@@ -1,0 +1,123 @@
+# Get Jobs 工作无忧
+
+Get Jobs 是一个基于 Spring Boot、Next.js 和 Playwright 的本地求职自动化工具，用于在招聘平台上完成配置管理、登录状态维护、岗位筛选、自动投递、进度推送和岗位数据分析。
+
+> 使用前请理解招聘平台规则和账号风险。Boss 直聘网页端稳定性不如手机端，不建议完全依赖程序投递；智联招聘当前投递链路在项目文档中也标注为不稳定。
+> 当前副本仅作为本机本地项目保存，未配置 GitHub 远程仓库，也不会自动上传到 GitHub。
+
+## 功能概览
+
+- 图形化管理界面：在网页端配置平台参数、AI 参数和运行任务。
+- 多平台支持：Boss 直聘、猎聘、前程无忧 51job、智联招聘。
+- 自动化执行：使用 Playwright 操作浏览器完成登录、搜索、筛选和投递。
+- AI 辅助：支持配置模型接口，用于 Boss 直聘岗位匹配和打招呼语生成。
+- 实时进度：后端通过 SSE 向前端推送投递进度。
+- 数据持久化：使用 SQLite 保存配置、Cookie、投递数据和统计数据。
+- 岗位分析：前端提供各平台投递结果列表与统计视图。
+
+## 技术栈
+
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS、shadcn/ui、Chart.js |
+| 后端 | JDK 21、Spring Boot 3.5.7、Gradle、MyBatis-Plus |
+| 自动化 | Microsoft Playwright for Java |
+| 数据库 | SQLite |
+
+## 目录结构
+
+```text
+.
+├── README.md                 # 项目入口说明
+├── build.gradle.kts          # 后端 Gradle 构建配置
+├── db/getjobs.db             # 本地 SQLite 数据库
+├── doc/                      # 项目文档
+├── front/                    # Next.js 前端
+├── src/main/java/com/getjobs # Spring Boot 后端与 worker 自动化逻辑
+└── src/main/resources        # 后端配置、静态资源、插件资源
+```
+
+## 快速启动
+
+### 1. 准备环境
+
+- JDK 21
+- Node.js 20.19 或更高版本
+- pnpm
+- 可正常访问招聘网站的本机网络环境
+
+### 2. 启动后端
+
+```bash
+./gradlew bootRun
+```
+
+后端默认端口为 `8888`，配置文件位于 `src/main/resources/application.yaml`。
+
+### 3. 启动前端
+
+```bash
+cd front
+pnpm install
+pnpm dev
+```
+
+前端默认端口为 `6866`，配置文件位于 `front/server.config.js`。启动后访问：
+
+```text
+http://localhost:6866
+```
+
+### 4. 配置并运行
+
+1. 打开网页端。
+2. 在环境配置和 AI 配置页面填写企业微信机器人、模型接口等参数。
+3. 到对应平台页面配置城市、岗位、薪资、投递页数等筛选条件。
+4. 登录平台账号并保存 Cookie。
+5. 点击开始运行，在页面中查看实时日志和统计结果。
+
+更完整的步骤见 [使用指南](doc/使用指南.md)。
+
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [文档索引](doc/文档索引.md) | 所有文档的入口和说明 |
+| [项目检查报告](doc/项目检查报告.md) | 项目结构检查、整理结果和注意事项 |
+| [使用指南](doc/使用指南.md) | 环境准备、启动、配置、平台使用说明 |
+| [开发指南](doc/开发指南.md) | 本地开发、构建、目录说明、常用命令 |
+| [架构说明](doc/架构说明.md) | 前端、后端、worker、数据库和运行流程 |
+| [API 接口](doc/API接口.md) | 主要后端接口按模块整理 |
+| [更新日志](doc/更新日志.md) | 历史版本变化 |
+
+## 常用命令
+
+```bash
+# 后端开发运行
+./gradlew bootRun
+
+# 后端测试
+./gradlew test
+
+# 前端开发运行
+cd front && pnpm dev
+
+# 前端构建
+cd front && pnpm build
+
+# 前端生产静态构建并复制 dist
+cd front && pnpm build:prod
+```
+
+## 重要注意事项
+
+- 本项目当前按本地-only 方式维护：`.github` 工作流已移除，Git 只用于本机版本保存。
+- 本项目更适合在个人电脑本地运行，不建议部署到服务器。招聘网站通常会识别服务器 IP，可能无法返回正常数据。
+- 不建议开启境外代理访问国内招聘网站，否则页面加载可能变慢或失败。
+- 数据库、Cookie、API Key、简历图片等都属于敏感数据，请勿提交到公开仓库。
+- `.gitignore` 已忽略 `db/`、`*.db`、`.env`、`cookie.json`、`*.jpg`、构建目录和 Playwright 缓存目录。
+- 前端构建产物可放到 `src/main/resources/dist` 后由后端静态资源服务承载。
+
+## 开源协议
+
+项目使用自定义限制商业化的开源协议，详见 [LICENSE](LICENSE)。
