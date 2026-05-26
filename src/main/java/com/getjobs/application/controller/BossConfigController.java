@@ -40,6 +40,9 @@ public class BossConfigController {
         if (config == null) {
             config = new BossConfigEntity();
         }
+        if (config.getAutoDeliver() == null) {
+            config.setAutoDeliver(0);
+        }
 
         // 获取所有选项并按类型分组
         Map<String, List<BossOptionEntity>> options = new HashMap<>();
@@ -69,6 +72,9 @@ public class BossConfigController {
   public BossConfigEntity updateConfig(@RequestBody BossConfigEntity config) {
         // 关键词标准化：将来自前端的逗号分隔或括号列表统一转换为 JSON 字符串列表
         config.setKeywords(normalizeKeywords(config.getKeywords()));
+        if (config.getAutoDeliver() == null) {
+            config.setAutoDeliver(0);
+        }
 
         // 将前端可能传来的『代码列表』转换并保存成『中文名称列表/值』
         // 城市：保存中文名（单值）

@@ -194,9 +194,9 @@ export default function EnvConfig() {
                   type="text"
                   value={envConfig.baseUrl}
                   onChange={(e) => setEnvConfig({ ...envConfig, baseUrl: e.target.value })}
-                  placeholder="https://api.ruyun.fun"
+                  placeholder="https://api.deepseek.com"
                 />
-                <p className="text-xs text-muted-foreground">API服务器地址</p>
+                <p className="text-xs text-muted-foreground">DeepSeek 推荐填写 https://api.deepseek.com；系统会自动调用 /v1/chat/completions</p>
               </div>
 
               <div className="space-y-2">
@@ -206,9 +206,9 @@ export default function EnvConfig() {
                   type="text"
                   value={envConfig.model}
                   onChange={(e) => setEnvConfig({ ...envConfig, model: e.target.value })}
-                  placeholder="gpt-5-nano-2025-08-07"
+                  placeholder="deepseek-chat"
                 />
-                <p className="text-xs text-muted-foreground">使用的AI模型名称</p>
+                <p className="text-xs text-muted-foreground">DeepSeek 推荐模型 deepseek-chat；也可以填写其他 OpenAI-compatible 模型名</p>
               </div>
             </div>
           </CardContent>

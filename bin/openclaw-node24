@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec "$HOME/.local/openclaw-node24/node_modules/node/bin/node" \
+  "$HOME/.local/openclaw-node24/node_modules/openclaw/openclaw.mjs" "$@"

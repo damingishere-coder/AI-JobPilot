@@ -47,6 +47,8 @@ public class BossConfigEntity {
     private Integer sendImgResume;
     /** 是否过滤不在线HR（1=启用，0=关闭） */
     private Integer filterDeadHr;
+    /** AI通过后是否自动投递（1=启用，0=关闭） */
+    private Integer autoDeliver;
     /** HR不在线状态列表（逗号或括号列表） */
     private String deadStatus;
     /** 创建时间 */

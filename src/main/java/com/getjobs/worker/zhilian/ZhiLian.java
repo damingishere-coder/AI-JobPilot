@@ -20,7 +20,7 @@ import java.util.function.Supplier;
 
 /**
  * @author loks666
- * 智联招聘自动投递 - Playwright版本
+     * 智联招聘岗位扫描 - Playwright版本
  */
 @Slf4j
 @Component
@@ -93,18 +93,18 @@ public class ZhiLian {
     }
 
     /**
-     * 执行投递任务
-     * @return 投递数量
+     * 执行扫描任务
+     * @return 待确认数量
      */
     public int execute() {
-        log.info("智联招聘投递任务开始...");
+        log.info("智联招聘扫描任务开始...");
         long startTime = System.currentTimeMillis();
 
         try {
             // 遍历所有关键词进行投递
             for (String keyword : config.getKeywords()) {
                 if (shouldStop() || isLimit) {
-                    sendProgress("用户取消投递或已达上限", null, null);
+                    sendProgress("用户取消扫描或已达上限", null, null);
                     break;
                 }
 
@@ -113,28 +113,28 @@ public class ZhiLian {
             }
 
             long duration = System.currentTimeMillis() - startTime;
-            String message = String.format("智联招聘投递完成，共投递%d个岗位，用时%s",
+            String message = String.format("智联招聘扫描完成，共生成%d个待确认岗位，用时%s",
                 resultList.size(), formatDuration(duration));
             log.info(message);
             sendProgress(message, null, null);
 
             if (!resultList.isEmpty()) {
-                log.info("新投递公司如下:");
+                log.info("新增待确认岗位如下:");
                 resultList.forEach(job -> log.info(job.toString()));
             } else {
-                log.info("未投递新的岗位...");
+                log.info("未生成新的待确认岗位...");
             }
 
         } catch (Exception e) {
-            log.error("智联招聘投递过程出现异常", e);
-            sendProgress("投递出现异常: " + e.getMessage(), null, null);
+            log.error("智联招聘扫描过程出现异常", e);
+            sendProgress("扫描出现异常: " + e.getMessage(), null, null);
         }
 
         return resultList.size();
     }
 
     /**
-     * 按关键词投递
+     * 按关键词扫描
      */
     private void deliverByKeyword(String keyword, String baseUrl) {
         if (isLimit) {
@@ -142,7 +142,7 @@ public class ZhiLian {
         }
 
         try {
-            log.info("开始投递关键词: {}", keyword);
+            log.info("开始扫描关键词: {}", keyword);
             sendProgress("正在搜索关键词: " + keyword, null, null);
 
             // 导航到搜索页面（路径参数：jl+城市码 + p1 + sl）
@@ -178,12 +178,12 @@ public class ZhiLian {
             int pageNum = 1;
             while (pageNum <= 50) {
                 if (shouldStop() || isLimit) {
-                    sendProgress("用户取消投递或已达上限", null, null);
+                    sendProgress("用户取消扫描或已达上限", null, null);
                     return;
                 }
 
-                log.info("开始投递【{}】关键词，第【{}】页...", keyword, pageNum);
-                sendProgress(String.format("正在投递第%d页", pageNum), pageNum, 50);
+                log.info("开始扫描【{}】关键词，第【{}】页...", keyword, pageNum);
+                sendProgress(String.format("正在扫描第%d页", pageNum), pageNum, 50);
 
                 // 等待岗位列表出现（CSS选择器）
                 try {
@@ -195,7 +195,7 @@ public class ZhiLian {
                     PlaywrightUtil.sleep(1);
                 }
 
-                // 投递当前页面
+                // 扫描当前页面
                 if (!deliverCurrentPage(keyword)) {
                     break;
                 }
@@ -221,15 +221,15 @@ public class ZhiLian {
                 }
             }
 
-            log.info("关键词【{}】投递完成", keyword);
+            log.info("关键词【{}】扫描完成", keyword);
         } catch (Exception e) {
-            log.error("投递关键词【{}】时出现异常", keyword, e);
+            log.error("扫描关键词【{}】时出现异常", keyword, e);
         }
     }
 
     /**
-     * 投递当前页面的所有职位
-     * @return 是否继续投递下一页
+     * 扫描当前页面的所有职位
+     * @return 是否继续扫描下一页
      */
     private boolean deliverCurrentPage(String keyword) {
         try {
@@ -237,7 +237,7 @@ public class ZhiLian {
                     new Page.WaitForSelectorOptions().setTimeout(15000));
 
             if (checkIsLimit()) {
-                sendProgress("用户取消投递或已达上限", null, null);
+                sendProgress("用户取消扫描或已达上限", null, null);
                 return false;
             }
 
@@ -251,7 +251,7 @@ public class ZhiLian {
 
             for (int i = 0; i < count; i++) {
                 if (shouldStop()) {
-                    sendProgress("用户取消投递或已达上限", null, null);
+                    sendProgress("用户取消扫描或已达上限", null, null);
                     return false;
                 }
 
@@ -314,16 +314,10 @@ public class ZhiLian {
 
             for (PageJob pj : jobs) {
                 if (shouldStop()) {
-                    sendProgress("用户取消投递或已达上限", null, null);
+                    sendProgress("用户取消扫描或已达上限", null, null);
                     return false;
                 }
 
-                Locator card = page.locator("div.joblist-box__item").nth(pj.index);
-                Locator applyBtn = card.locator("button.collect-and-apply__btn");
-                if (applyBtn.count() == 0) {
-                    log.info("岗位【{}】未找到立即投递按钮，跳过", pj.jobTitle);
-                    continue;
-                }
                 try {
                     String jobDescription = fetchJobDescription(pj.jobLink);
                     JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
@@ -347,51 +341,37 @@ public class ZhiLian {
                         continue;
                     }
 
-                    // 点击前：注册监听器，统一关闭由当前页面打开的新窗口（弹出页）
-                    java.util.function.Consumer<Page> closer = (Page newPage) -> {
-                        try {
-                            // 只关闭由当前 page 打开的子窗口，避免误伤
-                            if (newPage.opener() == page) {
-                                try { newPage.waitForLoadState(); } catch (Exception ignored) {}
-                                try { PlaywrightUtil.sleep(200); } catch (Exception ignored) {}
-                                try { newPage.close(); } catch (Exception ignored) {}
-                            }
-                        } catch (Exception ignored) {}
-                    };
-                    page.context().onPage(closer);
-
-                    // 仅通过监听器捕捉并关闭由当前页打开的新窗口，避免与 waitForPopup 产生竞态
-                    try {
-                        applyBtn.click(); /* 点击投递按钮（关键定位注释：delivery-click-line）*/
-                    } finally {
-                        // 取消监听，避免影响后续流程
-                        try { page.context().offPage(closer); } catch (Exception ignored) {}
-                    }
-
                     try {
                         if (pj.jobId != null && !pj.jobId.isEmpty()) {
-                            zhilianService.markDeliveredByJobId(pj.jobId);
-                            log.info("已标记投递：jobId={}，title={}，company={}", pj.jobId, pj.jobTitle, pj.companyName);
+                            zhilianService.markWaitingConfirmByJobId(pj.jobId);
+                            log.info("已加入待确认：jobId={}，title={}，company={}", pj.jobId, pj.jobTitle, pj.companyName);
                         } else if (pj.jobTitle != null && pj.companyName != null) {
-                            zhilianService.markDeliveredByTitleAndCompany(pj.jobTitle, pj.companyName);
-                            log.info("已标记投递：title={}，company={}", pj.jobTitle, pj.companyName);
+                            zhilianService.markWaitingConfirmByTitleAndCompany(pj.jobTitle, pj.companyName);
+                            log.info("已加入待确认：title={}，company={}", pj.jobTitle, pj.companyName);
                         }
+                        sendProgress("待确认：" + pj.jobTitle + "（" + analysis.getScore() + "分）", null, null);
+                        Job job = new Job();
+                        job.setJobName(pj.jobTitle);
+                        job.setCompanyName(pj.companyName);
+                        job.setSalary(pj.salary);
+                        job.setJobArea(pj.location);
+                        resultList.add(job);
                     } catch (Exception ex) {
-                        log.warn("更新投递状态失败: {}", ex.getMessage());
+                        log.warn("更新待确认状态失败: {}", ex.getMessage());
                     }
-                } catch (Exception clickEx) {
-                    log.warn("投递失败，继续下一个岗位: {}", clickEx.getMessage());
+                } catch (Exception scanEx) {
+                    log.warn("扫描岗位失败，继续下一个岗位: {}", scanEx.getMessage());
                 }
 
                 if (checkIsLimit()) {
-                    sendProgress("用户取消投递或已达上限", null, null);
+                    sendProgress("用户取消扫描或已达上限", null, null);
                     return false;
                 }
             }
 
             return true;
         } catch (Exception e) {
-            log.error("投递当前页面失败", e);
+            log.error("扫描当前页面失败", e);
             try {
                 saveCurrentPageHtml();
                 log.info("已保存当前页面到 src/main/java/com/getjobs/worker/zhilian/page.html 以便排查");

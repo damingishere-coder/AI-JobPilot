@@ -39,6 +39,9 @@ build/
 ### VS Code ###
 .vscode/
 data.json
+data/
+output/
+logs/
 src/main/java/boss/data.json
 merge_prs.log
 ### Mac OS ###
@@ -57,6 +60,7 @@ dist/
 front/out/
 front/.next/
 front/node_modules/
+.pnpm-store/
 
 # Gradle cache
 .gradle/

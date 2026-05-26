@@ -84,6 +84,11 @@ public class BossConfig {
     private Boolean filterDeadHR;
 
     /**
+     * AI通过后是否自动投递
+     */
+    private Boolean autoDeliver;
+
+    /**
      * 是否发送图片简历
      */
     private Boolean sendImgResume;

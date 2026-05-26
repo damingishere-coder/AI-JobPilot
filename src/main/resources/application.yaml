@@ -20,6 +20,10 @@ spring:
   sql:
     init:
       mode: never  # 数据库文件已存在，不需要自动初始化
+  servlet:
+    multipart:
+      max-file-size: 30MB
+      max-request-size: 30MB
   output:
     ansi:
       enabled: always
@@ -27,6 +31,12 @@ spring:
 # 服务器配置
 server:
   port: 8888  # 后端 API 固定端口
+
+app:
+  openclaw:
+    command: ./bin/openclaw-node24
+    profile: openclaw
+    detail-limit: 5
 
 # 日志配置
 logging:

@@ -63,6 +63,9 @@ http://localhost:8888
 | `POST` | `/api/boss/stop` | 停止 Boss 任务 |
 | `POST` | `/api/boss/logout` | Boss 退出登录 |
 | `GET` | `/api/boss/status` | Boss 运行状态 |
+| `POST` | `/api/boss/chrome/jobs` | 接收 Chrome Bridge 采集的 Boss 岗位并执行 AI 分析 |
+| `POST` | `/api/boss/chrome/stop` | 停止指定 Chrome Bridge Boss 扫描 runId |
+| `POST` | `/api/boss/ai-keywords` | 根据现有关键词生成 Boss 搜索关键词建议 |
 
 ### 数据分析
 
@@ -71,6 +74,10 @@ http://localhost:8888
 | `GET` | `/api/boss/stats` | Boss 统计数据 |
 | `GET` | `/api/boss/list` | Boss 投递结果列表 |
 | `GET` | `/api/boss/reload` | 重新加载 Boss 数据 |
+| `POST` | `/api/boss/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 投递任务 |
+| `POST` | `/api/boss/jobs/confirm-batch` | 按 id 或筛选条件生成 Boss 批量 Chrome 投递任务 |
+| `POST` | `/api/boss/jobs/{id}/delivery-result` | Chrome Bridge 回写 Boss 投递成功或失败 |
+| `POST` | `/api/boss/jobs/{id}/skip` | 手动跳过 Boss 待确认岗位 |
 
 ## 猎聘
 
@@ -127,10 +134,50 @@ http://localhost:8888
 | `POST` | `/api/zhilian/save-cookie` | 保存智联 Cookie |
 | `GET` | `/api/zhilian/stats` | 智联统计数据 |
 | `GET` | `/api/zhilian/list` | 智联投递结果列表 |
+| `POST` | `/api/zhilian/chrome/jobs` | 接收 Chrome Bridge 采集的智联岗位并执行 AI 分析 |
+| `GET` | `/api/zhilian/openclaw/status` | 检查 OpenClaw 实验浏览器通路 |
+| `POST` | `/api/zhilian/openclaw/probe` | OpenClaw 实验采集智联岗位，不执行真实投递 |
+| `POST` | `/api/zhilian/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 投递任务 |
+| `POST` | `/api/zhilian/jobs/confirm-batch` | 按 id 或筛选条件生成智联批量 Chrome 投递任务 |
+| `POST` | `/api/zhilian/jobs/{id}/delivery-result` | Chrome Bridge 回写智联投递成功或失败 |
 | `POST` | `/api/zhilian/start` | 启动智联任务 |
 | `POST` | `/api/zhilian/stop` | 停止智联任务 |
 | `GET` | `/api/zhilian/status` | 智联运行状态 |
 | `GET` | `/api/zhilian/health` | 智联模块健康检查 |
+
+## Chrome Bridge 数据结构
+
+Chrome Bridge 采集岗位时提交到后端的主要请求：
+
+```json
+{
+  "runId": "browser-run-id",
+  "keyword": "Java",
+  "autoDeliver": false,
+  "jobs": [
+    {
+      "id": "platform-job-id",
+      "title": "Java开发工程师",
+      "company": "示例公司",
+      "salary": "20-30K",
+      "location": "深圳",
+      "experience": "3-5年",
+      "degree": "本科",
+      "description": "岗位详情",
+      "url": "https://..."
+    }
+  ]
+}
+```
+
+后端返回 `tasks` 时，前端会交给 Chrome Bridge 执行投递。投递完成后扩展调用 `delivery-result`，请求体为：
+
+```json
+{
+  "success": true,
+  "message": "岗位已在Chrome中投递"
+}
+```
 
 ## 维护说明
 

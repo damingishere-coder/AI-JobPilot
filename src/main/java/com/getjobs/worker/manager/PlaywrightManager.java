@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -76,6 +77,9 @@ public class PlaywrightManager {
 
     // 记录智联招聘是否已处理过未登录引导（仅初始化时执行一次）
     private volatile boolean zhilianLoginGuided = false;
+    private final Object playwrightLifecycleLock = new Object();
+    private final Object bossPageOperationLock = new Object();
+    private volatile boolean playwrightInitializing = false;
 
     // 默认超时时间（毫秒）
   private static final int DEFAULT_TIMEOUT = 30000;
@@ -85,13 +89,22 @@ public class PlaywrightManager {
 
     // 平台URL常量
     private static final String BOSS_URL = "https://www.zhipin.com";
+    private static final String BOSS_LOGIN_URL = BOSS_URL + "/web/user/?ka=header-login";
     private static final String LIEPIN_URL = "https://www.liepin.com";
   private static final String JOB51_URL = "https://www.51job.com";
     private static final String ZHILIAN_URL = "https://www.zhaopin.com";
+    private static final String ZHILIAN_LOGIN_URL = "https://passport.zhaopin.com/login";
     // 降噪：51job Cookie保存日志节流状态
     private volatile long last51CookieLogMs = 0L;
     private volatile int last51CookieLogCount = -1;
     private volatile String last51CookieRemark = "";
+
+    public record BossSearchSessionStatus(
+            boolean homeLoggedIn,
+            boolean searchReady,
+            String currentUrl,
+            String failureReason
+    ) {}
 
     @Autowired
     private CookieService cookieService;
@@ -102,6 +115,15 @@ public class PlaywrightManager {
     public void init() {
         if (isInitialized()) {
             return;
+        }
+        synchronized (playwrightLifecycleLock) {
+            if (isInitialized()) {
+                return;
+            }
+            if (playwrightInitializing) {
+                return;
+            }
+            playwrightInitializing = true;
         }
         log.info("========================================");
         log.info("  初始化浏览器自动化引擎");
@@ -162,6 +184,8 @@ public class PlaywrightManager {
         } catch (Exception e) {
             log.error("✗ 浏览器自动化引擎初始化失败", e);
             throw new RuntimeException("Playwright初始化失败", e);
+        } finally {
+            playwrightInitializing = false;
         }
     }
 
@@ -252,7 +276,18 @@ public class PlaywrightManager {
      * 检查Boss是否已登录
      */
     private boolean checkIfLoggedIn() {
-        // 更稳健的登录判断：优先检测用户头像/昵称是否可见；备用检测登录入口是否可见且包含“登录”文本
+        if (bossPage == null || bossPage.isClosed()) {
+            return false;
+        }
+
+        try {
+            String url = bossPage.url();
+            if (url != null && (url.contains("/web/geek/") || url.contains("/web/user/resume"))) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+
+        // 更稳健的登录判断：优先检测用户头像/昵称/个人入口是否可见。
         try {
             Locator userLabel = bossPage.locator("li.nav-figure span.label-text").first();
             if (userLabel.isVisible()) {
@@ -262,17 +297,31 @@ public class PlaywrightManager {
 
         try {
             // 有些版本仅展示头像入口，无 label-text
-            Locator navFigure = bossPage.locator("li.nav-figure").first();
+            Locator navFigure = bossPage.locator("li.nav-figure, .nav-figure, a[href*='/web/geek/'], a[href*='/web/user/resume']").first();
             if (navFigure.isVisible()) {
                 return true;
             }
         } catch (Exception ignored) {}
 
         try {
-            // 未登录时通常有“登录/注册”入口或按钮容器
-            Locator loginAnchor = bossPage.locator("li.nav-sign a, .btns").first();
-            if (loginAnchor.isVisible()) {
-                String text = loginAnchor.textContent();
+            Locator header = bossPage.locator("#header, .site-nav, .nav, .user-nav").first();
+            if (header.isVisible()) {
+                String text = header.textContent();
+                if (text != null && text.contains("消息") && text.contains("简历") && !text.contains("登录")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            Locator loginEntry = bossPage.locator(
+                    "a[href*='header-login'], " +
+                    "a[href*='/web/user/?ka=header-login'], " +
+                    "li.nav-sign a, " +
+                    ".btns"
+            ).first();
+            if (loginEntry.isVisible()) {
+                String text = loginEntry.textContent();
                 if (text != null && text.contains("登录")) {
                     return false;
                 }
@@ -281,6 +330,413 @@ public class PlaywrightManager {
 
         // 无法明确检测到登录特征时，保守返回未登录
         return false;
+    }
+
+    private Page ensureBossPage() {
+        waitForPlaywrightReady();
+        if (context == null) {
+            throw new IllegalStateException("浏览器上下文尚未初始化");
+        }
+        try {
+            if (bossPage != null && !bossPage.isClosed()) {
+                return bossPage;
+            }
+        } catch (Exception ignored) {}
+        bossPage = context.newPage();
+        bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+        setupLoginMonitoring(bossPage);
+        setLoginStatus("boss", false);
+        log.info("Boss Page 已重新创建");
+        return bossPage;
+    }
+
+    private Page ensureZhilianPage() {
+        waitForPlaywrightReady();
+        if (context == null) {
+            throw new IllegalStateException("浏览器上下文尚未初始化");
+        }
+        try {
+            if (zhilianPage != null && !zhilianPage.isClosed()) {
+                return zhilianPage;
+            }
+        } catch (Exception ignored) {}
+        zhilianPage = context.newPage();
+        zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+        zhilianLoginGuided = false;
+        setupZhilianLoginMonitoring(zhilianPage);
+        setLoginStatus("zhilian", false);
+        log.info("智联招聘 Page 已重新创建");
+        return zhilianPage;
+    }
+
+    private void waitForPlaywrightReady() {
+        long deadline = System.currentTimeMillis() + 60000;
+        while (playwrightInitializing && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("等待浏览器初始化被中断", e);
+            }
+        }
+        if (playwrightInitializing) {
+            throw new IllegalStateException("浏览器自动化引擎仍在初始化，请稍后再试");
+        }
+    }
+
+    private boolean navigateZhilianPage(Page page, String url, String expectedUrlPart) {
+        try {
+            page.navigate(url, new Page.NavigateOptions()
+                    .setTimeout(60000)
+                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            return true;
+        } catch (Exception e) {
+            try {
+                String currentUrl = page.url();
+                if (currentUrl != null && currentUrl.contains(expectedUrlPart)) {
+                    log.debug("智联招聘页面导航异常但页面已可用: {}", e.getMessage());
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+            log.warn("智联招聘页面导航失败 url={}: {}", url, e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean navigateBossPage(Page page, String url, String expectedUrlPart) {
+        try {
+            page.navigate(url, new Page.NavigateOptions()
+                    .setTimeout(15000)
+                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            return true;
+        } catch (Exception e) {
+            try {
+                String currentUrl = page.url();
+                if (currentUrl != null && currentUrl.contains(expectedUrlPart)) {
+                    log.debug("Boss页面导航异常但页面已可用: {}", e.getMessage());
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+            log.warn("Boss页面导航失败 url={}: {}", url, e.getMessage());
+            return false;
+        }
+    }
+
+    private void openBossQrLoginPanel(Page page) {
+        try {
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            Locator qrSwitch = page.locator(".btn-sign-switch.ewm-switch").first();
+            if (qrSwitch.isVisible()) {
+                qrSwitch.click(new Locator.ClickOptions().setTimeout(3000));
+                return;
+            }
+
+            Locator tip = page.getByText("APP扫码登录").first();
+            if (tip.isVisible()) {
+                tip.click(new Locator.ClickOptions().setTimeout(3000));
+                return;
+            }
+
+            Locator legacy = page.locator("li.sign-switch-tip").first();
+            if (legacy.isVisible()) {
+                legacy.click(new Locator.ClickOptions().setTimeout(3000));
+            }
+        } catch (Exception e) {
+            log.debug("打开 Boss 登录页后切换二维码失败: {}", e.getMessage());
+        }
+    }
+
+    public BossSearchSessionStatus verifyBossSearchSession(String searchUrl) {
+        synchronized (bossPageOperationLock) {
+            Page page = ensureBossPage();
+            boolean homeLoggedIn = checkIfLoggedIn();
+            String targetUrl = normalizeBossSearchUrl(searchUrl);
+            try {
+                navigateBossPage(page, targetUrl, "zhipin.com");
+                try {
+                    page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                } catch (Exception ignored) {}
+                String currentUrl = safePageUrl(page);
+                String lowerUrl = currentUrl == null ? "" : currentUrl.toLowerCase();
+                if (isBossSecurityOrLoginUrl(lowerUrl)) {
+                    setLoginStatus("boss", false);
+                    return new BossSearchSessionStatus(homeLoggedIn, false, currentUrl,
+                            "Boss搜索页触发安全校验，需要在后端自动化浏览器里完成登录/安全验证");
+                }
+
+                waitForBossSearchPagePaint(page);
+
+                boolean hasSearchPage = hasBossJobCards(page);
+                try {
+                    log.info("Boss搜索页预检结果: hasCards={}, url={}, title={}", hasSearchPage, currentUrl, page.title());
+                } catch (Exception ignored) {}
+
+                if (!hasSearchPage) {
+                    String bodyText = "";
+                    try {
+                        bodyText = page.locator("body").innerText(new Locator.InnerTextOptions().setTimeout(3000));
+                    } catch (Exception ignored) {}
+                    if (bodyText.contains("安全验证") || bodyText.contains("异常访问") || bodyText.contains("登录") || bodyText.contains("扫码")) {
+                        setLoginStatus("boss", false);
+                        return new BossSearchSessionStatus(homeLoggedIn, false, currentUrl,
+                                "Boss搜索页需要登录或安全验证，请在后端自动化浏览器页面完成后再扫描");
+                    }
+                    return new BossSearchSessionStatus(homeLoggedIn, false, currentUrl,
+                            "Boss搜索页未加载岗位列表，请完成安全校验或稍后重试");
+                }
+
+                setLoginStatus("boss", true);
+                return new BossSearchSessionStatus(true, true, currentUrl, "");
+            } catch (Exception e) {
+                String currentUrl = safePageUrl(page);
+                String lowerUrl = currentUrl == null ? "" : currentUrl.toLowerCase();
+                if (isBossSecurityOrLoginUrl(lowerUrl)) {
+                    setLoginStatus("boss", false);
+                    return new BossSearchSessionStatus(homeLoggedIn, false, currentUrl,
+                            "Boss搜索页触发安全校验，需要在后端自动化浏览器里完成登录/安全验证");
+                }
+                return new BossSearchSessionStatus(homeLoggedIn, false, currentUrl,
+                        "Boss搜索页验证失败: " + e.getMessage());
+            }
+        }
+    }
+
+    public BossSearchSessionStatus verifyBossSearchSession() {
+        return verifyBossSearchSession(null);
+    }
+
+    public Map<String, Object> getBossLoginDetails() {
+        BossSearchSessionStatus status = verifyBossSearchSession();
+        Map<String, Object> details = new HashMap<>();
+        details.put("homeLoggedIn", status.homeLoggedIn());
+        details.put("searchReady", status.searchReady());
+        details.put("currentUrl", status.currentUrl() == null ? "" : status.currentUrl());
+        details.put("failureReason", status.failureReason() == null ? "" : status.failureReason());
+        return details;
+    }
+
+    public Map<String, Object> getBossPageSnapshot() {
+        synchronized (bossPageOperationLock) {
+            Page page = ensureBossPage();
+            Map<String, Object> snapshot = new HashMap<>();
+            snapshot.put("success", true);
+            snapshot.put("url", safePageUrl(page));
+            try {
+                snapshot.put("title", page.title());
+            } catch (Exception e) {
+                snapshot.put("title", "");
+            }
+            Exception lastError = null;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    try {
+                        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                    } catch (Exception ignored) {}
+                    byte[] bytes = page.screenshot(new Page.ScreenshotOptions()
+                            .setFullPage(false)
+                            .setTimeout(10000));
+                    snapshot.put("success", true);
+                    snapshot.put("url", safePageUrl(page));
+                    try {
+                        snapshot.put("title", page.title());
+                    } catch (Exception ignored) {}
+                    snapshot.put("image", "data:image/png;base64," + java.util.Base64.getEncoder().encodeToString(bytes));
+                    snapshot.remove("message");
+                    return snapshot;
+                } catch (Exception e) {
+                    lastError = e;
+                    try {
+                        Thread.sleep(800);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            snapshot.put("success", false);
+            snapshot.put("message", "获取Boss后端浏览器截图失败: " + (lastError == null ? "未知错误" : lastError.getMessage()));
+            return snapshot;
+        }
+    }
+
+    public Map<String, Object> clickBossPage(double x, double y) {
+        synchronized (bossPageOperationLock) {
+            Page page = ensureBossPage();
+            Map<String, Object> result = new HashMap<>();
+            try {
+                page.mouse().click(x, y);
+                try {
+                    page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                } catch (Exception ignored) {}
+                result.put("success", true);
+                result.put("url", safePageUrl(page));
+                result.put("message", "已点击后端Boss浏览器页面");
+            } catch (Exception e) {
+                result.put("success", false);
+                result.put("message", "点击后端Boss浏览器页面失败: " + e.getMessage());
+            }
+            return result;
+        }
+    }
+
+    public Map<String, Object> dragBossPage(double fromX, double fromY, double toX, double toY) {
+        synchronized (bossPageOperationLock) {
+            Map<String, Object> result = new HashMap<>();
+            Exception lastError = null;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                Page page = ensureBossPage();
+                try {
+                    page.mouse().move(fromX, fromY);
+                    page.mouse().down();
+                    page.mouse().move(toX, toY, new Mouse.MoveOptions().setSteps(24));
+                    page.mouse().up();
+                    try {
+                        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                    } catch (Exception ignored) {}
+                    result.put("success", true);
+                    result.put("url", safePageUrl(page));
+                    result.put("message", "已拖动后端Boss浏览器页面");
+                    return result;
+                } catch (Exception e) {
+                    lastError = e;
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            result.put("success", false);
+            result.put("message", "拖动后端Boss浏览器页面失败: " + (lastError == null ? "未知错误" : lastError.getMessage()));
+            return result;
+        }
+    }
+
+    private String normalizeBossSearchUrl(String searchUrl) {
+        if (searchUrl != null && !searchUrl.isBlank()) {
+            return searchUrl;
+        }
+        return BOSS_URL + "/web/geek/job?city=101280600&query=AI%E4%BA%A7%E5%93%81%E8%BF%90%E8%90%A5";
+    }
+
+    private boolean isBossSecurityOrLoginUrl(String lowerUrl) {
+        return lowerUrl.contains("/web/user")
+                || lowerUrl.contains("passport")
+                || lowerUrl.contains("login")
+                || lowerUrl.contains("_security_check");
+    }
+
+    private void waitForBossSearchPagePaint(Page page) {
+        String selector = String.join(", ",
+                "ul.rec-job-list li.job-card-box",
+                "li.job-card-box",
+                ".job-card-wrapper",
+                "[class*='job-card']",
+                "[ka^='search_list_']",
+                "input[placeholder*='搜索']");
+        try {
+            page.waitForSelector(selector, new Page.WaitForSelectorOptions().setTimeout(12000));
+        } catch (Exception ignored) {}
+    }
+
+    private boolean hasBossJobCards(Page page) {
+        String[] selectors = {
+                "ul.rec-job-list li.job-card-box",
+                "li.job-card-box",
+                ".job-card-wrapper",
+                "[ka^='search_list_']",
+                "a[href*='/job_detail/']"
+        };
+        for (String selector : selectors) {
+            try {
+                if (page.locator(selector).count() > 0) {
+                    return true;
+                }
+            } catch (Exception ignored) {}
+        }
+        return false;
+    }
+
+    private String safePageUrl(Page page) {
+        try {
+            return page.url();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private void openZhilianQrLoginPanel(Page page) {
+        try {
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            page.waitForSelector(
+                    "div.zppp-panel-normal-bar__img, " +
+                    ".zppp-panel-normal-bar__img, " +
+                    "[class*='normal-bar__img'], " +
+                    "[class*='qrcode'], img[src*='qrcode']",
+                    new Page.WaitForSelectorOptions().setTimeout(10000)
+            );
+        } catch (Exception e) {
+            log.debug("智联招聘登录页二维码相关元素等待失败: {}", e.getMessage());
+        }
+
+        String[] qrToggleSelectors = {
+                "div.zppp-panel-normal-bar__img",
+                ".zppp-panel-normal-bar__img",
+                "[class*='normal-bar__img']"
+        };
+
+        for (String selector : qrToggleSelectors) {
+            try {
+                Locator qrToggle = page.locator(selector).first();
+                if (qrToggle.count() > 0 && qrToggle.isVisible()) {
+                    qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
+                    log.info("已切换到智联二维码登录页面，等待用户扫码...");
+                    return;
+                }
+            } catch (Exception e) {
+                log.debug("尝试点击智联二维码入口失败 selector={}: {}", selector, e.getMessage());
+            }
+        }
+
+        log.info("智联招聘登录页已打开，等待用户自行选择扫码或登录方式");
+    }
+
+    /**
+     * 主动打开 Boss 平台或登录页。用于用户关闭平台页面后的恢复入口。
+     */
+    public boolean openBossPlatformPage() {
+        try {
+            Page page = ensureBossPage();
+            boolean loggedIn = checkIfLoggedIn();
+            if (!loggedIn) {
+                loggedIn = reloadBossCookiesFromDb();
+                page = ensureBossPage();
+            }
+            if (loggedIn) {
+                navigateBossPage(page, BOSS_URL, "zhipin.com");
+                setLoginStatus("boss", true);
+                return true;
+            }
+
+            navigateBossPage(page, BOSS_LOGIN_URL, "/web/user/");
+            openBossQrLoginPanel(page);
+            setLoginStatus("boss", false);
+            return false;
+        } catch (Exception e) {
+            log.error("打开 Boss 平台页面失败: {}", e.getMessage(), e);
+            throw new RuntimeException("打开 Boss 平台页面失败", e);
+        }
     }
 
     /**
@@ -967,7 +1423,7 @@ public class PlaywrightManager {
                             boolean loginNavOk = false;
                             try {
                                 zhilianPage.navigate(
-                                        "https://passport.zhaopin.com/login",
+                                        ZHILIAN_LOGIN_URL,
                                         new Page.NavigateOptions()
                                                 .setTimeout(60000)
                                                 .setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
@@ -1004,14 +1460,7 @@ public class PlaywrightManager {
                             }
                         }
 
-                        // 点击二维码登录按钮
-                        Locator qrToggle = zhilianPage.locator("div.zppp-panel-normal-bar__img").first();
-                        if (qrToggle.count() > 0 && qrToggle.isVisible()) {
-                            qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                            log.info("已切换到智联二维码登录页面，等待用户扫码...");
-                        } else {
-                            log.info("智联招聘登录页面已打开，等待用户扫码...");
-                        }
+                        openZhilianQrLoginPanel(zhilianPage);
                     } catch (Exception e) {
 //                        log.warn("智联招聘：打开二维码登录面板失败: {}", e.getMessage());
                     }
@@ -1084,45 +1533,55 @@ public class PlaywrightManager {
      */
     public void triggerZhilianLogin() {
         try {
-            if (zhilianPage == null) {
-                throw new IllegalStateException("智联招聘页面未初始化");
+            Page page = ensureZhilianPage();
+            zhilianLoginGuided = false;
+
+            if (!navigateZhilianPage(page, ZHILIAN_URL, "zhaopin.com")) {
+                throw new IllegalStateException("智联招聘首页打开失败");
             }
 
-            // 导航到智联首页，确保DOM就绪
-            zhilianPage.navigate(ZHILIAN_URL, new Page.NavigateOptions()
-                    .setTimeout(60000)
-                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
-
-            // 如果看到未登录入口，尝试打开二维码登录面板
-            Locator noLoginAnchor = zhilianPage.locator("a.home-header__c-no-login").first();
-            if (noLoginAnchor.isVisible()) {
-                Locator qrToggle = zhilianPage.locator("div.zppp-panel-normal-bar__img").first();
-                if (qrToggle.isVisible()) {
-                    qrToggle.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                    log.info("已点击智联二维码登录入口，等待用户扫码...");
-                } else {
-                    log.warn("未找到二维码登录入口元素：div.zppp-panel-normal-bar__img");
-                }
-            } else {
-                log.info("未检测到未登录入口，可能已登录或在其他页面");
-            }
-
-            // 监听登录成功：等待URL跳转到 i.zhaopin.com 或用户信息元素出现
-            try {
-                zhilianPage.waitForURL("**i.zhaopin.com**", new Page.WaitForURLOptions().setTimeout(120_000));
+            if (checkIfZhilianLoggedIn()) {
                 onZhilianLoginSuccess();
                 return;
-            } catch (Exception ignored) {
             }
-            try {
-                zhilianPage.waitForSelector(".user-info, .user-name, .username-text", new Page.WaitForSelectorOptions().setTimeout(120_000));
-                onZhilianLoginSuccess();
-            } catch (Exception e) {
-                log.warn("等待智联登录成功超时或失败: {}", e.getMessage());
+
+            if (navigateZhilianPage(page, ZHILIAN_LOGIN_URL, "passport.zhaopin.com")) {
+                openZhilianQrLoginPanel(page);
             }
+
+            setLoginStatus("zhilian", false);
+            // 不阻塞等待扫码，页面导航监听会在登录成功后自动保存 Cookie。
         } catch (Exception e) {
             log.error("触发智联登录流程失败: {}", e.getMessage(), e);
             throw new RuntimeException("触发智联登录流程失败", e);
+        }
+    }
+
+    /**
+     * 主动打开智联招聘平台或登录页。用于配置页按钮快速恢复平台页面。
+     */
+    public boolean openZhilianPlatformPage() {
+        try {
+            Page page = ensureZhilianPage();
+            zhilianLoginGuided = false;
+            if (!navigateZhilianPage(page, ZHILIAN_URL, "zhaopin.com")) {
+                throw new IllegalStateException("智联招聘首页打开失败");
+            }
+
+            boolean loggedIn = checkIfZhilianLoggedIn();
+            if (loggedIn) {
+                setLoginStatus("zhilian", true);
+                return true;
+            }
+
+            if (navigateZhilianPage(page, ZHILIAN_LOGIN_URL, "passport.zhaopin.com")) {
+                openZhilianQrLoginPanel(page);
+            }
+            setLoginStatus("zhilian", false);
+            return false;
+        } catch (Exception e) {
+            log.error("打开智联招聘平台页面失败: {}", e.getMessage(), e);
+            throw new RuntimeException("打开智联招聘平台页面失败", e);
         }
     }
 
@@ -1353,7 +1812,7 @@ public class PlaywrightManager {
      */
     private void saveBossCookiesToDatabase(String remark) {
         try {
-            List<com.microsoft.playwright.options.Cookie> cookies = context.cookies();
+            List<com.microsoft.playwright.options.Cookie> cookies = filterBossCookies(context.cookies());
             // 使用ObjectMapper序列化为JSON字符串
             String cookieJson = new ObjectMapper().writeValueAsString(cookies);
             boolean result = cookieService.saveOrUpdateCookie("boss", cookieJson, remark);
@@ -1365,11 +1824,96 @@ public class PlaywrightManager {
         }
     }
 
+    public boolean reloadBossCookiesFromDb() {
+        try {
+            if (context == null) {
+                log.warn("共享上下文不存在，无法重新加载Boss Cookie");
+                return false;
+            }
+
+            CookieEntity cookieEntity = cookieService.getCookieByPlatform("boss");
+            if (cookieEntity == null || cookieEntity.getCookieValue() == null || cookieEntity.getCookieValue().isBlank()) {
+                log.warn("数据库未找到Boss Cookie或值为空，无法重新加载");
+                setLoginStatus("boss", false);
+                return false;
+            }
+
+            List<Cookie> cookies = parseCookiesFromString(cookieEntity.getCookieValue());
+            if (cookies.isEmpty()) {
+                log.warn("解析Boss Cookie为空，无法重新加载");
+                setLoginStatus("boss", false);
+                return false;
+            }
+
+            context.addCookies(cookies);
+            Page page = ensureBossPage();
+            navigateBossPage(page, BOSS_URL, "zhipin.com");
+            boolean loggedIn = checkIfLoggedIn();
+            setLoginStatus("boss", loggedIn);
+            log.info("已重新加载Boss Cookie并刷新登录状态: loggedIn={}, cookieCount={}", loggedIn, cookies.size());
+            return loggedIn;
+        } catch (Exception e) {
+            log.warn("重新加载Boss Cookie失败: {}", e.getMessage());
+            setLoginStatus("boss", false);
+            return false;
+        }
+    }
+
+    /**
+     * 主动刷新 Boss 登录状态。用于配置页打开或用户扫码后手动查询最新状态。
+     */
+    public boolean refreshBossLoginStatus() {
+        try {
+            Page page = ensureBossPage();
+            if (isLoggedIn("boss") && checkIfLoggedIn()) {
+                saveBossCookiesToDatabase("login status refresh");
+                return true;
+            }
+
+            String currentUrl = null;
+            try {
+                currentUrl = page.url();
+            } catch (Exception ignored) {}
+
+            if (currentUrl == null || currentUrl.isBlank() || !currentUrl.contains("zhipin.com")) {
+                navigateBossPage(page, BOSS_URL, "zhipin.com");
+            }
+
+            boolean loggedIn = checkIfLoggedIn();
+            if (!loggedIn) {
+                loggedIn = reloadBossCookiesFromDb();
+            } else {
+                setLoginStatus("boss", true);
+                saveBossCookiesToDatabase("login status refresh");
+            }
+            return loggedIn;
+        } catch (Exception e) {
+            log.warn("刷新Boss登录状态失败: {}", e.getMessage());
+            setLoginStatus("boss", false);
+            return false;
+        }
+    }
+
     /**
      * 主动保存 Boss Cookie 到数据库（用于调试/验证）
      */
     public void saveBossCookiesToDb(String remark) {
         saveBossCookiesToDatabase(remark);
+        reloadBossCookiesFromDb();
+    }
+
+    private List<com.microsoft.playwright.options.Cookie> filterBossCookies(List<com.microsoft.playwright.options.Cookie> cookies) {
+        if (cookies == null || cookies.isEmpty()) {
+            return List.of();
+        }
+        List<com.microsoft.playwright.options.Cookie> filtered = new ArrayList<>();
+        for (com.microsoft.playwright.options.Cookie cookie : cookies) {
+            String domain = cookie.domain == null ? "" : cookie.domain.toLowerCase();
+            if (domain.equals("zhipin.com") || domain.equals("www.zhipin.com") || domain.endsWith(".zhipin.com")) {
+                filtered.add(cookie);
+            }
+        }
+        return filtered;
     }
 
     /**
@@ -1544,35 +2088,10 @@ public class PlaywrightManager {
 
                         // 避免重复导航：若当前已在登录页则不再二次跳转
                         if (currentUrl == null || !currentUrl.contains("/web/user/")) {
-                            bossPage.navigate(BOSS_URL + "/web/user/?ka=header-login");
-                            try { Thread.sleep(800); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                            navigateBossPage(bossPage, BOSS_LOGIN_URL, "/web/user/");
                         }
 
-                        // 尝试切换到二维码登录（点击“APP扫码登录”按钮），优先使用新版选择器
-                        try {
-                            Locator qrSwitch = bossPage.locator(".btn-sign-switch.ewm-switch").first();
-                            if (qrSwitch.isVisible()) {
-                                qrSwitch.click();
-                            } else {
-                                // 兜底：按文本匹配内部提示
-                                Locator tip = bossPage.getByText("APP扫码登录").first();
-                                if (tip.isVisible()) {
-                                    tip.click();
-                                    log.info("已点击包含文本的二维码登录切换提示（APP扫码登录）");
-                                } else {
-                                    // 兼容旧版选择器
-                                    Locator legacy = bossPage.locator("li.sign-switch-tip").first();
-                                    if (legacy.isVisible()) {
-                                        legacy.click();
-                                        log.info("已通过旧版选择器切换二维码登录（li.sign-switch-tip）");
-                                    } else {
-                                        log.info("未找到二维码登录切换按钮，保持当前登录页");
-                                    }
-                                }
-                            }
-                        } catch (Exception e) {
-                            log.debug("切换二维码登录失败: {}", e.getMessage());
-                        }
+                        openBossQrLoginPanel(bossPage);
                     }
                 } catch (Exception e) {
                     log.debug("设置Boss未登录状态时执行登录引导失败: {}", e.getMessage());

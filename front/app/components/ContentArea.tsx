@@ -22,14 +22,14 @@ export default function ContentArea({ children }: { children: ReactNode }) {
   }, [pathname])
 
   return (
-    <main className={`flex-1 ml-64 bg-background dark:bg-blacksection content-bg ${accentClass} min-h-screen`}>
+    <main className={`ml-64 min-h-screen w-[calc(100%_-_16rem)] min-w-0 overflow-x-hidden bg-background dark:bg-blacksection content-bg ${accentClass}`}>
       <motion.div
         key={pathname}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -20 }}
         transition={{ duration: 0.4, ease: "easeInOut" }}
-        className="container py-8"
+        className="w-full min-w-0 max-w-none px-6 py-8"
       >
         {children}
       </motion.div>

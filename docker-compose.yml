@@ -1,0 +1,66 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-dev
+    container_name: get-jobs-backend
+    init: true
+    shm_size: "1gb"
+    working_dir: /workspace
+    command: >
+      bash -lc "chmod +x ./gradlew &&
+      exec xvfb-run -a -s '-screen 0 1920x1080x24'
+      ./gradlew --no-daemon bootRun"
+    ports:
+      - "${BACKEND_PORT:-8888}:8888"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SERVER_PORT: ${SERVER_PORT:-8888}
+      APP_AUTO_OPEN_BROWSER: ${APP_AUTO_OPEN_BROWSER:-false}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:sqlite:/workspace/db/getjobs.db}
+      LOGGING_FILE_NAME: ${LOGGING_FILE_NAME:-/workspace/logs/get-jobs.log}
+      JAVA_OPTS: ${JAVA_OPTS:--Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8}
+      GRADLE_USER_HOME: /root/.gradle
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HUAWEI_API_KEY: ${HUAWEI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      BASE_URL: ${BASE_URL:-}
+      API_KEY: ${API_KEY:-}
+      MODEL: ${MODEL:-}
+    volumes:
+      - .:/workspace
+      - ${HOME}/.gradle:/root/.gradle
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-dev
+    container_name: get-jobs-frontend
+    init: true
+    working_dir: /workspace/front
+    command: >
+      bash -lc "pnpm install --frozen-lockfile &&
+      exec npx next dev -p 6866 -H 0.0.0.0"
+    ports:
+      - "${FRONTEND_PORT:-6866}:6866"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      NEXT_TELEMETRY_DISABLED: "1"
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - .:/workspace
+      - pnpm-store:/root/.local/share/pnpm/store
+      - front-node-modules:/workspace/front/node_modules
+      - front-next-cache:/workspace/front/.next
+    depends_on:
+      - backend
+
+volumes:
+  pnpm-store:
+  front-node-modules:
+  front-next-cache:

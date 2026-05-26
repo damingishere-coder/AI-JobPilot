@@ -1,10 +1,18 @@
 package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.dto.ChromeJobBatchRequest;
+import com.getjobs.application.dto.ChromeJobDto;
+import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.ConfigService;
+import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.worker.dto.JobProgressMessage;
+import com.getjobs.worker.boss.Boss;
+import com.getjobs.worker.boss.BossConfig;
 import com.getjobs.worker.manager.PlaywrightManager;
 import com.getjobs.worker.service.BossJobService;
+import com.getjobs.worker.service.JobRunCoordinator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
@@ -14,10 +22,15 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -36,6 +49,11 @@ public class BossController {
     private final BossJobService bossJobService;
     private final PlaywrightManager playwrightManager;
     private final CookieService cookieService;
+    private final JobRunCoordinator jobRunCoordinator;
+    private final ConfigService configService;
+    private final ObjectProvider<Boss> bossProvider;
+    private final com.getjobs.application.service.BossService bossService;
+    private final JobAiAnalysisService jobAiAnalysisService;
 
     private final List<SseEmitter> bossProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -59,7 +77,7 @@ public class BossController {
         });
 
         try {
-            emitter.send(SseEmitter.event().name("connected").data(Map.of("message", "已连接到Boss投递进度推送")));
+            emitter.send(SseEmitter.event().name("connected").data(Map.of("message", "已连接到Boss扫描进度推送")));
         } catch (IOException e) {
             log.error("发送SSE连接消息失败", e);
         }
@@ -72,7 +90,7 @@ public class BossController {
         if (bossJobService.isRunning()) {
             return ResponseEntity.ok(Map.of(
                     "status", "already_running",
-                    "message", "Boss投递任务已在运行中"
+                    "message", "Boss扫描任务已在运行中"
             ));
         }
 
@@ -80,8 +98,189 @@ public class BossController {
 
         return ResponseEntity.ok(Map.of(
                 "status", "started",
-                "message", "Boss投递任务已启动"
+                "message", "Boss扫描任务已启动"
         ));
+    }
+
+    @PostMapping("/chrome/jobs")
+    public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
+        int insertedOrUpdated = 0;
+        int waitingConfirm = 0;
+        int insufficient = 0;
+        String runId = request == null ? null : request.getRunId();
+        boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
+        List<Map<String, Object>> tasks = new ArrayList<>();
+        List<Map<String, Object>> analyses = new ArrayList<>();
+        if (request != null && request.getJobs() != null) {
+            if (jobRunCoordinator.isCancelRequested(runId)) {
+                jobRunCoordinator.clearCancel(runId);
+                sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续分析本批岗位"));
+                return ResponseEntity.ok(Map.of(
+                        "success", true,
+                        "cancelled", true,
+                        "received", received,
+                        "saved", 0,
+                        "waitingConfirm", 0,
+                        "insufficient", 0,
+                        "autoDeliver", autoDeliver,
+                        "tasks", List.of(),
+                        "analyses", List.of()
+                ));
+            }
+            sendBossProgress(JobProgressMessage.info("boss", "Chrome已采集到 " + received + " 个Boss岗位，开始AI分析"));
+            for (ChromeJobDto dto : request.getJobs()) {
+                if (jobRunCoordinator.isCancelRequested(runId)) {
+                    jobRunCoordinator.clearCancel(runId);
+                    sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位分析"));
+                    return ResponseEntity.ok(Map.of(
+                            "success", true,
+                            "cancelled", true,
+                            "received", received,
+                            "saved", insertedOrUpdated,
+                            "waitingConfirm", waitingConfirm,
+                            "insufficient", insufficient,
+                            "autoDeliver", autoDeliver,
+                            "tasks", tasks,
+                            "analyses", analyses
+                    ));
+                }
+                BossJobDataEntity entity = toBossEntity(dto);
+                BossJobDataEntity saved = bossService.upsertChromeBossJob(entity);
+                insertedOrUpdated++;
+
+                if (saved == null) {
+                    log.warn("Boss Chrome岗位入库返回为空：company={}, title={}, url={}", dto == null ? "" : dto.getCompany(), dto == null ? "" : dto.getTitle(), dto == null ? "" : dto.getUrl());
+                    continue;
+                }
+
+                List<String> missingFields = collectMissingAnalysisFields(saved);
+                if (!missingFields.isEmpty()) {
+                    insufficient++;
+                    BossJobDataEntity marked = bossService.markBossJobCollectionInsufficient(saved.getId(), missingFields);
+                    BossJobDataEntity display = marked == null ? saved : marked;
+                    analyses.add(Map.of(
+                            "id", display.getId(),
+                            "jobKey", Objects.toString(display.getEncryptId(), ""),
+                            "jobName", Objects.toString(display.getJobName(), ""),
+                            "companyName", Objects.toString(display.getCompanyName(), ""),
+                            "score", 0,
+                            "decision", "采集信息不足",
+                            "shouldApply", false
+                    ));
+                    String message = "采集信息不足：" + Objects.toString(display.getCompanyName(), "") + " / " + Objects.toString(display.getJobName(), "") + "，缺少：" + String.join("、", missingFields);
+                    log.warn("{}", message);
+                    sendBossProgress(JobProgressMessage.warning("boss", message));
+                    continue;
+                }
+
+                JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                analysisRequest.setPlatform("boss");
+                analysisRequest.setJobKey(saved.getEncryptId());
+                analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
+                analysisRequest.setCompanyName(saved.getCompanyName());
+                analysisRequest.setJobName(saved.getJobName());
+                analysisRequest.setSalary(saved.getSalary());
+                analysisRequest.setLocation(saved.getLocation());
+                analysisRequest.setExperience(saved.getExperience());
+                analysisRequest.setDegree(saved.getDegree());
+                analysisRequest.setCompanyInfo(saved.getIntroduce());
+                analysisRequest.setJobDescription(saved.getJobDescription());
+                JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(analysisRequest);
+                if (jobRunCoordinator.isCancelRequested(runId)) {
+                    jobRunCoordinator.clearCancel(runId);
+                    sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位分析"));
+                    return ResponseEntity.ok(Map.of(
+                            "success", true,
+                            "cancelled", true,
+                            "received", received,
+                            "saved", insertedOrUpdated,
+                            "waitingConfirm", waitingConfirm,
+                            "insufficient", insufficient,
+                            "autoDeliver", autoDeliver,
+                            "tasks", tasks,
+                            "analyses", analyses
+                    ));
+                }
+                BossJobDataEntity analyzed = bossService.getBossJobById(saved.getId());
+                if (result.shouldApply()) {
+                    waitingConfirm++;
+                    tasks.add(toDeliveryTask(analyzed == null ? saved : analyzed, result.getGreeting()));
+                }
+                analyses.add(Map.of(
+                        "id", saved.getId(),
+                        "jobKey", Objects.toString(saved.getEncryptId(), ""),
+                        "jobName", Objects.toString(saved.getJobName(), ""),
+                        "companyName", Objects.toString(saved.getCompanyName(), ""),
+                        "score", result.getScore() == null ? 0 : result.getScore(),
+                        "decision", Objects.toString(result.getDecision(), ""),
+                        "shouldApply", result.shouldApply()
+                ));
+                sendBossProgress(JobProgressMessage.progress(
+                        "boss",
+                        (result.shouldApply() ? (autoDeliver ? "AI通过待自动投递：" : "待确认：") : "跳过：") + saved.getJobName(),
+                        insertedOrUpdated,
+                        received
+                ));
+            }
+        }
+        sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome扫描入库完成，待确认 " + waitingConfirm + " 个"));
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "received", received,
+                "saved", insertedOrUpdated,
+                "waitingConfirm", waitingConfirm,
+                "insufficient", insufficient,
+                "autoDeliver", autoDeliver,
+                "tasks", tasks,
+                "analyses", analyses
+        ));
+    }
+
+    @PostMapping("/chrome/stop")
+    public ResponseEntity<Map<String, Object>> stopChromeBoss(@RequestBody(required = false) Map<String, Object> payload) {
+        String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");
+        jobRunCoordinator.requestCancel(runId);
+        sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描停止请求已发送"));
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "Boss Chrome扫描停止请求已发送",
+                "runId", runId == null ? "" : runId
+        ));
+    }
+
+    @PostMapping("/ai-keywords")
+    public ResponseEntity<Map<String, Object>> generateBossAiKeywords(@RequestBody(required = false) Map<String, Object> payload) {
+        List<String> existingKeywords = new ArrayList<>();
+        int limit = 5;
+        if (payload != null) {
+            Object existing = payload.get("existingKeywords");
+            if (existing instanceof List<?> list) {
+                for (Object item : list) {
+                    if (item != null && !String.valueOf(item).trim().isEmpty()) {
+                        existingKeywords.add(String.valueOf(item).trim());
+                    }
+                }
+            }
+            Object rawLimit = payload.get("limit");
+            if (rawLimit instanceof Number number) {
+                limit = number.intValue();
+            }
+        }
+        try {
+            List<String> keywords = jobAiAnalysisService.generateBossSearchKeywords(existingKeywords, limit);
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "keywords", keywords,
+                    "limit", Math.min(Math.max(limit, 1), 5)
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "message", e.getMessage(),
+                    "keywords", List.of()
+            ));
+        }
     }
 
     /** POST - 启动Boss投递任务（前端使用的接口）*/
@@ -89,10 +288,16 @@ public class BossController {
     public ResponseEntity<Map<String, Object>> startBoss() {
         Map<String, Object> response = new HashMap<>();
         try {
-            if (!playwrightManager.isLoggedIn("boss")) {
+            PlaywrightManager.BossSearchSessionStatus sessionStatus =
+                    playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
+            if (!sessionStatus.searchReady()) {
                 response.put("success", false);
-                response.put("message", "请先登录Boss直聘");
-                response.put("status", "not_logged_in");
+                response.put("message", sessionStatus.failureReason());
+                response.put("status", "search_not_ready");
+                response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
+                response.put("searchReady", sessionStatus.searchReady());
+                response.put("currentUrl", sessionStatus.currentUrl());
+                response.put("debugUrl", buildBossDebugUrl());
                 return ResponseEntity.badRequest().body(response);
             }
             if (bossJobService.isRunning()) {
@@ -101,20 +306,83 @@ public class BossController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
+            if (jobRunCoordinator.isRunningForAnotherPlatform("boss")) {
+                String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
+                response.put("success", false);
+                response.put("message", "已有" + active + "任务运行中，请等待当前任务完成");
+                response.put("status", "running");
+                return ResponseEntity.badRequest().body(response);
+            }
             CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {
                 sendBossProgress(pm);
                 log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
             }));
             response.put("success", true);
-            response.put("message", "Boss任务启动成功");
+            response.put("message", "Boss扫描任务启动成功，将生成待确认岗位");
             response.put("status", "started");
-            log.info("通过API启动Boss任务成功");
+            log.info("通过API启动Boss扫描任务成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("启动Boss任务失败", e);
             response.put("success", false);
             response.put("message", "启动Boss任务失败: " + e.getMessage());
             response.put("error", e.getClass().getSimpleName());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /** POST - 打开或恢复 Boss 平台登录页 */
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> loginBoss() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            boolean isLoggedIn = playwrightManager.openBossPlatformPage();
+            PlaywrightManager.BossSearchSessionStatus sessionStatus = playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
+            response.put("success", true);
+            response.put("platform", "boss");
+            response.put("isLoggedIn", sessionStatus.searchReady());
+            response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
+            response.put("searchReady", sessionStatus.searchReady());
+            response.put("currentUrl", sessionStatus.currentUrl());
+            response.put("failureReason", sessionStatus.failureReason());
+            response.put("debugUrl", buildBossDebugUrl());
+            response.put("message", sessionStatus.searchReady()
+                    ? "Boss搜索页已就绪，可以开始扫描"
+                    : (isLoggedIn ? "Boss页面已打开，但搜索页仍需完成安全校验" : "Boss登录页已打开，请在后端自动化浏览器完成扫码/安全校验"));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("打开Boss登录页失败", e);
+            response.put("success", false);
+            response.put("platform", "boss");
+            response.put("isLoggedIn", false);
+            response.put("message", "打开Boss登录页失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /** GET - 检查并刷新 Boss 登录状态 */
+    @GetMapping("/login-status")
+    public ResponseEntity<Map<String, Object>> checkBossLoginStatus() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            boolean homeLoggedIn = playwrightManager.refreshBossLoginStatus();
+            PlaywrightManager.BossSearchSessionStatus sessionStatus = playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
+            response.put("success", true);
+            response.put("platform", "boss");
+            response.put("isLoggedIn", sessionStatus.searchReady());
+            response.put("homeLoggedIn", homeLoggedIn || sessionStatus.homeLoggedIn());
+            response.put("searchReady", sessionStatus.searchReady());
+            response.put("currentUrl", sessionStatus.currentUrl());
+            response.put("failureReason", sessionStatus.failureReason());
+            response.put("debugUrl", buildBossDebugUrl());
+            response.put("message", sessionStatus.searchReady() ? "Boss搜索页已就绪" : sessionStatus.failureReason());
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("检查Boss登录状态失败", e);
+            response.put("success", false);
+            response.put("platform", "boss");
+            response.put("isLoggedIn", false);
+            response.put("message", "检查Boss登录状态失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
     }
@@ -168,7 +436,147 @@ public class BossController {
     /** GET - 获取Boss任务状态 */
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getBossStatus() {
-        return ResponseEntity.ok(bossJobService.getStatus());
+        Map<String, Object> status = new HashMap<>(bossJobService.getStatus());
+        status.putAll(playwrightManager.getBossLoginDetails());
+        status.put("isLoggedIn", Boolean.TRUE.equals(status.get("searchReady")));
+        status.put("debugUrl", buildBossDebugUrl());
+        return ResponseEntity.ok(status);
+    }
+
+    @PostMapping("/verify-search-session")
+    public ResponseEntity<Map<String, Object>> verifyBossSearchSession() {
+        PlaywrightManager.BossSearchSessionStatus sessionStatus =
+                playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", sessionStatus.searchReady());
+        response.put("platform", "boss");
+        response.put("isLoggedIn", sessionStatus.searchReady());
+        response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
+        response.put("searchReady", sessionStatus.searchReady());
+        response.put("currentUrl", sessionStatus.currentUrl());
+        response.put("failureReason", sessionStatus.failureReason());
+        response.put("debugUrl", buildBossDebugUrl());
+        response.put("message", sessionStatus.searchReady() ? "Boss搜索页已就绪" : sessionStatus.failureReason());
+        return sessionStatus.searchReady() ? ResponseEntity.ok(response) : ResponseEntity.badRequest().body(response);
+    }
+
+    @GetMapping("/debug-url")
+    public ResponseEntity<Map<String, Object>> getBossDebugUrl() {
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "debugUrl", buildBossDebugUrl(),
+                "message", "请在Boss配置页的后端浏览器画面中完成登录/安全验证"
+        ));
+    }
+
+    @GetMapping("/browser-snapshot")
+    public ResponseEntity<Map<String, Object>> getBossBrowserSnapshot() {
+        return ResponseEntity.ok(playwrightManager.getBossPageSnapshot());
+    }
+
+    @PostMapping("/browser-click")
+    public ResponseEntity<Map<String, Object>> clickBossBrowser(@RequestBody Map<String, Object> payload) {
+        double x = ((Number) payload.getOrDefault("x", 0)).doubleValue();
+        double y = ((Number) payload.getOrDefault("y", 0)).doubleValue();
+        Map<String, Object> result = playwrightManager.clickBossPage(x, y);
+        return Boolean.TRUE.equals(result.get("success"))
+                ? ResponseEntity.ok(result)
+                : ResponseEntity.badRequest().body(result);
+    }
+
+    @PostMapping("/browser-drag")
+    public ResponseEntity<Map<String, Object>> dragBossBrowser(@RequestBody Map<String, Object> payload) {
+        double fromX = ((Number) payload.getOrDefault("fromX", 0)).doubleValue();
+        double fromY = ((Number) payload.getOrDefault("fromY", 0)).doubleValue();
+        double toX = ((Number) payload.getOrDefault("toX", 0)).doubleValue();
+        double toY = ((Number) payload.getOrDefault("toY", 0)).doubleValue();
+        Map<String, Object> result = playwrightManager.dragBossPage(fromX, fromY, toX, toY);
+        return Boolean.TRUE.equals(result.get("success"))
+                ? ResponseEntity.ok(result)
+                : ResponseEntity.badRequest().body(result);
+    }
+
+    private String buildBossProbeSearchUrl() {
+        try {
+            BossConfig config = configService.getBossConfig();
+            Boss boss = bossProvider.getObject();
+            boss.setConfig(config);
+            return boss.buildProbeSearchUrl();
+        } catch (Exception e) {
+            String keyword = URLEncoder.encode("AI产品运营", StandardCharsets.UTF_8);
+            return "https://www.zhipin.com/web/geek/job?city=101280600&query=" + keyword;
+        }
+    }
+
+    private String buildBossDebugUrl() {
+        return "/boss#boss-backend-browser";
+    }
+
+    private BossJobDataEntity toBossEntity(ChromeJobDto dto) {
+        BossJobDataEntity entity = new BossJobDataEntity();
+        if (dto == null) return entity;
+        entity.setEncryptId(firstNonBlank(dto.getId(), extractBossId(dto.getUrl())));
+        entity.setEncryptUserId(dto.getUserId());
+        entity.setCompanyName(dto.getCompany());
+        entity.setJobName(dto.getTitle());
+        entity.setSalary(dto.getSalary());
+        entity.setLocation(dto.getLocation());
+        entity.setExperience(dto.getExperience());
+        entity.setDegree(dto.getDegree());
+        entity.setHrName(dto.getHrName());
+        entity.setHrPosition(dto.getHrTitle());
+        entity.setHrActiveStatus(dto.getHrActive());
+        entity.setDeliveryStatus("未投递");
+        entity.setJobDescription(dto.getDescription());
+        entity.setJobUrl(dto.getUrl());
+        entity.setRecruitmentStatus(dto.getRecruitmentStatus());
+        entity.setCompanyAddress(dto.getCompanyAddress());
+        entity.setIndustry(dto.getIndustry());
+        entity.setIntroduce(dto.getCompanyInfo());
+        entity.setFinancingStage(dto.getFinancingStage());
+        entity.setCompanyScale(dto.getCompanyScale());
+        return entity;
+    }
+
+    private List<String> collectMissingAnalysisFields(BossJobDataEntity job) {
+        List<String> missing = new ArrayList<>();
+        if (job == null) {
+            missing.add("岗位");
+            return missing;
+        }
+        if (isBlank(job.getJobName())) missing.add("岗位名称");
+        if (isBlank(job.getCompanyName())) missing.add("公司名称");
+        if (isBlank(job.getJobUrl())) missing.add("岗位链接");
+        String detailText = firstNonBlank(job.getJobDescription(), job.getIntroduce());
+        if (isBlank(detailText) || detailText.trim().length() < 30) missing.add("岗位要求");
+        return missing;
+    }
+
+    private Map<String, Object> toDeliveryTask(BossJobDataEntity job, String greeting) {
+        Map<String, Object> task = new HashMap<>();
+        if (job == null) return task;
+        task.put("id", job.getId());
+        task.put("platform", "boss");
+        task.put("url", Objects.toString(job.getJobUrl(), ""));
+        task.put("companyName", Objects.toString(job.getCompanyName(), ""));
+        task.put("jobName", Objects.toString(job.getJobName(), ""));
+        task.put("salary", Objects.toString(job.getSalary(), ""));
+        task.put("greeting", greeting == null ? "" : greeting);
+        return task;
+    }
+
+    private String extractBossId(String url) {
+        if (url == null) return null;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("/job_detail/([^/?#]+)").matcher(url);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private void sendBossProgress(JobProgressMessage message) {

@@ -1,0 +1,420 @@
+const PLATFORM_CONFIG = {
+  boss: {
+    hosts: ["zhipin.com"],
+    home: "https://www.zhipin.com/",
+    contentScript: "boss-content.js"
+  },
+  zhilian: {
+    hosts: ["zhaopin.com"],
+    home: "https://www.zhaopin.com/",
+    contentScript: "zhilian-content.js"
+  }
+};
+
+const pageTabs = new Map();
+const BACKGROUND_VERSION = "2026-05-27-boss-click-interest-chat-1";
+const CONTENT_READY_RETRIES = 12;
+const CONTENT_READY_INTERVAL_MS = 250;
+const TAB_LOAD_TIMEOUT_MS = 10000;
+const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-05-27-boss-click-interest-chat-1";
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_PAGE") {
+    handlePageMessage(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.source === "GET_JOBS_PLATFORM" && message.pageTabId) {
+    chrome.tabs.sendMessage(message.pageTabId, {
+      source: "GET_JOBS_BACKGROUND",
+      type: "GET_JOBS_EXTENSION_EVENT",
+      payload: message.payload
+    }).catch(() => {});
+  }
+});
+
+async function handlePageMessage(message, sender) {
+  const pageTabId = sender.tab?.id;
+  if (pageTabId) pageTabs.set(pageTabId, Date.now());
+
+  if (message.type === "GET_JOBS_EXTENSION_PING") {
+    return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION };
+  }
+
+  const platform = message.platform || inferPlatform(message.type);
+  if (!platform || !PLATFORM_CONFIG[platform]) {
+    return { success: false, message: "未知平台" };
+  }
+
+  const config = PLATFORM_CONFIG[platform];
+  const tab = isNoCreatePlatformMessage(message.type)
+    ? await findPlatformTab(platform)
+    : await findOrCreatePlatformTab(platform, platformStartUrl(message));
+  if (!tab?.id) {
+    return {
+      success: true,
+      message: message.type === "BOSS_SCAN_STOP" ? "没有正在运行的Boss扫描任务" : "未找到已打开的平台页面",
+      isRunning: false,
+      stage: "idle"
+    };
+  }
+
+  if (isPassiveStatusMessage(message.type)) {
+    return await queryPassivePlatformStatus(tab.id, platform, message, pageTabId);
+  }
+
+  if (isPassiveStopMessage(message.type)) {
+    return await sendPassiveStop(tab.id, platform, message, pageTabId);
+  }
+
+  if (platform === "boss" && isBossDeliverMessage(message.type)) {
+    return await handleBossDeliver(tab, config, message, pageTabId);
+  }
+
+  await waitForSupportedTab(tab.id, config);
+  await ensureContentScript(tab.id, config.contentScript);
+  if (!isNoFocusPlatformMessage(message.type)) {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      ...message,
+      source: "GET_JOBS_BACKGROUND",
+      pageTabId
+    });
+    return response || { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      message: buildContentScriptError(platform, error)
+    };
+  }
+}
+
+function inferPlatform(type) {
+  if (type?.startsWith("BOSS_")) return "boss";
+  if (type?.startsWith("ZHILIAN_")) return "zhilian";
+  return "";
+}
+
+function isNoFocusPlatformMessage(type) {
+  return type === "BOSS_SCAN_STATUS" || type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STATUS" || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isNoCreatePlatformMessage(type) {
+  return isNoFocusPlatformMessage(type);
+}
+
+function isPassiveStatusMessage(type) {
+  return type === "BOSS_SCAN_STATUS" || type === "ZHILIAN_SCAN_STATUS";
+}
+
+function isPassiveStopMessage(type) {
+  return type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isBossDeliverMessage(type) {
+  return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH";
+}
+
+function platformStartUrl(message) {
+  if (message?.startUrl) return message.startUrl;
+  if (message?.type === "BOSS_DELIVER_ONE" && message?.task?.url) return message.task.url;
+  if (message?.type === "BOSS_DELIVER_BATCH" && Array.isArray(message.tasks) && message.tasks[0]?.url) {
+    return message.tasks[0].url;
+  }
+  return undefined;
+}
+
+async function handleBossDeliver(tab, config, message, pageTabId) {
+  if (message.type === "BOSS_DELIVER_ONE") {
+    const result = await deliverBossTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
+      const errorMessage = error.message || String(error);
+      await postBossDeliveryResult(message.task, false, errorMessage).catch(() => {});
+      return {
+        success: false,
+        message: errorMessage
+      };
+    });
+    return result || { success: false, message: "Boss投递未返回结果" };
+  }
+
+  const tasks = Array.isArray(message.tasks) ? message.tasks : [];
+  if (!tasks.length) {
+    return { success: false, message: "Boss批量投递任务为空" };
+  }
+
+  let success = 0;
+  let failed = 0;
+  for (let index = 0; index < tasks.length; index++) {
+    const task = tasks[index];
+    const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
+      const errorMessage = error.message || String(error);
+      await postBossDeliveryResult(task, false, errorMessage).catch(() => {});
+      return {
+        success: false,
+        message: errorMessage
+      };
+    });
+    if (result?.success) success += 1;
+    else failed += 1;
+  }
+
+  return {
+    success: true,
+    message: `Boss批量投递完成：成功${success}，失败${failed}`,
+    successCount: success,
+    failedCount: failed
+  };
+}
+
+async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
+  if (!task?.url || !task?.id) {
+    if (task?.id) {
+      await postBossDeliveryResult(task, false, "投递任务缺少岗位链接或ID").catch(() => {});
+    }
+    return { success: false, message: "投递任务缺少岗位链接或ID" };
+  }
+
+  postPlatformProgress(pageTabId, {
+    platform: "boss",
+    type: "info",
+    message: `Boss Chrome准备打开投递岗位 ${index}/${total}：${task.companyName || ""} ${task.jobName || ""}`.trim(),
+    operation: "deliver",
+    stage: "navigating",
+    keyword: task.jobName || task.title || "",
+    keywordIndex: index,
+    keywordTotal: total
+  });
+  await navigatePlatformTab(tab.id, task.url, config, DELIVERY_NAVIGATION_TIMEOUT_MS);
+  await ensureContentScript(tab.id, config.contentScript);
+  if (!isNoFocusPlatformMessage(message.type)) {
+    const updatedTab = await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(updatedTab.windowId || tab.windowId, { focused: true }).catch(() => {});
+  }
+
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      ...message,
+      type: "BOSS_DELIVER_CURRENT_V2",
+      source: "GET_JOBS_BACKGROUND",
+      task,
+      pageTabId,
+      deliveryIndex: index,
+      deliveryTotal: total
+    });
+    return response || { success: false, message: "Boss投递未返回结果" };
+  } catch (error) {
+    const errorMessage = buildContentScriptError("boss", error, "投递");
+    await postBossDeliveryResult(task, false, errorMessage).catch(() => {});
+    return {
+      success: false,
+      message: errorMessage
+    };
+  }
+}
+
+async function postBossDeliveryResult(task, success, message) {
+  if (!task?.id) return;
+  await fetch(`http://localhost:8888/api/boss/jobs/${task.id}/delivery-result`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ success, message })
+  });
+}
+
+function postPlatformProgress(pageTabId, payload) {
+  if (!pageTabId) return;
+  chrome.tabs.sendMessage(pageTabId, {
+    source: "GET_JOBS_BACKGROUND",
+    type: "GET_JOBS_EXTENSION_EVENT",
+    payload: {
+      timestamp: Date.now(),
+      ...payload
+    }
+  }).catch(() => {});
+}
+
+async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
+  if (!await pingContentScript(tabId)) {
+    return {
+      success: true,
+      message: "平台页面脚本未就绪，状态按空闲处理。",
+      isRunning: false,
+      hasStoredTask: false,
+      stage: "idle"
+    };
+  }
+
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      ...message,
+      source: "GET_JOBS_BACKGROUND",
+      pageTabId
+    });
+    return response || { success: true, isRunning: false, stage: "idle" };
+  } catch (error) {
+    return {
+      success: true,
+      message: buildContentScriptError(platform, error),
+      isRunning: false,
+      hasStoredTask: false,
+      stage: "idle"
+    };
+  }
+}
+
+async function sendPassiveStop(tabId, platform, message, pageTabId) {
+  if (!await pingContentScript(tabId)) {
+    return {
+      success: true,
+      message: platform === "boss" ? "没有正在运行的Boss扫描任务" : "没有正在运行的扫描任务",
+      isRunning: false,
+      stage: "idle"
+    };
+  }
+
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      ...message,
+      source: "GET_JOBS_BACKGROUND",
+      pageTabId
+    });
+    return response || { success: true, isRunning: false, stage: "stopped" };
+  } catch (error) {
+    return {
+      success: false,
+      message: buildContentScriptError(platform, error),
+      isRunning: false,
+      stage: "idle"
+    };
+  }
+}
+
+async function findOrCreatePlatformTab(platform, startUrl) {
+  const config = PLATFORM_CONFIG[platform];
+  const tabs = await chrome.tabs.query({});
+  const found = tabs.find((tab) => config.hosts.some((host) => (tab.url || "").includes(host)));
+  if (found) return found;
+  return await chrome.tabs.create({ url: startUrl || config.home, active: true });
+}
+
+async function findPlatformTab(platform) {
+  const config = PLATFORM_CONFIG[platform];
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
+}
+
+async function waitForSupportedTab(tabId, config) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < TAB_LOAD_TIMEOUT_MS) {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url || tab.pendingUrl || "";
+    if (isSupportedUrl(url, config) && tab.status !== "loading") return tab;
+    await sleep(CONTENT_READY_INTERVAL_MS);
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  const url = tab.url || tab.pendingUrl || "";
+  if (!isSupportedUrl(url, config)) {
+    throw new Error("请先打开支持的招聘平台页面后再开始扫描。");
+  }
+  return tab;
+}
+
+async function navigatePlatformTab(tabId, url, config, timeoutMs) {
+  const currentTab = await chrome.tabs.get(tabId);
+  const currentUrl = currentTab.url || currentTab.pendingUrl || "";
+  if (!isSameNavigationUrl(currentUrl, url)) {
+    await chrome.tabs.update(tabId, { url });
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const tab = await chrome.tabs.get(tabId);
+    const tabUrl = tab.url || tab.pendingUrl || "";
+    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url) && tab.status !== "loading") {
+      return tab;
+    }
+    await sleep(CONTENT_READY_INTERVAL_MS);
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  const tabUrl = tab.url || tab.pendingUrl || "";
+  if (!isSupportedUrl(tabUrl, config)) {
+    throw new Error("请先打开支持的招聘平台页面后再投递。");
+  }
+  throw new Error(`Boss页面未能打开目标岗位详情页。当前URL：${tabUrl || "未知"}`);
+}
+
+async function ensureContentScript(tabId, file) {
+  if (await isContentScriptReady(tabId, file)) return;
+
+  await chrome.scripting.executeScript({ target: { tabId }, files: [file] });
+
+  for (let attempt = 0; attempt < CONTENT_READY_RETRIES; attempt++) {
+    if (await isContentScriptReady(tabId, file)) return;
+    await sleep(CONTENT_READY_INTERVAL_MS);
+  }
+
+  throw new Error("Chrome扩展已加载，但招聘页面脚本未就绪。请刷新招聘页面后重试。");
+}
+
+async function isContentScriptReady(tabId, file) {
+  const ping = await pingContentScript(tabId);
+  if (!ping) return false;
+  if (file !== "boss-content.js") return true;
+  return await isBossContentVersionReady(tabId);
+}
+
+async function pingContentScript(tabId) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { source: "GET_JOBS_BACKGROUND", type: "PING_CONTENT" });
+  } catch {
+    return null;
+  }
+}
+
+async function isBossContentVersionReady(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      source: "GET_JOBS_BACKGROUND",
+      type: "GET_BOSS_CONTENT_VERSION"
+    });
+    return response?.version === REQUIRED_BOSS_CONTENT_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedUrl(url, config) {
+  return /^https?:\/\//.test(url) && config.hosts.some((host) => url.includes(host));
+}
+
+function isSameNavigationUrl(left, right) {
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    return leftUrl.origin === rightUrl.origin && leftUrl.pathname === rightUrl.pathname;
+  } catch {
+    return String(left || "") === String(right || "");
+  }
+}
+
+function buildContentScriptError(platform, error, operation = "扫描") {
+  const platformName = platform === "boss" ? "Boss直聘" : "招聘平台";
+  const detail = error?.message || String(error || "");
+  if (detail.includes("Receiving end does not exist") || detail.includes("Could not establish connection")) {
+    return `${platformName}页面还没有准备好接收${operation}请求。请刷新${platformName}页面，确认扩展已重新加载后再试。`;
+  }
+  return `${platformName}${operation}请求发送失败：${detail}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

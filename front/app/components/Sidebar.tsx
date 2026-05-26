@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BiEnvelope, BiBriefcase, BiSearch, BiTask, BiUserCircle, BiBrain, BiMoon, BiSun } from 'react-icons/bi'
 import { motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
@@ -14,7 +14,7 @@ export default function Sidebar() {
 
   // 健康检查状态：up / degraded / down / unknown
   const [health, setHealth] = useState<'up' | 'degraded' | 'down' | 'unknown'>('unknown')
-  const [checking, setChecking] = useState(false)
+  const checkingRef = useRef(false)
 
   useEffect(() => {
     setMounted(true)
@@ -24,8 +24,8 @@ export default function Sidebar() {
     let interval: NodeJS.Timeout | null = null
 
     const check = async () => {
-      if (checking) return
-      setChecking(true)
+      if (checkingRef.current) return
+      checkingRef.current = true
       const baseUrl = process.env.API_BASE_URL || 'http://localhost:8888'
 
       const controller = new AbortController()
@@ -47,11 +47,11 @@ export default function Sidebar() {
         } else {
           setHealth('down')
         }
-      } catch (e) {
+      } catch {
         setHealth('unknown')
       } finally {
         clearTimeout(timeout)
-        setChecking(false)
+        checkingRef.current = false
       }
     }
 
@@ -70,9 +70,12 @@ export default function Sidebar() {
 
   const platformGroup = [
     { href: '/boss', icon: BiBriefcase, label: 'Boss直聘', color: 'text-indigo-300' },
-    { href: '/liepin', icon: BiSearch, label: '猎聘', color: 'text-purple-300' },
-    { href: '/51job', icon: BiTask, label: '51job', color: 'text-blue-300' },
     { href: '/zhilian', icon: BiUserCircle, label: '智联招聘', color: 'text-cyan-300' },
+  ]
+
+  const unsupportedPlatformGroup = [
+    { href: '/liepin', icon: BiSearch, label: '猎聘' },
+    { href: '/51job', icon: BiTask, label: '51job' },
   ]
 
   return (
@@ -217,6 +220,32 @@ export default function Sidebar() {
                       </div>
                     )}
                   </Link>
+                </motion.div>
+              )
+            })}
+            {unsupportedPlatformGroup.map((item, index) => {
+              const Icon = item.icon
+              return (
+                <motion.div
+                  key={item.href}
+                  initial={{ x: -20, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: 0.1 * (platformGroup.length + index) + 0.5, duration: 0.3 }}
+                >
+                  <div
+                    aria-disabled="true"
+                    title={`${item.label}暂未适配`}
+                    className="
+                      group flex cursor-not-allowed items-center gap-3 rounded-xl px-4 py-3
+                      text-white/35 grayscale dark:text-waterloo/70
+                    "
+                  >
+                    <Icon className="text-xl text-white/30 dark:text-waterloo/70" />
+                    <span className="font-medium">{item.label}</span>
+                    <span className="ml-auto rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-medium text-white/35 dark:border-white/5 dark:text-waterloo">
+                      未适配
+                    </span>
+                  </div>
                 </motion.div>
               )
             })}

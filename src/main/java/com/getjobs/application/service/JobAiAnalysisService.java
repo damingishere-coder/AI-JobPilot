@@ -247,6 +247,34 @@ public class JobAiAnalysisService {
         }
     }
 
+    public List<String> generateBossSearchKeywords(List<String> existingKeywords, int limitCount) {
+        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, 5));
+        ResumeProfileEntity resume = getResumeProfile();
+        String resumeText = resume == null ? "" : resume.getResumeText();
+        if (resumeText == null || resumeText.trim().isEmpty()) {
+            throw new IllegalArgumentException("请先在AI配置页保存简历内容");
+        }
+        List<String> existing = existingKeywords == null ? List.of() : existingKeywords.stream()
+                .filter(s -> s != null && !s.trim().isEmpty())
+                .map(String::trim)
+                .distinct()
+                .collect(Collectors.toList());
+        String prompt = "你是 Boss 直聘搜索关键词助手。请根据候选人简历生成最多" + max + "个中文岗位搜索关键词。\n" +
+                "只返回JSON数组，不要使用Markdown代码块，不要解释。关键词要适合直接填入 Boss 搜索框，优先2到8个字，避免过宽泛。\n" +
+                "已配置关键词（不要重复）：\n" + new JSONArray(existing).toString() + "\n\n" +
+                "简历：\n" + limit(resumeText, 5000);
+        try {
+            String raw = aiService.sendRequest(prompt);
+            return parseKeywordArray(raw).stream()
+                    .filter(s -> existing.stream().noneMatch(e -> e.equalsIgnoreCase(s)))
+                    .limit(max)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("AI生成Boss关键词失败: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     private String buildPrompt(String resumeText, JobAnalysisRequest request, boolean priority, int threshold) {
         return "你是求职投递决策助手。请根据候选人简历和岗位信息判断是否值得自动投递。\n" +
                 "只返回JSON，不要使用Markdown代码块。JSON字段必须包含 score, decision, summary, strengths, risks, greeting。\n" +
@@ -277,6 +305,19 @@ public class JobAiAnalysisService {
         return result;
     }
 
+    private List<String> parseKeywordArray(String raw) {
+        String json = extractJsonArray(raw);
+        JSONArray arr = new JSONArray(json);
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String keyword = arr.optString(i, "").trim();
+            if (!keyword.isEmpty() && out.stream().noneMatch(existing -> existing.equalsIgnoreCase(keyword))) {
+                out.add(keyword);
+            }
+        }
+        return out;
+    }
+
     private String extractJson(String raw) {
         if (raw == null || raw.trim().isEmpty()) return "{}";
         String s = raw.trim();
@@ -285,6 +326,18 @@ public class JobAiAnalysisService {
         }
         int start = s.indexOf('{');
         int end = s.lastIndexOf('}');
+        if (start >= 0 && end > start) return s.substring(start, end + 1);
+        return s;
+    }
+
+    private String extractJsonArray(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "[]";
+        String s = raw.trim();
+        if (s.startsWith("```")) {
+            s = s.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("\\s*```$", "").trim();
+        }
+        int start = s.indexOf('[');
+        int end = s.lastIndexOf(']');
         if (start >= 0 && end > start) return s.substring(start, end + 1);
         return s;
     }
@@ -331,7 +384,11 @@ public class JobAiAnalysisService {
             update.setAiDecision(result.getDecision());
             update.setAiReason(reason);
             update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
-            if (!result.shouldApply()) update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+            if (result.shouldApply()) {
+                update.setDeliveryStatus("待确认");
+            } else {
+                update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+            }
             update.setUpdatedAt(LocalDateTime.now());
             UpdateWrapper<BossJobDataEntity> uw = new UpdateWrapper<>();
             if (request.getJobKey() != null && !request.getJobKey().isBlank()) {

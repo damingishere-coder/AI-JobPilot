@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
+import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
 import { createPortal } from 'react-dom'
-import { BiBriefcase, BiSave, BiSearch, BiMap, BiMoney, BiBuilding, BiTime, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut } from 'react-icons/bi'
+import { BiBriefcase, BiSave, BiSearch, BiMap, BiMoney, BiBuilding, BiTime, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -30,6 +31,7 @@ interface BossConfig {
   enableAi?: number
   sendImgResume?: number
   filterDeadHr?: number
+  autoDeliver?: number
   deadStatus?: string
 }
 
@@ -60,6 +62,25 @@ interface BlacklistItem {
   type: string
 }
 
+type DialogKind = 'save' | 'platform'
+
+interface ProgressLog {
+  id: number
+  type: string
+  message: string
+  timestamp?: number
+}
+
+const isTerminalScanPayload = (payload: Record<string, unknown>) => {
+  const stage = String(payload.stage || '')
+  const message = String(payload.message || '')
+  const operation = String(payload.operation || '')
+  return (operation === 'scan' && ['complete', 'stopped', 'error'].includes(stage))
+    || message.includes('扫描完成')
+    || message.includes('扫描已停止')
+    || message.includes('扫描失败')
+}
+
 export default function BossPage() {
   const [config, setConfig] = useState<BossConfig>({
     keywords: '',
@@ -72,6 +93,7 @@ export default function BossPage() {
     scale: '',
     stage: '',
     filterDeadHr: 0,
+    autoDeliver: 0,
   })
   // 关键词显示用（无括号无引号，逗号分隔）
   const [keywordsDisplay, setKeywordsDisplay] = useState<string>('')
@@ -96,17 +118,32 @@ export default function BossPage() {
   const [newBlacklistKeyword, setNewBlacklistKeyword] = useState('')
   const [blacklistType, setBlacklistType] = useState('company') // 默认为公司
   const [loading, setLoading] = useState(true)
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [bossLoginMessage, setBossLoginMessage] = useState('')
   const [isDelivering, setIsDelivering] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [saveDialogKind, setSaveDialogKind] = useState<DialogKind>('save')
   const [showLogoutResultDialog, setShowLogoutResultDialog] = useState(false)
   const [logoutResult, setLogoutResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [progressLogs, setProgressLogs] = useState<ProgressLog[]>([])
+  const [chromeBridgeReady, setChromeBridgeReady] = useState(false)
+  const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  const [isStopping, setIsStopping] = useState(false)
+  const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+
+  const appendProgressLog = useCallback((entry: Omit<ProgressLog, 'id'>) => {
+    const timestamp = entry.timestamp || Date.now()
+    setProgressLogs((prev) => [
+      { ...entry, timestamp, id: timestamp + Math.random() },
+      ...prev,
+    ].slice(0, 80))
+  }, [])
 
   useEffect(() => {
     fetchAllData()
+    checkChromeBridge()
 
     // 确保在客户端环境且 EventSource 可用
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -129,7 +166,6 @@ export default function BossPage() {
           handler: (event) => {
             try {
               const data = JSON.parse(event.data)
-              setIsLoggedIn(data.bossLoggedIn || false)
               setCheckingLogin(false)
             } catch (error) {
               console.error('[SSE] 解析连接消息失败:', error)
@@ -142,7 +178,6 @@ export default function BossPage() {
             try {
               const data = JSON.parse(event.data)
               if (data.platform === 'boss') {
-                setIsLoggedIn(data.isLoggedIn)
                 setCheckingLogin(false)
               }
             } catch (error) {
@@ -158,6 +193,107 @@ export default function BossPage() {
       client.close()
     }
   }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      checkChromeBridge()
+    }, 3000)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+      appendProgressLog({ type: 'warning', message: '当前浏览器不支持实时日志，无法连接 Boss 进度流。' })
+      return
+    }
+
+    const client = createSSEWithBackoff('http://localhost:8888/api/boss/stream', {
+      onOpen: () => appendProgressLog({ type: 'info', message: 'Boss 运行日志已连接。' }),
+      onError: (_e, attempt, delay) => {
+        appendProgressLog({ type: 'warning', message: `Boss 运行日志连接中断，${Math.round(delay / 1000)}秒后第${attempt}次重连。` })
+      },
+      listeners: [
+        {
+          name: 'connected',
+          handler: (event) => {
+            try {
+              const data = JSON.parse(event.data)
+              appendProgressLog({ type: 'info', message: data.message || '已连接到 Boss 扫描进度。' })
+            } catch {
+              appendProgressLog({ type: 'info', message: '已连接到 Boss 扫描进度。' })
+            }
+          },
+        },
+        {
+          name: 'progress',
+          handler: (event) => {
+            try {
+              const raw = JSON.parse(event.data)
+              const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+              appendProgressLog({
+                type: data.type || 'info',
+                message: data.message || '',
+                timestamp: data.timestamp,
+              })
+              if (String(data.message || '').includes('入库完成')) {
+                setAnalysisRefreshSignal((value) => value + 1)
+              }
+              if (data.type === 'error') {
+                setIsDelivering(false)
+              }
+            } catch (error) {
+              console.warn('解析Boss进度消息失败:', error)
+            }
+          },
+        },
+        { name: 'ping', handler: () => {} },
+      ],
+    })
+
+    return () => client.close()
+  }, [appendProgressLog])
+
+  useEffect(() => {
+    return subscribeChromeBridgeEvents((event) => {
+      const payload = event.payload
+      if (!payload || payload.platform !== 'boss') return
+
+      appendProgressLog({
+        type: payload.type || 'info',
+        message: payload.message || '',
+        timestamp: payload.timestamp,
+      })
+
+      const message = String(payload.message || '')
+      if (message.includes('入库完成') || message.includes('扫描完成') || message.includes('提交后端完成')) {
+        setAnalysisRefreshSignal((value) => value + 1)
+      }
+      if (isTerminalScanPayload(payload)) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setActiveRunId(null)
+      }
+    })
+  }, [appendProgressLog])
+
+  const checkChromeBridge = async () => {
+    try {
+      const status = await getChromeBridgeStatus()
+      const ready = !!status.success
+      setChromeBridgeReady(ready)
+      setBossLoginMessage(
+        ready
+          ? `Chrome扩展已连接。只有点击“开始扫描”时才会控制Boss页面。版本：${status.version || '旧版/未知'}`
+          : status.message || 'Chrome扩展未连接，请加载 Get Jobs Chrome Bridge。'
+      )
+    } catch {
+      setChromeBridgeReady(false)
+      setBossLoginMessage('Chrome扩展未连接，请加载 Get Jobs Chrome Bridge。')
+    } finally {
+      setCheckingLogin(false)
+    }
+  }
 
   const fetchAllData = async () => {
     try {
@@ -186,6 +322,7 @@ export default function BossPage() {
           ...data.config,
           cityCode: normalizeCityCode(data.config.cityCode),
           jobType: normalizeJobType(data.config.jobType),
+          autoDeliver: data.config.autoDeliver ?? 0,
         })
         // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
         const toDisplayKeywords = (raw?: string): string => {
@@ -320,7 +457,7 @@ export default function BossPage() {
 
         // HR活跃过滤开关：后端为 0/1，前端直接回显为数字
         const normalizedFilterDeadHr = (data.config?.filterDeadHr ?? 0)
-        setConfig(prev => ({ ...prev, filterDeadHr: normalizedFilterDeadHr }))
+        setConfig(prev => ({ ...prev, filterDeadHr: normalizedFilterDeadHr, autoDeliver: data.config?.autoDeliver ?? 0 }))
 
         // 其它多选选项：将中文名称转换为代码以匹配 MultiSelect 的 selected
         setSelectedIndustry(toCodes(data.options.industry || [], parseListString(data.config?.industry)))
@@ -391,22 +528,20 @@ export default function BossPage() {
       })
 
       if (response.ok) {
-        // 统一保存 Cookie（Boss）
-        try {
-          await fetch('http://localhost:8888/api/cookie/save?platform=boss', { method: 'POST' })
-        } catch (e) {
-          console.warn('保存 Cookie 失败（Boss）:', e)
-        }
-
         fetchAllData()
         if (!silent) {
-          setSaveResult({ success: true, message: '保存成功，配置与Cookie已更新。' })
+          setSaveDialogKind('save')
+          setSaveResult({
+            success: true,
+            message: '保存成功。扫描与投递会使用 Chrome 扩展读取你当前 Chrome 的登录态。',
+          })
           setShowSaveDialog(true)
         }
       } else {
         // 保存失败：不弹框，记录日志
         console.warn('保存失败：后端返回非 2xx 状态')
         if (!silent) {
+          setSaveDialogKind('save')
           setSaveResult({ success: false, message: '保存失败：后端返回异常状态。' })
           setShowSaveDialog(true)
         }
@@ -415,6 +550,7 @@ export default function BossPage() {
       console.error('Failed to save config:', error)
       // 保存失败：不弹框
       if (!silent) {
+        setSaveDialogKind('save')
         setSaveResult({ success: false, message: '保存失败：网络或服务异常。' })
         setShowSaveDialog(true)
       }
@@ -472,45 +608,114 @@ export default function BossPage() {
 
   const handleStartDelivery = async () => {
     try {
+      if (!chromeBridgeReady) {
+        appendProgressLog({ type: 'error', message: 'Chrome扩展未连接，请先在Chrome扩展页加载 chrome-extension 目录。' })
+        return
+      }
       setIsDelivering(true)
-      const response = await fetch('http://localhost:8888/api/boss/start', {
-        method: 'POST',
+      setIsStopping(false)
+      const runId = `boss-${Date.now()}`
+      setActiveRunId(runId)
+      appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求，将使用当前Chrome登录态生成待确认岗位。' })
+      if (Number(config.autoDeliver || 0) === 1) {
+        appendProgressLog({ type: 'warning', message: '自动投递已开启：AI通过后会真实联系 Boss HR。' })
+      }
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_SCAN_START',
+        platform: 'boss',
+        runId,
+        config: {
+          ...config,
+          keywords: keywordsDisplay,
+          industry: selectedIndustry,
+          experience: selectedExperience,
+          degree: selectedDegree,
+          scale: selectedScale,
+          stage: selectedStage,
+          salary: selectedSalary,
+          cityCode: config.cityCode,
+          autoDeliver: config.autoDeliver ?? 0,
+        },
+        autoDeliver: config.autoDeliver ?? 0,
       })
-      const data = await response.json()
 
       if (data.success) {
-        // 启动成功：不弹框
+        appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
-        // 启动失败：不弹框
         console.warn('启动失败：', data.message)
+        appendProgressLog({ type: 'error', message: data.message || 'Boss扫描启动失败。' })
         setIsDelivering(false)
+        setIsStopping(false)
+        setActiveRunId(null)
       }
     } catch (error) {
       console.error('Failed to start delivery:', error)
-      // 启动失败：不弹框
+      appendProgressLog({ type: 'error', message: 'Boss扫描启动失败：网络或服务异常。' })
       setIsDelivering(false)
+      setIsStopping(false)
+      setActiveRunId(null)
     }
   }
 
   const handleStopDelivery = async () => {
+    if (isStopping) return
+    setIsStopping(true)
     try {
-      const response = await fetch('http://localhost:8888/api/boss/stop', {
+      const runId = activeRunId
+      await fetch('http://localhost:8888/api/boss/chrome/stop', {
         method: 'POST',
-      })
-      const data = await response.json()
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId }),
+      }).catch(() => null)
+
+      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId }, 1500)
 
       if (data.success) {
-        // 停止成功：不弹框
+        appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })
         setIsDelivering(false)
+        setActiveRunId(null)
       } else {
         // 停止失败：也要将状态设置为未投递（因为可能任务已经结束）
         console.warn('停止失败：', data.message)
+        appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描可能已经结束。' })
         setIsDelivering(false)
+        setActiveRunId(null)
       }
     } catch (error) {
       console.error('Failed to stop delivery:', error)
       // 停止失败：也要将状态设置为未投递
+      appendProgressLog({ type: 'error', message: 'Boss扫描停止失败：网络或服务异常。' })
       setIsDelivering(false)
+      setActiveRunId(null)
+    } finally {
+      setIsStopping(false)
+    }
+  }
+
+  const handleOpenPlatform = async () => {
+    setSaveDialogKind('platform')
+    setCheckingLogin(true)
+
+    try {
+      const data = await sendChromeBridgeMessage({ type: 'GET_JOBS_EXTENSION_PING' }, 1500)
+      if (data.success) {
+        setChromeBridgeReady(true)
+        appendProgressLog({ type: 'success', message: `Chrome扩展已连接。本次检查不会打开或切换Boss页面。版本：${data.version || '旧版/未知'}` })
+        setSaveResult({
+          success: true,
+          message: `Chrome扩展已连接。本次检查不会打开或切换Boss页面；需要扫描时请点击“开始扫描”。版本：${data.version || '旧版/未知'}`,
+        })
+      } else {
+        setChromeBridgeReady(false)
+        setSaveResult({ success: false, message: data.message || 'Chrome扩展未连接，请加载 chrome-extension 目录。' })
+      }
+      setShowSaveDialog(true)
+    } catch {
+      setChromeBridgeReady(false)
+      setSaveResult({ success: false, message: 'Chrome扩展未连接，请加载 chrome-extension 目录。' })
+      setShowSaveDialog(true)
+    } finally {
+      setCheckingLogin(false)
     }
   }
 
@@ -519,7 +724,6 @@ export default function BossPage() {
       const response = await fetch('http://localhost:8888/api/boss/logout', { method: 'POST' })
       const data = await response.json()
       if (data.success) {
-        setIsLoggedIn(false)
         setIsDelivering(false)
         console.info('已退出登录，数据库Cookie已置空')
         setLogoutResult({ success: true, message: '已退出登录，Cookie已清空。' })
@@ -550,23 +754,26 @@ export default function BossPage() {
         accentBgClass="bg-teal-500"
         actions={
           <div className="flex items-center gap-2">
+            <Button onClick={handleOpenPlatform} size="sm" className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+              <BiLinkExternal className="mr-1" /> 检查扩展连接
+            </Button>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
-            ) : !isLoggedIn ? (
+            ) : !chromeBridgeReady ? (
               <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
-                <BiPlay className="mr-1" /> 请先登录Boss
+                <BiPlay className="mr-1" /> 扩展未连接
               </Button>
-            ) : isDelivering ? (
-              <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
-                <BiStop className="mr-1" /> 停止投递
-              </Button>
-            ) : (
-              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
-                <BiPlay className="mr-1" /> 开始投递
-              </Button>
-            )}
+	            ) : isDelivering ? (
+	              <Button onClick={handleStopDelivery} size="sm" disabled={isStopping} className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-70 disabled:hover:scale-100">
+	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
+	              </Button>
+	            ) : (
+	              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+	                <BiPlay className="mr-1" /> 开始扫描
+	              </Button>
+	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
@@ -583,20 +790,22 @@ export default function BossPage() {
           <TabsTrigger value="analytics">投递分析</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="config" className="space-y-6 mt-6">
-          {/* 平台说明 */}
-          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+	          <TabsContent value="config" className="space-y-6 mt-6">
+	          <ProgressLogCard logs={progressLogs} isRunning={isDelivering} isStopping={isStopping} onStop={handleStopDelivery} onClear={() => setProgressLogs([])} />
+
+	          {/* 平台说明 */}
+	          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <BiBriefcase className="text-primary" />
                 Boss直聘平台说明
               </CardTitle>
-              <CardDescription>登录与投递操作提示</CardDescription>
+	              <CardDescription>登录与扫描操作提示</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">请在浏览器标签页中登录 Boss 直聘平台，登录成功后系统会自动检测登录状态。</p>
-                <p className="text-sm text-muted-foreground">登录成功后，点击“开始投递”按钮启动自动投递任务。</p>
+	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
+		                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始采集；自动投递关闭时只生成待确认列表。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>
@@ -679,6 +888,18 @@ export default function BossPage() {
                   <option value="1">开启</option>
                 </Select>
                 <p className="text-xs text-muted-foreground">开启后将过滤活跃状态包含“年”的HR，但仍保存数据。</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="autoDeliver">AI通过后自动投递</Label>
+                <Select
+                  id="autoDeliver"
+                  value={String(config.autoDeliver ?? 0)}
+                  onChange={(e) => setConfig({ ...config, autoDeliver: Number(e.target.value) })}
+                >
+                  <option value="0">关闭</option>
+                  <option value="1">开启</option>
+                </Select>
+                <p className="text-xs text-red-600 dark:text-red-400">开启后 AI 通过会真实联系 HR。</p>
               </div>
               </div>
             </CardContent>
@@ -906,7 +1127,7 @@ export default function BossPage() {
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-6 mt-6">
-          <AnalysisContent />
+          <AnalysisContent refreshSignal={analysisRefreshSignal} />
         </TabsContent>
       </Tabs>
 
@@ -975,7 +1196,7 @@ export default function BossPage() {
         </div>
       )}
 
-      {/* 保存结果弹框 */}
+      {/* 结果弹框 */}
       {showSaveDialog && saveResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" role="dialog" aria-modal="true">
           <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-[92%] max-w-sm border border-gray-200 dark:border-neutral-800 animate-in fade-in zoom-in-95">
@@ -983,7 +1204,9 @@ export default function BossPage() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg flex items-center gap-2">
                   <BiSave className={saveResult.success ? 'text-green-500' : 'text-red-500'} />
-                  {saveResult.success ? '保存成功' : '保存失败'}
+                  {saveDialogKind === 'platform'
+                    ? (saveResult.success ? '打开成功' : '打开失败')
+                    : (saveResult.success ? '保存成功' : '保存失败')}
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-0">
@@ -1002,6 +1225,72 @@ export default function BossPage() {
         </div>
       )}
     </div>
+  )
+}
+
+function ProgressLogCard({
+  logs,
+  isRunning,
+  isStopping,
+  onStop,
+  onClear,
+}: {
+  logs: ProgressLog[]
+  isRunning: boolean
+  isStopping: boolean
+  onStop: () => void
+  onClear: () => void
+}) {
+  const badgeClass = (type: string) => {
+    if (type === 'success') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    if (type === 'error') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+    if (type === 'warning') return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+  }
+
+  const formatTime = (timestamp?: number) => {
+    if (!timestamp) return ''
+    return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false })
+  }
+
+  return (
+    <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <BiBarChart className="text-primary" />
+            运行日志
+          </CardTitle>
+          <CardDescription>后台自动化浏览器的扫描进度和结果</CardDescription>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+            {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
+          </span>
+          {isRunning && (
+            <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-full px-3">
+              <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止'}
+            </Button>
+          )}
+          <Button onClick={onClear} size="sm" variant="ghost" className="rounded-full px-3">清空</Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、AI分析、待确认和错误信息。</p>
+        ) : (
+          <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
+            {logs.map((log) => (
+              <div key={log.id} className="flex items-start gap-3 rounded-md bg-white/70 px-3 py-2 text-sm shadow-sm dark:bg-neutral-900/70">
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeClass(log.type)}`}>{log.type}</span>
+                <span className="min-w-0 flex-1 break-words text-foreground">{log.message}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{formatTime(log.timestamp)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -1028,7 +1317,8 @@ function MultiSelect({
 
   // 确保组件已挂载（解决 SSR 问题）
   useEffect(() => {
-    setMounted(true)
+    const frame = window.requestAnimationFrame(() => setMounted(true))
+    return () => window.cancelAnimationFrame(frame)
   }, [])
 
   // 计算下拉框位置

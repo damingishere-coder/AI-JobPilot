@@ -76,6 +76,18 @@ public class CookieController {
                 return ResponseEntity.badRequest().body(response);
             }
 
+            if ("boss".equals(platform)) {
+                PlaywrightManager.BossSearchSessionStatus sessionStatus = playwrightManager.verifyBossSearchSession();
+                response.put("searchReady", sessionStatus.searchReady());
+                response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
+                response.put("currentUrl", sessionStatus.currentUrl());
+                response.put("failureReason", sessionStatus.failureReason());
+                if (!sessionStatus.searchReady()) {
+                    response.put("success", false);
+                    response.put("message", sessionStatus.failureReason());
+                    return ResponseEntity.badRequest().body(response);
+                }
+            }
             playwrightManager.saveCookiesToDb(platform, remark);
             response.put("success", true);
             response.put("message", String.format("已主动保存 %s Cookie 到数据库", platform));

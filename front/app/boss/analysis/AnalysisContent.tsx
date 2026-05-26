@@ -1,13 +1,27 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
+import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
+import {
+  BiRefresh,
+  BiDownload,
+  BiBarChart,
+  BiLineChart,
+  BiPieChart,
+  BiBriefcase,
+  BiFilterAlt,
+  BiSearch,
+  BiX,
+  BiChevronDown,
+  BiChevronUp,
+  BiLinkExternal,
+} from "react-icons/bi"
 
 type NameValue = { name: string; value: number }
 type BucketValue = { bucket: string; value: number }
@@ -17,9 +31,26 @@ type StatsResponse = {
     total: number
     delivered: number
     pending: number
+    waitingConfirm?: number
+    insufficient?: number
     filtered: number
     failed: number
     avgMonthlyK?: number | null
+  }
+  overview?: {
+    aiAvgScore?: number | null
+    aiPassCount?: number
+    aiRejectCount?: number
+    aiFailedCount?: number
+    priorityCompanyCount?: number
+    missingLinkCount?: number
+    missingSalaryCount?: number
+    latestCreatedAt?: string | null
+    topCity?: string | null
+    topIndustry?: string | null
+    topCompany?: string | null
+    topExperience?: string | null
+    topDegree?: string | null
   }
   charts: {
     byStatus: NameValue[]
@@ -69,6 +100,45 @@ type PagedResult = {
 }
 
 const API_BASE = "http://localhost:8888"
+const DELIVERY_STATUS_OPTIONS = ["待确认", "已投递", "未投递", "AI不匹配", "采集信息不足", "已过滤", "已跳过", "投递失败"]
+const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
+const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
+
+type FilterState = {
+  statuses: string[]
+  location: string
+  experience: string
+  degree: string
+  minK: string
+  maxK: string
+  keyword: string
+  filterHeadhunter: boolean
+}
+
+type ChartInstance = { destroy: () => void }
+type ChartConstructor = new (
+  context: CanvasRenderingContext2D,
+  config: {
+    type: "pie" | "bar" | "line"
+    data: {
+      labels: string[]
+      datasets: Array<Record<string, unknown>>
+    }
+    options: Record<string, unknown>
+  }
+) => ChartInstance
+
+const EMPTY_FILTERS: FilterState = {
+  statuses: [],
+  location: "",
+  experience: "",
+  degree: "",
+  minK: "",
+  maxK: "",
+  keyword: "",
+  filterHeadhunter: false,
+}
+
 // 通用分类颜色（用于柱状/饼状图每个分类不同颜色）
 const CATEGORY_COLORS = [
   "#3b82f6",
@@ -103,16 +173,20 @@ function ChartCanvas({
   colors?: string[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<any | null>(null)
+  const chartRef = useRef<ChartInstance | null>(null)
   // 颜色统一使用纯色（不透明）
   const toSolid = (hex: string) => hex
 
-  async function ensureChart(): Promise<any> {
-    if (typeof window !== "undefined" && (window as any).Chart) return (window as any).Chart
-    return new Promise((resolve, reject) => {
+  async function ensureChart(): Promise<ChartConstructor> {
+    const chartWindow = window as Window & { Chart?: ChartConstructor }
+    if (typeof window !== "undefined" && chartWindow.Chart) return chartWindow.Chart
+    return new Promise<ChartConstructor>((resolve, reject) => {
       const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
       if (existing) {
-        existing.addEventListener("load", () => resolve((window as any).Chart))
+        existing.addEventListener("load", () => {
+          if (chartWindow.Chart) resolve(chartWindow.Chart)
+          else reject(new Error("Chart.js unavailable after load"))
+        })
         existing.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
         return
       }
@@ -120,7 +194,10 @@ function ChartCanvas({
       script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
       script.async = true
       script.setAttribute("data-chartjs-cdn", "true")
-      script.addEventListener("load", () => resolve((window as any).Chart))
+      script.addEventListener("load", () => {
+        if (chartWindow.Chart) resolve(chartWindow.Chart)
+        else reject(new Error("Chart.js unavailable after load"))
+      })
       script.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
       document.head.appendChild(script)
     })
@@ -175,7 +252,7 @@ function ChartCanvas({
       return color
     })()
 
-    const dataset: any = {
+    const dataset: Record<string, unknown> = {
       label: title || "",
       data,
       backgroundColor,
@@ -225,10 +302,145 @@ function ChartCanvas({
     }
   }, [type, labels, data, title, color, colors])
 
-  return <canvas ref={canvasRef} className="w-full h-64" />
+  return <canvas ref={canvasRef} className="h-44 w-full md:h-48" />
 }
 
-export default function AnalysisContent({ showHeader = false }: { showHeader?: boolean }) {
+function formatDateOnlyValue(value?: string | null) {
+  if (!value) return "暂无数据"
+  const date = new Date(value)
+  if (!Number.isNaN(date.getTime())) {
+    const y = date.getFullYear()
+    const m = String(date.getMonth() + 1).padStart(2, "0")
+    const d = String(date.getDate()).padStart(2, "0")
+    return `${y}-${m}-${d}`
+  }
+  return value.slice(0, 10) || "暂无数据"
+}
+
+function OverviewMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold text-foreground" title={String(value)}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function OverviewSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description: string
+  children: ReactNode
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-white/20 bg-white/35 p-4 dark:bg-white/5">
+      <div className="mb-4">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{description}</div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function OverviewPanel({ stats, loading }: { stats: StatsResponse | null; loading: boolean }) {
+  const k = stats?.kpi
+  const overview = stats?.overview
+  const statusCount = (name: string) => stats?.charts.byStatus.find((item) => item.name === name)?.value ?? 0
+  const total = k?.total ?? 0
+  const delivered = k?.delivered ?? 0
+  const waitingConfirm = k?.waitingConfirm ?? 0
+  const filtered = k?.filtered ?? 0
+  const failed = k?.failed ?? 0
+  const skipped = statusCount("已跳过")
+  const remainder = Math.max(0, total - delivered - waitingConfirm - filtered - failed - skipped)
+  const segments = [
+    { label: "已投递", value: delivered, className: "bg-emerald-500" },
+    { label: "待确认", value: waitingConfirm, className: "bg-cyan-500" },
+    { label: "已过滤", value: filtered, className: "bg-pink-500" },
+    { label: "失败/跳过", value: failed + skipped, className: "bg-amber-500" },
+    { label: "其他", value: remainder, className: "bg-slate-400" },
+  ].filter((segment) => segment.value > 0)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 数据总览</CardTitle>
+        <CardDescription>基于当前 Boss 岗位库生成的投递进度、AI 判断、岗位画像与数据质量概况</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading && !stats ? (
+          <div className="flex h-40 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+            加载中...
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
+            <OverviewSection title="投递进度" description="按当前状态查看岗位流转">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="总岗位" value={total} />
+                <OverviewMetric label="待确认" value={waitingConfirm} />
+                <OverviewMetric label="已投递" value={delivered} />
+                <OverviewMetric label="过滤/失败/跳过" value={filtered + failed + skipped} />
+              </div>
+              <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
+                {total > 0 ? (
+                  <div className="flex h-full w-full">
+                    {segments.map((segment) => (
+                      <div
+                        key={segment.label}
+                        className={segment.className}
+                        style={{ width: `${(segment.value / total) * 100}%` }}
+                        title={`${segment.label}: ${segment.value}`}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </OverviewSection>
+
+            <OverviewSection title="AI判断" description="查看 AI 分析后的通过与风险">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="平均AI分" value={overview?.aiAvgScore ?? "暂无数据"} />
+                <OverviewMetric label="AI通过" value={overview?.aiPassCount ?? 0} />
+                <OverviewMetric label="AI不匹配" value={overview?.aiRejectCount ?? 0} />
+                <OverviewMetric label="优先公司" value={overview?.priorityCompanyCount ?? 0} />
+              </div>
+              <div className="mt-4 text-xs text-muted-foreground">分析失败 {overview?.aiFailedCount ?? 0} 个</div>
+            </OverviewSection>
+
+            <OverviewSection title="岗位画像" description="从城市、行业、公司与要求看集中度">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="TOP城市" value={overview?.topCity || "暂无数据"} />
+                <OverviewMetric label="TOP行业" value={overview?.topIndustry || "暂无数据"} />
+                <OverviewMetric label="TOP公司" value={overview?.topCompany || "暂无数据"} />
+                <OverviewMetric label="主流经验" value={overview?.topExperience || "暂无数据"} />
+              </div>
+              <div className="mt-4">
+                <OverviewMetric label="主流学历" value={overview?.topDegree || "暂无数据"} />
+              </div>
+            </OverviewSection>
+
+            <OverviewSection title="数据质量" description="检查采集完整度与最近入库时间">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="采集不足" value={k?.insufficient ?? 0} />
+                <OverviewMetric label="缺少链接" value={overview?.missingLinkCount ?? 0} />
+                <OverviewMetric label="缺少薪资" value={overview?.missingSalaryCount ?? 0} />
+                <OverviewMetric label="最近入库" value={formatDateOnlyValue(overview?.latestCreatedAt)} />
+              </div>
+            </OverviewSection>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
 
@@ -240,23 +452,21 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [inputPage, setInputPage] = useState<number | string>(1)
   const [inputSize, setInputSize] = useState<number | string>(20)
 
-  const [statuses, setStatuses] = useState<string[]>([]) // 默认不勾选任何状态
-  const [location, setLocation] = useState<string>("")
-  const [experience, setExperience] = useState<string>("")
-  const [degree, setDegree] = useState<string>("")
-  const [minK, setMinK] = useState<string>("")
-  const [maxK, setMaxK] = useState<string>("")
-  const [keyword, setKeyword] = useState<string>("")
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS)
+  const [draftFilters, setDraftFilters] = useState<FilterState>(EMPTY_FILTERS)
+  const [filtersOpen, setFiltersOpen] = useState(true)
+  const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [filterHeadhunter, setFilterHeadhunter] = useState<boolean>(false)
 
   // 查看全文弹窗
   const [showTextDialog, setShowTextDialog] = useState(false)
   const [textDialogTitle, setTextDialogTitle] = useState<string>("")
   const [textDialogContent, setTextDialogContent] = useState<string>("")
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+  const [actingJobId, setActingJobId] = useState<number | null>(null)
+  const [actingBatch, setActingBatch] = useState(false)
 
   const openTextDialog = (title: string, content?: string) => {
     setTextDialogTitle(title)
@@ -273,7 +483,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     try {
       await navigator.clipboard.writeText(textDialogContent || "")
       alert("已复制到剪贴板")
-    } catch (e) {
+    } catch {
       try {
         const ta = document.createElement("textarea")
         ta.value = textDialogContent || ""
@@ -282,13 +492,11 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         document.execCommand("copy")
         document.body.removeChild(ta)
         alert("已复制到剪贴板")
-      } catch (e2) {
+      } catch {
         alert("复制失败，请手动选中复制")
       }
     }
   }
-
-  const statusOptions = ["未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 
   useEffect(() => {
     // 初次加载统计（应用当前筛选条件）
@@ -302,13 +510,6 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   useEffect(() => {
     setInputSize(size)
   }, [size])
-
-  // 勾选“过滤猎头岗位”后自动刷新列表（从第1页开始）
-  useEffect(() => {
-    loadList(1, size)
-    loadStats()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterHeadhunter])
 
   // 仅显示日期（YYYY-MM-DD）
   const formatDateOnly = (s?: string) => {
@@ -324,16 +525,52 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     return s.slice(0, 10)
   }
 
-  const loadList = async (toPage = page, toSize = size) => {
+  const buildFilterParams = (source: FilterState = filters) => {
     const params = new URLSearchParams()
-    if (statuses.length) params.set("statuses", statuses.join(","))
-    if (location) params.set("location", location)
-    if (experience) params.set("experience", experience)
-    if (degree) params.set("degree", degree)
-    if (minK) params.set("minK", String(Number(minK)))
-    if (maxK) params.set("maxK", String(Number(maxK)))
-    if (keyword) params.set("keyword", keyword)
-    if (filterHeadhunter) params.set("filterHeadhunter", "true")
+    if (source.statuses.length) params.set("statuses", source.statuses.join(","))
+    if (source.location.trim()) params.set("location", source.location.trim())
+    if (source.experience) params.set("experience", source.experience)
+    if (source.degree) params.set("degree", source.degree)
+    if (source.minK) params.set("minK", String(Number(source.minK)))
+    if (source.maxK) params.set("maxK", String(Number(source.maxK)))
+    if (source.keyword.trim()) params.set("keyword", source.keyword.trim())
+    if (source.filterHeadhunter) params.set("filterHeadhunter", "true")
+    return params
+  }
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0
+    if (filters.statuses.length) count += 1
+    if (filters.location.trim()) count += 1
+    if (filters.experience) count += 1
+    if (filters.degree) count += 1
+    if (filters.minK || filters.maxK) count += 1
+    if (filters.keyword.trim()) count += 1
+    if (filters.filterHeadhunter) count += 1
+    return count
+  }, [filters])
+
+  const toggleDraftStatus = (status: string) => {
+    setDraftFilters((prev) => {
+      const exists = prev.statuses.includes(status)
+      return {
+        ...prev,
+        statuses: exists ? prev.statuses.filter((item) => item !== status) : [...prev.statuses, status],
+      }
+    })
+  }
+
+  const applyFilters = () => {
+    setFilters(draftFilters)
+  }
+
+  const resetFilters = () => {
+    setDraftFilters(EMPTY_FILTERS)
+    setFilters(EMPTY_FILTERS)
+  }
+
+  const loadList = async (toPage = page, toSize = size) => {
+    const params = buildFilterParams()
     params.set("page", String(toPage))
     params.set("size", String(toSize))
 
@@ -343,7 +580,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       const data: PagedResult = await res.json()
       // 前端兜底过滤猎头（避免后端未更新导致的显示异常）
       const filteredItems = (data.items || []).filter(it => {
-        if (!filterHeadhunter) return true
+        if (!filters.filterHeadhunter) return true
         const hp = (it.hrPosition || "").toLowerCase()
         return !(hp.includes("猎头") || hp.includes("獵頭"))
       })
@@ -360,15 +597,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
 
   // 统计图加载：与列表共享相同筛选条件
   const loadStats = async () => {
-    const params = new URLSearchParams()
-    if (statuses.length) params.set("statuses", statuses.join(","))
-    if (location) params.set("location", location)
-    if (experience) params.set("experience", experience)
-    if (degree) params.set("degree", degree)
-    if (minK) params.set("minK", String(Number(minK)))
-    if (maxK) params.set("maxK", String(Number(maxK)))
-    if (keyword) params.set("keyword", keyword)
-    if (filterHeadhunter) params.set("filterHeadhunter", "true")
+    const params = buildFilterParams()
 
     try {
       setLoadingStats(true)
@@ -386,6 +615,19 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!refreshSignal) return
+    loadList(1, size)
+    loadStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal])
+
+  useEffect(() => {
+    loadList(1, size)
+    loadStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters])
 
   const onReload = async () => {
     try {
@@ -406,15 +648,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     try {
       setExporting(true)
       // 组装当前筛选条件
-      const baseParams = new URLSearchParams()
-      if (statuses.length) baseParams.set("statuses", statuses.join(","))
-      if (location) baseParams.set("location", location)
-      if (experience) baseParams.set("experience", experience)
-      if (degree) baseParams.set("degree", degree)
-      if (minK) baseParams.set("minK", String(Number(minK)))
-      if (maxK) baseParams.set("maxK", String(Number(maxK)))
-      if (keyword) baseParams.set("keyword", keyword)
-      if (filterHeadhunter) baseParams.set("filterHeadhunter", "true")
+      const baseParams = buildFilterParams()
 
       // 分页抓取，直到获取全部数据
       const pageSize = 1000
@@ -430,7 +664,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         const data: PagedResult = await res.json()
         let chunk = data.items || []
         // 导出也做兜底过滤，确保CSV不含猎头岗位
-        if (filterHeadhunter) {
+        if (filters.filterHeadhunter) {
           chunk = chunk.filter(it => {
             const hp = (it.hrPosition || "").toLowerCase()
             return !(hp.includes("猎头") || hp.includes("獵頭"))
@@ -492,13 +726,101 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     }
   }
 
+  const handleConfirmJob = async (job: BossJob) => {
+    try {
+      setActingJobId(job.id)
+      const res = await fetch(`${API_BASE}/api/boss/jobs/${job.id}/confirm`, { method: "POST" })
+      const data = await res.json()
+      if (!data.success) {
+        openTextDialog("确认投递", data.message || "该岗位暂不能投递。")
+        return
+      }
+      const ok = window.confirm(`将通过 Chrome 真实联系 Boss HR：${job.companyName || ""} / ${job.jobName || ""}。确认继续？`)
+      if (!ok) return
+      const result = await sendChromeBridgeMessage({
+        type: "BOSS_DELIVER_ONE",
+        platform: "boss",
+        task: data.task,
+      }, 120000)
+      openTextDialog("确认投递", result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      openTextDialog("待确认发送", "确认失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
+  const currentBatchFilters = () => ({
+    location: filters.location || undefined,
+    experience: filters.experience || undefined,
+    degree: filters.degree || undefined,
+    minK: filters.minK ? Number(filters.minK) : undefined,
+    maxK: filters.maxK ? Number(filters.maxK) : undefined,
+    keyword: filters.keyword || undefined,
+    filterHeadhunter: filters.filterHeadhunter,
+  })
+
+  const handleConfirmBatch = async () => {
+    try {
+      setActingBatch(true)
+      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentBatchFilters()),
+      })
+      const data = await res.json()
+      const tasks = data.tasks || []
+      if (!data.success || tasks.length === 0) {
+        openTextDialog("批量投递", data.message || "当前筛选条件下没有待确认岗位。")
+        return
+      }
+      const ok = window.confirm(`将通过 Chrome 真实联系 ${tasks.length} 个 Boss 待确认岗位。确认继续？`)
+      if (!ok) return
+      const result = await sendChromeBridgeMessage({
+        type: "BOSS_DELIVER_BATCH",
+        platform: "boss",
+        tasks,
+      }, Math.max(120000, tasks.length * 30000))
+      openTextDialog("批量投递", result.message || "批量投递任务已结束。")
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      openTextDialog("批量投递", "批量投递失败：网络或服务异常。")
+    } finally {
+      setActingBatch(false)
+    }
+  }
+
+  const handleSkipJob = async (job: BossJob) => {
+    try {
+      setActingJobId(job.id)
+      const res = await fetch(`${API_BASE}/api/boss/jobs/${job.id}/skip`, { method: "POST" })
+      const data = await res.json()
+      if (!data.success) {
+        openTextDialog("跳过岗位", data.message || "跳过失败。")
+      }
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      openTextDialog("跳过岗位", "跳过失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
   // 彩色标签样式（用于状态类字段）
   const badgeClass = (kind: "delivery" | "hr" | "recruitment", value?: string) => {
     const base = "px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap"
     const v = (value || "").trim()
     if (kind === "delivery") {
       if (v.includes("已投递")) return `${base} bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300`
+      if (v.includes("待确认")) return `${base} bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300`
+      if (v.includes("采集信息不足")) return `${base} bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300`
+      if (v.includes("AI不匹配")) return `${base} bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300`
       if (v.includes("已过滤")) return `${base} bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300`
+      if (v.includes("已跳过")) return `${base} bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300`
       if (v.includes("失败")) return `${base} bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300`
       return `${base} bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300`
     }
@@ -520,6 +842,8 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
       { title: "已投递", value: k?.delivered ?? 0 },
+      { title: "待确认", value: k?.waitingConfirm ?? 0 },
+      { title: "采集不足", value: k?.insufficient ?? 0 },
       { title: "未投递", value: k?.pending ?? 0 },
       { title: "已过滤", value: k?.filtered ?? 0 },
       { title: "投递失败", value: k?.failed ?? 0 },
@@ -538,7 +862,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       )}
 
       {/* KPI 卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
         {kpiCards.map((c, idx) => (
           <Card key={idx} className="border">
             <CardHeader>
@@ -549,114 +873,16 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         ))}
       </div>
 
-      {/* 操作栏 */}
-      <Card>
-        <CardHeader className="space-y-0">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <CardTitle className="text-base">筛选与操作</CardTitle>
-              <CardDescription>按状态、地区、经验、学历与薪资区间过滤列表</CardDescription>
-            </div>
-            <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
-              {statusOptions.map((s) => (
-                <label
-                  key={s}
-                  className={`group inline-flex items-center gap-2 text-sm rounded-full px-3 py-1.5 transition-all border backdrop-blur-sm ${
-                    statuses.includes(s)
-                      ? "border-cyan-300/60 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 text-cyan-900 dark:text-cyan-200 shadow"
-                      : "border-white/20 bg-white/8 text-foreground/80 hover:bg-white/12"
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={statuses.includes(s)}
-                    onChange={(e) => {
-                      setStatuses((prev) => {
-                        if (e.target.checked) return Array.from(new Set([...prev, s]))
-                        return prev.filter((x) => x !== s)
-                      })
-                    }}
-                    className="sr-only peer"
-                  />
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all peer-checked:bg-cyan-400/60 peer-checked:border-cyan-300/80"></span>
-                  {s}
-                </label>
-              ))}
-              <label
-                className={`group inline-flex items-center gap-2 text-sm rounded-full px-3 py-1.5 transition-all border backdrop-blur-sm ${
-                  filterHeadhunter
-                    ? "border-teal-300/60 bg-gradient-to-r from-teal-500/15 to-emerald-500/15 text-teal-900 dark:text-teal-200 shadow"
-                    : "border-white/20 bg-white/8 text-foreground/80 hover:bg-white/12"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={filterHeadhunter}
-                  onChange={(e) => setFilterHeadhunter(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <span className="inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all peer-checked:bg-teal-400/60 peer-checked:border-teal-300/80"></span>
-                过滤猎头岗位
-              </label>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
-            <div>
-              <Label>城市</Label>
-              <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="如：深圳" />
-            </div>
-            <div>
-              <Label>经验</Label>
-              <Input value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="如：3-5年" />
-            </div>
-            <div>
-              <Label>学历</Label>
-              <Input value={degree} onChange={(e) => setDegree(e.target.value)} placeholder="如：本科" />
-            </div>
-            <div>
-              <Label>最低月薪(K)</Label>
-              <Input type="number" value={minK} onChange={(e) => setMinK(e.target.value)} placeholder="10" />
-            </div>
-            <div>
-              <Label>最高月薪(K)</Label>
-              <Input type="number" value={maxK} onChange={(e) => setMaxK(e.target.value)} placeholder="30" />
-            </div>
-            <div>
-              <Label>关键词</Label>
-              <Input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="公司/岗位/HR" />
-            </div>
-          </div>
-
-          <div className="mt-4 flex gap-3">
-            <Button
-              onClick={async () => {
-                await loadList(1, size)
-                await loadStats()
-              }}
-              disabled={loadingList}
-            >
-              <BiBarChart className="mr-2" /> 应用筛选
-            </Button>
-            <Button variant="success" onClick={exportCSV} disabled={exporting}>
-              <BiDownload className="mr-2" /> {exporting ? "导出中..." : "导出CSV"}
-            </Button>
-            <Button variant="outline" onClick={onReload} disabled={reloading}>
-              <BiRefresh className="mr-2" /> 刷新数据
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <OverviewPanel stats={stats} loading={loadingStats} />
 
       {/* 图表区：6个图表（已移除每日趋势与HR活跃度） */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiPieChart /> 投递状态分布</CardTitle>
             <CardDescription>已投递/未投递/已过滤/失败等占比</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas
                 type="pie"
@@ -664,7 +890,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                 data={stats.charts.byStatus.map((x) => x.value)}
               />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">
                 加载中...
               </div>
             )}
@@ -672,11 +898,11 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 行业TOP10</CardTitle>
             <CardDescription>岗位按行业聚合</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas
                 type="bar"
@@ -685,63 +911,63 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                 colors={CATEGORY_COLORS}
               />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 公司岗位数TOP10</CardTitle>
             <CardDescription>按公司名称聚合</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas type="bar" labels={stats.charts.byCompany.map((x) => x.name)} data={stats.charts.byCompany.map((x) => x.value)} colors={CATEGORY_COLORS} />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 经验分布</CardTitle>
             <CardDescription>不同经验要求的岗位数</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas type="bar" labels={stats.charts.byExperience.map((x) => x.name)} data={stats.charts.byExperience.map((x) => x.value)} colors={CATEGORY_COLORS} />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 学历分布</CardTitle>
             <CardDescription>不同学历要求的岗位数</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas type="bar" labels={stats.charts.byDegree.map((x) => x.name)} data={stats.charts.byDegree.map((x) => x.value)} colors={CATEGORY_COLORS} />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="p-4 pb-2">
             <CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle>
             <CardDescription>基于中位数K的桶聚合</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-4 pt-0">
             {stats ? (
               <ChartCanvas type="line" labels={stats.charts.salaryBuckets.map((x) => x.bucket)} data={stats.charts.salaryBuckets.map((x) => x.value)} color="#ef4444" />
             ) : (
-              <div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
             )}
           </CardContent>
         </Card>
@@ -750,46 +976,205 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       {/* 列表 */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><BiBriefcase /> 岗位数据</CardTitle>
-          <CardDescription>支持筛选、导出与刷新</CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2"><BiBriefcase /> 岗位数据</CardTitle>
+              <CardDescription>当前 Boss 岗位库明细</CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="success" onClick={exportCSV} disabled={exporting}>
+                <BiDownload className="mr-1" /> {exporting ? "导出中..." : "导出CSV"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={onReload} disabled={reloading}>
+                <BiRefresh className="mr-1" /> 刷新数据
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setShowDetailColumns((value) => !value)}>
+                {showDetailColumns ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
+                {showDetailColumns ? "收起详情列" : "展开详情列"}
+              </Button>
+              <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+                <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前待确认"}
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto rounded-xl border border-stroke/30 dark:border-strokedark/30 shadow-lg">
-            <table className="w-full table-fixed min-w-[1420px] bg-white dark:bg-blacksection">
+          <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-900/30">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-foreground"
+                onClick={() => setFiltersOpen((open) => !open)}
+              >
+                <BiFilterAlt />
+                表头筛选
+                {activeFilterCount > 0 && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{activeFilterCount}</span>
+                )}
+                {filtersOpen ? <BiChevronUp /> : <BiChevronDown />}
+              </button>
+              <div className="text-xs text-muted-foreground">
+                当前显示 {items.length} 条，本页/总数 {total} 条
+              </div>
+            </div>
+
+            {filtersOpen && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <div className="xl:col-span-2">
+                    <Label className="text-xs">关键词</Label>
+                    <div className="relative mt-1">
+                      <BiSearch className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={draftFilters.keyword}
+                        onChange={(e) => setDraftFilters((prev) => ({ ...prev, keyword: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") applyFilters()
+                        }}
+                        placeholder="公司 / 岗位 / HR"
+                        className="h-9 pl-9"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs">地点</Label>
+                    <Input
+                      value={draftFilters.location}
+                      onChange={(e) => setDraftFilters((prev) => ({ ...prev, location: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") applyFilters()
+                      }}
+                      placeholder="如 深圳"
+                      className="mt-1 h-9"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">经验</Label>
+                    <Select
+                      value={draftFilters.experience}
+                      onChange={(e) => setDraftFilters((prev) => ({ ...prev, experience: e.target.value }))}
+                      className="mt-1 h-9 rounded-md bg-background"
+                    >
+                      <option value="">全部</option>
+                      {EXPERIENCE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">学历</Label>
+                    <Select
+                      value={draftFilters.degree}
+                      onChange={(e) => setDraftFilters((prev) => ({ ...prev, degree: e.target.value }))}
+                      className="mt-1 h-9 rounded-md bg-background"
+                    >
+                      <option value="">全部</option>
+                      {DEGREE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">月薪(K)</Label>
+                    <div className="mt-1 flex gap-2">
+                      <Input
+                        type="number"
+                        value={draftFilters.minK}
+                        onChange={(e) => setDraftFilters((prev) => ({ ...prev, minK: e.target.value }))}
+                        placeholder="最低"
+                        className="h-9"
+                      />
+                      <Input
+                        type="number"
+                        value={draftFilters.maxK}
+                        onChange={(e) => setDraftFilters((prev) => ({ ...prev, maxK: e.target.value }))}
+                        placeholder="最高"
+                        className="h-9"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="mr-1 text-xs text-muted-foreground">投递状态</span>
+                  {DELIVERY_STATUS_OPTIONS.map((status) => {
+                    const active = draftFilters.statuses.includes(status)
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => toggleDraftStatus(status)}
+                        className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                          active
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-slate-300 bg-background text-foreground hover:border-primary/60 dark:border-slate-700"
+                        }`}
+                      >
+                        {status}
+                      </button>
+                    )
+                  })}
+                  <label className="ml-0 inline-flex cursor-pointer items-center gap-2 rounded-full border border-slate-300 bg-background px-3 py-1 text-xs dark:border-slate-700 md:ml-2">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5"
+                      checked={draftFilters.filterHeadhunter}
+                      onChange={(e) => setDraftFilters((prev) => ({ ...prev, filterHeadhunter: e.target.checked }))}
+                    />
+                    过滤猎头
+                  </label>
+                  <div className="ml-auto flex gap-2">
+                    <Button size="sm" variant="outline" onClick={resetFilters}>
+                      <BiX className="mr-1" /> 清空
+                    </Button>
+                    <Button size="sm" onClick={applyFilters}>
+                      <BiFilterAlt className="mr-1" /> 应用筛选
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
+            <table className={`${showDetailColumns ? "min-w-[1800px]" : "min-w-[1180px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
               <thead>
                 <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
-                  <th className="w-40 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司名称</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位名称</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">薪资</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">地点</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">经验</th>
-                  <th className="w-20 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">学历</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR</th>
-                  <th className="w-32 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR职位</th>
-                  <th className="w-32 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR活跃</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">投递状态</th>
-                  <th className="w-20 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI分</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI决策</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI原因</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">优先</th>
-                  <th className="w-24 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">招聘状态</th>
-                  <th className="w-16 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">链接</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司地址</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">行业</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司规模</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">融资阶段</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司介绍</th>
-                  <th className="w-48 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位描述</th>
-                  <th className="w-28 px-4 py-3.5 text-left text-sm font-semibold text-gray-700 dark:text-gray-200">创建时间</th>
+                  <th className={`${showDetailColumns ? "w-[80px]" : "w-[86px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>操作</th>
+                  <th className={`${showDetailColumns ? "w-[140px]" : "w-[180px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>公司名称</th>
+                  <th className={`${showDetailColumns ? "w-[170px]" : "w-[220px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>岗位名称</th>
+                  <th className="w-[110px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">薪资</th>
+                  <th className="w-[94px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">地点</th>
+                  <th className="w-[96px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">经验</th>
+                  <th className="w-[76px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">学历</th>
+                  <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR</th>
+                  <th className="w-[136px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">投递状态</th>
+                  <th className="w-[70px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI分</th>
+                  <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI决策</th>
+                  <th className={`${showDetailColumns ? "w-[160px]" : "w-[230px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>AI原因</th>
+                  <th className="w-[86px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">优先</th>
+                  <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">招聘状态</th>
+                  <th className="w-[78px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">链接</th>
+                  {showDetailColumns && (
+                    <>
+                      <th className="w-[180px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司地址</th>
+                      <th className="w-[110px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">行业</th>
+                      <th className="w-[110px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司规模</th>
+                      <th className="w-[110px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">融资阶段</th>
+                      <th className="w-[180px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">公司介绍</th>
+                      <th className="w-[180px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">岗位描述</th>
+                    </>
+                  )}
+                  <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200">创建时间</th>
                 </tr>
               </thead>
               <tbody>
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={23} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
+                    <td colSpan={showDetailColumns ? 22 : 16} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
                       <div className="flex flex-col items-center gap-3">
                         <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
-                        <p className="text-sm">暂无数据</p>
+                        <p className="text-sm">当前还没有入库岗位；请查看 Boss 页进度日志里的采集数量、详情缺失和提交结果。</p>
                       </div>
                     </td>
                   </tr>
@@ -803,77 +1188,89 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                           : 'bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20'
                       }`}
                     >
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                        {it.deliveryStatus === "待确认" ? (
+                          <div className="flex flex-col gap-2">
+                            <Button size="sm" disabled={actingJobId === it.id} onClick={() => handleConfirmJob(it)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                              发送
+                            </Button>
+                            <Button size="sm" variant="outline" disabled={actingJobId === it.id} onClick={() => handleSkipJob(it)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                              跳过
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyName || '-'} onClick={() => openTextDialog("公司名称", it.companyName)}>{it.companyName || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.jobName || '-'} onClick={() => openTextDialog("岗位名称", it.jobName)}>{it.jobName || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.salary || '-'} onClick={() => openTextDialog("薪资", it.salary)}>{it.salary || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.location || '-'} onClick={() => openTextDialog("地点", it.location)}>{it.location || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.experience || '-'} onClick={() => openTextDialog("经验", it.experience)}>{it.experience || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.degree || '-'} onClick={() => openTextDialog("学历", it.degree)}>{it.degree || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.hrName || '-'} onClick={() => openTextDialog("HR", it.hrName)}>{it.hrName || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.hrPosition || '-'} onClick={() => openTextDialog("HR职位", it.hrPosition)}>{it.hrPosition || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <button className={badgeClass("hr", it.hrActiveStatus)} title={it.hrActiveStatus} onClick={() => openTextDialog("HR活跃", it.hrActiveStatus)}>{it.hrActiveStatus || "-"}</button>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <button className={badgeClass("delivery", it.deliveryStatus)} title={it.deliveryStatus} onClick={() => openTextDialog("投递状态", it.deliveryStatus)}>{it.deliveryStatus || "-"}</button>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         {it.aiScore ?? "-"}
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <button className={badgeClass("delivery", it.aiDecision)} title={it.aiDecision} onClick={() => openTextDialog("AI决策", it.aiDecision)}>{it.aiDecision || "-"}</button>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.aiReason || '-'} onClick={() => openTextDialog("AI原因", it.aiReason)}>{it.aiReason || '-'}</div>
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                        <div className="line-clamp-2 cursor-pointer hover:text-primary transition-colors" title={it.aiReason || '-'} onClick={() => openTextDialog("AI原因", it.aiReason)}>{it.aiReason || '-'}</div>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         {it.priorityCompany ? "是" : "-"}
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         <button className={badgeClass("recruitment", it.recruitmentStatus)} title={it.recruitmentStatus} onClick={() => openTextDialog("招聘状态", it.recruitmentStatus)}>{it.recruitmentStatus || "-"}</button>
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         {it.jobUrl ? (
-                          <a href={it.jobUrl} className="text-primary underline hover:text-primary/80 transition-colors" target="_blank" rel="noreferrer">链接</a>
+                          <a href={it.jobUrl} className="inline-flex items-center gap-1 text-primary underline hover:text-primary/80 transition-colors" target="_blank" rel="noreferrer">链接 <BiLinkExternal /></a>
                         ) : (
                           "-"
                         )}
                       </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyAddress || '-'} onClick={() => openTextDialog("公司地址", it.companyAddress)}>{it.companyAddress || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.industry || '-'} onClick={() => openTextDialog("行业", it.industry)}>{it.industry || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyScale || '-'} onClick={() => openTextDialog("公司规模", it.companyScale)}>{it.companyScale || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.financingStage || '-'} onClick={() => openTextDialog("融资阶段", it.financingStage)}>{it.financingStage || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.introduce || '-'} onClick={() => openTextDialog("公司介绍", it.introduce)}>{it.introduce || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 align-top border-r border-gray-200 dark:border-gray-700">
-                        <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.jobDescription || '-'} onClick={() => openTextDialog("岗位描述", it.jobDescription)}>{it.jobDescription || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top">
+                      {showDetailColumns && (
+                        <>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyAddress || '-'} onClick={() => openTextDialog("公司地址", it.companyAddress)}>{it.companyAddress || '-'}</div>
+                          </td>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.industry || '-'} onClick={() => openTextDialog("行业", it.industry)}>{it.industry || '-'}</div>
+                          </td>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.companyScale || '-'} onClick={() => openTextDialog("公司规模", it.companyScale)}>{it.companyScale || '-'}</div>
+                          </td>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.financingStage || '-'} onClick={() => openTextDialog("融资阶段", it.financingStage)}>{it.financingStage || '-'}</div>
+                          </td>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.introduce || '-'} onClick={() => openTextDialog("公司介绍", it.introduce)}>{it.introduce || '-'}</div>
+                          </td>
+                          <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                            <div className="line-clamp-2 cursor-pointer hover:text-primary transition-colors" title={it.jobDescription || '-'} onClick={() => openTextDialog("岗位描述", it.jobDescription)}>{it.jobDescription || '-'}</div>
+                          </td>
+                        </>
+                      )}
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top">
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={formatDateOnly(it.createdAt) || '-'} onClick={() => openTextDialog("创建时间", formatDateOnly(it.createdAt))}>{formatDateOnly(it.createdAt) || '-'}</div>
                       </td>
                     </tr>

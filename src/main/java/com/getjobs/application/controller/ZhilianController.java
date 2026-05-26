@@ -1,20 +1,39 @@
 package com.getjobs.application.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.dto.ChromeJobBatchRequest;
+import com.getjobs.application.dto.ChromeJobDto;
+import com.getjobs.application.dto.ConfirmBatchRequest;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.entity.ZhilianConfigEntity;
+import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.JobAiAnalysisService;
+import com.getjobs.application.service.OpenClawJobProbeService;
 import com.getjobs.application.service.ZhilianService;
+import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.manager.PlaywrightManager;
+import com.getjobs.worker.service.JobRunCoordinator;
 import com.getjobs.worker.service.ZhilianJobService;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.catalina.connector.ClientAbortException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -26,6 +45,7 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/zhilian")
 @CrossOrigin(origins = "*")
 public class ZhilianController {
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     private ZhilianService zhilianService;
@@ -38,6 +58,17 @@ public class ZhilianController {
 
     @Autowired
     private ZhilianJobService zhilianJobService;
+
+    @Autowired
+    private JobRunCoordinator jobRunCoordinator;
+
+    @Autowired
+    private JobAiAnalysisService jobAiAnalysisService;
+
+    @Autowired
+    private OpenClawJobProbeService openClawJobProbeService;
+
+    private final List<SseEmitter> zhilianProgressEmitters = new CopyOnWriteArrayList<>();
 
     // ==================== 配置管理相关接口 ====================
 
@@ -120,13 +151,17 @@ public class ZhilianController {
     public ResponseEntity<Map<String, Object>> triggerZhilianLogin() {
         Map<String, Object> response = new HashMap<>();
         try {
-            playwrightManager.triggerZhilianLogin();
+            boolean isLoggedIn = playwrightManager.openZhilianPlatformPage();
             response.put("success", true);
-            response.put("message", "已尝试打开智联二维码登录入口，请在浏览器扫码登录");
+            response.put("platform", "zhilian");
+            response.put("isLoggedIn", isLoggedIn);
+            response.put("message", isLoggedIn ? "智联招聘页面已打开" : "智联招聘登录页已打开，请扫码登录");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("触发智联登录失败", e);
             response.put("success", false);
+            response.put("platform", "zhilian");
+            response.put("isLoggedIn", false);
             response.put("message", "触发登录失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
@@ -260,10 +295,150 @@ public class ZhilianController {
         return zhilianService.listZhilianJobs(statusList, location, experience, degree, minK, maxK, keyword, page, size);
     }
 
+    @PostMapping("/chrome/jobs")
+    public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
+        int savedCount = 0;
+        int waitingConfirm = 0;
+        if (request != null && request.getJobs() != null) {
+            sendZhilianProgress(JobProgressMessage.info("zhilian", "Chrome已采集到 " + received + " 个智联岗位，开始AI分析"));
+            for (ChromeJobDto dto : request.getJobs()) {
+                ZhilianJobDataEntity entity = toZhilianEntity(dto);
+                ZhilianJobDataEntity saved = zhilianService.upsertChromeJob(entity);
+                savedCount++;
+
+                JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                analysisRequest.setPlatform("zhilian");
+                analysisRequest.setJobKey(saved.getJobId());
+                analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
+                analysisRequest.setCompanyName(saved.getCompanyName());
+                analysisRequest.setJobName(saved.getJobTitle());
+                analysisRequest.setSalary(saved.getSalary());
+                analysisRequest.setLocation(saved.getLocation());
+                analysisRequest.setExperience(saved.getExperience());
+                analysisRequest.setDegree(saved.getDegree());
+                analysisRequest.setCompanyInfo("");
+                analysisRequest.setJobDescription(saved.getJobDescription());
+                JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(analysisRequest);
+                if (result.shouldApply()) {
+                    zhilianService.markWaitingConfirmByJobId(saved.getJobId());
+                    waitingConfirm++;
+                }
+                sendZhilianProgress(JobProgressMessage.progress(
+                        "zhilian",
+                        (result.shouldApply() ? "待确认：" : "跳过：") + saved.getJobTitle(),
+                        savedCount,
+                        received
+                ));
+            }
+        }
+        sendZhilianProgress(JobProgressMessage.success("zhilian", "智联 Chrome扫描入库完成，待确认 " + waitingConfirm + " 个"));
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "received", received,
+                "saved", savedCount,
+                "waitingConfirm", waitingConfirm
+        ));
+    }
+
+    @GetMapping("/openclaw/status")
+    public ResponseEntity<Map<String, Object>> getOpenClawStatus(
+            @RequestParam(value = "profile", required = false) String profile) {
+        return ResponseEntity.ok(openClawJobProbeService.status(profile));
+    }
+
+    @PostMapping("/openclaw/probe")
+    public ResponseEntity<Map<String, Object>> probeOpenClaw(@RequestBody(required = false) Map<String, Object> payload) {
+        Map<String, Object> request = payload == null ? new HashMap<>() : new HashMap<>(payload);
+        request.put("platform", "zhilian");
+        Map<String, Object> response = openClawJobProbeService.probe(request);
+        if (Boolean.TRUE.equals(response.get("success"))) {
+            sendZhilianProgress(JobProgressMessage.info("zhilian", "OpenClaw实验采集完成，等待前端提交现有AI分析入库接口"));
+            return ResponseEntity.ok(response);
+        }
+        sendZhilianProgress(JobProgressMessage.warning("zhilian", Objects.toString(response.get("message"), "OpenClaw实验采集失败")));
+        return ResponseEntity.badRequest().body(response);
+    }
+
+    @PostMapping("/jobs/{id}/confirm")
+    public Map<String, Object> confirmZhilianJob(@PathVariable("id") Long id) {
+        ZhilianJobDataEntity job = getZhilianJobById(id);
+        Map<String, Object> error = validateDeliverable(job);
+        if (error != null) return error;
+        return Map.of("success", true, "message", "请在 Chrome 中确认投递该智联岗位", "task", toDeliveryTask(job));
+    }
+
+    @PostMapping("/jobs/confirm-batch")
+    public Map<String, Object> confirmZhilianBatch(@RequestBody ConfirmBatchRequest request) {
+        List<ZhilianJobDataEntity> candidates = new ArrayList<>();
+        if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
+            for (Long id : request.getIds()) {
+                ZhilianJobDataEntity job = getZhilianJobById(id);
+                if (job != null) candidates.add(job);
+            }
+        } else {
+            ZhilianService.PagedResult page = zhilianService.listZhilianJobs(
+                    List.of("待确认"),
+                    request == null ? null : request.getLocation(),
+                    request == null ? null : request.getExperience(),
+                    request == null ? null : request.getDegree(),
+                    request == null ? null : request.getMinK(),
+                    request == null ? null : request.getMaxK(),
+                    request == null ? null : request.getKeyword(),
+                    1,
+                    500
+            );
+            if (page != null && page.items != null) candidates.addAll(page.items);
+        }
+        List<Map<String, Object>> tasks = candidates.stream()
+                .filter(job -> "待确认".equals(job.getDeliveryStatus()))
+                .map(this::toDeliveryTask)
+                .collect(Collectors.toList());
+        return Map.of("success", true, "message", "已生成智联批量 Chrome 投递任务", "tasks", tasks, "count", tasks.size());
+    }
+
+    @PostMapping("/jobs/{id}/delivery-result")
+    public Map<String, Object> updateZhilianDeliveryResult(@PathVariable("id") Long id, @RequestBody DeliveryResultRequest request) {
+        ZhilianJobDataEntity job = getZhilianJobById(id);
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? "已投递" : "投递失败";
+        zhilianService.updateDeliveryStatusByJobId(job.getJobId(), status);
+        return Map.of("success", true, "message", request == null || request.getMessage() == null ? "投递状态已更新" : request.getMessage(), "status", status);
+    }
+
     // ==================== 任务管理相关接口 ====================
 
     /**
-     * 启动智联招聘自动投递任务
+     * 智联招聘任务进度推送
+     */
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamZhilianProgress() {
+        SseEmitter emitter = new SseEmitter(0L);
+        zhilianProgressEmitters.add(emitter);
+
+        emitter.onCompletion(() -> {
+            log.info("智联招聘进度SSE连接已完成");
+            zhilianProgressEmitters.remove(emitter);
+        });
+        emitter.onTimeout(() -> {
+            log.info("智联招聘进度SSE连接超时");
+            zhilianProgressEmitters.remove(emitter);
+        });
+        emitter.onError(e -> {
+            log.error("智联招聘进度SSE连接错误", e);
+            zhilianProgressEmitters.remove(emitter);
+        });
+
+        try {
+            emitter.send(SseEmitter.event().name("connected").data(Map.of("message", "已连接到智联招聘扫描进度推送")));
+        } catch (IOException e) {
+            log.error("发送智联招聘SSE连接消息失败", e);
+        }
+        return emitter;
+    }
+
+    /**
+     * 启动智联招聘自动扫描任务
      * @return 响应结果
      */
     @PostMapping("/start")
@@ -286,19 +461,27 @@ public class ZhilianController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
+            if (jobRunCoordinator.isRunningForAnotherPlatform("zhilian")) {
+                String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
+                response.put("success", false);
+                response.put("message", "已有" + active + "任务运行中，请等待当前任务完成");
+                response.put("status", "running");
+                return ResponseEntity.badRequest().body(response);
+            }
 
             // 异步启动新任务
             CompletableFuture.runAsync(() -> {
                 zhilianJobService.executeDelivery(progressMessage -> {
+                    sendZhilianProgress(progressMessage);
                     log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
                 });
             });
 
             response.put("success", true);
-            response.put("message", "智联招聘任务启动成功");
+            response.put("message", "智联招聘扫描任务启动成功，将生成待确认岗位");
             response.put("status", "started");
 
-            log.info("通过API启动智联招聘任务成功");
+            log.info("通过API启动智联招聘扫描任务成功");
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
@@ -383,6 +566,105 @@ public class ZhilianController {
     }
 
     // ==================== 辅助方法 ====================
+
+    private void sendZhilianProgress(JobProgressMessage message) {
+        List<SseEmitter> deadEmitters = new CopyOnWriteArrayList<>();
+        for (SseEmitter emitter : zhilianProgressEmitters) {
+            try {
+                emitter.send(SseEmitter.event().name("progress").data(objectMapper.writeValueAsString(message)));
+            } catch (Exception e) {
+                if (e instanceof AsyncRequestNotUsableException ||
+                        e instanceof ClientAbortException ||
+                        (e.getCause() instanceof ClientAbortException) ||
+                        (e instanceof IOException && String.valueOf(e.getMessage()).contains("中止了一个已建立的连接"))) {
+                    log.debug("智联招聘进度 SSE 客户端已断开，移除连接: {}", e.getMessage());
+                    try { emitter.complete(); } catch (Exception ignored) {}
+                } else {
+                    log.error("发送智联招聘进度消息失败", e);
+                }
+                deadEmitters.add(emitter);
+            }
+        }
+        zhilianProgressEmitters.removeAll(deadEmitters);
+    }
+
+    private ZhilianJobDataEntity toZhilianEntity(ChromeJobDto dto) {
+        ZhilianJobDataEntity entity = new ZhilianJobDataEntity();
+        if (dto == null) return entity;
+        entity.setJobId(firstNonBlank(dto.getId(), extractUrlId(dto.getUrl())));
+        entity.setJobTitle(dto.getTitle());
+        entity.setJobLink(dto.getUrl());
+        entity.setSalary(dto.getSalary());
+        entity.setLocation(dto.getLocation());
+        entity.setExperience(dto.getExperience());
+        entity.setDegree(dto.getDegree());
+        entity.setCompanyName(dto.getCompany());
+        entity.setDeliveryStatus("未投递");
+        entity.setJobDescription(dto.getDescription());
+        return entity;
+    }
+
+    private ZhilianJobDataEntity getZhilianJobById(Long id) {
+        return zhilianService.getZhilianJobById(id);
+    }
+
+    private Map<String, Object> validateDeliverable(ZhilianJobDataEntity job) {
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        if (!"待确认".equals(job.getDeliveryStatus())) {
+            return Map.of("success", false, "message", "只有待确认岗位可以确认投递", "status", job.getDeliveryStatus() == null ? "" : job.getDeliveryStatus());
+        }
+        if (job.getJobLink() == null || job.getJobLink().isBlank()) {
+            return Map.of("success", false, "message", "该岗位缺少详情链接，无法在 Chrome 中投递");
+        }
+        return null;
+    }
+
+    private Map<String, Object> toDeliveryTask(ZhilianJobDataEntity job) {
+        Map<String, Object> task = new HashMap<>();
+        task.put("id", job.getId());
+        task.put("platform", "zhilian");
+        task.put("url", Objects.toString(job.getJobLink(), ""));
+        task.put("companyName", Objects.toString(job.getCompanyName(), ""));
+        task.put("jobName", Objects.toString(job.getJobTitle(), ""));
+        task.put("salary", Objects.toString(job.getSalary(), ""));
+        return task;
+    }
+
+    private String extractUrlId(String url) {
+        if (url == null || url.isBlank()) return null;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("([A-Za-z0-9_-]{8,})").matcher(url);
+        String last = null;
+        while (matcher.find()) last = matcher.group(1);
+        return last;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    /** 心跳 - 智联招聘进度 SSE */
+    @Scheduled(fixedRate = 30000)
+    public void heartbeatZhilianProgress() {
+        if (zhilianProgressEmitters.isEmpty()) return;
+        List<SseEmitter> deadEmitters = new CopyOnWriteArrayList<>();
+        for (SseEmitter emitter : zhilianProgressEmitters) {
+            try {
+                emitter.send(SseEmitter.event().name("ping").data("keep-alive"));
+            } catch (Exception e) {
+                if (e instanceof AsyncRequestNotUsableException ||
+                        e instanceof ClientAbortException ||
+                        (e.getCause() instanceof ClientAbortException) ||
+                        (e instanceof IOException && String.valueOf(e.getMessage()).contains("中止了一个已建立的连接"))) {
+                    log.debug("智联招聘进度 SSE 客户端已断开（心跳），移除连接: {}", e.getMessage());
+                    try { emitter.complete(); } catch (Exception ignored) {}
+                } else {
+                    log.error("发送智联招聘进度心跳失败", e);
+                }
+                deadEmitters.add(emitter);
+            }
+        }
+        zhilianProgressEmitters.removeAll(deadEmitters);
+    }
 
     // 旧枚举构建方法已移除，改为从数据库读取
 }

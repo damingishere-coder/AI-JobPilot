@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
+import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
@@ -16,9 +17,10 @@ type SalaryBucketLike = BucketValue | { bucket?: string; name?: string; value: n
 
 type StatsResponse = {
   kpi: {
-    total: number
-    delivered: number
-    pending: number
+	    total: number
+	    delivered: number
+	    waitingConfirm?: number
+	    pending: number
     filtered: number
     failed: number
     avgMonthlyK?: number | null
@@ -35,6 +37,7 @@ type StatsResponse = {
 }
 
 type ZhilianJob = {
+  id?: number
   jobId: string
   companyName?: string
   jobTitle?: string
@@ -222,8 +225,9 @@ function formatDateOnly(s?: string) {
 function badgeClass(type: "status" | "delivery", text?: string) {
   const base = "px-2 py-0.5 rounded text-xs"
   if (type === "delivery") {
-    if (!text || text === "未投递") return `${base} bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200`
-    if (text === "已投递") return `${base} bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200`
+	    if (!text || text === "未投递") return `${base} bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200`
+	    if (text === "待确认") return `${base} bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-200`
+	    if (text === "已投递") return `${base} bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200`
     if (text === "已过滤") return `${base} bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-200`
     if (text === "投递失败") return `${base} bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200`
     return `${base} bg-gray-100 text-gray-800`
@@ -253,8 +257,10 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [exporting, setExporting] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
+  const [actingJobId, setActingJobId] = useState<number | null>(null)
+  const [actingBatch, setActingBatch] = useState(false)
 
-  const statusOptions = ["未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
+	  const statusOptions = ["待确认", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 
   const loadList = async (toPage = page, toSize = size) => {
     try {
@@ -437,6 +443,76 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     }
   }
 
+  const currentBatchFilters = () => ({
+    location: location || undefined,
+    experience: experience || undefined,
+    degree: degree || undefined,
+    minK: minK ? Number(minK) : undefined,
+    maxK: maxK ? Number(maxK) : undefined,
+    keyword: keyword || undefined,
+  })
+
+  const handleConfirmJob = async (job: ZhilianJob) => {
+    if (!job.id) {
+      alert("该智联岗位缺少内部ID，无法确认投递。")
+      return
+    }
+    try {
+      setActingJobId(job.id)
+      const res = await fetch(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { method: "POST" })
+      const data = await res.json()
+      if (!data.success) {
+        alert(data.message || "该智联岗位暂不能投递。")
+        return
+      }
+      const ok = window.confirm(`将通过 Chrome 真实申请智联岗位：${job.companyName || ""} / ${job.jobTitle || ""}。确认继续？`)
+      if (!ok) return
+      const result = await sendChromeBridgeMessage({
+        type: "ZHILIAN_DELIVER_ONE",
+        platform: "zhilian",
+        task: data.task,
+      }, 120000)
+      alert(result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      alert("确认投递失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
+  const handleConfirmBatch = async () => {
+    try {
+      setActingBatch(true)
+      const res = await fetch(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentBatchFilters()),
+      })
+      const data = await res.json()
+      const tasks = data.tasks || []
+      if (!data.success || tasks.length === 0) {
+        alert(data.message || "当前筛选条件下没有智联待确认岗位。")
+        return
+      }
+      const ok = window.confirm(`将通过 Chrome 真实申请 ${tasks.length} 个智联待确认岗位。确认继续？`)
+      if (!ok) return
+      const result = await sendChromeBridgeMessage({
+        type: "ZHILIAN_DELIVER_BATCH",
+        platform: "zhilian",
+        tasks,
+      }, Math.max(120000, tasks.length * 30000))
+      alert(result.message || "批量投递任务已结束。")
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      alert("批量投递失败：网络或服务异常。")
+    } finally {
+      setActingBatch(false)
+    }
+  }
+
   useEffect(() => {
     const apiBuckets = stats?.charts?.salaryBuckets || []
     const sum = apiBuckets.reduce((a, b) => a + (b?.value || 0), 0)
@@ -463,8 +539,8 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     })()
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
-      { title: "已投递", value: k?.delivered ?? 0 },
-      { title: "未投递", value: k?.pending ?? 0 },
+	      { title: "待确认", value: k?.waitingConfirm ?? 0 },
+	      { title: "未投递", value: k?.pending ?? 0 },
       { title: "平均月薪(K)", value: (k?.avgMonthlyK ?? avgMonthlyKFromItems ?? 0) },
     ]
   }, [stats, items])
@@ -564,6 +640,9 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             </Button>
             <Button variant="outline" onClick={exportCSV} disabled={exporting}>
               <BiDownload className="mr-1" /> 导出CSV
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+              <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
             </Button>
           </div>
         </CardContent>
@@ -672,6 +751,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-muted">
+                  <th className="py-2 px-3 text-left">操作</th>
                   <th className="py-2 px-3 text-left">公司</th>
                   <th className="py-2 px-3 text-left">岗位</th>
                   <th className="py-2 px-3 text-left">薪资</th>
@@ -690,6 +770,20 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
               <tbody>
                 {items.map((it, idx) => (
                   <tr key={`${it.jobId}-${idx}`} className="border-t">
+                    <td className="py-2 px-3 whitespace-nowrap">
+                      {it.deliveryStatus === "待确认" ? (
+                        <Button
+                          size="sm"
+                          disabled={actingJobId === it.id}
+                          onClick={() => handleConfirmJob(it)}
+                          className="h-7 rounded-full px-3 text-xs"
+                        >
+                          Chrome投递
+                        </Button>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.companyName || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.jobTitle || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.salary || ""}</td>

@@ -1,52 +1,104 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { BiSave, BiBrain, BiInfoCircle } from 'react-icons/bi'
+import { useEffect, useState } from 'react'
+import { BiSave, BiBrain, BiInfoCircle, BiUpload } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import PageHeader from '@/app/components/PageHeader'
 
+const API_BASE = 'http://localhost:8888'
+const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
+
+const ANALYSIS_LOGIC_TEXT = `1. 平台配置页先决定怎么找岗位：关键词、城市、薪资、学历、经验、行业、公司规模等。
+2. 自动任务按这些条件进入招聘平台搜索岗位，并读取公司、岗位名、薪资、地点、经验、学历、公司信息和岗位描述。
+3. AI 会把你的简历内容和岗位信息放在一起分析，返回 score、decision、summary、strengths、risks、greeting。
+4. 普通公司默认 score 达到 75 才自动投递；优先公司名单命中后，阈值降到 65。
+5. 如果 decision 是 APPLY，系统会进入沟通页面，优先使用 AI 返回的 greeting；如果没有可用 greeting，就使用下面的打招呼话术。`
+
+type AiConfig = {
+  introduce: string
+  prompt: string
+}
+
+type ResumeMeta = {
+  sourceFilename?: string
+  parseStatus?: string
+  parseMessage?: string
+}
+
 type PriorityCompany = {
   companyName?: string
 }
 
+type SavedResume = {
+  resumeText?: string
+  sourceFilename?: string
+  parseStatus?: string
+  parseMessage?: string
+}
+
+type SaveOptions = {
+  nextAiConfig?: AiConfig
+  nextResumeText?: string
+  nextResumeFile?: File | null
+  nextSayHi?: string
+  skipResume?: boolean
+  showAlert?: boolean
+}
+
 export default function AiConfigPage() {
-  const [aiConfig, setAiConfig] = useState({
+  const [aiConfig, setAiConfig] = useState<AiConfig>({
     introduce: '',
     prompt: '',
   })
   const [resumeText, setResumeText] = useState('')
-  const [resumeMeta, setResumeMeta] = useState<{ sourceFilename?: string; parseStatus?: string; parseMessage?: string } | null>(null)
+  const [resumeMeta, setResumeMeta] = useState<ResumeMeta | null>(null)
   const [priorityCompanies, setPriorityCompanies] = useState('')
   const [resumeFile, setResumeFile] = useState<File | null>(null)
+  const [resumeDirty, setResumeDirty] = useState(false)
+  const [sayHi, setSayHi] = useState('')
 
   const [loading, setLoading] = useState(false)
-  // 是否启用AI（映射 boss_config.enable_ai）
+  const [generating, setGenerating] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('')
   const [enableAi, setEnableAi] = useState<number>(0)
 
-  // 加载AI配置
   useEffect(() => {
-    fetchAiConfig()
-    fetchEnableAi()
-    fetchResume()
-    fetchPriorityCompanies()
+    reloadCurrentData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const markDirty = () => {
+    setHasUnsavedChanges(true)
+    setStatusMessage('')
+  }
+
+  const parseEnableAi = (raw: unknown) => {
+    const val = String(raw ?? '').trim().toLowerCase()
+    return val === '1' || val === 'true' || val === 'on' ? 1 : Number(raw) === 1 ? 1 : 0
+  }
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`
+    return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+  }
+
+  const reloadCurrentData = async () => {
+    await Promise.all([fetchAiConfig(), fetchBossConfig(), fetchResume(), fetchPriorityCompanies()])
+    setHasUnsavedChanges(false)
+    setResumeDirty(false)
+  }
 
   const fetchAiConfig = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/ai/config', {
+      const response = await fetch(`${API_BASE}/api/ai/config`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
       })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
       const result = await response.json()
       if (result.success && result.data) {
         setAiConfig({
@@ -56,14 +108,12 @@ export default function AiConfigPage() {
       }
     } catch (error) {
       console.error('加载AI配置失败:', error)
-      // 如果加载失败，使用默认值，不影响用户使用
-      console.log('使用默认配置')
     }
   }
 
   const fetchResume = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/ai/resume')
+      const response = await fetch(`${API_BASE}/api/ai/resume`)
       const result = await response.json()
       if (result.success && result.data) {
         setResumeText(result.data.resumeText || '')
@@ -80,7 +130,7 @@ export default function AiConfigPage() {
 
   const fetchPriorityCompanies = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/ai/companies/priority')
+      const response = await fetch(`${API_BASE}/api/ai/companies/priority`)
       const result = await response.json()
       if (result.success && Array.isArray(result.data)) {
         setPriorityCompanies(result.data.map((it: PriorityCompany) => it.companyName).filter(Boolean).join('\n'))
@@ -90,205 +140,255 @@ export default function AiConfigPage() {
     }
   }
 
-  // 加载 boss_config 的 enable_ai 字段
-  const fetchEnableAi = async () => {
+  const fetchBossConfig = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/boss/config', {
+      const response = await fetch(`${API_BASE}/api/boss/config`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
       })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
       const result = await response.json()
-      const raw = result?.config?.enableAi
-      const val = String(raw ?? '').trim().toLowerCase()
-      setEnableAi(val === '1' || val === 'true' || val === 'on' ? 1 : Number(raw) === 1 ? 1 : 0)
+      setEnableAi(parseEnableAi(result?.config?.enableAi))
+      setSayHi(result?.config?.sayHi || '')
     } catch (e) {
-      console.error('加载enable_ai失败:', e)
+      console.error('加载Boss AI配置失败:', e)
     }
   }
 
-  // 切换 AI 开关并保存到 boss_config
+  const parseJsonResponse = async (response: Response, fallback: string) => {
+    try {
+      const result = await response.json()
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.message || fallback)
+      }
+      return result
+    } catch (error) {
+      if (error instanceof Error) throw error
+      throw new Error(fallback)
+    }
+  }
+
   const toggleEnableAi = async () => {
     try {
       const next = enableAi ? 0 : 1
       setEnableAi(next)
-      const response = await fetch('http://localhost:8888/api/boss/config', {
+      const response = await fetch(`${API_BASE}/api/boss/config`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enableAi: next }),
       })
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-      // 可选：校验返回体
-      // const updated = await response.json()
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+      setStatusMessage('AI开关已保存')
     } catch (e) {
       console.error('更新enable_ai失败:', e)
-      // 回滚
       setEnableAi((prev) => (prev ? 0 : 1))
       alert('切换失败，请检查后端服务连接')
+    }
+  }
+
+  const saveAiConfig = async (configToSave: AiConfig) => {
+    const response = await fetch(`${API_BASE}/api/ai/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(configToSave),
+    })
+    const result = await parseJsonResponse(response, 'AI配置保存失败')
+    return result.data
+  }
+
+  const saveResume = async (fileToSave: File | null, textToSave: string): Promise<SavedResume> => {
+    if (fileToSave && fileToSave.size > MAX_RESUME_FILE_SIZE) {
+      throw new Error(`文件过大：${formatFileSize(fileToSave.size)}，请压缩到30MB以内后再上传`)
+    }
+
+    const resumeForm = new FormData()
+    if (fileToSave) {
+      resumeForm.append('file', fileToSave)
+    } else {
+      resumeForm.append('resumeText', textToSave)
+    }
+
+    const response = await fetch(`${API_BASE}/api/ai/resume`, {
+      method: 'POST',
+      body: resumeForm,
+    })
+    const result = await parseJsonResponse(response, '简历保存失败')
+    if (result.data) {
+      setResumeText(result.data.resumeText || textToSave)
+      setResumeMeta({
+        sourceFilename: result.data.sourceFilename,
+        parseStatus: result.data.parseStatus,
+        parseMessage: result.data.parseMessage,
+      })
+    }
+    setResumeFile(null)
+    setResumeDirty(false)
+    return result.data || { resumeText: textToSave }
+  }
+
+  const savePriorityCompanies = async (value: string) => {
+    const companies = value
+      .split(/\r?\n|,/)
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map((companyName) => ({ companyName, enabled: 1 }))
+
+    const response = await fetch(`${API_BASE}/api/ai/companies/priority`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(companies),
+    })
+    const result = await parseJsonResponse(response, '优先公司保存失败')
+    return result.data
+  }
+
+  const saveBossGreeting = async (nextSayHi: string) => {
+    const response = await fetch(`${API_BASE}/api/boss/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sayHi: nextSayHi, enableAi }),
+    })
+    if (!response.ok) throw new Error('Boss默认打招呼语保存失败')
+    return response.json()
+  }
+
+  const saveEverything = async ({
+    nextAiConfig = aiConfig,
+    nextResumeText = resumeText,
+    nextResumeFile = resumeFile,
+    nextSayHi = sayHi,
+    skipResume = false,
+    showAlert = true,
+  }: SaveOptions = {}) => {
+    await saveAiConfig(nextAiConfig)
+    if (!skipResume && (nextResumeFile || resumeDirty)) {
+      await saveResume(nextResumeFile, nextResumeText)
+    }
+    await saveBossGreeting(nextSayHi)
+    await savePriorityCompanies(priorityCompanies)
+    await reloadCurrentData()
+    setStatusMessage('已保存')
+    if (showAlert) {
+      alert('打招呼话术、简历资料、优先公司已保存！')
     }
   }
 
   const handleSave = async () => {
     setLoading(true)
     try {
-      // 保存AI配置
-      const response = await fetch('http://localhost:8888/api/ai/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(aiConfig),
-      })
-
-      const result = await response.json()
-
-      if (!result.success) {
-        alert('保存失败: ' + result.message)
-        return
-      }
-
-      const resumeForm = new FormData()
-      if (resumeFile) {
-        resumeForm.append('file', resumeFile)
-      } else {
-        resumeForm.append('resumeText', resumeText)
-      }
-      const resumeResponse = await fetch('http://localhost:8888/api/ai/resume', {
-        method: 'POST',
-        body: resumeForm,
-      })
-      const resumeResult = await resumeResponse.json()
-      if (!resumeResult.success) {
-        alert('简历保存失败: ' + resumeResult.message)
-        return
-      }
-      if (resumeResult.data) {
-        setResumeText(resumeResult.data.resumeText || resumeText)
-        setResumeMeta({
-          sourceFilename: resumeResult.data.sourceFilename,
-          parseStatus: resumeResult.data.parseStatus,
-          parseMessage: resumeResult.data.parseMessage,
-        })
-      }
-      setResumeFile(null)
-
-      const companies = priorityCompanies
-        .split(/\r?\n|,/)
-        .map((name) => name.trim())
-        .filter(Boolean)
-        .map((companyName) => ({ companyName, enabled: 1 }))
-      const companyResponse = await fetch('http://localhost:8888/api/ai/companies/priority', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(companies),
-      })
-      const companyResult = await companyResponse.json()
-      if (!companyResult.success) {
-        alert('优先公司保存失败: ' + companyResult.message)
-        return
-      }
-
-      alert('AI配置、简历和优先公司已保存！')
+      await saveEverything()
     } catch (error) {
       console.error('保存AI配置失败:', error)
-      alert('保存失败，请检查服务器连接！')
+      alert(error instanceof Error ? error.message : '保存失败，请检查服务器连接！')
     } finally {
       setLoading(false)
     }
   }
+
+  const handleSubmitResumeAndGenerate = async () => {
+    setGenerating(true)
+    try {
+      const savedResume = resumeFile || resumeDirty
+        ? await saveResume(resumeFile, resumeText)
+        : { resumeText }
+      const latestResumeText = savedResume?.resumeText || resumeText
+      if (!latestResumeText.trim()) {
+        throw new Error('简历内容为空，请先上传或粘贴简历内容')
+      }
+
+      const response = await fetch(`${API_BASE}/api/ai/resume/generate-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resumeText: latestResumeText }),
+      })
+      const result = await parseJsonResponse(response, 'AI配置生成失败')
+
+      const nextSayHi = result.data?.sayHi || ''
+      const nextAiConfig = {
+        introduce: result.data?.introduce || '',
+        prompt: result.data?.prompt || aiConfig.prompt,
+      }
+
+      setAiConfig(nextAiConfig)
+      setSayHi(nextSayHi)
+
+      await saveEverything({
+        nextAiConfig,
+        nextResumeText: latestResumeText,
+        nextResumeFile: null,
+        nextSayHi,
+        skipResume: true,
+        showAlert: false,
+      })
+      setStatusMessage('已提交简历并生成AI配置')
+      alert('已提交简历，并生成打招呼话术和AI配置！')
+    } catch (error) {
+      console.error('提交简历并生成AI配置失败:', error)
+      alert(error instanceof Error ? error.message : '提交简历并生成AI配置失败')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleResumeFileChange = (file: File | null) => {
+    if (file && file.size > MAX_RESUME_FILE_SIZE) {
+      setResumeFile(null)
+      alert(`文件过大：${formatFileSize(file.size)}，请压缩到30MB以内后再上传`)
+      return
+    }
+    setResumeFile(file)
+    setResumeDirty(true)
+    markDirty()
+  }
+
+  const isBusy = loading || generating
 
   return (
     <div className="space-y-6">
       <PageHeader
         icon={<BiBrain className="text-2xl" />}
         title="AI配置"
-        subtitle="配置AI相关的技能介绍和提示词"
+        subtitle="先提交简历，再生成自动投递需要的打招呼话术和分析逻辑"
         iconClass="text-white"
         accentBgClass="bg-purple-500"
         actions={
-          <Button
-            onClick={handleSave}
-            size="sm"
-            className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
-            type="button"
-            disabled={loading}
-          >
-            <BiSave className="mr-1" /> 保存配置
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {hasUnsavedChanges ? (
+              <span className="rounded-full border border-amber-300/60 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
+                有未保存更改
+              </span>
+            ) : statusMessage ? (
+              <span className="rounded-full border border-emerald-300/60 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                {statusMessage}
+              </span>
+            ) : null}
+            <Button
+              onClick={handleSave}
+              size="sm"
+              className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 px-4 text-white shadow-lg transition-all duration-300 hover:scale-105 hover:from-blue-600 hover:to-indigo-600 hover:shadow-xl"
+              type="button"
+              disabled={isBusy}
+            >
+              <BiSave className="mr-1" /> {loading ? '保存中...' : '保存配置'}
+            </Button>
+          </div>
         }
       />
 
+      {hasUnsavedChanges ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          当前页面有未保存更改，刷新页面前请点击右上角保存配置，或点击“提交简历并生成AI配置”。
+        </div>
+      ) : null}
+
       <div className="space-y-6">
-        {/* AI配置 */}
-        <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-          <CardHeader className="flex items-start gap-4">
-            <div className="min-w-0 space-y-2">
-              <CardTitle className="flex items-center gap-2">
-                <BiBrain className="text-primary" />
-                AI配置
-              </CardTitle>
-              <CardDescription>配置AI相关的技能介绍和提示词，用于生成个性化求职内容</CardDescription>
-            </div>
-            <div>
-              <button
-                type="button"
-                aria-label="AI启用开关"
-                onClick={toggleEnableAi}
-                className={`relative inline-flex h-7 w-14 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400/40 border border-white/30 shadow-[inset_0_1px_0_rgba(255,255,255,.25)] ${enableAi ? 'bg-emerald-500/80 hover:bg-emerald-500' : 'bg-white/10 hover:bg-white/15'}`}
-              >
-                <span
-                  className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${enableAi ? 'translate-x-7' : 'translate-x-0'}`}
-                />
-              </button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="introduce">技能介绍</Label>
-                <Textarea
-                  id="introduce"
-                  value={aiConfig.introduce}
-                  onChange={(e) => setAiConfig({ ...aiConfig, introduce: e.target.value })}
-                  placeholder="请输入您的技能介绍，例如：我熟练使用Java、Python等语言进行开发..."
-                  className="min-h-[150px] resize-y"
-                />
-                <p className="text-xs text-muted-foreground">
-                  详细描述您的技能、经验和专业背景，AI将使用这些信息生成个性化的求职文本
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="prompt">AI提示词</Label>
-                <Textarea
-                  id="prompt"
-                  value={aiConfig.prompt}
-                  onChange={(e) => setAiConfig({ ...aiConfig, prompt: e.target.value })}
-                  placeholder="请输入AI提示词模板，例如：我目前在找工作，%s，我期望的岗位方向是【%s】..."
-                  className="min-h-[150px] resize-y"
-                />
-                <p className="text-xs text-muted-foreground">
-                  AI使用的提示词模板，支持使用 %s 作为占位符，用于动态插入内容
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
           <CardHeader>
-            <CardTitle>简历匹配资料</CardTitle>
-            <CardDescription>AI 会基于这份简历判断 Boss 和智联岗位是否值得自动投递</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <BiUpload className="text-primary" />
+              提交简历
+            </CardTitle>
+            <CardDescription>支持 PDF、TXT、PNG、JPG、JPEG、WEBP，单个文件不超过30MB</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -298,9 +398,14 @@ export default function AiConfigPage() {
                   id="resume-file"
                   type="file"
                   accept=".pdf,.txt,.png,.jpg,.jpeg,.webp"
-                  onChange={(e) => setResumeFile(e.target.files?.[0] || null)}
+                  onChange={(e) => handleResumeFileChange(e.target.files?.[0] || null)}
                   className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:text-white"
                 />
+                <p className="text-xs text-muted-foreground">
+                  {resumeFile
+                    ? `待提交文件：${resumeFile.name}（${formatFileSize(resumeFile.size)}）`
+                    : '也可以直接在下面粘贴简历文本'}
+                </p>
                 {resumeMeta?.sourceFilename ? (
                   <p className="text-xs text-muted-foreground">
                     最近文件：{resumeMeta.sourceFilename}；状态：{resumeMeta.parseStatus || '-'}；{resumeMeta.parseMessage || ''}
@@ -313,11 +418,111 @@ export default function AiConfigPage() {
                 <Textarea
                   id="resume-text"
                   value={resumeText}
-                  onChange={(e) => setResumeText(e.target.value)}
-                  placeholder="粘贴你的完整简历文本，或上传 PDF/图片后在这里检查解析结果"
-                  className="min-h-[220px] resize-y"
+                  onChange={(e) => {
+                    setResumeText(e.target.value)
+                    setResumeDirty(true)
+                    markDirty()
+                  }}
+                  placeholder="上传 PDF/图片后会在这里显示解析结果；也可以直接粘贴完整简历文本"
+                  className="min-h-[240px] resize-y"
                 />
               </div>
+
+              <Button
+                onClick={handleSubmitResumeAndGenerate}
+                className="rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 text-white shadow-lg transition-all duration-300 hover:scale-105 hover:from-emerald-600 hover:to-teal-600 hover:shadow-xl"
+                type="button"
+                disabled={isBusy}
+              >
+                <BiBrain className="mr-1" /> {generating ? '提交并生成中...' : '提交简历并生成AI配置'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+          <CardHeader className="flex items-start gap-4">
+            <div className="min-w-0 space-y-2">
+              <CardTitle className="flex items-center gap-2">
+                <BiBrain className="text-primary" />
+                打招呼与AI分析配置
+              </CardTitle>
+              <CardDescription>用于自动投递时判断岗位是否匹配，并生成或兜底发送沟通话术</CardDescription>
+            </div>
+            <div>
+              <button
+                type="button"
+                aria-label="AI启用开关"
+                onClick={toggleEnableAi}
+                className={`relative inline-flex h-7 w-14 rounded-full border border-white/30 shadow-[inset_0_1px_0_rgba(255,255,255,.25)] transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${enableAi ? 'bg-emerald-500/80 hover:bg-emerald-500' : 'bg-white/10 hover:bg-white/15'}`}
+              >
+                <span
+                  className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${enableAi ? 'translate-x-7' : 'translate-x-0'}`}
+                />
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="say-hi">打招呼话术</Label>
+                <Textarea
+                  id="say-hi"
+                  value={sayHi}
+                  onChange={(e) => {
+                    setSayHi(e.target.value)
+                    markDirty()
+                  }}
+                  placeholder="您好，我对这个岗位很感兴趣，希望可以进一步沟通，谢谢！"
+                  className="min-h-[120px] resize-y"
+                />
+                <p className="text-xs text-muted-foreground">
+                  AI关闭、AI返回为空或生成失败时，Boss投递会使用这段话术
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="analysis-logic">投递岗位分析逻辑</Label>
+                <Textarea
+                  id="analysis-logic"
+                  value={ANALYSIS_LOGIC_TEXT}
+                  readOnly
+                  className="min-h-[190px] resize-y bg-muted/40"
+                />
+                <p className="text-xs text-muted-foreground">
+                  这段逻辑由后端投递决策服务执行，为避免自动投递误判，当前仅展示不直接编辑
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="prompt">打招呼生成提示词模板</Label>
+                <Textarea
+                  id="prompt"
+                  value={aiConfig.prompt}
+                  onChange={(e) => {
+                    setAiConfig({ ...aiConfig, prompt: e.target.value })
+                    markDirty()
+                  }}
+                  placeholder="用于生成Boss打招呼语，支持5个 %s 占位符"
+                  className="min-h-[120px] resize-y"
+                />
+                <p className="text-xs text-muted-foreground">
+                  该模板用于生成打招呼语；岗位是否投递由上面的分析逻辑决定
+                </p>
+              </div>
+
+              <details className="rounded-lg border border-border/60 p-3">
+                <summary className="cursor-pointer text-sm font-medium">查看AI提取的简历摘要</summary>
+                <Textarea
+                  value={aiConfig.introduce}
+                  onChange={(e) => {
+                    setAiConfig({ ...aiConfig, introduce: e.target.value })
+                    markDirty()
+                  }}
+                  placeholder="提交简历并生成AI配置后，这里会保存AI提取的个人技能和经历摘要"
+                  className="mt-3 min-h-[120px] resize-y"
+                />
+              </details>
             </div>
           </CardContent>
         </Card>
@@ -330,46 +535,35 @@ export default function AiConfigPage() {
           <CardContent>
             <Textarea
               value={priorityCompanies}
-              onChange={(e) => setPriorityCompanies(e.target.value)}
+              onChange={(e) => {
+                setPriorityCompanies(e.target.value)
+                markDirty()
+              }}
               placeholder={'OpenAI\n微软\n字节跳动'}
               className="min-h-[150px] resize-y"
             />
           </CardContent>
         </Card>
 
-        {/* ��用说明 */}
-        <Card className="border-primary/20 bg-primary/5 animate-in fade-in slide-in-from-bottom-6 duration-700">
+        <Card className="animate-in fade-in slide-in-from-bottom-6 border-primary/20 bg-primary/5 duration-700">
           <CardContent className="pt-6">
             <div className="flex gap-3">
-              <BiInfoCircle className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
+              <BiInfoCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary" />
               <div>
-                <p className="text-sm text-foreground mb-2">
-                  <strong className="font-semibold">使用说明：</strong>
+                <p className="mb-2 text-sm text-foreground">
+                  <strong className="font-semibold">平台配置和简历匹配是怎么工作的：</strong>
                 </p>
-                <ul className="text-sm text-muted-foreground space-y-2">
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>技能介绍：</strong>用于AI了解您的专业技能、工作经验和技术背景，是生成个性化内容的基础</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>AI提示词：</strong>定义AI生成内容的模板和风格，支持使用 <code className="bg-muted px-1 py-0.5 rounded text-xs">%s</code> 作为占位符</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>效果：</strong>配置保存后，AI将在自动投递时使用这些信息生成匹配度高的求职沟通内容</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>提示：</strong>建议定期更新技能介绍以反映最新的技能和经验，提高匹配成功率</span>
-                  </li>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>平台配置页决定搜索条件，例如关键词、城市、薪资、学历、经验、行业和公司规模。</li>
+                  <li>自动任务按这些条件在招聘平台搜索岗位，并提取岗位详情和公司信息。</li>
+                  <li>提交简历后，AI会用“简历内容 + 岗位信息 + 优先公司阈值”进行匹配打分。</li>
+                  <li>普通公司达到75分才投递；优先公司达到65分即可投递。</li>
+                  <li>决定投递后，系统优先发送AI生成的 greeting；没有可用 greeting 时发送默认打招呼话术。</li>
                 </ul>
               </div>
             </div>
           </CardContent>
         </Card>
-
-        {/* 操作按钮（已迁移到右上角 PageHeader.actions，保持与环境配置一致） */}
       </div>
     </div>
   )

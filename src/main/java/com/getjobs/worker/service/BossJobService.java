@@ -28,6 +28,7 @@ public class BossJobService implements JobPlatformService {
     private final PlaywrightManager playwrightManager;
     private final ConfigService configService;
     private final ObjectProvider<Boss> bossProvider;
+    private final JobRunCoordinator jobRunCoordinator;
 
     // 任务运行状态
     private volatile boolean isRunning = false;
@@ -38,6 +39,11 @@ public class BossJobService implements JobPlatformService {
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
         if (isRunning) {
             progressCallback.accept(JobProgressMessage.warning(PLATFORM, "任务已在运行中"));
+            return;
+        }
+        if (!jobRunCoordinator.tryStart(PLATFORM)) {
+            String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
+            progressCallback.accept(JobProgressMessage.warning(PLATFORM, "已有" + active + "任务运行中，请等待当前任务完成"));
             return;
         }
 
@@ -66,7 +72,7 @@ public class BossJobService implements JobPlatformService {
             BossConfig config = configService.getBossConfig();
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
-            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始投递任务..."));
+            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始扫描岗位，命中岗位会进入待确认列表..."));
 
             // 创建Boss实例并执行投递
             Boss.ProgressCallback bossCallback = (message, current, total) -> {
@@ -84,16 +90,27 @@ public class BossJobService implements JobPlatformService {
             boss.setShouldStopCallback(this::shouldStop);
             boss.prepare();
 
+            PlaywrightManager.BossSearchSessionStatus sessionStatus =
+                    playwrightManager.verifyBossSearchSession(boss.buildProbeSearchUrl());
+            if (!sessionStatus.searchReady()) {
+                String reason = sessionStatus.failureReason() == null || sessionStatus.failureReason().isBlank()
+                        ? "Boss搜索页未就绪"
+                        : sessionStatus.failureReason();
+                progressCallback.accept(JobProgressMessage.error(PLATFORM, reason));
+                return;
+            }
+
             int deliveredCount = boss.execute();
 
             progressCallback.accept(JobProgressMessage.success(PLATFORM,
-                String.format("投递任务完成，共发起%d个聊天", deliveredCount)));
+                String.format("Boss扫描完成，共生成%d个待确认岗位", deliveredCount)));
         } catch (Exception e) {
             log.error("Boss投递任务执行失败", e);
-            progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));
+            progressCallback.accept(JobProgressMessage.error(PLATFORM, "扫描失败: " + e.getMessage()));
         } finally {
             isRunning = false;
             shouldStop = false;
+            jobRunCoordinator.finish(PLATFORM);
             // 恢复后台登录监控
             try {
                 playwrightManager.resumeBossMonitoring();

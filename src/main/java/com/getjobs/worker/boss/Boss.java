@@ -110,6 +110,12 @@ public class Boss {
         return new ArrayList<>(resultList);
     }
 
+    public String buildProbeSearchUrl() {
+        String cityCode = firstOrDefault(config != null ? config.getCityCode() : null, "101280600");
+        String keyword = firstOrDefault(config != null ? config.getKeywords() : null, "AI产品运营");
+        return getSearchUrl(cityCode) + "&query=" + URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+    }
+
     /**
      * 更新黑名单（从聊天记录中）
      */
@@ -221,8 +227,19 @@ public class Boss {
             page.navigate(url, new Page.NavigateOptions()
                     .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED)
                     .setTimeout(15_000));
+            ensureSearchPageAvailable(keyword);
             // 等待列表容器出现，确保页面完成首屏渲染
-            page.waitForSelector("//ul[contains(@class, 'rec-job-list')]", new Page.WaitForSelectorOptions().setTimeout(60_000));
+            try {
+                page.waitForSelector(JOB_LIST_SELECTOR, new Page.WaitForSelectorOptions().setTimeout(60_000));
+            } catch (Exception waitEx) {
+                ensureSearchPageAvailable(keyword);
+                String message = buildBossSearchFailureMessage();
+                log.warn("{}，关键词：{}，当前URL：{}", message, keyword, safeCurrentUrl());
+                if (progressCallback != null) {
+                    progressCallback.accept(message, null, null);
+                }
+                throw waitEx;
+            }
 
             // 1. 基于 footer 出现滚动到底，确保加载全部岗位
             int lastCount = -1;
@@ -241,7 +258,7 @@ public class Boss {
                 page.evaluate("() => window.scrollBy(0, Math.floor(window.innerHeight * 1.5))");
 
                 // 获取卡片数量变化，判断是否需要强制触底
-                Locator cardsProbe = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
+                Locator cardsProbe = page.locator(JOB_LIST_SELECTOR);
                 int currentCount = cardsProbe.count();
                 if (currentCount == lastCount) {
                     stableTries++;
@@ -256,7 +273,7 @@ public class Boss {
                 }
             }
             // 统计最终岗位数量
-            Locator cardsFinal = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
+            Locator cardsFinal = page.locator(JOB_LIST_SELECTOR);
             int loadedCount = cardsFinal.count();
             log.info("【{}】岗位已全部加载，总数:{}", keyword, loadedCount);
             progressCallback.accept("岗位加载完成：" + keyword, 0, loadedCount);
@@ -266,7 +283,7 @@ public class Boss {
             PlaywrightUtil.sleep(1);
 
             // 3. 逐个遍历所有岗位
-            Locator cards = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
+            Locator cards = page.locator(JOB_LIST_SELECTOR);
             int count = cards.count();
             for (int i = 0; i < count; i++) {
                 // 检查是否需要停止
@@ -276,7 +293,7 @@ public class Boss {
                 }
 
                 // 重新获取卡片，避免元素过期
-                cards = page.locator("//ul[contains(@class, 'rec-job-list')]//li[contains(@class, 'job-card-box')]");
+                cards = page.locator(JOB_LIST_SELECTOR);
                 // 在点击卡片时同步等待岗位详情接口返回，随后解析并入库
                 Response detailResp = null;
                 try {
@@ -389,7 +406,7 @@ public class Boss {
                 job.setJobInfo(jobDesc != null ? jobDesc : "");
 
                 // 输出
-                progressCallback.accept("正在投递：" + jobName, i + 1, count);
+                progressCallback.accept("正在分析：" + jobName, i + 1, count);
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setPlatform("boss");
                 analysisRequest.setKeyword(keyword);
@@ -409,8 +426,22 @@ public class Boss {
                     progressCallback.accept("AI跳过：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
                     continue;
                 }
-                resumeSubmission(keyword, job, analysis);
-                postCount++;
+                if (!Boolean.TRUE.equals(config.getDebugger())) {
+                    String encryptId = extractEncryptIdFromCurrentDetailLink();
+                    String encryptUserId = encryptId != null ? encryptIdToUserId.get(encryptId) : null;
+                    if (encryptId != null) {
+                        try {
+        bossService.updateDeliveryStatus(encryptId, encryptUserId, "待确认");
+                            log.info("AI通过，进入待确认 | 公司：{} | 岗位：{} | 分数：{}", job.getCompanyName(), job.getJobName(), analysis.getScore());
+                        } catch (Exception e) {
+                            log.warn("更新待确认状态失败：{}", e.getMessage());
+                        }
+                    }
+                    progressCallback.accept("待确认：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
+                    postCount++;
+                } else {
+                    progressCallback.accept("调试模式命中：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
+                }
 
                 // 为避免点击下面的卡片触发页面刷新：在点击5个卡片之后，每次点击后适度下滑
                 try {
@@ -420,7 +451,44 @@ public class Boss {
                     }
                 } catch (Throwable ignore) {}
             }
-            log.info("【{}】岗位已投递完毕！已投递岗位数量:{}", keyword, postCount);
+            log.info("【{}】岗位扫描完毕！待确认岗位数量:{}", keyword, postCount);
+        }
+    }
+
+    private void ensureSearchPageAvailable(String keyword) {
+        String currentUrl = safeCurrentUrl();
+        String lowerUrl = currentUrl == null ? "" : currentUrl.toLowerCase();
+        boolean redirectedToLogin = lowerUrl.contains("/web/user")
+                || lowerUrl.contains("passport")
+                || lowerUrl.contains("login");
+        if (redirectedToLogin) {
+            String message = "Boss登录态未生效，请在Boss页面重新登录并保存配置后再扫描";
+            log.warn("{}，关键词：{}，当前URL：{}", message, keyword, currentUrl);
+            if (progressCallback != null) {
+                progressCallback.accept(message, null, null);
+            }
+            throw new IllegalStateException(message);
+        }
+    }
+
+    private String buildBossSearchFailureMessage() {
+        try {
+            String bodyText = page.locator("body").innerText(new Locator.InnerTextOptions().setTimeout(3000));
+            if (bodyText.contains("安全验证") || bodyText.contains("异常访问")) {
+                return "Boss搜索页触发安全校验，请在后端自动化浏览器页面完成验证后再扫描";
+            }
+            if (bodyText.contains("登录") || bodyText.contains("扫码")) {
+                return "Boss登录态未生效，请在Boss页面重新登录并保存配置后再扫描";
+            }
+        } catch (Exception ignored) {}
+        return "Boss岗位列表未加载，请确认登录态有效或页面结构未变化";
+    }
+
+    private String safeCurrentUrl() {
+        try {
+            return page.url();
+        } catch (Exception ignored) {
+            return "";
         }
     }
 
@@ -591,6 +659,18 @@ public class Boss {
         } catch (Exception ignore) {
         }
         return null;
+    }
+
+    private String firstOrDefault(List<String> values, String fallback) {
+        if (values == null || values.isEmpty()) {
+            return fallback;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return fallback;
     }
 
     private String getSearchUrl(String cityCode) {

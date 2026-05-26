@@ -14,6 +14,7 @@ import com.getjobs.application.mapper.BossConfigMapper;
 import com.getjobs.application.mapper.BossIndustryMapper;
 import com.getjobs.application.mapper.BossOptionMapper;
 import com.getjobs.worker.boss.BossConfig;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -48,6 +49,22 @@ public class BossService {
     private final BlacklistMapper blacklistMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final javax.sql.DataSource dataSource;
+
+    @PostConstruct
+    public void ensureBossConfigSchema() {
+        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
+            addColumn(stmt, "boss_config", "auto_deliver", "INTEGER DEFAULT 0");
+        } catch (Exception e) {
+            log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
+        }
+    }
+
+    private void addColumn(Statement stmt, String table, String column, String type) {
+        try {
+            stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
+        } catch (Exception ignored) {
+        }
+    }
 
     // ==================== Option相关方法 ====================
 
@@ -221,6 +238,7 @@ public class BossService {
         if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
+        if (partial.getAutoDeliver() != null) existing.setAutoDeliver(partial.getAutoDeliver());
         if (partial.getSendImgResume() != null) existing.setSendImgResume(partial.getSendImgResume());
         if (partial.getWaitTime() != null) existing.setWaitTime(partial.getWaitTime());
 
@@ -272,6 +290,7 @@ public class BossService {
         config.setDebugger(entity.getDebugger() != null && entity.getDebugger() == 1);
         config.setEnableAI(entity.getEnableAi() != null && entity.getEnableAi() == 1);
         config.setFilterDeadHR(entity.getFilterDeadHr() != null && entity.getFilterDeadHr() == 1);
+        config.setAutoDeliver(entity.getAutoDeliver() != null && entity.getAutoDeliver() == 1);
         config.setSendImgResume(entity.getSendImgResume() != null && entity.getSendImgResume() == 1);
         config.setWaitTime(entity.getWaitTime() != null ? String.valueOf(entity.getWaitTime()) : null);
 
@@ -618,6 +637,110 @@ public class BossService {
         bossJobDataMapper.insert(entity);
     }
 
+    public BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity) {
+        if (entity == null) return null;
+        String encryptId = entity.getEncryptId();
+        String encryptUserId = entity.getEncryptUserId();
+        BossJobDataEntity existing = null;
+        if (encryptId != null && !encryptId.isBlank()) {
+            existing = getBossJobByKey(encryptId, encryptUserId);
+            if (existing == null) {
+                QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+                wrapper.eq("encrypt_id", encryptId).last("LIMIT 1");
+                existing = bossJobDataMapper.selectOne(wrapper);
+            }
+        }
+        if (existing == null && entity.getCompanyName() != null && entity.getJobName() != null) {
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("company_name", entity.getCompanyName())
+                    .eq("job_name", entity.getJobName())
+                    .last("LIMIT 1");
+            existing = bossJobDataMapper.selectOne(wrapper);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        if (existing == null) {
+            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? "未投递" : entity.getDeliveryStatus());
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
+            bossJobDataMapper.insert(entity);
+            return entity;
+        }
+
+        BossJobDataEntity merged = mergeChromeBossJob(existing, entity, now);
+        bossJobDataMapper.updateById(merged);
+        return bossJobDataMapper.selectById(existing.getId());
+    }
+
+    public BossJobDataEntity markBossJobCollectionInsufficient(Long id, List<String> missingFields) {
+        if (id == null) return null;
+        String detail = missingFields == null || missingFields.isEmpty()
+                ? "岗位详情缺失，未调用AI分析"
+                : "岗位详情缺失，未调用AI分析；缺少：" + String.join("、", missingFields);
+        BossJobDataEntity update = new BossJobDataEntity();
+        update.setId(id);
+        update.setDeliveryStatus("采集信息不足");
+        update.setAiScore(0);
+        update.setAiDecision("采集信息不足");
+        update.setAiReason(detail);
+        update.setUpdatedAt(LocalDateTime.now());
+        bossJobDataMapper.updateById(update);
+        return bossJobDataMapper.selectById(id);
+    }
+
+    private BossJobDataEntity mergeChromeBossJob(BossJobDataEntity existing, BossJobDataEntity incoming, LocalDateTime updatedAt) {
+        BossJobDataEntity merged = new BossJobDataEntity();
+        merged.setId(existing.getId());
+        merged.setCreatedAt(existing.getCreatedAt());
+        merged.setUpdatedAt(updatedAt);
+        merged.setEncryptId(firstNonBlank(incoming.getEncryptId(), existing.getEncryptId()));
+        merged.setEncryptUserId(firstNonBlank(incoming.getEncryptUserId(), existing.getEncryptUserId()));
+        merged.setCompanyName(firstNonBlank(incoming.getCompanyName(), existing.getCompanyName()));
+        merged.setJobName(firstNonBlank(incoming.getJobName(), existing.getJobName()));
+        merged.setSalary(firstNonBlank(incoming.getSalary(), existing.getSalary()));
+        merged.setLocation(firstNonBlank(incoming.getLocation(), existing.getLocation()));
+        merged.setExperience(firstNonBlank(incoming.getExperience(), existing.getExperience()));
+        merged.setDegree(firstNonBlank(incoming.getDegree(), existing.getDegree()));
+        merged.setHrName(firstNonBlank(incoming.getHrName(), existing.getHrName()));
+        merged.setHrPosition(firstNonBlank(incoming.getHrPosition(), existing.getHrPosition()));
+        merged.setHrActiveStatus(firstNonBlank(incoming.getHrActiveStatus(), existing.getHrActiveStatus()));
+        merged.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), incoming.getDeliveryStatus()));
+        merged.setJobDescription(bestLongText(incoming.getJobDescription(), existing.getJobDescription()));
+        merged.setJobUrl(firstNonBlank(incoming.getJobUrl(), existing.getJobUrl()));
+        merged.setRecruitmentStatus(firstNonBlank(incoming.getRecruitmentStatus(), existing.getRecruitmentStatus()));
+        merged.setCompanyAddress(firstNonBlank(incoming.getCompanyAddress(), existing.getCompanyAddress()));
+        merged.setIndustry(firstNonBlank(incoming.getIndustry(), existing.getIndustry()));
+        merged.setIntroduce(bestLongText(incoming.getIntroduce(), existing.getIntroduce()));
+        merged.setFinancingStage(firstNonBlank(incoming.getFinancingStage(), existing.getFinancingStage()));
+        merged.setCompanyScale(firstNonBlank(incoming.getCompanyScale(), existing.getCompanyScale()));
+        merged.setAiScore(existing.getAiScore());
+        merged.setAiDecision(existing.getAiDecision());
+        merged.setAiReason(existing.getAiReason());
+        merged.setPriorityCompany(existing.getPriorityCompany());
+        return merged;
+    }
+
+    private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
+        if (existingStatus != null && List.of("已投递", "待确认", "已跳过").contains(existingStatus)) {
+            return existingStatus;
+        }
+        return firstNonBlank(incomingStatus, existingStatus, "未投递");
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
+    }
+
+    private String bestLongText(String incoming, String existing) {
+        if (incoming == null || incoming.isBlank()) return existing;
+        if (existing == null || existing.isBlank()) return incoming;
+        return incoming.trim().length() >= existing.trim().length() ? incoming : existing;
+    }
+
     /**
      * 更新投递状态（WHERE encrypt_id = ? AND encrypt_user_id = ?）
      */
@@ -633,6 +756,34 @@ public class BossService {
             uw.eq("encrypt_user_id", encryptUserId);
         }
         bossJobDataMapper.update(update, uw);
+    }
+
+    public BossJobDataEntity getBossJobById(Long id) {
+        if (id == null) return null;
+        return bossJobDataMapper.selectById(id);
+    }
+
+    public BossJobDataEntity getBossJobByKey(String encryptId, String encryptUserId) {
+        if (encryptId == null || encryptId.isBlank()) return null;
+        QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("encrypt_id", encryptId);
+        if (encryptUserId != null && !encryptUserId.isBlank()) {
+            wrapper.eq("encrypt_user_id", encryptUserId);
+        }
+        wrapper.last("LIMIT 1");
+        return bossJobDataMapper.selectOne(wrapper);
+    }
+
+    public BossJobDataEntity updateDeliveryStatusById(Long id, String status) {
+        if (id == null || status == null || status.isBlank()) {
+            throw new IllegalArgumentException("岗位ID和状态不能为空");
+        }
+        BossJobDataEntity update = new BossJobDataEntity();
+        update.setId(id);
+        update.setDeliveryStatus(status);
+        update.setUpdatedAt(LocalDateTime.now());
+        bossJobDataMapper.updateById(update);
+        return bossJobDataMapper.selectById(id);
     }
 
     // ==================== 投递分析（Dashboard）相关方法 ====================
@@ -711,8 +862,10 @@ public class BossService {
         public long total;
         public long delivered;
         public long pending;
+        public long waitingConfirm;
         public long filtered;
         public long failed;
+        public long insufficient;
         public Double avgMonthlyK; // 平均中位数K
     }
 
@@ -745,10 +898,28 @@ public class BossService {
         public List<NameValue> hrActivity;
     }
 
+    /** Boss 分析页总览 */
+    public static class Overview {
+        public Double aiAvgScore;
+        public long aiPassCount;
+        public long aiRejectCount;
+        public long aiFailedCount;
+        public long priorityCompanyCount;
+        public long missingLinkCount;
+        public long missingSalaryCount;
+        public String latestCreatedAt;
+        public String topCity;
+        public String topIndustry;
+        public String topCompany;
+        public String topExperience;
+        public String topDegree;
+    }
+
     /** 统计响应 */
     public static class StatsResponse {
         public Kpi kpi;
         public Charts charts;
+        public Overview overview;
     }
 
     /** 列表分页响应 */
@@ -781,8 +952,10 @@ public class BossService {
             resp.kpi.total = scalarCount(conn, "SELECT COUNT(*) FROM boss_data");
             resp.kpi.delivered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='已投递'");
             resp.kpi.pending = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='未投递'");
+            resp.kpi.waitingConfirm = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='待确认'");
             resp.kpi.filtered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='已过滤'");
             resp.kpi.failed = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='投递失败'");
+            resp.kpi.insufficient = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='采集信息不足'");
 
             // 平均中位数K（忽略面议）
             double sumMedian = 0.0; long countMedian = 0;
@@ -866,11 +1039,13 @@ public class BossService {
             charts.salaryBuckets.add(new BucketValue("20-" + topEdge + "K", b20_top));
             charts.salaryBuckets.add(new BucketValue(">=" + topEdge + "K", b_ge_top));
 
+            resp.overview = buildOverviewFromDatabase(conn);
             resp.charts = charts;
             return resp;
         } catch (Exception e) {
             log.error("获取Boss统计失败: {}", e.getMessage(), e);
             // 失败时返回空集合，避免前端崩溃
+            resp.overview = new Overview();
             resp.charts = charts;
             return resp;
         }
@@ -951,8 +1126,10 @@ public class BossService {
             resp.kpi.total = filtered.size();
             resp.kpi.delivered = filtered.stream().filter(e -> "已投递".equals(e.getDeliveryStatus())).count();
             resp.kpi.pending = filtered.stream().filter(e -> "未投递".equals(e.getDeliveryStatus())).count();
+            resp.kpi.waitingConfirm = filtered.stream().filter(e -> "待确认".equals(e.getDeliveryStatus())).count();
             resp.kpi.filtered = filtered.stream().filter(e -> "已过滤".equals(e.getDeliveryStatus())).count();
             resp.kpi.failed = filtered.stream().filter(e -> "投递失败".equals(e.getDeliveryStatus())).count();
+            resp.kpi.insufficient = filtered.stream().filter(e -> "采集信息不足".equals(e.getDeliveryStatus())).count();
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // Charts - 分组聚合（在内存中统计）
@@ -1032,10 +1209,12 @@ public class BossService {
             charts.salaryBuckets.add(new BucketValue("20-" + topEdge + "K", b20_top));
             charts.salaryBuckets.add(new BucketValue(">=" + topEdge + "K", b_ge_top));
 
+            resp.overview = buildOverviewFromJobs(filtered);
             resp.charts = charts;
             return resp;
         } catch (Exception e) {
             log.error("获取Boss筛选统计失败: {}", e.getMessage(), e);
+            resp.overview = new Overview();
             resp.charts = charts;
             return resp;
         }
@@ -1048,6 +1227,106 @@ public class BossService {
     }
 
     private String nullSafe(String s) { return s == null || s.isEmpty() ? "未知" : s; }
+
+    private Overview buildOverviewFromDatabase(Connection conn) throws Exception {
+        Overview overview = new Overview();
+        overview.aiPassCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='待确认' OR delivery_status='已投递'");
+        overview.aiRejectCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='AI不匹配' OR ai_decision='AI不匹配'");
+        overview.aiFailedCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='AI分析失败' OR ai_decision='AI分析失败'");
+        overview.priorityCompanyCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE priority_company=1");
+        overview.missingLinkCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE job_url IS NULL OR TRIM(job_url)=''");
+        overview.missingSalaryCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE salary IS NULL OR TRIM(salary)=''");
+        overview.latestCreatedAt = scalarString(conn, "SELECT MAX(created_at) FROM boss_data");
+        overview.topCity = scalarString(conn, "SELECT location FROM boss_data WHERE location IS NOT NULL AND TRIM(location)<>'' GROUP BY location ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topIndustry = scalarString(conn, "SELECT industry FROM boss_data WHERE industry IS NOT NULL AND TRIM(industry)<>'' GROUP BY industry ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topCompany = scalarString(conn, "SELECT company_name FROM boss_data WHERE company_name IS NOT NULL AND TRIM(company_name)<>'' GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topExperience = scalarString(conn, "SELECT experience FROM boss_data WHERE experience IS NOT NULL AND TRIM(experience)<>'' GROUP BY experience ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topDegree = scalarString(conn, "SELECT degree FROM boss_data WHERE degree IS NOT NULL AND TRIM(degree)<>'' GROUP BY degree ORDER BY COUNT(*) DESC LIMIT 1");
+
+        double scoreSum = 0.0;
+        long scoreCount = 0;
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT ai_score FROM boss_data WHERE ai_score IS NOT NULL")) {
+            while (rs.next()) {
+                scoreSum += rs.getDouble(1);
+                scoreCount++;
+            }
+        }
+        overview.aiAvgScore = scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 10.0) / 10.0 : null;
+        return overview;
+    }
+
+    private Overview buildOverviewFromJobs(List<BossJobDataEntity> jobs) {
+        Overview overview = new Overview();
+        if (jobs == null || jobs.isEmpty()) return overview;
+
+        double scoreSum = 0.0;
+        long scoreCount = 0;
+        LocalDateTime latest = null;
+        Map<String, Long> city = new HashMap<>();
+        Map<String, Long> industry = new HashMap<>();
+        Map<String, Long> company = new HashMap<>();
+        Map<String, Long> experience = new HashMap<>();
+        Map<String, Long> degree = new HashMap<>();
+
+        for (BossJobDataEntity job : jobs) {
+            String status = nullSafeRaw(job.getDeliveryStatus());
+            String decision = nullSafeRaw(job.getAiDecision());
+            if ("待确认".equals(status) || "已投递".equals(status)) overview.aiPassCount++;
+            if ("AI不匹配".equals(status) || "AI不匹配".equals(decision)) overview.aiRejectCount++;
+            if ("AI分析失败".equals(status) || "AI分析失败".equals(decision)) overview.aiFailedCount++;
+            if (job.getPriorityCompany() != null && job.getPriorityCompany() == 1) overview.priorityCompanyCount++;
+            if (isBlank(job.getJobUrl())) overview.missingLinkCount++;
+            if (isBlank(job.getSalary())) overview.missingSalaryCount++;
+            if (job.getAiScore() != null) {
+                scoreSum += job.getAiScore();
+                scoreCount++;
+            }
+            if (job.getCreatedAt() != null && (latest == null || job.getCreatedAt().isAfter(latest))) {
+                latest = job.getCreatedAt();
+            }
+            addBucket(city, job.getLocation());
+            addBucket(industry, job.getIndustry());
+            addBucket(company, job.getCompanyName());
+            addBucket(experience, job.getExperience());
+            addBucket(degree, job.getDegree());
+        }
+
+        overview.aiAvgScore = scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 10.0) / 10.0 : null;
+        overview.latestCreatedAt = latest == null ? null : latest.toString();
+        overview.topCity = topBucket(city);
+        overview.topIndustry = topBucket(industry);
+        overview.topCompany = topBucket(company);
+        overview.topExperience = topBucket(experience);
+        overview.topDegree = topBucket(degree);
+        return overview;
+    }
+
+    private String scalarString(Connection conn, String sql) throws Exception {
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            return rs.next() ? rs.getString(1) : null;
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String nullSafeRaw(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private void addBucket(Map<String, Long> bucket, String value) {
+        if (isBlank(value)) return;
+        String key = value.trim();
+        bucket.put(key, bucket.getOrDefault(key, 0L) + 1);
+    }
+
+    private String topBucket(Map<String, Long> bucket) {
+        return bucket.entrySet().stream()
+                .max((a, b) -> Long.compare(a.getValue(), b.getValue()))
+                .map(Map.Entry::getKey)
+                .orElse(null);
+    }
 
     /**
      * 列表查询（分页 + 筛选 + 关键词 + 薪资区间基于中位数K）

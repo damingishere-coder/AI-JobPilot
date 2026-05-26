@@ -121,6 +121,29 @@ public class AiConfigController {
         }
     }
 
+    @PostMapping("/resume/generate-config")
+    public ResponseEntity<Map<String, Object>> generateConfigFromResume(@RequestBody Map<String, String> requestBody) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String resumeText = requestBody.get("resumeText");
+            if (resumeText == null || resumeText.trim().isEmpty()) {
+                response.put("success", false);
+                response.put("message", "简历内容不能为空，请先上传或粘贴简历内容");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            response.put("success", true);
+            response.put("data", aiService.generateResumeAiConfig(resumeText));
+            response.put("message", "AI文案生成成功");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("根据简历生成AI文案失败", e);
+            response.put("success", false);
+            response.put("message", "根据简历生成AI文案失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
     @GetMapping("/companies/priority")
     public ResponseEntity<Map<String, Object>> getPriorityCompanies() {
         Map<String, Object> response = new HashMap<>();

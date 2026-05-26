@@ -28,6 +28,7 @@ public class ZhilianJobService implements JobPlatformService {
     private final PlaywrightManager playwrightManager;
     private final ObjectProvider<ZhiLian> zhilianProvider;
     private final ConfigService configService;
+    private final JobRunCoordinator jobRunCoordinator;
 
     // 任务运行状态
     private volatile boolean isRunning = false;
@@ -38,6 +39,11 @@ public class ZhilianJobService implements JobPlatformService {
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
         if (isRunning) {
             progressCallback.accept(JobProgressMessage.warning(PLATFORM, "任务已在运行中"));
+            return;
+        }
+        if (!jobRunCoordinator.tryStart(PLATFORM)) {
+            String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
+            progressCallback.accept(JobProgressMessage.warning(PLATFORM, "已有" + active + "任务运行中，请等待当前任务完成"));
             return;
         }
 
@@ -66,7 +72,7 @@ public class ZhilianJobService implements JobPlatformService {
             ZhilianConfig config = configService.getZhilianConfig();
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
-            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始投递任务..."));
+            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始扫描岗位，命中岗位会进入待确认列表..."));
 
             // 创建ZhiLian实例并执行投递
             ZhiLian.ProgressCallback zhilianCallback = (message, current, total) -> {
@@ -87,13 +93,14 @@ public class ZhilianJobService implements JobPlatformService {
             int deliveredCount = zhilian.execute();
 
             progressCallback.accept(JobProgressMessage.success(PLATFORM,
-                String.format("投递任务完成，共投递%d个职位", deliveredCount)));
+                String.format("智联招聘扫描完成，共生成%d个待确认岗位", deliveredCount)));
         } catch (Exception e) {
-            log.error("智联招聘投递任务执行失败", e);
-            progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));
+            log.error("智联招聘扫描任务执行失败", e);
+            progressCallback.accept(JobProgressMessage.error(PLATFORM, "扫描失败: " + e.getMessage()));
         } finally {
             isRunning = false;
             shouldStop = false;
+            jobRunCoordinator.finish(PLATFORM);
             // 恢复后台登录监控
             try {
                 playwrightManager.resumeZhilianMonitoring();

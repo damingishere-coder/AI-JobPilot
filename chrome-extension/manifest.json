@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Get Jobs Chrome Bridge",
+  "version": "1.0.0",
+  "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for Get Jobs.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "http://localhost:6866/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "http://[::1]:*/*",
+    "http://localhost:8888/*",
+    "https://www.zhipin.com/*",
+    "https://*.zhipin.com/*",
+    "https://www.zhaopin.com/*",
+    "https://*.zhaopin.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:*/*", "http://127.0.0.1:*/*", "http://[::1]:*/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.zhipin.com/*", "https://*.zhipin.com/*"],
+      "js": ["boss-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.zhaopin.com/*", "https://*.zhaopin.com/*"],
+      "js": ["zhilian-content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

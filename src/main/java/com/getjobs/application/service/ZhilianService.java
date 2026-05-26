@@ -15,7 +15,6 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 import jakarta.annotation.PostConstruct;
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -239,10 +238,58 @@ public class ZhilianService {
         zhilianJobDataMapper.insert(entity);
     }
 
+    public ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity) {
+        if (entity == null) return null;
+        ZhilianJobDataEntity existing = null;
+        if (entity.getJobId() != null && !entity.getJobId().isBlank()) {
+            QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("job_id", entity.getJobId()).last("LIMIT 1");
+            existing = zhilianJobDataMapper.selectOne(wrapper);
+        }
+        if (existing == null && entity.getJobTitle() != null && entity.getCompanyName() != null) {
+            QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("job_title", entity.getJobTitle())
+                    .eq("company_name", entity.getCompanyName())
+                    .last("LIMIT 1");
+            existing = zhilianJobDataMapper.selectOne(wrapper);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        if (existing == null) {
+            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? "未投递" : entity.getDeliveryStatus());
+            entity.setCreateTime(now);
+            entity.setUpdateTime(now);
+            zhilianJobDataMapper.insert(entity);
+            return entity;
+        }
+
+        entity.setId(existing.getId());
+        entity.setCreateTime(existing.getCreateTime());
+        entity.setUpdateTime(now);
+        if (entity.getDeliveryStatus() == null || entity.getDeliveryStatus().isBlank()) {
+            entity.setDeliveryStatus(existing.getDeliveryStatus());
+        }
+        zhilianJobDataMapper.updateById(entity);
+        return zhilianJobDataMapper.selectById(existing.getId());
+    }
+
+    public ZhilianJobDataEntity getZhilianJobById(Long id) {
+        if (id == null) return null;
+        return zhilianJobDataMapper.selectById(id);
+    }
+
     public void markDeliveredByJobId(String jobId) {
+        updateDeliveryStatusByJobId(jobId, "已投递");
+    }
+
+    public void markWaitingConfirmByJobId(String jobId) {
+        updateDeliveryStatusByJobId(jobId, "待确认");
+    }
+
+    public void updateDeliveryStatusByJobId(String jobId, String status) {
         if (jobId == null || jobId.trim().isEmpty()) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
-        upd.setDeliveryStatus("已投递");
+        upd.setDeliveryStatus(status);
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
@@ -251,9 +298,17 @@ public class ZhilianService {
     }
 
     public void markDeliveredByTitleAndCompany(String jobTitle, String companyName) {
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "已投递");
+    }
+
+    public void markWaitingConfirmByTitleAndCompany(String jobTitle, String companyName) {
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "待确认");
+    }
+
+    public void updateDeliveryStatusByTitleAndCompany(String jobTitle, String companyName, String status) {
         if (jobTitle == null || companyName == null) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
-        upd.setDeliveryStatus("已投递");
+        upd.setDeliveryStatus(status);
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
@@ -320,6 +375,7 @@ public class ZhilianService {
     public static class Kpi {
         public long total;
         public long delivered;
+        public long waitingConfirm;
         public long pending;
         public long filtered; // 智联暂不区分，置0或来源于 delivery_status
         public long failed;   // 智暂不区分，置0或来源于 delivery_status
@@ -388,6 +444,7 @@ public class ZhilianService {
         Kpi kpi = new Kpi();
         kpi.total = filtered.size();
         kpi.delivered = filtered.stream().filter(e -> "已投递".equals(nullSafe(e.getDeliveryStatus()))).count();
+        kpi.waitingConfirm = filtered.stream().filter(e -> "待确认".equals(nullSafe(e.getDeliveryStatus()))).count();
         kpi.pending = filtered.stream().filter(e -> "未投递".equals(nullSafe(e.getDeliveryStatus()))).count();
         kpi.filtered = filtered.stream().filter(e -> "已过滤".equals(nullSafe(e.getDeliveryStatus()))).count();
         kpi.failed = filtered.stream().filter(e -> "投递失败".equals(nullSafe(e.getDeliveryStatus()))).count();

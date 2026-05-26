@@ -14,6 +14,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -30,6 +32,10 @@ import java.time.format.DateTimeFormatter;
 public class AiService {
     private final ConfigService configService;
     private final AiMapper aiMapper;
+    private static final String DEFAULT_GREETING_PROMPT_TEMPLATE =
+            "我目前在找工作，%s。我的期望岗位方向是【%s】，我需要投递的岗位名称是【%s】，岗位要求是【%s】。" +
+            "如果岗位和我的经历基本符合，请生成一段给HR的中文打招呼文本；如果完全不符合，只返回false。" +
+            "请突出匹配度和优势，参考我自己的打招呼语：【%s】。只返回需要发送的内容。";
 
     /**
      * 发送 AI 请求（非流式）并返回回复内容。
@@ -210,6 +216,105 @@ public class AiService {
         }
     }
 
+    /**
+     * 根据简历生成 AI 配置草稿。这里只返回生成结果，不写数据库。
+     */
+    public Map<String, String> generateResumeAiConfig(String resumeText) {
+        if (resumeText == null || resumeText.trim().isEmpty()) {
+            throw new IllegalArgumentException("简历内容不能为空，请先上传或粘贴简历内容");
+        }
+
+        String prompt = "你是求职自动化工具的配置助手。请根据候选人简历生成三段中文配置文案。\n" +
+                "只返回JSON，不要使用Markdown代码块，不要添加解释。JSON字段必须包含 introduce, prompt, sayHi。\n" +
+                "字段要求：\n" +
+                "1. introduce：第一人称技能介绍，120到260字，突出技术栈、经验、方向和优势。\n" +
+                "2. prompt：用于生成Boss直聘打招呼语的模板，必须且只能包含5个%s占位符，顺序分别是技能介绍、期望岗位方向、岗位名称、岗位要求、默认打招呼语。模板要说明不匹配时只返回false。\n" +
+                "3. sayHi：默认打招呼语，60字以内，第一人称，礼貌直接，适合发给HR。\n\n" +
+                "简历内容：\n" + limit(resumeText, 6000);
+
+        String raw = sendRequest(prompt);
+        JSONObject obj = new JSONObject(extractJsonObject(raw));
+        String introduce = normalizeGeneratedText(obj.optString("introduce", ""));
+        String promptTemplate = normalizePromptTemplate(obj.optString("prompt", ""));
+        String sayHi = normalizeGeneratedText(obj.optString("sayHi", ""));
+
+        if (introduce.isEmpty() || sayHi.isEmpty()) {
+            throw new IllegalStateException("AI返回内容不完整，请稍后重试");
+        }
+        if (countPlaceholders(promptTemplate) != 5) {
+            promptTemplate = DEFAULT_GREETING_PROMPT_TEMPLATE;
+        }
+
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("introduce", introduce);
+        result.put("prompt", promptTemplate);
+        result.put("sayHi", sayHi);
+        return result;
+    }
+
+    private String extractJsonObject(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            throw new IllegalStateException("AI返回为空");
+        }
+        String s = raw.trim();
+        if (s.startsWith("```")) {
+            s = s.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("\\s*```$", "").trim();
+        }
+        int start = s.indexOf('{');
+        int end = s.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return s.substring(start, end + 1);
+        }
+        return s;
+    }
+
+    private String normalizeGeneratedText(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String normalizePromptTemplate(String value) {
+        String template = normalizeGeneratedText(value);
+        if (template.isEmpty()) {
+            return DEFAULT_GREETING_PROMPT_TEMPLATE;
+        }
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < template.length(); i++) {
+            char ch = template.charAt(i);
+            if (ch != '%') {
+                out.append(ch);
+                continue;
+            }
+            if (i + 1 < template.length() && template.charAt(i + 1) == 's') {
+                out.append("%s");
+                i++;
+            } else if (i + 1 < template.length() && template.charAt(i + 1) == '%') {
+                out.append("%%");
+                i++;
+            } else {
+                out.append("%%");
+            }
+        }
+        return out.toString();
+    }
+
+    private int countPlaceholders(String template) {
+        int count = 0;
+        for (int i = 0; i < template.length() - 1; i++) {
+            if (template.charAt(i) == '%' && template.charAt(i + 1) == 's') {
+                count++;
+                i++;
+            }
+        }
+        return count;
+    }
+
+    private String limit(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, maxLength);
+    }
+
     private String normalizeBaseUrl(String baseUrl) {
         if (baseUrl == null) return "";
         String trimmed = baseUrl.trim();
@@ -245,6 +350,7 @@ public class AiService {
     private boolean isResponsesModel(String model) {
         if (model == null) return false;
         String m = model.toLowerCase();
+        if (m.startsWith("deepseek-")) return false;
         return m.contains("o1") || m.contains("o3") || m.contains("o4")
                 || m.contains("4.1") || m.contains("reasoner")
                 || m.contains("4o-mini") || m.contains("gpt-4o-mini");
