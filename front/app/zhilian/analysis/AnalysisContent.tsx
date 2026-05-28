@@ -4,11 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
+import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiBriefcase, BiTrash } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
 type NameValue = { name: string; value: number }
@@ -62,6 +61,19 @@ type PagedResult = {
   size: number
 }
 
+type ChartInstance = { destroy: () => void }
+type ChartConstructor = new (
+  context: CanvasRenderingContext2D,
+  config: {
+    type: "pie" | "bar" | "line"
+    data: {
+      labels: string[]
+      datasets: Array<Record<string, unknown>>
+    }
+    options: Record<string, unknown>
+  }
+) => ChartInstance
+
 const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 
 const CATEGORY_COLORS = [
@@ -101,15 +113,19 @@ function ChartCanvas({
   colors?: string[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<any | null>(null)
+  const chartRef = useRef<ChartInstance | null>(null)
   const toSolid = (hex: string) => hex
 
-  async function ensureChart(): Promise<any> {
-    if (typeof window !== "undefined" && (window as any).Chart) return (window as any).Chart
-    return new Promise((resolve, reject) => {
+  async function ensureChart(): Promise<ChartConstructor> {
+    const chartWindow = window as Window & { Chart?: ChartConstructor }
+    if (typeof window !== "undefined" && chartWindow.Chart) return chartWindow.Chart
+    return new Promise<ChartConstructor>((resolve, reject) => {
       const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
       if (existing) {
-        existing.addEventListener("load", () => resolve((window as any).Chart))
+        existing.addEventListener("load", () => {
+          if (chartWindow.Chart) resolve(chartWindow.Chart)
+          else reject(new Error("Chart.js unavailable after load"))
+        })
         existing.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
         return
       }
@@ -117,7 +133,10 @@ function ChartCanvas({
       script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
       script.async = true
       script.setAttribute("data-chartjs-cdn", "true")
-      script.addEventListener("load", () => resolve((window as any).Chart))
+      script.addEventListener("load", () => {
+        if (chartWindow.Chart) resolve(chartWindow.Chart)
+        else reject(new Error("Chart.js unavailable after load"))
+      })
       script.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
       document.head.appendChild(script)
     })
@@ -164,7 +183,7 @@ function ChartCanvas({
       return color
     })()
 
-    const dataset: any = {
+    const dataset: Record<string, unknown> = {
       label: title || "",
       data,
       backgroundColor,
@@ -217,7 +236,7 @@ function formatDateOnly(s?: string) {
     const d = new Date(s)
     if (isNaN(d.getTime())) return s
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-  } catch (e) {
+  } catch {
     return s
   }
 }
@@ -227,6 +246,7 @@ function badgeClass(type: "status" | "delivery", text?: string) {
   if (type === "delivery") {
 	    if (!text || text === "未投递") return `${base} bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200`
 	    if (text === "待确认") return `${base} bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-200`
+	    if (text === "AI分析中") return `${base} bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200`
 	    if (text === "已投递") return `${base} bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200`
     if (text === "已过滤") return `${base} bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-200`
     if (text === "投递失败") return `${base} bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200`
@@ -255,12 +275,12 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [keyword, setKeyword] = useState<string>("")
 
   const [exporting, setExporting] = useState(false)
-  const [reloading, setReloading] = useState(false)
+  const [clearingAnalysis, setClearingAnalysis] = useState(false)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
 
-	  const statusOptions = ["待确认", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
+	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 
   const loadList = async (toPage = page, toSize = size) => {
     try {
@@ -303,6 +323,32 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       console.error("fetch zhilian stats failed", e)
     } finally {
       setLoadingStats(false)
+    }
+  }
+
+  const clearAnalysisData = async () => {
+    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
+    if (!ok) return
+    try {
+      setClearingAnalysis(true)
+      const res = await fetch(`${API_BASE}/api/zhilian/analysis`, { method: "DELETE" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || "清空失败")
+      }
+      setItems([])
+      setTotal(0)
+      setPage(1)
+      setInputPage(1)
+      setStats(null)
+      setComputedSalaryBuckets([])
+      await loadList(1, size)
+      await loadStats()
+      alert(data.message || "智联投递分析数据已清空。")
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "清空失败：网络或服务异常。")
+    } finally {
+      setClearingAnalysis(false)
     }
   }
 
@@ -545,28 +591,19 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     ]
   }, [stats, items])
 
-  const fallbackSalaryBuckets = useMemo(() => {
-    const ks: number[] = []
-    for (const it of items) {
-      const info = parseSalary(it.salary)
-      if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-    }
-    if (!ks.length) return [] as BucketValue[]
-    const buckets: { key: string; min: number; max: number | null }[] = [
-      { key: "0-10K", min: 0, max: 10 },
-      { key: "10-15K", min: 10, max: 15 },
-      { key: "15-20K", min: 15, max: 20 },
-      { key: "20-25K", min: 20, max: 25 },
-      { key: ">=25K", min: 25, max: null },
-    ]
-    const counts = buckets.map((b) => ks.filter((k) => (b.max == null ? k >= b.min : k >= b.min && k < b.max)).length)
-    return buckets.map((b, i) => ({ bucket: b.key, value: counts[i] }))
-  }, [items])
-
   return (
     <div className="space-y-8">
       {showHeader && (
-        <PageHeader title="智联 投递分析" subtitle="基于 zhilian_data 表的统计图与列表分析" icon={<BiBarChart size={28} />} />
+        <PageHeader
+          title="智联 投递分析"
+          subtitle="基于 zhilian_data 表的统计图与列表分析"
+          icon={<BiBarChart size={28} />}
+          actions={
+            <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+            </Button>
+          }
+        />
       )}
 
       {/* KPI 卡片 */}
@@ -637,6 +674,9 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             </Button>
             <Button variant="outline" onClick={() => loadList(1, size)}>
               <BiBriefcase className="mr-1" /> 刷新列表
+            </Button>
+            <Button variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
             </Button>
             <Button variant="outline" onClick={exportCSV} disabled={exporting}>
               <BiDownload className="mr-1" /> 导出CSV

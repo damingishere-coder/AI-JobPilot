@@ -8,6 +8,7 @@ import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.entity.ZhilianConfigEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
+import com.getjobs.application.service.ChromeJobAnalysisQueueService;
 import com.getjobs.application.service.CookieService;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.OpenClawJobProbeService;
@@ -63,7 +64,7 @@ public class ZhilianController {
     private JobRunCoordinator jobRunCoordinator;
 
     @Autowired
-    private JobAiAnalysisService jobAiAnalysisService;
+    private ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
 
     @Autowired
     private OpenClawJobProbeService openClawJobProbeService;
@@ -82,6 +83,11 @@ public class ZhilianController {
         ZhilianConfigEntity config = zhilianService.getFirstConfig();
         if (config == null) {
             config = new ZhilianConfigEntity();
+        }
+        if (config.getSearchJobLimit() == null) {
+            config.setSearchJobLimit(ZhilianService.DEFAULT_SEARCH_JOB_LIMIT);
+        } else {
+            config.setSearchJobLimit(zhilianService.normalizeSearchJobLimit(config.getSearchJobLimit()));
         }
 
         Map<String, List<Map<String, String>>> options = new HashMap<>();
@@ -295,17 +301,73 @@ public class ZhilianController {
         return zhilianService.listZhilianJobs(statusList, location, experience, degree, minK, maxK, keyword, page, size);
     }
 
+    /** 清空智联投递分析数据，切换候选人或简历前使用。 */
+    @DeleteMapping("/analysis")
+    public Map<String, Object> clearAnalysis() {
+        return zhilianService.clearZhilianAnalysisData();
+    }
+
     @PostMapping("/chrome/jobs")
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int savedCount = 0;
-        int waitingConfirm = 0;
+        int queued = 0;
+        int skipped = 0;
+        String runId = request == null ? null : request.getRunId();
+        List<Map<String, Object>> analyses = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
-            sendZhilianProgress(JobProgressMessage.info("zhilian", "Chrome已采集到 " + received + " 个智联岗位，开始AI分析"));
+            if (jobRunCoordinator.isCancelRequested(runId)) {
+                jobRunCoordinator.clearCancel(runId);
+                sendZhilianProgress(JobProgressMessage.warning("zhilian", "智联 Chrome扫描已停止，后端未继续处理本批岗位"));
+                return ResponseEntity.ok(Map.of(
+                        "success", true,
+                        "cancelled", true,
+                        "asyncAnalysis", true,
+                        "received", received,
+                        "saved", 0,
+                        "queued", 0,
+                        "skipped", 0,
+                        "insufficient", 0,
+                        "queueSize", chromeJobAnalysisQueueService.queueSize(),
+                        "analyses", List.of()
+                ));
+            }
+            sendZhilianProgress(JobProgressMessage.info("zhilian", "Chrome已采集到 " + received + " 个智联岗位，正在提交后台AI队列"));
             for (ChromeJobDto dto : request.getJobs()) {
+                if (jobRunCoordinator.isCancelRequested(runId)) {
+                    jobRunCoordinator.clearCancel(runId);
+                    sendZhilianProgress(JobProgressMessage.warning("zhilian", "智联 Chrome扫描已停止，后端已中断剩余岗位入队"));
+                    return ResponseEntity.ok(Map.of(
+                            "success", true,
+                            "cancelled", true,
+                            "asyncAnalysis", true,
+                            "received", received,
+                            "saved", savedCount,
+                            "queued", queued,
+                            "skipped", skipped,
+                            "insufficient", 0,
+                            "queueSize", chromeJobAnalysisQueueService.queueSize(),
+                            "analyses", analyses
+                    ));
+                }
                 ZhilianJobDataEntity entity = toZhilianEntity(dto);
                 ZhilianJobDataEntity saved = zhilianService.upsertChromeJob(entity);
                 savedCount++;
+
+                if (saved == null) {
+                    skipped++;
+                    log.warn("智联 Chrome岗位入库返回为空：company={}, title={}, url={}", dto == null ? "" : dto.getCompany(), dto == null ? "" : dto.getTitle(), dto == null ? "" : dto.getUrl());
+                    continue;
+                }
+                String currentStatus = saved.getDeliveryStatus();
+                if ("AI分析中".equals(currentStatus)) {
+                    skipped++;
+                    continue;
+                }
+                if (!isFinalZhilianStatus(currentStatus)) {
+                    zhilianService.updateDeliveryStatusByJobId(saved.getJobId(), "AI分析中");
+                    saved = zhilianService.getZhilianJobById(saved.getId());
+                }
 
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setPlatform("zhilian");
@@ -319,25 +381,66 @@ public class ZhilianController {
                 analysisRequest.setDegree(saved.getDegree());
                 analysisRequest.setCompanyInfo("");
                 analysisRequest.setJobDescription(saved.getJobDescription());
-                JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(analysisRequest);
-                if (result.shouldApply()) {
-                    zhilianService.markWaitingConfirmByJobId(saved.getJobId());
-                    waitingConfirm++;
+                ChromeJobAnalysisQueueService.AnalysisJob job = new ChromeJobAnalysisQueueService.AnalysisJob();
+                job.setRunId(runId);
+                job.setCurrentStatus(currentStatus);
+                job.setCurrent(savedCount);
+                job.setTotal(received);
+                job.setRequest(analysisRequest);
+                job.setProgressCallback(this::sendZhilianProgress);
+
+                ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
+                if (enqueueResult.isRejected()) {
+                    zhilianService.updateDeliveryStatusByJobId(saved.getJobId(), firstNonBlank(currentStatus, "未投递"));
+                    return ResponseEntity.status(429).body(Map.of(
+                            "success", false,
+                            "message", enqueueResult.getMessage(),
+                            "asyncAnalysis", true,
+                            "received", received,
+                            "saved", savedCount,
+                            "queued", queued,
+                            "skipped", skipped,
+                            "insufficient", 0,
+                            "queueSize", chromeJobAnalysisQueueService.queueSize(),
+                            "analyses", analyses
+                    ));
                 }
-                sendZhilianProgress(JobProgressMessage.progress(
-                        "zhilian",
-                        (result.shouldApply() ? "待确认：" : "跳过：") + saved.getJobTitle(),
-                        savedCount,
-                        received
-                ));
+                if (enqueueResult.isQueued()) {
+                    queued++;
+                    sendZhilianProgress(JobProgressMessage.progress(
+                            "zhilian",
+                            "已加入后台AI队列：" + saved.getJobTitle(),
+                            savedCount,
+                            received
+                    ));
+                } else {
+                    skipped++;
+                }
             }
         }
-        sendZhilianProgress(JobProgressMessage.success("zhilian", "智联 Chrome扫描入库完成，待确认 " + waitingConfirm + " 个"));
+        sendZhilianProgress(JobProgressMessage.success("zhilian", "智联 Chrome岗位已提交后台AI队列：入库 " + savedCount + " 个，入队 " + queued + " 个"));
         return ResponseEntity.ok(Map.of(
                 "success", true,
+                "asyncAnalysis", true,
                 "received", received,
                 "saved", savedCount,
-                "waitingConfirm", waitingConfirm
+                "queued", queued,
+                "skipped", skipped,
+                "insufficient", 0,
+                "queueSize", chromeJobAnalysisQueueService.queueSize(),
+                "analyses", analyses
+        ));
+    }
+
+    @PostMapping("/chrome/stop")
+    public ResponseEntity<Map<String, Object>> stopChromeZhilian(@RequestBody(required = false) Map<String, Object> payload) {
+        String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");
+        jobRunCoordinator.requestCancel(runId);
+        sendZhilianProgress(JobProgressMessage.warning("zhilian", "智联 Chrome扫描停止请求已发送"));
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "智联 Chrome扫描停止请求已发送",
+                "runId", runId == null ? "" : runId
         ));
     }
 
@@ -617,6 +720,12 @@ public class ZhilianController {
             return Map.of("success", false, "message", "该岗位缺少详情链接，无法在 Chrome 中投递");
         }
         return null;
+    }
+
+    private boolean isFinalZhilianStatus(String status) {
+        if (status == null || status.isBlank()) return false;
+        return List.of("待确认", "已投递", "已跳过", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败")
+                .contains(status.trim());
     }
 
     private Map<String, Object> toDeliveryTask(ZhilianJobDataEntity job) {

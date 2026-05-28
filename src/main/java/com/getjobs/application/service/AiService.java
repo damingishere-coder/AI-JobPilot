@@ -99,28 +99,9 @@ public class AiService {
                 long created = responseObject.optLong("created", 0);
                 String usedModel = responseObject.optString("model");
 
-                String responseContent;
-                if (endpoint.endsWith("/responses")) {
-                    // Responses API：优先读取 output_text
-                    responseContent = responseObject.optString("output_text", null);
-                    if (responseContent == null || responseContent.isEmpty()) {
-                        // 兜底：尝试从通用 choices/message 结构读取（部分代理/兼容层会返回该结构）
-                        try {
-                            JSONObject messageObject = responseObject.getJSONArray("choices")
-                                    .getJSONObject(0)
-                                    .getJSONObject("message");
-                            responseContent = messageObject.getString("content");
-                        } catch (Exception ignore) {
-                            responseContent = response.body(); // 最后兜底：返回原始文本，避免空值
-                        }
-                    }
-                } else {
-                    // Chat Completions API
-                    JSONObject messageObject = responseObject.getJSONArray("choices")
-                            .getJSONObject(0)
-                            .getJSONObject("message");
-                    responseContent = messageObject.getString("content");
-                }
+                String responseContent = endpoint.endsWith("/responses")
+                        ? extractResponsesContent(responseObject, response.body())
+                        : extractChatContent(responseObject, response.body());
 
                 JSONObject usageObject = responseObject.optJSONObject("usage");
                 int promptTokens = usageObject != null ? usageObject.optInt("prompt_tokens", -1) : -1;
@@ -393,20 +374,7 @@ public class AiService {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() == 200) {
                 JSONObject resp = new JSONObject(response.body());
-                String outputText = resp.optString("output_text", null);
-                if (outputText != null && !outputText.isEmpty()) {
-                    return outputText;
-                }
-                // 兜底解析：部分兼容层可能返回 choices/message 结构
-                try {
-                    JSONObject messageObject = resp.getJSONArray("choices")
-                            .getJSONObject(0)
-                            .getJSONObject("message");
-                    return messageObject.getString("content");
-                } catch (Exception ignore) {
-                }
-                // 无法解析则直接返回原始体，避免空值中断流程
-                return response.body();
+                return extractResponsesContent(resp, response.body());
             }
             log.error("Responses API 调用失败: status={}, endpoint={}, body={}", response.statusCode(), endpoint, response.body());
             throw new RuntimeException("AI请求失败，状态码: " + response.statusCode() + ", 详情: " + response.body());
@@ -414,6 +382,87 @@ public class AiService {
             log.error("Responses API 调用异常", e);
             throw e instanceof RuntimeException ? (RuntimeException) e : new RuntimeException(e);
         }
+    }
+
+    private String extractChatContent(JSONObject responseObject, String rawBody) {
+        try {
+            JSONObject messageObject = responseObject.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message");
+            return flattenContent(messageObject.opt("content"), rawBody);
+        } catch (Exception ignore) {
+            return rawBody;
+        }
+    }
+
+    private String extractResponsesContent(JSONObject responseObject, String rawBody) {
+        String outputText = responseObject.optString("output_text", null);
+        if (outputText != null && !outputText.isEmpty()) {
+            return outputText;
+        }
+        StringBuilder out = new StringBuilder();
+        collectResponseOutputText(responseObject.opt("output"), out);
+        if (!out.isEmpty()) {
+            return out.toString();
+        }
+        try {
+            JSONObject messageObject = responseObject.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message");
+            String content = flattenContent(messageObject.opt("content"), rawBody);
+            if (content != null && !content.isBlank()) {
+                return content;
+            }
+        } catch (Exception ignore) {
+        }
+        return rawBody;
+    }
+
+    private void collectResponseOutputText(Object value, StringBuilder out) {
+        if (value == null) return;
+        if (value instanceof JSONArray arr) {
+            for (int i = 0; i < arr.length(); i++) {
+                collectResponseOutputText(arr.opt(i), out);
+            }
+            return;
+        }
+        if (value instanceof JSONObject obj) {
+            String type = obj.optString("type", "");
+            if ("output_text".equals(type) || "text".equals(type)) {
+                String text = obj.optString("text", "");
+                if (!text.isBlank()) {
+                    if (!out.isEmpty()) out.append("\n");
+                    out.append(text);
+                }
+            }
+            collectResponseOutputText(obj.opt("content"), out);
+        }
+    }
+
+    private String flattenContent(Object content, String fallback) {
+        if (content == null) return fallback;
+        if (content instanceof String text) return text;
+        if (content instanceof JSONArray arr) {
+            StringBuilder out = new StringBuilder();
+            for (int i = 0; i < arr.length(); i++) {
+                Object item = arr.opt(i);
+                if (item instanceof JSONObject obj) {
+                    String text = obj.optString("text", obj.optString("content", ""));
+                    if (!text.isBlank()) {
+                        if (!out.isEmpty()) out.append("\n");
+                        out.append(text);
+                    }
+                } else if (item != null) {
+                    String text = String.valueOf(item);
+                    if (!text.isBlank()) {
+                        if (!out.isEmpty()) out.append("\n");
+                        out.append(text);
+                    }
+                }
+            }
+            return out.isEmpty() ? fallback : out.toString();
+        }
+        return String.valueOf(content);
     }
 
     // ================= 合并的 AI 配置管理方法 =================

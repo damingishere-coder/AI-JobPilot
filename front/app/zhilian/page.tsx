@@ -18,6 +18,7 @@ interface ZhilianConfig {
   keywords?: string
   cityCode?: string
   salary?: string
+  searchJobLimit?: number
 }
 
 interface Option { name: string; code: string }
@@ -33,7 +34,7 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
   const operation = String(payload.operation || '')
-  return (operation === 'scan' && ['complete', 'stopped', 'error'].includes(stage))
+  return (operation === 'scan' && ['complete', 'stopped', 'error', 'blocked'].includes(stage))
     || message.includes('扫描完成')
     || message.includes('扫描已停止')
     || message.includes('扫描失败')
@@ -57,9 +58,15 @@ export default function ZhilianPage() {
   const [openClawRunning, setOpenClawRunning] = useState(false)
   const [openClawMessage, setOpenClawMessage] = useState('')
 
-  const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '' })
+  const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '', searchJobLimit: 20 })
   const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
   const [loadingConfig, setLoadingConfig] = useState(true)
+
+  const normalizeSearchJobLimit = (value?: number | string): number => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed < 1) return 20
+    return Math.min(Math.floor(parsed), 200)
+  }
 
   const appendProgressLog = useCallback((entry: Omit<ProgressLog, 'id'>) => {
     const timestamp = entry.timestamp || Date.now()
@@ -231,6 +238,7 @@ export default function ZhilianPage() {
       if (data.config) {
         const normalized = { ...data.config }
         normalized.keywords = parseKeywordsFromDb(data.config.keywords)
+        normalized.searchJobLimit = normalizeSearchJobLimit(data.config.searchJobLimit)
         setConfig(normalized)
       }
       if (data.options) setOptions(data.options)
@@ -305,12 +313,15 @@ export default function ZhilianPage() {
       setActiveRunId(runId)
       setIsStopping(false)
       setIsDelivering(true)
-      appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求，将使用当前Chrome登录态生成待确认岗位。' })
+      appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
         platform: 'zhilian',
         runId,
-        config,
+        config: {
+          ...config,
+          searchJobLimit: normalizeSearchJobLimit(config.searchJobLimit),
+        },
       })
       if (data.success) {
         appendProgressLog({ type: 'info', message: data.message || '智联招聘 Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
@@ -332,7 +343,13 @@ export default function ZhilianPage() {
     if (isStopping) return
     setIsStopping(true)
     try {
-      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId: activeRunId }, 1500)
+      const runId = activeRunId
+      await fetch('http://localhost:8888/api/zhilian/chrome/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId }),
+      }).catch(() => null)
+      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId }, 1500)
       appendProgressLog({ type: data.success ? 'warning' : 'error', message: data.message || '智联招聘扫描停止请求已处理。' })
       setIsDelivering(false)
       setActiveRunId(null)
@@ -389,7 +406,7 @@ export default function ZhilianPage() {
       }
       appendProgressLog({
         type: 'success',
-        message: `OpenClaw智联实验提交完成：采集 ${submitData.received ?? jobs.length} 个，入库 ${submitData.saved ?? 0} 个，待确认 ${submitData.waitingConfirm ?? 0} 个。`,
+        message: `OpenClaw智联实验提交完成：采集 ${submitData.received ?? jobs.length} 个，入库 ${submitData.saved ?? 0} 个，入队 ${submitData.queued ?? 0} 个。`,
       })
     } catch {
       appendProgressLog({ type: 'error', message: 'OpenClaw智联实验采集失败：网络、服务或CLI异常。' })
@@ -448,7 +465,11 @@ export default function ZhilianPage() {
 
   const handleSaveConfig = async () => {
     try {
-      const payload = { ...config, keywords: serializeKeywordsForDb(config.keywords) }
+      const payload = {
+        ...config,
+        keywords: serializeKeywordsForDb(config.keywords),
+        searchJobLimit: normalizeSearchJobLimit(config.searchJobLimit),
+      }
       const response = await fetch('http://localhost:8888/api/zhilian/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -534,7 +555,7 @@ export default function ZhilianPage() {
             <CardContent>
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground">请先在你自己的 Chrome 里登录智联招聘，并加载本项目 chrome-extension 目录。</p>
-	                <p className="text-sm text-muted-foreground">点击“开始扫描”会让 Chrome 扩展使用当前 Chrome 登录态搜索、采集岗位，并生成待确认列表；扫描阶段不会直接申请职位。</p>
+	                <p className="text-sm text-muted-foreground">点击“开始扫描”会让 Chrome 扩展使用当前 Chrome 登录态搜索、持续采集岗位；AI 会在后台分析，结果稍后进入待确认列表。</p>
                 <p className="text-sm text-muted-foreground">真实申请只会在投递分析页由你点击确认后触发。</p>
               </div>
             </CardContent>
@@ -565,7 +586,7 @@ export default function ZhilianPage() {
                     <BiCodeAlt className="mr-1" /> {openClawRunning ? '实验采集中...' : 'OpenClaw实验采集'}
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">实验采集会强制走待确认和AI分析链路，不会直接申请智联岗位。</p>
+                <p className="text-xs text-muted-foreground">实验采集会走后台AI分析链路，不会直接申请智联岗位。</p>
               </div>
             </CardContent>
           </Card>
@@ -602,6 +623,18 @@ export default function ZhilianPage() {
                         <option key={o.code} value={o.code}>{o.name}</option>
                       ))}
                     </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>每关键词后台 AI 分析岗位数</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      step={1}
+                      placeholder="20"
+                      value={config.searchJobLimit ?? 20}
+                      onChange={(e) => setConfig((c) => ({ ...c, searchJobLimit: normalizeSearchJobLimit(e.target.value) }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>薪资范围（最低和最高工资，用逗号分割）</Label>
@@ -730,7 +763,7 @@ function ProgressLogCard({
       </CardHeader>
       <CardContent>
         {logs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、AI分析、待确认和错误信息。</p>
+          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、后台AI队列、待确认和错误信息。</p>
         ) : (
           <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (

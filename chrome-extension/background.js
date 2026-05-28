@@ -12,14 +12,21 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-05-27-boss-click-interest-chat-1";
+const BACKGROUND_VERSION = "2026-05-29-boss-delivery-confirm-search-nav-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-05-27-boss-click-interest-chat-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-05-29-boss-delivery-confirm-search-nav-1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
+    handleBossContentNavigation(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_PAGE") {
     handlePageMessage(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
@@ -35,6 +42,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }).catch(() => {});
   }
 });
+
+async function handleBossContentNavigation(message, sender) {
+  const tabId = sender.tab?.id;
+  const targetUrl = String(message?.url || "");
+  if (!tabId) return { success: false, message: "缺少Boss标签页ID" };
+  if (!isBossSearchUrl(targetUrl)) return { success: false, message: "拒绝打开非Boss搜索页" };
+
+  await chrome.tabs.update(tabId, { url: targetUrl });
+  return { success: true };
+}
 
 async function handlePageMessage(message, sender) {
   const pageTabId = sender.tab?.id;
@@ -191,7 +208,8 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     keywordIndex: index,
     keywordTotal: total
   });
-  await navigatePlatformTab(tab.id, task.url, config, DELIVERY_NAVIGATION_TIMEOUT_MS);
+  const targetUrl = task.url;
+  await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { bossJobUrl: targetUrl });
   await ensureContentScript(tab.id, config.contentScript);
   if (!isNoFocusPlatformMessage(message.type)) {
     const updatedTab = await chrome.tabs.update(tab.id, { active: true });
@@ -199,16 +217,7 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
   }
 
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      ...message,
-      type: "BOSS_DELIVER_CURRENT_V2",
-      source: "GET_JOBS_BACKGROUND",
-      task,
-      pageTabId,
-      deliveryIndex: index,
-      deliveryTotal: total
-    });
-    return response || { success: false, message: "Boss投递未返回结果" };
+    return await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
     await postBossDeliveryResult(task, false, errorMessage).catch(() => {});
@@ -216,6 +225,47 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
       success: false,
       message: errorMessage
     };
+  }
+}
+
+async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, total) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        ...message,
+        type: "BOSS_DELIVER_CURRENT_V2",
+        source: "GET_JOBS_BACKGROUND",
+        task,
+        pageTabId,
+        deliveryIndex: index,
+        deliveryTotal: total
+      });
+      if (response) return response;
+      const fallback = await inferBossDeliveryAfterEmptyResponse(tabId, task);
+      if (fallback.success) return fallback;
+    } catch (error) {
+      lastError = error;
+      await sleep(500);
+    }
+  }
+  throw lastError || new Error("Boss投递请求发送失败");
+}
+
+async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const currentUrl = tab.url || tab.pendingUrl || "";
+    if (isBossChatUrl(currentUrl)) {
+      await postBossDeliveryResult(task, true, "Boss已进入沟通页").catch(() => {});
+      return {
+        success: true,
+        message: "Boss已进入沟通页，按成功处理。"
+      };
+    }
+    return { success: false, message: "Boss投递未返回结果，未确认进入沟通页。" };
+  } catch {
+    return { success: false, message: "Boss投递未返回结果" };
   }
 }
 
@@ -327,10 +377,10 @@ async function waitForSupportedTab(tabId, config) {
   return tab;
 }
 
-async function navigatePlatformTab(tabId, url, config, timeoutMs) {
+async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) {
   const currentTab = await chrome.tabs.get(tabId);
   const currentUrl = currentTab.url || currentTab.pendingUrl || "";
-  if (!isSameNavigationUrl(currentUrl, url)) {
+  if (!isSameNavigationUrl(currentUrl, url, options)) {
     await chrome.tabs.update(tabId, { url });
   }
 
@@ -338,7 +388,7 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs) {
   while (Date.now() - startedAt < timeoutMs) {
     const tab = await chrome.tabs.get(tabId);
     const tabUrl = tab.url || tab.pendingUrl || "";
-    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url) && tab.status !== "loading") {
+    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url, options) && tab.status !== "loading") {
       return tab;
     }
     await sleep(CONTENT_READY_INTERVAL_MS);
@@ -396,7 +446,8 @@ function isSupportedUrl(url, config) {
   return /^https?:\/\//.test(url) && config.hosts.some((host) => url.includes(host));
 }
 
-function isSameNavigationUrl(left, right) {
+function isSameNavigationUrl(left, right, options = {}) {
+  if (options.bossJobUrl && sameBossJobDetailUrl(left, options.bossJobUrl)) return true;
   try {
     const leftUrl = new URL(left);
     const rightUrl = new URL(right);
@@ -404,6 +455,37 @@ function isSameNavigationUrl(left, right) {
   } catch {
     return String(left || "") === String(right || "");
   }
+}
+
+function sameBossJobDetailUrl(left, right) {
+  const leftId = extractBossJobId(left);
+  const rightId = extractBossJobId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+}
+
+function isBossSearchUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:"
+      && parsed.hostname.endsWith("zhipin.com")
+      && parsed.pathname === "/web/geek/job";
+  } catch {
+    return false;
+  }
+}
+
+function isBossChatUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.endsWith("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function extractBossJobId(url) {
+  const match = String(url || "").match(/\/job_detail\/([^/?#]+)/);
+  return match ? match[1] : "";
 }
 
 function buildContentScriptError(platform, error, operation = "扫描") {

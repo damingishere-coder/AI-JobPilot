@@ -7,8 +7,7 @@
   const SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
-  const DETAIL_LIMIT_PER_KEYWORD = 20;
-  const EXTENSION_VERSION = "2026-05-27-passive-resume-1";
+  const EXTENSION_VERSION = "2026-05-28-async-ai-queue-1";
   let stopRequested = false;
   let activeScanPromise = null;
 
@@ -181,6 +180,9 @@
     for (let keywordIndex = Number(task.currentIndex || 0); keywordIndex < keywords.length; keywordIndex++) {
       if (isStopRequested()) stopRequested = true;
       if (stopRequested) break;
+      if (keywordIndex > Number(task.currentIndex || 0) || task.phase === "nextKeyword") {
+        await humanPause(1500, 3000);
+      }
       const keyword = keywords[keywordIndex];
       const searchUrl = buildSearchUrl(keyword, config);
       const baseTask = {
@@ -255,17 +257,26 @@
       }
       await sleep(2200);
       const waitState = await waitForJobCards();
+      if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
+        stopRequested = true;
+        break;
+      }
       postProgress(task, "info", `智联岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，岗位节点 ${waitState.diagnostics.jobNodes} 个。`, {
         ...baseMeta,
         stage: "collecting",
         ...waitState.diagnostics
       });
-      await scrollForCards();
+      const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
+      await scrollForCards(searchJobLimit);
       const collectResult = collectJobs(keyword, task, baseMeta);
       const candidates = collectResult.jobs;
-      const jobs = candidates.slice(0, DETAIL_LIMIT_PER_KEYWORD);
+      const jobs = candidates.slice(0, searchJobLimit);
       if (!jobs.length) {
         const diagnostics = buildListDiagnostics();
+        if (handleBlockingState(task, diagnostics, baseMeta)) {
+          stopRequested = true;
+          break;
+        }
         postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
           ...baseMeta,
           stage: "empty",
@@ -276,10 +287,11 @@
         continue;
       }
 
-      postProgress(task, "info", `智联 Chrome采集到 ${candidates.length} 个岗位，将进入前 ${jobs.length} 个详情页做AI比对`, {
+      postProgress(task, "info", `智联 Chrome采集到 ${candidates.length} 个岗位，将按配置进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对`, {
         ...baseMeta,
         stage: "details",
-        collected: jobs.length
+        collected: jobs.length,
+        searchJobLimit
       });
       storeScanTask({
         ...baseTask,
@@ -334,7 +346,7 @@
     const jobs = [];
     let skipped = 0;
     let errorCount = 0;
-    links.slice(0, 40).forEach((link, index) => {
+    links.slice(0, Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))).forEach((link, index) => {
       try {
         const job = parseLink(link, keyword);
         if (job.title && job.company && job.url) {
@@ -413,6 +425,12 @@
     }
 
     if (currentJob) {
+      const detailDiagnostics = buildPageBlockDiagnostics();
+      if (handleBlockingState(message, detailDiagnostics, { ...baseMeta, stage: "details" })) {
+        stopRequested = true;
+        return { success: true, totalSaved };
+      }
+      await humanPause(900, 1800);
       writeScanStatus({
         isRunning: true,
         stopRequested: false,
@@ -453,7 +471,7 @@
       return { success: true, totalSaved, pendingNavigation: true };
     }
 
-    postProgress(message, "info", `智联 Chrome已读取 ${jobs.length} 个岗位详情，提交后端AI分析`, {
+    postProgress(message, "info", `智联 Chrome已读取 ${jobs.length} 个岗位详情，提交后台AI队列`, {
       ...baseMeta,
       stage: "submitting",
       collected: jobs.length
@@ -467,12 +485,14 @@
     const data = await res.json();
     if (!data.success) throw new Error(data.message || "智联岗位提交失败");
     const nextTotalSaved = totalSaved + (data.saved || 0);
-    postProgress(message, "success", `智联 Chrome提交后端完成：采集 ${data.received ?? jobs.length} 个，入库 ${data.saved ?? 0} 个，待确认 ${data.waitingConfirm ?? 0} 个。`, {
+    postProgress(message, "success", `智联 Chrome已提交后台AI队列：采集 ${data.received ?? jobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，跳过 ${data.skipped ?? 0} 个。`, {
       ...baseMeta,
       stage: "submitted",
       collected: data.received ?? jobs.length,
       saved: data.saved ?? 0,
-      waitingConfirm: data.waitingConfirm ?? 0,
+      queued: data.queued ?? 0,
+      skipped: data.skipped ?? 0,
+      queueSize: data.queueSize ?? 0,
       totalSaved: nextTotalSaved
     });
     storeScanTask({
@@ -571,10 +591,11 @@
     return all.find((el) => labels.some((label) => compact(el.innerText || "").includes(label)));
   }
 
-  async function scrollForCards() {
-    for (let i = 0; i < 6 && !isStopRequested(); i++) {
+  async function scrollForCards(searchJobLimit = 20) {
+    const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
+    for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
       window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
-      await sleep(700);
+      await humanPause(550, 950);
     }
     window.scrollTo(0, 0);
   }
@@ -605,9 +626,10 @@
   function normalizeScanTask(message) {
     const config = message?.config || {};
     const keywords = uniqueStrings(toList(message?.keywords || config.keywords || config.keyword || "AI产品运营"));
+    const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
     return {
       ...message,
-      config: { ...config, keywords },
+      config: { ...config, keywords, searchJobLimit },
       keywords,
       source: "GET_JOBS_BACKGROUND",
       type: "ZHILIAN_SCAN_START",
@@ -618,6 +640,12 @@
       jobs: Array.isArray(message.jobs) ? message.jobs : [],
       startedAt: message.startedAt || Date.now()
     };
+  }
+
+  function normalizeSearchJobLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1) return 20;
+    return Math.min(Math.floor(parsed), 200);
   }
 
   function isResumableScanTask(task) {
@@ -741,10 +769,11 @@
 
   function buildListDiagnostics() {
     const bodyText = compact(document.body?.innerText || "");
+    const currentUrl = window.location.href;
     const detailLinks = document.querySelectorAll("a[href*='jobs.zhaopin.com'], a[href*='/job/']").length;
     const jobNodes = document.querySelectorAll("[class*='joblist'], [class*='job-card'], [class*='position']").length;
-    const hasLoginPrompt = /登录|扫码|注册|验证码/.test(bodyText);
-    const hasSecurityPrompt = /安全验证|验证|滑块|访问异常|身份验证|请完成验证/.test(bodyText);
+    const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
+    const hasSecurityPrompt = isSecurityPrompt(bodyText);
     const hasEmptyPrompt = /暂无|没有找到|未找到|无搜索结果|换个关键词|调整筛选/.test(bodyText);
     const pageState = hasSecurityPrompt
       ? "安全验证"
@@ -756,7 +785,7 @@
             ? "已出现搜索结果容器"
             : "未知";
     return {
-      currentUrl: window.location.href,
+      currentUrl,
       title: document.title || "",
       detailLinks,
       jobNodes,
@@ -766,6 +795,55 @@
       hasEmptyPrompt,
       hasBlockingState: hasLoginPrompt || hasSecurityPrompt || hasEmptyPrompt
     };
+  }
+
+  function buildPageBlockDiagnostics() {
+    const bodyText = compact(document.body?.innerText || "");
+    const currentUrl = window.location.href;
+    const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
+    const hasSecurityPrompt = isSecurityPrompt(bodyText);
+    return {
+      currentUrl,
+      title: document.title || "",
+      pageState: hasSecurityPrompt ? "安全验证" : hasLoginPrompt ? "登录提示" : "正常",
+      hasLoginPrompt,
+      hasSecurityPrompt,
+      hasEmptyPrompt: false,
+      hasBlockingState: hasLoginPrompt || hasSecurityPrompt
+    };
+  }
+
+  function handleBlockingState(task, diagnostics, meta = {}) {
+    if (!diagnostics || !(diagnostics.hasSecurityPrompt || diagnostics.hasLoginPrompt)) return false;
+    const state = diagnostics.hasSecurityPrompt ? "安全验证" : "登录提示";
+    clearStoredScanTask();
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: true,
+      stage: "blocked",
+      message: `智联页面出现${state}，扫描已暂停，请处理后重新开始。`,
+      runId: task?.runId,
+      startedAt: task?.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(task || {}, "warning", `智联页面出现${state}，扫描已暂停，请在Chrome中处理验证码/登录/安全验证后重新开始。`, {
+      ...meta,
+      operation: "scan",
+      stage: "blocked",
+      currentUrl: diagnostics.currentUrl,
+      pageState: diagnostics.pageState
+    });
+    return true;
+  }
+
+  function isSecurityPrompt(text) {
+    return /安全验证|滑块|访问异常|身份验证|请完成验证|验证码|verify|captcha/i.test(text || "");
+  }
+
+  function isStrongLoginPrompt(text, url) {
+    const current = String(url || "");
+    if (/passport|login|user\/login|扫码登录|二维码登录/.test(current)) return true;
+    return /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
   }
 
   function first(value, fallback) {
@@ -876,5 +954,13 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function randomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function humanPause(minMs, maxMs) {
+    return sleep(randomInt(minMs, maxMs));
   }
 })();

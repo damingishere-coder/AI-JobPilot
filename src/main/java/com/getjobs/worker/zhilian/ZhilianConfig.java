@@ -27,6 +27,11 @@ public class ZhilianConfig {
      */
     private String salary;
 
+    /**
+     * 每个关键词进入AI分析的岗位数量上限
+     */
+    private Integer searchJobLimit;
+
 
     // 注意：已改为在 ZhilianJobService 中通过 ConfigService 构建配置
     // 保留空的 init 以兼容旧调用，但建议不要再使用

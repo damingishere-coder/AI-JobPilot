@@ -54,6 +54,11 @@ public class BossConfig {
     private String jobType;
 
     /**
+     * 每个关键词进入AI分析的岗位数量上限
+     */
+    private Integer searchJobLimit;
+
+    /**
      * 薪资范围（多选）
      */
     private java.util.List<String> salary;

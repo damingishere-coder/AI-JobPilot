@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-05-27-boss-click-interest-chat-1";
+  const EXTENSION_VERSION = "2026-05-29-boss-delivery-confirm-search-nav-1";
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -9,7 +9,10 @@
   const SCAN_CANCEL_KEY = "__GET_JOBS_BOSS_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_BOSS_SCAN_STATUS__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
-  const DETAIL_LIMIT_PER_KEYWORD = 20;
+  const SEARCH_NAVIGATION_GRACE_MS = 60 * 1000;
+  const SEARCH_NAVIGATION_RETRY_MS = 2500;
+  const SEARCH_NAVIGATION_MAX_ATTEMPTS = 4;
+  const SEARCH_PARAM_KEYS = ["city", "jobType", "salary", "experience", "degree", "scale", "industry", "stage", "query"];
   const JOB_CARD_SELECTORS = [
     "li.job-card-box",
     ".job-card-wrapper",
@@ -31,6 +34,8 @@
   let activeScanPromise = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ !== EXTENSION_VERSION) return;
+
     if (message?.type === "PING_CONTENT") {
       sendResponse({ success: true, version: EXTENSION_VERSION });
       return;
@@ -74,16 +79,12 @@
       return;
     }
     if (message?.type === "BOSS_DELIVER_CURRENT_V2") {
-      deliverOnCurrentPage(message.task, message).then(sendResponse).catch((error) => {
-        postProgress(message, "error", error.message || String(error), {
-          operation: "deliver",
-          stage: "error"
-        });
-        sendResponse({ success: false, message: error.message || String(error) });
-      });
+      prepareStandaloneDelivery();
+      handleDeliverCurrentMessage(message, sendResponse);
       return true;
     }
     if (message?.type === "BOSS_DELIVER_ONE") {
+      prepareStandaloneDelivery();
       deliverOne(message.task, message).then(sendResponse).catch((error) => {
         postProgress(message, "error", error.message || String(error), {
           operation: "deliver",
@@ -94,6 +95,7 @@
       return true;
     }
     if (message?.type === "BOSS_DELIVER_BATCH") {
+      prepareStandaloneDelivery();
       deliverBatch(message.tasks || [], message).then(sendResponse).catch((error) => {
         postProgress(message, "error", error.message || String(error), {
           operation: "deliver",
@@ -231,39 +233,25 @@
       stopRequested = true;
     }
 
-    if (task.phase === "autoDeliver") {
-      if (isStopRequested()) {
-        stopRequested = true;
-      } else {
-      const keyword = keywords[currentIndex] || "";
-      const deliveryResult = await continueAutoDeliverScan(task, keyword, {
-        operation: "scan",
-        keyword,
-        keywordIndex: currentIndex + 1,
-        keywordTotal: keywords.length,
-        totalSaved
-      });
-      if (deliveryResult.pendingNavigation) return deliveryResult;
-      task = deliveryResult.task;
-      currentIndex = Number(task.currentIndex || 0);
-      totalSaved = Number(task.totalSaved || totalSaved);
-      }
-    }
-
     for (let index = currentIndex; index < keywords.length; index++) {
       if (isStopRequested()) stopRequested = true;
       if (stopRequested) break;
+      if (index > currentIndex || task.phase === "nextKeyword") {
+        await humanPause(1500, 3000);
+      }
       const keyword = keywords[index];
       const url = buildSearchUrl(keyword, city, config);
       const navigationKey = buildNavigationKey(keyword, city);
       const navigationAttempts = task.navigationKey === navigationKey ? Number(task.navigationAttempts || 0) : 0;
+      const nextNavigationAttempts = navigationAttempts + 1;
       const searchTaskState = {
         ...task,
         phase: "searching",
         currentIndex: index,
         totalSaved,
         navigationKey,
-        navigationAttempts: navigationAttempts + 1,
+        navigationAttempts: nextNavigationAttempts,
+        navigationStartedAt: Date.now(),
         expectedKeyword: keyword,
         expectedSearchUrl: url
       };
@@ -308,20 +296,26 @@
         continue;
       }
 
-      if (!isCurrentSearchPage(keyword, city)) {
-        postProgress(task, "info", `Boss Chrome准备打开搜索页：${keyword}（第 ${navigationAttempts + 1} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
+      const pageBlockDiagnostics = buildPageBlockDiagnostics();
+      if (handleBlockingState(task, pageBlockDiagnostics, baseMeta)) {
+        stopRequested = true;
+        break;
+      }
+
+      if (!isCurrentSearchPage(keyword, city, url)) {
+        postProgress(task, "info", `Boss Chrome准备打开搜索页：${keyword}（第 ${nextNavigationAttempts} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
           ...baseMeta,
           stage: "searching",
           currentUrl: window.location.href,
           targetUrl: url,
-          navigationAttempts: navigationAttempts + 1
+          navigationAttempts: nextNavigationAttempts
         });
         storeScanTask(searchTaskState);
-        window.location.assign(url);
+        openSearchPage(url, searchTaskState);
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
 
-      storeScanTask({ ...searchTaskState, phase: "collecting", navigationAttempts: 0 });
+      storeScanTask({ ...searchTaskState, phase: "collecting", navigationAttempts: 0, navigationStartedAt: 0 });
       postProgress(task, "info", `Boss Chrome开始搜索：${keyword}，当前URL：${window.location.href}`, {
         ...baseMeta,
         stage: "searching",
@@ -342,12 +336,17 @@
         stopRequested = true;
         break;
       }
+      if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
+        stopRequested = true;
+        break;
+      }
       postProgress(task, "info", `Boss岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，搜索结果容器 ${waitState.diagnostics.resultContainers} 个。`, {
         ...baseMeta,
         stage: "collecting",
         ...waitState.diagnostics
       });
-      await scrollForCards();
+      const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
+      await scrollForCards(searchJobLimit);
       if (isStopRequested()) {
         stopRequested = true;
         break;
@@ -355,7 +354,6 @@
 
       const collectResult = collectJobs(keyword, task, baseMeta);
       const candidates = collectResult.jobs;
-      const jobs = candidates.slice(0, DETAIL_LIMIT_PER_KEYWORD);
       postProgress(task, "info", `Boss Chrome卡片解析完成：节点 ${collectResult.nodeCount} 个，成功 ${collectResult.parsed} 个，跳过 ${collectResult.skipped} 个。`, {
         ...baseMeta,
         stage: "collecting",
@@ -364,8 +362,12 @@
         skipped: collectResult.skipped,
         errorCount: collectResult.errorCount
       });
-      if (!jobs.length) {
+      if (!candidates.length) {
         const diagnostics = buildListDiagnostics();
+        if (handleBlockingState(task, diagnostics, baseMeta)) {
+          stopRequested = true;
+          break;
+        }
         postProgress(task, "warning", `Boss Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，搜索结果容器=${diagnostics.resultContainers}，状态=${diagnostics.pageState}，首个卡片=${diagnostics.firstCardText}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
           ...baseMeta,
           stage: "empty",
@@ -376,11 +378,38 @@
         continue;
       }
 
+      const dedupeResult = await filterDuplicateJobs(candidates, task, baseMeta);
+      const freshCandidates = dedupeResult.jobs;
+      const jobs = freshCandidates.slice(0, searchJobLimit);
+      postProgress(task, dedupeResult.duplicateCount > 0 ? "info" : "success", `Boss重复岗位检查完成：候选 ${candidates.length} 个，已接触 ${dedupeResult.duplicateCount} 个，新岗位 ${freshCandidates.length} 个，将进入前 ${jobs.length}/${searchJobLimit} 个详情页。`, {
+        ...baseMeta,
+        stage: "dedupe",
+        collected: candidates.length,
+        duplicates: dedupeResult.duplicateCount,
+        fresh: freshCandidates.length,
+        searchJobLimit
+      });
+      if (!jobs.length) {
+        postProgress(task, "warning", `Boss关键词 ${keyword} 的岗位都已扫描过，跳过本关键词。`, {
+          ...baseMeta,
+          stage: "dedupe",
+          collected: candidates.length,
+          duplicates: dedupeResult.duplicateCount,
+          fresh: 0
+        });
+        storeScanTask({ ...task, phase: "nextKeyword", currentIndex: index + 1, totalSaved });
+        continue;
+      }
+
       const diagnostics = buildListDiagnostics();
-      postProgress(task, "info", `Boss Chrome采集到 ${candidates.length} 个岗位，将进入前 ${jobs.length} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
+      postProgress(task, "info", `Boss Chrome采集到 ${candidates.length} 个岗位，过滤重复后剩余 ${freshCandidates.length} 个，将按配置进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
+        candidates: candidates.length,
+        fresh: freshCandidates.length,
+        duplicates: dedupeResult.duplicateCount,
+        searchJobLimit,
         ...diagnostics
       });
 
@@ -461,7 +490,7 @@
     const jobs = [];
     let skipped = 0;
     let errorCount = 0;
-    nodes.slice(0, 40).forEach((node, index) => {
+    nodes.slice(0, Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))).forEach((node, index) => {
       try {
         const job = parseCard(node, keyword);
         if (job.title && job.company && job.url) {
@@ -494,6 +523,60 @@
     return unique(JOB_CARD_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
       .map((node) => node.matches?.("a[href*='/job_detail/']") ? jobCardRoot(node) : node)
       .filter(Boolean);
+  }
+
+  async function filterDuplicateJobs(jobs, message, baseMeta) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    if (!list.length) return { jobs: [], duplicateCount: 0 };
+
+    try {
+      const res = await fetch(`${API_BASE}/api/boss/chrome/jobs/dedupe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword: baseMeta.keyword, jobs: list.map(normalizeJobForDedupe) })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.success || !Array.isArray(data.items)) throw new Error(data.message || "查重接口返回异常");
+
+      const duplicateKeys = new Set(data.items.filter((item) => item.duplicate).map(dedupeItemKey));
+      const freshJobs = list.filter((job) => !duplicateKeys.has(dedupeJobKey(job)));
+      return {
+        jobs: freshJobs,
+        duplicateCount: Number(data.duplicateCount ?? (list.length - freshJobs.length) ?? 0)
+      };
+    } catch (error) {
+      postProgress(message, "warning", `Boss重复岗位检查失败，将继续扫描本页岗位：${error.message || String(error)}`, {
+        ...baseMeta,
+        stage: "dedupe",
+        collected: list.length
+      });
+      return { jobs: list, duplicateCount: 0 };
+    }
+  }
+
+  function dedupeItemKey(item) {
+    return dedupeKey(item?.id, item?.company, item?.title, item?.url);
+  }
+
+  function dedupeJobKey(job) {
+    return dedupeKey(job?.id, job?.company, job?.title, job?.url);
+  }
+
+  function normalizeJobForDedupe(job) {
+    return {
+      id: compact(job?.id || extractBossId(job?.url)),
+      url: job?.url || "",
+      title: compact(job?.title),
+      company: compact(job?.company),
+      keyword: job?.keyword || ""
+    };
+  }
+
+  function dedupeKey(id, company, title, url) {
+    const bossId = compact(id || extractBossId(url));
+    if (bossId) return `id:${bossId}`;
+    return `ct:${compact(company).toLowerCase()}::${compact(title).toLowerCase()}`;
   }
 
   function parseCard(node, keyword) {
@@ -540,6 +623,14 @@
     }
 
     const currentJob = jobs[detailIndex];
+    if (currentJob) {
+      const pageBlockDiagnostics = buildPageBlockDiagnostics();
+      if (handleBlockingState(message, pageBlockDiagnostics, { ...baseMeta, stage: "details" })) {
+        stopRequested = true;
+        return { success: true, totalSaved };
+      }
+    }
+
     if (currentJob && !isSameUrl(window.location.href, currentJob.url)) {
       postProgress(message, "info", `Boss Chrome正在查看详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
         ...baseMeta,
@@ -558,6 +649,7 @@
         clearStoredScanTask();
         return { success: true, totalSaved };
       }
+      await humanPause(900, 1800);
       writeScanStatus({
         isRunning: true,
         stopRequested: false,
@@ -605,7 +697,7 @@
       clearStoredScanTask();
       return { success: true, totalSaved };
     }
-    postProgress(message, "info", `Boss Chrome已读取 ${jobs.length} 个岗位详情，准备提交后端AI分析。可提交 ${submitJobs.length} 个，详情不足 ${detailSummary.missingDescription} 个。`, {
+    postProgress(message, "info", `Boss Chrome已读取 ${jobs.length} 个岗位详情，准备提交后台AI队列。可提交 ${submitJobs.length} 个，详情不足 ${detailSummary.missingDescription} 个。`, {
       ...baseMeta,
       stage: "submitting",
       collected: jobs.length,
@@ -646,39 +738,22 @@
       return { success: true, totalSaved: totalSaved + (data.saved || 0) };
     }
     const nextTotalSaved = totalSaved + (data.saved || 0);
-    postProgress(message, "success", `Boss Chrome提交后端完成：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，待确认 ${data.waitingConfirm ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
+    postProgress(message, "success", `Boss Chrome已提交后台AI队列：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
       ...baseMeta,
       stage: "submitted",
       collected: data.received ?? submitJobs.length,
-      analyzed: data.saved ?? 0,
       saved: data.saved ?? 0,
-      waitingConfirm: data.waitingConfirm ?? 0,
+      queued: data.queued ?? 0,
+      skipped: data.skipped ?? 0,
       insufficient: data.insufficient ?? 0,
+      queueSize: data.queueSize ?? 0,
       totalSaved: nextTotalSaved
     });
-    if (isAutoDeliverEnabled(message) && Array.isArray(data.tasks) && data.tasks.length) {
-      if (isStopRequested()) {
-        stopRequested = true;
-        clearStoredScanTask();
-        return { success: true, totalSaved: nextTotalSaved };
-      }
-      const deliveryTask = {
-        ...message,
-        phase: "autoDeliver",
-        jobs: [],
-        detailIndex: 0,
-        deliveryQueue: data.tasks,
-        deliveryIndex: 0,
-        totalSaved: nextTotalSaved
-      };
-      storeScanTask(deliveryTask);
-      postProgress(message, "info", `AI通过后自动投递开启，准备真实联系 ${data.tasks.length} 个Boss HR。`, {
+    if (isAutoDeliverEnabled(message)) {
+      postProgress(message, "warning", "扫描优先模式已启用：Boss扫描期间不会自动投递，AI通过岗位会进入待确认列表。", {
         ...baseMeta,
-        stage: "autoDeliver",
-        keywordTotal: data.tasks.length
+        stage: "submitted"
       });
-      window.location.href = data.tasks[0].url;
-      return { success: true, totalSaved: nextTotalSaved, pendingNavigation: true };
     }
     storeScanTask({
       ...message,
@@ -715,7 +790,7 @@
     }
 
     const delivery = queue[deliveryIndex];
-    if (delivery?.url && !isSameUrl(window.location.href, delivery.url)) {
+    if (delivery?.url && !isSameBossJobUrl(window.location.href, delivery.url)) {
       postProgress(message, "info", `自动投递正在打开 ${deliveryIndex + 1}/${queue.length}：${delivery.companyName || ""} ${delivery.jobName || ""}`.trim(), {
         ...baseMeta,
         stage: "autoDeliver",
@@ -867,28 +942,47 @@
       keywordIndex: 1
     });
     await waitForPage();
-    if (!isSameUrl(window.location.href, task.url)) {
+    if (!isSameBossJobUrl(window.location.href, task.url)) {
       return {
         success: false,
         message: "Boss投递需要先由扩展后台打开岗位详情页，请刷新扩展和页面后重试。"
       };
     }
-    if (isStopRequested()) {
-      stopRequested = true;
-      return { success: false, message: "Boss扫描已停止" };
-    }
     return deliverOnCurrentPage(task, message);
   }
 
-  async function deliverOnCurrentPage(task, message) {
+  function handleDeliverCurrentMessage(message, sendResponse) {
+    let responded = false;
+    const respondOnce = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (error) {
+        console.warn("Boss deliver response failed", error);
+      }
+    };
+
+    deliverOnCurrentPage(message.task, message, respondOnce).then((result) => {
+      respondOnce(result);
+    }).catch((error) => {
+      postProgress(message, "error", error.message || String(error), {
+        operation: "deliver",
+        stage: "error"
+      });
+      respondOnce({ success: false, message: error.message || String(error) });
+    });
+  }
+
+  async function deliverOnCurrentPage(task, message, earlyRespond) {
     if (!task?.url || !task?.id) {
       return { success: false, message: "投递任务缺少岗位链接或ID" };
     }
     await waitForPage();
-    if (!isSameUrl(window.location.href, task.url)) {
+    if (!isSameBossJobUrl(window.location.href, task.url)) {
       return { success: false, message: "当前Boss页面不是目标岗位详情页，已取消投递。" };
     }
-    if (isStopRequested()) {
+    if (message?.respectScanStop && isStopRequested()) {
       stopRequested = true;
       return { success: false, message: "Boss扫描已停止" };
     }
@@ -900,38 +994,146 @@
       keywordIndex: Number(message.deliveryIndex || 1),
       keywordTotal: Number(message.deliveryTotal || 1)
     });
-    const favoriteButton = findClickable(["感兴趣", "收藏该岗位", "收藏"]) || findBossActionButton("favorite");
+    const beforeUrl = window.location.href;
+    const favoriteButton = findBossDeliverButton(["感兴趣"], ["不感兴趣"])
+      || findClickable(["感兴趣", "收藏该岗位", "收藏"]);
     if (favoriteButton) {
       clickElement(favoriteButton);
       await sleep(600);
-      postProgress(message, "info", "Boss Chrome已点击感兴趣/收藏岗位。", {
+      postProgress(message, "info", "Boss Chrome已点击感兴趣。", {
         operation: "deliver",
         stage: "submitting"
       });
     }
 
-    const chatButton = findClickable(["立即沟通", "继续沟通", "沟通", "立即投递"]) || findBossActionButton("chat");
+    let chatButton = findBossDeliverButton(["立即沟通", "继续沟通", "沟通"], ["不感兴趣"])
+      || findClickable(["立即沟通", "继续沟通", "沟通", "立即投递"]);
+    if (!chatButton && favoriteButton) {
+      chatButton = await waitForBossDeliverButton(["立即沟通", "继续沟通", "沟通"], ["不感兴趣"], 3500)
+        || findClickable(["立即沟通", "继续沟通", "沟通", "立即投递"]);
+    }
     if (!chatButton) {
-      await postDeliveryResult(task, false, "未找到立即沟通按钮");
-      postProgress(message, "warning", "Boss Chrome投递失败：未找到立即沟通按钮", {
+      const failure = detectDeliveryFailure("未找到立即沟通按钮");
+      await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `Boss Chrome投递失败：${failure}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: "未找到立即沟通按钮" };
+      return { success: false, message: failure };
     }
     postProgress(message, "info", "Boss Chrome已找到沟通入口，准备点击立即沟通。", {
       operation: "deliver",
       stage: "submitting"
     });
     clickElement(chatButton);
-    await sleep(1200);
-    await postDeliveryResult(task, true, favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通");
-    postProgress(message, "success", favoriteButton ? "Boss Chrome投递完成：已点击感兴趣并立即沟通。" : "Boss Chrome投递完成：已点击立即沟通。", {
+    const successMessage = favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通";
+    const deliveryCheck = await waitForDeliveryOpened(beforeUrl, task, 9000);
+    if (!deliveryCheck.success) {
+      await postDeliveryResult(task, false, deliveryCheck.message);
+      postProgress(message, "warning", `Boss Chrome投递失败：${deliveryCheck.message}`, {
+        operation: "deliver",
+        stage: "error"
+      });
+      return deliveryCheck;
+    }
+    const greetingResult = await sendConfiguredGreeting(task, message);
+    const finalMessage = greetingResult?.sent ? `${successMessage}，已发送开场白` : successMessage;
+    await postDeliveryResult(task, true, finalMessage);
+    earlyRespond?.({ success: true, message: finalMessage, early: true });
+    postProgress(message, "success", buildDeliverySuccessMessage(favoriteButton, greetingResult), {
       operation: "deliver",
       stage: "complete",
       saved: 1
     });
-    return { success: true, message: favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通" };
+    return { success: true, message: finalMessage };
+  }
+
+  async function sendConfiguredGreeting(task, message) {
+    const greeting = compact(task?.greeting || "");
+    if (!greeting) return { attempted: false, sent: false, message: "未配置开场白" };
+
+    const input = await waitForChatInput(4500);
+    if (!input) return { attempted: false, sent: false, message: "未出现聊天输入框" };
+
+    writeChatInput(input, greeting);
+    await sleep(400);
+    const sendButton = findSendButton();
+    if (!sendButton) {
+      postProgress(message, "warning", "Boss Chrome已填入配置开场白，但未找到发送按钮。", {
+        operation: "deliver",
+        stage: "submitting"
+      });
+      return { attempted: true, sent: false, message: "未找到发送按钮" };
+    }
+
+    clickElement(sendButton);
+    await sleep(600);
+    postProgress(message, "info", "Boss Chrome已发送配置开场白。", {
+      operation: "deliver",
+      stage: "submitting"
+    });
+    return { attempted: true, sent: true, message: "已发送配置开场白" };
+  }
+
+  function buildDeliverySuccessMessage(favoriteButton, greetingResult) {
+    const base = favoriteButton ? "Boss Chrome投递完成：已点击感兴趣并立即沟通。" : "Boss Chrome投递完成：已点击立即沟通。";
+    if (greetingResult?.sent) return `${base}已发送配置开场白。`;
+    if (greetingResult?.attempted) return `${base}配置开场白已填入但未发送。`;
+    return base;
+  }
+
+  async function waitForChatInput(timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const input = findChatInput();
+      if (input) return input;
+      await sleep(250);
+    }
+    return null;
+  }
+
+  function findChatInput() {
+    const selectors = [
+      "div#chat-input.chat-input[contenteditable='true']",
+      "[contenteditable='true'].chat-input",
+      "[contenteditable='true'][id*='chat']",
+      "textarea.input-area",
+      "textarea"
+    ];
+    for (const selector of selectors) {
+      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function writeChatInput(input, text) {
+    input.focus?.();
+    input.click?.();
+    if (String(input.tagName || "").toLowerCase() === "textarea") {
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    input.innerText = text;
+    input.textContent = text;
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+  }
+
+  function findSendButton() {
+    const selectors = [
+      "div.send-message",
+      "button[type='send'].btn-send",
+      "button.btn-send",
+      "[class*='send-message']",
+      "[class*='btn-send']"
+    ];
+    for (const selector of selectors) {
+      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
+      if (node) return node;
+    }
+    return findClickable(["发送"]);
   }
 
   async function deliverBatch(tasks, message) {
@@ -944,10 +1146,6 @@
       saved: 0
     });
     for (let index = 0; index < tasks.length; index++) {
-      if (isStopRequested()) {
-        stopRequested = true;
-        break;
-      }
       const task = tasks[index];
       postProgress(message, "info", `Boss Chrome批量投递进度：${index + 1}/${tasks.length}`, {
         operation: "deliver",
@@ -993,9 +1191,10 @@
   function normalizeScanTask(message) {
     const config = message?.config || {};
     const keywords = uniqueStrings(toList(message?.keywords || config.keywords || config.keyword || "AI产品运营"));
+    const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
     return {
       ...message,
-      config: { ...config, keywords },
+      config: { ...config, keywords, searchJobLimit },
       keywords,
       source: "GET_JOBS_BACKGROUND",
       type: "BOSS_SCAN_START",
@@ -1008,6 +1207,12 @@
       autoDeliver: isAutoDeliverEnabled(message),
       startedAt: message.startedAt || Date.now()
     };
+  }
+
+  function normalizeSearchJobLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1) return 20;
+    return Math.min(Math.floor(parsed), 200);
   }
 
   function storeScanTask(task) {
@@ -1050,15 +1255,12 @@
       if (phase === "detail") {
         const jobs = Array.isArray(task.jobs) ? task.jobs : [];
         const job = jobs[Number(task.detailIndex || 0)];
-        return Boolean(job?.url && isSameUrl(current.href, job.url)) || current.pathname.includes("/job_detail/");
-      }
-      if (phase === "autoDeliver") {
-        const queue = Array.isArray(task.deliveryQueue) ? task.deliveryQueue : [];
-        const delivery = queue[Number(task.deliveryIndex || 0)];
-        return Boolean(delivery?.url && isSameUrl(current.href, delivery.url)) || current.pathname.includes("/job_detail/");
+        if (buildPageBlockDiagnostics().hasBlockingState) return true;
+        return Boolean(job?.url && isSameBossJobUrl(current.href, job.url)) || current.pathname.includes("/job_detail/");
       }
       if (phase === "searching" || phase === "collecting" || phase === "nextKeyword") {
-        return current.pathname === "/web/geek/job";
+        if (current.pathname === "/web/geek/job") return true;
+        return phase === "searching" && isSearchNavigationPending(task);
       }
 
       return false;
@@ -1073,6 +1275,20 @@
 
   function clearStopRequested() {
     sessionStorage.removeItem(SCAN_CANCEL_KEY);
+  }
+
+  function prepareStandaloneDelivery() {
+    stopRequested = false;
+    clearStopRequested();
+    const status = readScanStatus();
+    if (status?.stopRequested || status?.stage === "stopped") {
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: false,
+        stage: "idle",
+        message: "Boss扫描停止状态已清理，正在执行投递"
+      });
+    }
   }
 
   function isStopRequested() {
@@ -1112,6 +1328,68 @@
     return matched.find((el) => /^(BUTTON|A)$/.test(el.tagName) || el.getAttribute?.("role") === "button") || matched[0];
   }
 
+  function findBossDeliverButton(labels, blockedLabels = []) {
+    const all = Array.from(document.querySelectorAll("button, a, [role='button']"))
+      .filter((el) => el.offsetParent !== null);
+    return all.find((el) => {
+      const text = compact([
+        el.innerText,
+        el.textContent,
+        el.getAttribute?.("aria-label"),
+        el.getAttribute?.("title")
+      ].filter(Boolean).join(" "));
+      return labels.some((label) => text === label || text.includes(label))
+        && !blockedLabels.some((label) => text.includes(label));
+    }) || null;
+  }
+
+  async function waitForBossDeliverButton(labels, blockedLabels = [], timeoutMs = 3000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const button = findBossDeliverButton(labels, blockedLabels);
+      if (button) return button;
+      await sleep(250);
+    }
+    return null;
+  }
+
+  async function waitForDeliveryOpened(beforeUrl, task, timeoutMs = 9000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const failure = detectDeliveryFailure("");
+      if (failure) return { success: false, message: failure };
+      if (isBossChatPage(window.location.href)) {
+        return { success: true, message: "已进入Boss沟通页" };
+      }
+      if (findChatInput()) {
+        return { success: true, message: "已打开Boss聊天窗口" };
+      }
+      const continueButton = findBossDeliverButton(["继续沟通", "已沟通"], []);
+      if (continueButton && (!isSameBossJobUrl(beforeUrl, window.location.href) || isSameBossJobUrl(window.location.href, task.url))) {
+        return { success: true, message: "Boss沟通状态已更新" };
+      }
+      await sleep(300);
+    }
+    return { success: false, message: detectDeliveryFailure("点击立即沟通后未出现聊天窗口或沟通页") };
+  }
+
+  function detectDeliveryFailure(fallback) {
+    const text = compact(document.body?.innerText || "");
+    if (isSecurityPrompt(text)) return "Boss页面出现安全验证，请处理后重试";
+    if (isStrongLoginPrompt(text, window.location.href)) return "Boss登录状态失效，请在Chrome中重新登录后重试";
+    const reason = firstMatch(text, /(今日沟通.*?已用完|沟通次数.*?已用完|沟通上限|已达上限|账号异常|操作过于频繁|职位已关闭|停止招聘|职位不存在|该职位.*?不存在|暂不接受沟通|无法与该职位沟通|请先完善在线简历|请上传简历|请先完成实名认证)/);
+    return reason || fallback || "";
+  }
+
+  function isBossChatPage(url) {
+    try {
+      const parsed = new URL(url, window.location.origin);
+      return parsed.hostname.includes("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+    } catch {
+      return false;
+    }
+  }
+
   function findBossActionButton(kind) {
     const buttons = Array.from(document.querySelectorAll("button, a, [role='button'], div, span"))
       .filter((el) => el.offsetParent !== null)
@@ -1132,12 +1410,23 @@
   }
 
   function clickElement(el) {
+    el.scrollIntoView?.({ block: "center", inline: "center" });
     const rect = el.getBoundingClientRect();
     const options = { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-    el.dispatchEvent(new MouseEvent("pointerdown", options));
+    try {
+      el.dispatchEvent(new PointerEvent("pointerdown", options));
+    } catch {
+      el.dispatchEvent(new MouseEvent("pointerdown", options));
+    }
     el.dispatchEvent(new MouseEvent("mousedown", options));
     el.dispatchEvent(new MouseEvent("mouseup", options));
+    try {
+      el.dispatchEvent(new PointerEvent("pointerup", options));
+    } catch {
+      // Some older pages may not expose PointerEvent.
+    }
     el.dispatchEvent(new MouseEvent("click", options));
+    el.click?.();
   }
 
   function extractBossId(url) {
@@ -1145,10 +1434,11 @@
     return match ? match[1] : "";
   }
 
-  async function scrollForCards() {
-    for (let i = 0; i < 6 && !isStopRequested(); i++) {
+  async function scrollForCards(searchJobLimit = 20) {
+    const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
+    for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
       window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
-      await sleep(700);
+      await humanPause(550, 950);
     }
     window.scrollTo(0, 0);
   }
@@ -1196,16 +1486,29 @@
     if (list.length) params.set(key, list.join(","));
   }
 
-  function isCurrentSearchPage(keyword, city) {
+  function isCurrentSearchPage(keyword, city, expectedUrl = "") {
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhipin.com")) return false;
       if (current.pathname !== "/web/geek/job") return false;
+      if (expectedUrl) return isSameSearchUrl(current.href, expectedUrl);
       const query = current.searchParams.get("query") || "";
       const currentCity = current.searchParams.get("city") || "";
       return compact(decodeURIComponent(query)) === compact(keyword) && (!city || !currentCity || currentCity === city);
     } catch {
       return false;
+    }
+  }
+
+  function isSameSearchUrl(left, right) {
+    try {
+      const leftUrl = new URL(left, window.location.origin);
+      const rightUrl = new URL(right, window.location.origin);
+      return leftUrl.origin === rightUrl.origin
+        && leftUrl.pathname === rightUrl.pathname
+        && SEARCH_PARAM_KEYS.every((key) => (leftUrl.searchParams.get(key) || "") === (rightUrl.searchParams.get(key) || ""));
+    } catch {
+      return String(left || "") === String(right || "");
     }
   }
 
@@ -1223,13 +1526,14 @@
 
   function buildListDiagnostics() {
     const bodyText = compact(document.body?.innerText || "");
+    const currentUrl = window.location.href;
     const stats = selectorStats();
     const resultContainers = SEARCH_RESULT_SELECTORS.reduce((sum, selector) => sum + document.querySelectorAll(selector).length, 0);
     const detailLinks = document.querySelectorAll("a[href*='/job_detail/']").length;
     const firstCard = collectJobNodes()[0];
     const firstCardText = compact(firstCard?.innerText || firstCard?.textContent || "").slice(0, 160);
-    const hasLoginPrompt = /登录|扫码|注册|验证码/.test(bodyText);
-    const hasSecurityPrompt = /安全验证|验证|滑块|访问异常|身份验证|请完成验证/.test(bodyText);
+    const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
+    const hasSecurityPrompt = isSecurityPrompt(bodyText);
     const hasEmptyPrompt = /暂无|没有找到|未找到|无搜索结果|换个关键词|调整筛选/.test(bodyText);
     const pageState = hasSecurityPrompt
       ? "安全验证"
@@ -1241,7 +1545,7 @@
             ? "已出现搜索结果容器"
             : "未知";
     return {
-      currentUrl: window.location.href,
+      currentUrl,
       title: document.title || "",
       detailLinks,
       resultContainers,
@@ -1255,8 +1559,208 @@
     };
   }
 
+  function buildPageBlockDiagnostics() {
+    const bodyText = compact(document.body?.innerText || "");
+    const currentUrl = window.location.href;
+    const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
+    const hasSecurityPrompt = isSecurityPrompt(bodyText);
+    return {
+      currentUrl,
+      title: document.title || "",
+      pageState: hasSecurityPrompt ? "安全验证" : hasLoginPrompt ? "登录提示" : "正常",
+      hasLoginPrompt,
+      hasSecurityPrompt,
+      hasEmptyPrompt: false,
+      hasBlockingState: hasLoginPrompt || hasSecurityPrompt
+    };
+  }
+
+  function handleBlockingState(task, diagnostics, meta = {}) {
+    if (!diagnostics || !(diagnostics.hasSecurityPrompt || diagnostics.hasLoginPrompt)) return false;
+    const state = diagnostics.hasSecurityPrompt ? "安全验证" : "登录提示";
+    clearStoredScanTask();
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: true,
+      stage: "blocked",
+      message: `Boss页面出现${state}，扫描已暂停，请处理后重新开始。`,
+      runId: task?.runId,
+      startedAt: task?.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(task || {}, "warning", `Boss页面出现${state}，扫描已暂停，请在Chrome中处理验证码/登录/安全验证后重新开始。`, {
+      ...meta,
+      operation: "scan",
+      stage: "blocked",
+      currentUrl: diagnostics.currentUrl,
+      pageState: diagnostics.pageState
+    });
+    return true;
+  }
+
+  function isSecurityPrompt(text) {
+    return /安全验证|滑块|访问异常|身份验证|请完成验证|验证码|verify|captcha/i.test(text || "");
+  }
+
+  function isStrongLoginPrompt(text, url) {
+    const current = String(url || "");
+    if (/passport|login|user\/login|扫码登录|二维码登录/.test(current)) return true;
+    return /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
+  }
+
   function buildNavigationKey(keyword, city) {
     return `${keyword}::${city}`;
+  }
+
+  function openSearchPage(url, task) {
+    const attempts = Number(task.navigationAttempts || 1);
+    scheduleSearchNavigationRetry(url, task, attempts);
+    requestBackgroundNavigation(url).then((response) => {
+      if (response?.success) return;
+      navigateSearchPageInCurrentFrame(url, attempts);
+    }).catch(() => {
+      navigateSearchPageInCurrentFrame(url, attempts);
+    });
+
+    window.setTimeout(() => {
+      const stored = readStoredScanTask();
+      if (!stored || stored.runId !== task.runId || stored.navigationKey !== task.navigationKey) return;
+      if (!isSearchNavigationPending(stored) || isSameSearchUrl(window.location.href, url)) return;
+      navigateSearchPageInCurrentFrame(url, attempts);
+    }, 350);
+  }
+
+  function requestBackgroundNavigation(url) {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return Promise.resolve({ success: false });
+    }
+    return chrome.runtime.sendMessage({
+      source: "GET_JOBS_BOSS_CONTENT",
+      type: "BOSS_NAVIGATE_TAB",
+      url
+    });
+  }
+
+  function navigateSearchPageInCurrentFrame(url, attempts) {
+    if (attempts > 1) {
+      window.location.replace(url);
+    } else {
+      window.location.assign(url);
+    }
+  }
+
+  function scheduleSearchNavigationRetry(url, task, attempts) {
+    window.setTimeout(() => {
+      const stored = readStoredScanTask();
+      if (!stored || stored.runId !== task.runId || stored.navigationKey !== task.navigationKey) return;
+      if (!isSearchNavigationPending(stored) || isSameSearchUrl(window.location.href, url)) return;
+
+      if (attempts >= SEARCH_NAVIGATION_MAX_ATTEMPTS) {
+        skipSearchNavigationKeyword(stored, url);
+        return;
+      }
+
+      const nextAttempts = Number(stored.navigationAttempts || attempts || 0) + 1;
+      const retryTask = {
+        ...stored,
+        navigationAttempts: nextAttempts,
+        navigationStartedAt: Date.now(),
+        navigationRefreshAttempted: stored.navigationRefreshAttempted || nextAttempts === 3
+      };
+      storeScanTask(retryTask);
+      if (nextAttempts === 3 && !stored.navigationRefreshAttempted) {
+        postProgress(retryTask, "warning", `Boss搜索页跳转仍未完成，正在刷新当前页面后继续恢复：${retryTask.expectedKeyword || ""}。当前URL：${window.location.href}`, {
+          operation: "scan",
+          stage: "searching",
+          keyword: retryTask.expectedKeyword || "",
+          keywordIndex: Number(retryTask.currentIndex || 0) + 1,
+          keywordTotal: scanKeywords(retryTask).length,
+          currentUrl: window.location.href,
+          targetUrl: url,
+          navigationAttempts: nextAttempts,
+          totalSaved: Number(retryTask.totalSaved || 0)
+        });
+        window.location.reload();
+        return;
+      }
+      postProgress(retryTask, "warning", `Boss搜索页跳转未完成，正在重试打开搜索页：${retryTask.expectedKeyword || ""}。当前URL：${window.location.href}`, {
+        operation: "scan",
+        stage: "searching",
+        keyword: retryTask.expectedKeyword || "",
+        keywordIndex: Number(retryTask.currentIndex || 0) + 1,
+        keywordTotal: scanKeywords(retryTask).length,
+        currentUrl: window.location.href,
+        targetUrl: url,
+        navigationAttempts: nextAttempts,
+        totalSaved: Number(retryTask.totalSaved || 0)
+      });
+      openSearchPage(url, retryTask);
+    }, SEARCH_NAVIGATION_RETRY_MS);
+  }
+
+  function skipSearchNavigationKeyword(task, url) {
+    const keyword = task.expectedKeyword || scanKeywords(task)[Number(task.currentIndex || 0)] || "";
+    const keywordTotal = scanKeywords(task).length;
+    const nextTask = {
+      ...task,
+      phase: "nextKeyword",
+      jobs: [],
+      detailIndex: 0,
+      currentIndex: Number(task.currentIndex || 0) + 1,
+      navigationAttempts: 0,
+      navigationStartedAt: 0,
+      navigationRefreshAttempted: false,
+      expectedKeyword: "",
+      expectedSearchUrl: "",
+      totalSaved: Number(task.totalSaved || 0)
+    };
+    storeScanTask(nextTask);
+    writeScanStatus({
+      isRunning: true,
+      stopRequested: false,
+      stage: "searching",
+      message: `Boss搜索页跳转失败，已跳过关键词：${keyword}，继续下一个关键词。`,
+      runId: task.runId,
+      keyword,
+      keywordIndex: Number(task.currentIndex || 0) + 1,
+      keywordTotal,
+      totalSaved: Number(task.totalSaved || 0),
+      startedAt: task.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(task, "warning", `Boss搜索页跳转失败，已跳过关键词：${keyword}，继续下一个关键词。`, {
+      operation: "scan",
+      stage: "searching",
+      keyword,
+      keywordIndex: Number(task.currentIndex || 0) + 1,
+      keywordTotal,
+      currentUrl: window.location.href,
+      targetUrl: url,
+      navigationAttempts: Number(task.navigationAttempts || 0),
+      totalSaved: Number(task.totalSaved || 0)
+    });
+    runScan(nextTask).catch((error) => {
+      clearStoredScanTask();
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: false,
+        stage: "error",
+        message: error.message || String(error),
+        runId: task.runId,
+        startedAt: task.startedAt,
+        updatedAt: Date.now()
+      });
+      postProgress(task, "error", error.message || String(error), {
+        operation: "scan",
+        stage: "error"
+      });
+    });
+  }
+
+  function isSearchNavigationPending(task) {
+    if (String(task?.phase || "") !== "searching" || !task?.expectedSearchUrl) return false;
+    const startedAt = Number(task.navigationStartedAt || task.updatedAt || 0);
+    return Boolean(startedAt && Date.now() - startedAt < SEARCH_NAVIGATION_GRACE_MS);
   }
 
   function isAutoDeliverEnabled(message) {
@@ -1484,6 +1988,13 @@
     }
   }
 
+  function isSameBossJobUrl(left, right) {
+    const leftId = extractBossId(left);
+    const rightId = extractBossId(right);
+    if (leftId && rightId) return leftId === rightId;
+    return isSameUrl(left, right);
+  }
+
   function compact(text) {
     return String(text || "").replace(/\s+/g, " ").trim();
   }
@@ -1523,5 +2034,13 @@
       };
       tick();
     });
+  }
+
+  function randomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function humanPause(minMs, maxMs) {
+    return sleep(randomInt(minMs, maxMs));
   }
 })();

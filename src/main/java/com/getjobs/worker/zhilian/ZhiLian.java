@@ -176,6 +176,7 @@ public class ZhiLian {
 
             // 遍历所有页面：仅以“下一页”按钮禁用状态为主，最多50页
             int pageNum = 1;
+            KeywordScanState scanState = new KeywordScanState(searchJobLimit());
             while (pageNum <= 50) {
                 if (shouldStop() || isLimit) {
                     sendProgress("用户取消扫描或已达上限", null, null);
@@ -196,7 +197,11 @@ public class ZhiLian {
                 }
 
                 // 扫描当前页面
-                if (!deliverCurrentPage(keyword)) {
+                if (!deliverCurrentPage(keyword, scanState)) {
+                    break;
+                }
+                if (scanState.reachedLimit()) {
+                    log.info("关键词【{}】已达到每关键词AI分析上限: {}", keyword, scanState.limit);
                     break;
                 }
 
@@ -231,7 +236,7 @@ public class ZhiLian {
      * 扫描当前页面的所有职位
      * @return 是否继续扫描下一页
      */
-    private boolean deliverCurrentPage(String keyword) {
+    private boolean deliverCurrentPage(String keyword, KeywordScanState scanState) {
         try {
             page.waitForSelector("div.joblist-box__item",
                     new Page.WaitForSelectorOptions().setTimeout(15000));
@@ -313,6 +318,10 @@ public class ZhiLian {
             }
 
             for (PageJob pj : jobs) {
+                if (scanState.reachedLimit()) {
+                    sendProgress("已达到每关键词AI分析上限：" + scanState.limit, scanState.analyzed, scanState.limit);
+                    return false;
+                }
                 if (shouldStop()) {
                     sendProgress("用户取消扫描或已达上限", null, null);
                     return false;
@@ -320,6 +329,8 @@ public class ZhiLian {
 
                 try {
                     String jobDescription = fetchJobDescription(pj.jobLink);
+                    scanState.analyzed++;
+                    sendProgress("正在AI分析：" + pj.jobTitle, scanState.analyzed, scanState.limit);
                     JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                     analysisRequest.setPlatform("zhilian");
                     analysisRequest.setKeyword(keyword);
@@ -379,6 +390,25 @@ public class ZhiLian {
                 log.warn("保存当前页面HTML失败: {}", saveEx.getMessage());
             }
             return false;
+        }
+    }
+
+    private int searchJobLimit() {
+        Integer limit = config == null ? null : config.getSearchJobLimit();
+        if (limit == null || limit < 1) return 20;
+        return Math.min(limit, 200);
+    }
+
+    private static class KeywordScanState {
+        private final int limit;
+        private int analyzed;
+
+        KeywordScanState(int limit) {
+            this.limit = limit;
+        }
+
+        boolean reachedLimit() {
+            return analyzed >= limit;
         }
     }
 

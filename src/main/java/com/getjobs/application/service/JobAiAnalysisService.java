@@ -294,7 +294,7 @@ public class JobAiAnalysisService {
     }
 
     private AnalysisResult parseResult(String raw) {
-        JSONObject obj = new JSONObject(extractJson(raw));
+        JSONObject obj = new JSONObject(repairJsonObject(extractJson(raw)));
         AnalysisResult result = new AnalysisResult();
         result.setScore(obj.has("score") ? obj.optInt("score") : 0);
         result.setDecision(obj.optString("decision", "SKIP"));
@@ -328,6 +328,70 @@ public class JobAiAnalysisService {
         int end = s.lastIndexOf('}');
         if (start >= 0 && end > start) return s.substring(start, end + 1);
         return s;
+    }
+
+    private String repairJsonObject(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "{}";
+        String s = raw.trim()
+                .replace('\u201c', '"')
+                .replace('\u201d', '"')
+                .replace('\u2018', '\'')
+                .replace('\u2019', '\'');
+        try {
+            new JSONObject(s);
+            return s;
+        } catch (Exception ignored) {
+        }
+
+        int start = s.indexOf('{');
+        int end = s.lastIndexOf('}');
+        if (start >= 0) {
+            s = end > start ? s.substring(start, end + 1) : s.substring(start) + "}";
+        }
+
+        s = s.replaceAll(",\\s*([}\\]])", "$1");
+        for (String key : List.of("score", "decision", "summary", "strengths", "risks", "greeting")) {
+            s = s.replaceAll("(?m)([{,]\\s*)" + key + "\\s*:", "$1\"" + key + "\":");
+        }
+        try {
+            new JSONObject(s);
+            return s;
+        } catch (Exception ignored) {
+        }
+
+        return fallbackJsonFromText(raw);
+    }
+
+    private String fallbackJsonFromText(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        JSONObject obj = new JSONObject();
+        obj.put("score", extractScore(text));
+        obj.put("decision", extractDecision(text));
+        obj.put("summary", limit(text.isEmpty() ? "AI返回格式异常，已按跳过处理" : text, 500));
+        obj.put("strengths", new JSONArray());
+        obj.put("risks", new JSONArray(List.of("AI返回不是标准JSON，建议检查模型输出或重试分析")));
+        obj.put("greeting", "");
+        return obj.toString();
+    }
+
+    private int extractScore(String text) {
+        if (text == null) return 0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(?i)(score|分数|得分)\\D{0,12}(\\d{1,3})").matcher(text);
+        if (matcher.find()) {
+            try {
+                return Math.max(0, Math.min(100, Integer.parseInt(matcher.group(2))));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0;
+    }
+
+    private String extractDecision(String text) {
+        if (text == null) return "SKIP";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?i)(decision|决策)\\D{0,20}(APPLY|SKIP)")
+                .matcher(text);
+        return matcher.find() ? matcher.group(2).toUpperCase(Locale.ROOT) : "SKIP";
     }
 
     private String extractJsonArray(String raw) {

@@ -285,7 +285,9 @@ public class Boss {
             // 3. 逐个遍历所有岗位
             Locator cards = page.locator(JOB_LIST_SELECTOR);
             int count = cards.count();
-            for (int i = 0; i < count; i++) {
+            int searchJobLimit = searchJobLimit();
+            int analyzedCount = 0;
+            for (int i = 0; i < count && analyzedCount < searchJobLimit; i++) {
                 // 检查是否需要停止
                 if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
                     progressCallback.accept("用户取消投递", i, count);
@@ -406,7 +408,8 @@ public class Boss {
                 job.setJobInfo(jobDesc != null ? jobDesc : "");
 
                 // 输出
-                progressCallback.accept("正在分析：" + jobName, i + 1, count);
+                analyzedCount++;
+                progressCallback.accept("正在分析：" + jobName, analyzedCount, searchJobLimit);
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setPlatform("boss");
                 analysisRequest.setKeyword(keyword);
@@ -423,7 +426,7 @@ public class Boss {
                 if (!analysis.shouldApply()) {
                     log.info("AI跳过岗位 | 公司：{} | 岗位：{} | 分数：{} | 原因：{}",
                             job.getCompanyName(), job.getJobName(), analysis.getScore(), analysis.getSummary());
-                    progressCallback.accept("AI跳过：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
+                    progressCallback.accept("AI跳过：" + jobName + "（" + analysis.getScore() + "分）", analyzedCount, searchJobLimit);
                     continue;
                 }
                 if (!Boolean.TRUE.equals(config.getDebugger())) {
@@ -437,10 +440,10 @@ public class Boss {
                             log.warn("更新待确认状态失败：{}", e.getMessage());
                         }
                     }
-                    progressCallback.accept("待确认：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
+                    progressCallback.accept("待确认：" + jobName + "（" + analysis.getScore() + "分）", analyzedCount, searchJobLimit);
                     postCount++;
                 } else {
-                    progressCallback.accept("调试模式命中：" + jobName + "（" + analysis.getScore() + "分）", i + 1, count);
+                    progressCallback.accept("调试模式命中：" + jobName + "（" + analysis.getScore() + "分）", analyzedCount, searchJobLimit);
                 }
 
                 // 为避免点击下面的卡片触发页面刷新：在点击5个卡片之后，每次点击后适度下滑
@@ -451,8 +454,17 @@ public class Boss {
                     }
                 } catch (Throwable ignore) {}
             }
-            log.info("【{}】岗位扫描完毕！待确认岗位数量:{}", keyword, postCount);
+            if (analyzedCount >= searchJobLimit && count > searchJobLimit) {
+                log.info("【{}】已达到每关键词AI分析上限: {}", keyword, searchJobLimit);
+            }
+            log.info("【{}】岗位扫描完毕！已分析:{}，待确认岗位数量:{}", keyword, analyzedCount, postCount);
         }
+    }
+
+    private int searchJobLimit() {
+        Integer limit = config == null ? null : config.getSearchJobLimit();
+        if (limit == null || limit < 1) return 20;
+        return Math.min(limit, 200);
     }
 
     private void ensureSearchPageAvailable(String keyword) {

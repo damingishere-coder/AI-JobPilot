@@ -21,6 +21,7 @@ import {
   BiChevronDown,
   BiChevronUp,
   BiLinkExternal,
+  BiTrash,
 } from "react-icons/bi"
 
 type NameValue = { name: string; value: number }
@@ -100,7 +101,7 @@ type PagedResult = {
 }
 
 const API_BASE = "http://localhost:8888"
-const DELIVERY_STATUS_OPTIONS = ["待确认", "已投递", "未投递", "AI不匹配", "采集信息不足", "已过滤", "已跳过", "投递失败"]
+const DELIVERY_STATUS_OPTIONS = ["待确认", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
 const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
 const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
 
@@ -459,6 +460,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [clearingAnalysis, setClearingAnalysis] = useState(false)
 
   // 查看全文弹窗
   const [showTextDialog, setShowTextDialog] = useState(false)
@@ -467,6 +469,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
+  const [actingAiBatch, setActingAiBatch] = useState(false)
 
   const openTextDialog = (title: string, content?: string) => {
     setTextDialogTitle(title)
@@ -644,6 +647,31 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
+  const clearAnalysisData = async () => {
+    const ok = window.confirm("确认清空 Boss 投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
+    if (!ok) return
+    try {
+      setClearingAnalysis(true)
+      const res = await fetch(`${API_BASE}/api/boss/analysis`, { method: "DELETE" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || "清空失败")
+      }
+      setItems([])
+      setTotal(0)
+      setPage(1)
+      setInputPage(1)
+      setStats(null)
+      await loadList(1, size)
+      await loadStats()
+      openTextDialog("清空投递分析", data.message || "Boss投递分析数据已清空。")
+    } catch (error) {
+      openTextDialog("清空投递分析", error instanceof Error ? error.message : "清空失败：网络或服务异常。")
+    } finally {
+      setClearingAnalysis(false)
+    }
+  }
+
   const exportCSV = async () => {
     try {
       setExporting(true)
@@ -793,6 +821,37 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
+  const handleConfirmAiRecommendedBatch = async () => {
+    try {
+      setActingAiBatch(true)
+      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiRecommendedOnly: true }),
+      })
+      const data = await res.json()
+      const tasks = data.tasks || []
+      if (!data.success || tasks.length === 0) {
+        openTextDialog("AI推荐一键投递", data.message || "当前没有 AI 推荐的待确认岗位。")
+        return
+      }
+      const ok = window.confirm(`将通过 Chrome 真实联系 ${tasks.length} 个 Boss AI推荐待确认岗位。确认继续？`)
+      if (!ok) return
+      const result = await sendChromeBridgeMessage({
+        type: "BOSS_DELIVER_BATCH",
+        platform: "boss",
+        tasks,
+      }, Math.max(120000, tasks.length * 30000))
+      openTextDialog("AI推荐一键投递", result.message || "AI推荐批量投递任务已结束。")
+      await loadList(page, size)
+      await loadStats()
+    } catch {
+      openTextDialog("AI推荐一键投递", "AI推荐批量投递失败：网络或服务异常。")
+    } finally {
+      setActingAiBatch(false)
+    }
+  }
+
   const handleSkipJob = async (job: BossJob) => {
     try {
       setActingJobId(job.id)
@@ -817,6 +876,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     if (kind === "delivery") {
       if (v.includes("已投递")) return `${base} bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300`
       if (v.includes("待确认")) return `${base} bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300`
+      if (v.includes("AI分析中")) return `${base} bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300`
       if (v.includes("采集信息不足")) return `${base} bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300`
       if (v.includes("AI不匹配")) return `${base} bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300`
       if (v.includes("已过滤")) return `${base} bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300`
@@ -858,6 +918,11 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           title="Boss 投递分析"
           subtitle="基于 boss_data 表的统计图与列表分析"
           icon={<BiBarChart size={28} />}
+          actions={
+            <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+            </Button>
+          }
         />
       )}
 
@@ -988,11 +1053,17 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               <Button size="sm" variant="outline" onClick={onReload} disabled={reloading}>
                 <BiRefresh className="mr-1" /> 刷新数据
               </Button>
+              <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
+                <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+              </Button>
               <Button size="sm" variant="outline" onClick={() => setShowDetailColumns((value) => !value)}>
                 {showDetailColumns ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
                 {showDetailColumns ? "收起详情列" : "展开详情列"}
               </Button>
-              <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+              <Button size="sm" variant="success" onClick={handleConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch}>
+                <BiBriefcase className="mr-1" /> {actingAiBatch ? "投递中..." : "一键投递AI推荐待确认"}
+              </Button>
+              <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || actingAiBatch}>
                 <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前待确认"}
               </Button>
             </div>

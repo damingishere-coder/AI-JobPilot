@@ -26,6 +26,10 @@ import java.util.stream.Collectors;
 @Slf4j
 @RequiredArgsConstructor
 public class ZhilianService {
+    public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
+    public static final int MIN_SEARCH_JOB_LIMIT = 1;
+    public static final int MAX_SEARCH_JOB_LIMIT = 200;
+
     private final ZhilianConfigMapper zhilianConfigMapper;
     private final ZhilianOptionMapper zhilianOptionMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
@@ -47,11 +51,13 @@ public class ZhilianService {
             config.setKeywords(new ArrayList<>());
             config.setCityCode("0");
             config.setSalary("0");
+            config.setSearchJobLimit(DEFAULT_SEARCH_JOB_LIMIT);
             return config;
         }
 
         // 关键词解析：支持逗号或括号列表
         config.setKeywords(parseListString(entity.getKeywords()));
+        config.setSearchJobLimit(normalizeSearchJobLimit(entity.getSearchJobLimit()));
 
         // 城市：中文名映射到代码；缺省或“不限”映射为 0
         String city = safeTrim(entity.getCityCode());
@@ -108,6 +114,7 @@ public class ZhilianService {
      */
     public ZhilianConfigEntity updateConfig(ZhilianConfigEntity config) {
         if (config == null) return null;
+        config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         if (config.getId() != null) {
             zhilianConfigMapper.updateById(config);
             return zhilianConfigMapper.selectById(config.getId());
@@ -126,6 +133,7 @@ public class ZhilianService {
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setCityCode(incoming.getCityCode());
             toInsert.setSalary(incoming.getSalary());
+            toInsert.setSearchJobLimit(normalizeSearchJobLimit(incoming.getSearchJobLimit()));
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
             zhilianConfigMapper.insert(toInsert);
@@ -136,6 +144,11 @@ public class ZhilianService {
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getCityCode() != null) toUpdate.setCityCode(incoming.getCityCode());
             if (incoming.getSalary() != null) toUpdate.setSalary(incoming.getSalary());
+            if (incoming.getSearchJobLimit() != null) {
+                toUpdate.setSearchJobLimit(normalizeSearchJobLimit(incoming.getSearchJobLimit()));
+            } else if (first.getSearchJobLimit() == null) {
+                toUpdate.setSearchJobLimit(DEFAULT_SEARCH_JOB_LIMIT);
+            }
             toUpdate.setCreatedAt(first.getCreatedAt());
             toUpdate.setUpdatedAt(now);
             zhilianConfigMapper.updateById(toUpdate);
@@ -201,6 +214,7 @@ public class ZhilianService {
                 " update_time DATETIME" +
                 ")";
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
+            try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN search_job_limit INTEGER DEFAULT 20"); } catch (Exception ignored) {}
             stmt.execute(createSql);
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN job_description TEXT"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_score INTEGER"); } catch (Exception ignored) {}
@@ -211,6 +225,13 @@ public class ZhilianService {
         } catch (Exception e) {
             log.warn("创建 zhilian_data 表失败: {}", e.getMessage());
         }
+    }
+
+    public int normalizeSearchJobLimit(Integer raw) {
+        if (raw == null || raw < MIN_SEARCH_JOB_LIMIT) {
+            return DEFAULT_SEARCH_JOB_LIMIT;
+        }
+        return Math.min(raw, MAX_SEARCH_JOB_LIMIT);
     }
 
     public boolean existsByJobId(String jobId) {
@@ -266,11 +287,19 @@ public class ZhilianService {
         entity.setId(existing.getId());
         entity.setCreateTime(existing.getCreateTime());
         entity.setUpdateTime(now);
-        if (entity.getDeliveryStatus() == null || entity.getDeliveryStatus().isBlank()) {
-            entity.setDeliveryStatus(existing.getDeliveryStatus());
-        }
+        entity.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), entity.getDeliveryStatus()));
         zhilianJobDataMapper.updateById(entity);
         return zhilianJobDataMapper.selectById(existing.getId());
+    }
+
+    private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
+        if (existingStatus != null && List.of(
+                "已投递", "待确认", "已跳过", "AI分析中", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
+        ).contains(existingStatus)) {
+            return existingStatus;
+        }
+        if (incomingStatus != null && !incomingStatus.isBlank()) return incomingStatus;
+        return existingStatus == null || existingStatus.isBlank() ? "未投递" : existingStatus;
     }
 
     public ZhilianJobDataEntity getZhilianJobById(Long id) {
@@ -593,6 +622,44 @@ public class ZhilianService {
         public long total;
         public int page;
         public int size;
+    }
+
+    /**
+     * 清空智联投递分析数据。用于切换候选人/简历前重置旧岗位和旧 AI 结果。
+     */
+    public Map<String, Object> clearZhilianAnalysisData() {
+        Map<String, Object> resp = new HashMap<>();
+        Connection conn = null;
+        boolean originalAutoCommit = true;
+        try {
+            conn = dataSource.getConnection();
+            originalAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+
+            int analysisDeleted;
+            int jobsDeleted;
+            try (Statement st = conn.createStatement()) {
+                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian'");
+                jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data");
+                try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='zhilian_data'"); } catch (Exception ignore) {}
+            }
+
+            conn.commit();
+            resp.put("success", true);
+            resp.put("message", "智联投递分析数据已清空");
+            resp.put("jobsDeleted", jobsDeleted);
+            resp.put("analysisDeleted", analysisDeleted);
+            resp.put("total", 0);
+        } catch (Exception e) {
+            try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}
+            log.warn("清空智联投递分析数据失败: {}", e.getMessage());
+            resp.put("success", false);
+            resp.put("message", "清空失败: " + e.getMessage());
+        } finally {
+            try { if (conn != null) conn.setAutoCommit(originalAutoCommit); } catch (Exception ignore) {}
+            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
+        }
+        return resp;
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s.trim(); }

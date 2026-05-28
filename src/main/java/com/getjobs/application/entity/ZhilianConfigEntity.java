@@ -23,6 +23,9 @@ public class ZhilianConfigEntity {
     /** 薪资范围（中文名或代码，单值） */
     private String salary;
 
+    /** 每个关键词进入AI分析的岗位数量上限 */
+    private Integer searchJobLimit;
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

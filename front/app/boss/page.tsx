@@ -22,6 +22,7 @@ interface BossConfig {
   cityCode?: string
   industry?: string
   jobType?: string
+  searchJobLimit?: number
   experience?: string
   degree?: string
   salary?: string
@@ -71,11 +72,14 @@ interface ProgressLog {
   timestamp?: number
 }
 
+const SEARCH_JOB_LIMIT_PRESETS = [10, 20, 30, 50, 100, 200]
+const SEARCH_JOB_LIMIT_CUSTOM_VALUE = 'custom'
+
 const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
   const operation = String(payload.operation || '')
-  return (operation === 'scan' && ['complete', 'stopped', 'error'].includes(stage))
+  return (operation === 'scan' && ['complete', 'stopped', 'error', 'blocked'].includes(stage))
     || message.includes('扫描完成')
     || message.includes('扫描已停止')
     || message.includes('扫描失败')
@@ -92,6 +96,7 @@ export default function BossPage() {
     salary: '',
     scale: '',
     stage: '',
+    searchJobLimit: 20,
     filterDeadHr: 0,
     autoDeliver: 0,
   })
@@ -132,6 +137,28 @@ export default function BossPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+  const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
+  const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
+
+  const normalizeSearchJobLimit = (value?: number | string): number => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed < 1) return 20
+    return Math.min(Math.floor(parsed), 200)
+  }
+
+  const syncSearchJobLimitControls = (value?: number | string): number => {
+    const limit = normalizeSearchJobLimit(value)
+    setCustomSearchJobLimit(String(limit))
+    setSearchJobLimitMode(SEARCH_JOB_LIMIT_PRESETS.includes(limit) ? 'preset' : 'custom')
+    return limit
+  }
+
+  const commitSearchJobLimit = (value?: number | string): number => {
+    const rawValue = value ?? (searchJobLimitMode === 'custom' ? customSearchJobLimit : config.searchJobLimit)
+    const limit = syncSearchJobLimitControls(rawValue)
+    setConfig((prev) => ({ ...prev, searchJobLimit: limit }))
+    return limit
+  }
 
   const appendProgressLog = useCallback((entry: Omit<ProgressLog, 'id'>) => {
     const timestamp = entry.timestamp || Date.now()
@@ -266,7 +293,7 @@ export default function BossPage() {
       })
 
       const message = String(payload.message || '')
-      if (message.includes('入库完成') || message.includes('扫描完成') || message.includes('提交后端完成')) {
+      if (message.includes('入库完成') || message.includes('扫描完成')) {
         setAnalysisRefreshSignal((value) => value + 1)
       }
       if (isTerminalScanPayload(payload)) {
@@ -318,10 +345,12 @@ export default function BossPage() {
           if (list.length > 0) return list[0]
           return raw
         }
+        const searchJobLimit = syncSearchJobLimitControls(data.config.searchJobLimit)
         setConfig({
           ...data.config,
           cityCode: normalizeCityCode(data.config.cityCode),
           jobType: normalizeJobType(data.config.jobType),
+          searchJobLimit,
           autoDeliver: data.config.autoDeliver ?? 0,
         })
         // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
@@ -457,7 +486,13 @@ export default function BossPage() {
 
         // HR活跃过滤开关：后端为 0/1，前端直接回显为数字
         const normalizedFilterDeadHr = (data.config?.filterDeadHr ?? 0)
-        setConfig(prev => ({ ...prev, filterDeadHr: normalizedFilterDeadHr, autoDeliver: data.config?.autoDeliver ?? 0 }))
+        const optionSearchJobLimit = syncSearchJobLimitControls(data.config?.searchJobLimit)
+        setConfig(prev => ({
+          ...prev,
+          filterDeadHr: normalizedFilterDeadHr,
+          autoDeliver: data.config?.autoDeliver ?? 0,
+          searchJobLimit: optionSearchJobLimit,
+        }))
 
         // 其它多选选项：将中文名称转换为代码以匹配 MultiSelect 的 selected
         setSelectedIndustry(toCodes(data.options.industry || [], parseListString(data.config?.industry)))
@@ -505,6 +540,7 @@ export default function BossPage() {
 
   const handleSave = async (silent: boolean = false, overrides?: Partial<BossConfig>) => {
     try {
+      const searchJobLimit = commitSearchJobLimit(overrides?.searchJobLimit)
       // 组装要保存的负载：多选使用括号列表
       const payload: BossConfig = {
         ...config,
@@ -512,6 +548,7 @@ export default function BossPage() {
         ...(overrides || {}),
         // 关键词：前端发送逗号分隔的纯文本，后端统一组装为 JSON 列表
         keywords: keywordsDisplay,
+        searchJobLimit,
         industry: toBracketList(selectedIndustry),
         experience: toBracketList(selectedExperience),
         degree: toBracketList(selectedDegree),
@@ -528,7 +565,12 @@ export default function BossPage() {
       })
 
       if (response.ok) {
-        fetchAllData()
+        const savedConfig = await response.json().catch(() => null)
+        if (savedConfig?.searchJobLimit != null) {
+          const savedLimit = syncSearchJobLimitControls(savedConfig.searchJobLimit)
+          setConfig((prev) => ({ ...prev, searchJobLimit: savedLimit }))
+        }
+        await fetchAllData()
         if (!silent) {
           setSaveDialogKind('save')
           setSaveResult({
@@ -616,10 +658,11 @@ export default function BossPage() {
       setIsStopping(false)
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
-      appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求，将使用当前Chrome登录态生成待确认岗位。' })
+      appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       if (Number(config.autoDeliver || 0) === 1) {
-        appendProgressLog({ type: 'warning', message: '自动投递已开启：AI通过后会真实联系 Boss HR。' })
+        appendProgressLog({ type: 'warning', message: '扫描优先模式：扫描期间不会自动投递，AI通过岗位会进入待确认列表。' })
       }
+      const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
         platform: 'boss',
@@ -634,6 +677,7 @@ export default function BossPage() {
           stage: selectedStage,
           salary: selectedSalary,
           cityCode: config.cityCode,
+          searchJobLimit,
           autoDeliver: config.autoDeliver ?? 0,
         },
         autoDeliver: config.autoDeliver ?? 0,
@@ -805,7 +849,7 @@ export default function BossPage() {
             <CardContent>
               <div className="space-y-4">
 	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
-		                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始采集；自动投递关闭时只生成待确认列表。</p>
+	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始采集；扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>
@@ -866,6 +910,52 @@ export default function BossPage() {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="searchJobLimit">每关键词后台 AI 分析岗位数</Label>
+                <Select
+                  id="searchJobLimit"
+                  value={searchJobLimitMode === 'custom' ? SEARCH_JOB_LIMIT_CUSTOM_VALUE : String(normalizeSearchJobLimit(config.searchJobLimit))}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    if (value === SEARCH_JOB_LIMIT_CUSTOM_VALUE) {
+                      const currentLimit = normalizeSearchJobLimit(config.searchJobLimit)
+                      setSearchJobLimitMode('custom')
+                      setCustomSearchJobLimit(String(currentLimit))
+                      return
+                    }
+                    const limit = normalizeSearchJobLimit(value)
+                    setSearchJobLimitMode('preset')
+                    setCustomSearchJobLimit(String(limit))
+                    setConfig({ ...config, searchJobLimit: limit })
+                  }}
+                >
+                  {SEARCH_JOB_LIMIT_PRESETS.map((limit) => (
+                    <option key={limit} value={String(limit)}>{limit}</option>
+                  ))}
+                  <option value={SEARCH_JOB_LIMIT_CUSTOM_VALUE}>自定义</option>
+                </Select>
+                {searchJobLimitMode === 'custom' && (
+                  <Input
+                    type="number"
+                    min={1}
+                    max={200}
+                    step={1}
+                    value={customSearchJobLimit}
+                    onChange={(e) => {
+                      const rawValue = e.target.value
+                      setCustomSearchJobLimit(rawValue)
+                      const parsed = Number(rawValue)
+                      if (Number.isFinite(parsed) && parsed >= 1) {
+                        setConfig({ ...config, searchJobLimit: Math.min(Math.floor(parsed), 200) })
+                      }
+                    }}
+                    onBlur={() => commitSearchJobLimit(customSearchJobLimit)}
+                    placeholder="输入 1-200"
+                  />
+                )}
+                <p className="text-xs text-muted-foreground">每个关键词最多进入AI打分的岗位数，范围 1-200。</p>
+              </div>
+
+              <div className="space-y-2">
                 <Label>公司行业</Label>
                 <MultiSelect
                   options={options.industry}
@@ -899,7 +989,7 @@ export default function BossPage() {
                   <option value="0">关闭</option>
                   <option value="1">开启</option>
                 </Select>
-                <p className="text-xs text-red-600 dark:text-red-400">开启后 AI 通过会真实联系 HR。</p>
+                <p className="text-xs text-muted-foreground">扫描期间不会自动投递；AI通过岗位会进入待确认列表，可在分析页统一确认投递。</p>
               </div>
               </div>
             </CardContent>
@@ -1277,7 +1367,7 @@ function ProgressLogCard({
       </CardHeader>
       <CardContent>
         {logs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、AI分析、待确认和错误信息。</p>
+          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、后台AI队列、待确认和错误信息。</p>
         ) : (
           <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (

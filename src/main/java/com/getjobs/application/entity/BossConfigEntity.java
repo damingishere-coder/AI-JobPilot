@@ -25,6 +25,8 @@ public class BossConfigEntity {
     private String industry;
     /** 职位类型（名称或代码，单值或列表，优先取第一项） */
     private String jobType;
+    /** 每个关键词进入AI分析的岗位数量上限 */
+    private Integer searchJobLimit;
     /** 工作经验（名称或代码，支持列表） */
     private String experience;
     /** 学历要求（名称或代码，支持列表） */

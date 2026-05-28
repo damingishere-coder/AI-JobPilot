@@ -43,6 +43,11 @@ public class BossConfigController {
         if (config.getAutoDeliver() == null) {
             config.setAutoDeliver(0);
         }
+        if (config.getSearchJobLimit() == null) {
+            config.setSearchJobLimit(BossService.DEFAULT_SEARCH_JOB_LIMIT);
+        } else {
+            config.setSearchJobLimit(bossService.normalizeSearchJobLimit(config.getSearchJobLimit()));
+        }
 
         // 获取所有选项并按类型分组
         Map<String, List<BossOptionEntity>> options = new HashMap<>();

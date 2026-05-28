@@ -42,6 +42,9 @@ import java.util.regex.Pattern;
 @Slf4j
 @RequiredArgsConstructor
 public class BossService {
+    public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
+    public static final int MIN_SEARCH_JOB_LIMIT = 1;
+    public static final int MAX_SEARCH_JOB_LIMIT = 200;
 
     private final BossOptionMapper bossOptionMapper;
     private final BossIndustryMapper bossIndustryMapper;
@@ -54,6 +57,7 @@ public class BossService {
     public void ensureBossConfigSchema() {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             addColumn(stmt, "boss_config", "auto_deliver", "INTEGER DEFAULT 0");
+            addColumn(stmt, "boss_config", "search_job_limit", "INTEGER DEFAULT 20");
         } catch (Exception e) {
             log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
         }
@@ -193,7 +197,7 @@ public class BossService {
      */
     public BossConfigEntity getFirstConfig() {
         QueryWrapper<BossConfigEntity> wrapper = new QueryWrapper<>();
-        wrapper.last("LIMIT 1");
+        wrapper.orderByAsc("id").last("LIMIT 1");
         return bossConfigMapper.selectOne(wrapper);
     }
 
@@ -201,6 +205,7 @@ public class BossService {
      * 保存配置
      */
     public BossConfigEntity saveConfig(BossConfigEntity config) {
+        config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         config.setCreatedAt(LocalDateTime.now());
         config.setUpdatedAt(LocalDateTime.now());
         bossConfigMapper.insert(config);
@@ -211,6 +216,7 @@ public class BossService {
      * 更新配置
      */
     public BossConfigEntity updateConfig(BossConfigEntity config) {
+        config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         config.setUpdatedAt(LocalDateTime.now());
         bossConfigMapper.updateById(config);
         return config;
@@ -227,6 +233,7 @@ public class BossService {
 
         if (existing == null) {
             // 表为空，插入新记录
+            partial.setSearchJobLimit(normalizeSearchJobLimit(partial.getSearchJobLimit()));
             partial.setCreatedAt(now);
             partial.setUpdatedAt(now);
             bossConfigMapper.insert(partial);
@@ -241,6 +248,11 @@ public class BossService {
         if (partial.getAutoDeliver() != null) existing.setAutoDeliver(partial.getAutoDeliver());
         if (partial.getSendImgResume() != null) existing.setSendImgResume(partial.getSendImgResume());
         if (partial.getWaitTime() != null) existing.setWaitTime(partial.getWaitTime());
+        if (partial.getSearchJobLimit() != null) {
+            existing.setSearchJobLimit(normalizeSearchJobLimit(partial.getSearchJobLimit()));
+        } else if (existing.getSearchJobLimit() == null) {
+            existing.setSearchJobLimit(DEFAULT_SEARCH_JOB_LIMIT);
+        }
 
         if (partial.getKeywords() != null) existing.setKeywords(partial.getKeywords());
         if (partial.getCityCode() != null) existing.setCityCode(partial.getCityCode());
@@ -293,6 +305,7 @@ public class BossService {
         config.setAutoDeliver(entity.getAutoDeliver() != null && entity.getAutoDeliver() == 1);
         config.setSendImgResume(entity.getSendImgResume() != null && entity.getSendImgResume() == 1);
         config.setWaitTime(entity.getWaitTime() != null ? String.valueOf(entity.getWaitTime()) : null);
+        config.setSearchJobLimit(normalizeSearchJobLimit(entity.getSearchJobLimit()));
 
         // 关键词（允许逗号或括号列表），直接解析为列表
         config.setKeywords(parseListString(entity.getKeywords()));
@@ -338,6 +351,13 @@ public class BossService {
 
         log.info("已从 boss_config 加载Boss配置，并完成括号列表解析");
         return config;
+    }
+
+    public int normalizeSearchJobLimit(Integer raw) {
+        if (raw == null || raw < MIN_SEARCH_JOB_LIMIT) {
+            return DEFAULT_SEARCH_JOB_LIMIT;
+        }
+        return Math.min(raw, MAX_SEARCH_JOB_LIMIT);
     }
 
     /**
@@ -721,7 +741,9 @@ public class BossService {
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
-        if (existingStatus != null && List.of("已投递", "待确认", "已跳过").contains(existingStatus)) {
+        if (existingStatus != null && List.of(
+                "已投递", "待确认", "已跳过", "AI分析中", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
+        ).contains(existingStatus)) {
             return existingStatus;
         }
         return firstNonBlank(incomingStatus, existingStatus, "未投递");
@@ -761,6 +783,25 @@ public class BossService {
     public BossJobDataEntity getBossJobById(Long id) {
         if (id == null) return null;
         return bossJobDataMapper.selectById(id);
+    }
+
+    public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName) {
+        if (encryptId != null && !encryptId.isBlank()) {
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("encrypt_id", encryptId).last("LIMIT 1");
+            BossJobDataEntity existing = bossJobDataMapper.selectOne(wrapper);
+            if (existing != null) return existing;
+        }
+
+        if (companyName != null && !companyName.isBlank() && jobName != null && !jobName.isBlank()) {
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("company_name", companyName)
+                    .eq("job_name", jobName)
+                    .last("LIMIT 1");
+            return bossJobDataMapper.selectOne(wrapper);
+        }
+
+        return null;
     }
 
     public BossJobDataEntity getBossJobByKey(String encryptId, String encryptUserId) {
@@ -1419,6 +1460,44 @@ public class BossService {
             resp.put("success", false);
             resp.put("message", "刷新失败: " + e.getMessage());
         } finally {
+            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
+        }
+        return resp;
+    }
+
+    /**
+     * 清空 Boss 投递分析数据。用于切换候选人/简历前重置旧岗位和旧 AI 结果。
+     */
+    public Map<String, Object> clearBossAnalysisData() {
+        Map<String, Object> resp = new HashMap<>();
+        Connection conn = null;
+        boolean originalAutoCommit = true;
+        try {
+            conn = dataSource.getConnection();
+            originalAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+
+            int analysisDeleted;
+            int jobsDeleted;
+            try (Statement st = conn.createStatement()) {
+                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss'");
+                jobsDeleted = st.executeUpdate("DELETE FROM boss_data");
+                try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='boss_data'"); } catch (Exception ignore) {}
+            }
+
+            conn.commit();
+            resp.put("success", true);
+            resp.put("message", "Boss投递分析数据已清空");
+            resp.put("jobsDeleted", jobsDeleted);
+            resp.put("analysisDeleted", analysisDeleted);
+            resp.put("total", 0);
+        } catch (Exception e) {
+            try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}
+            log.warn("清空Boss投递分析数据失败: {}", e.getMessage());
+            resp.put("success", false);
+            resp.put("message", "清空失败: " + e.getMessage());
+        } finally {
+            try { if (conn != null) conn.setAutoCommit(originalAutoCommit); } catch (Exception ignore) {}
             try { if (conn != null) conn.close(); } catch (Exception ignore) {}
         }
         return resp;

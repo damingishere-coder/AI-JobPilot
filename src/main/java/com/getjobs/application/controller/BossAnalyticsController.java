@@ -3,6 +3,7 @@ package com.getjobs.application.controller;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
+import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.service.BossService;
 import org.springframework.web.bind.annotation.*;
 
@@ -103,6 +104,14 @@ public class BossAnalyticsController {
         return bossService.reloadBossData();
     }
 
+    /**
+     * 清空 Boss 投递分析数据，切换候选人或简历前使用。
+     */
+    @DeleteMapping("/analysis")
+    public Map<String, Object> clearAnalysis() {
+        return bossService.clearBossAnalysisData();
+    }
+
     @PostMapping("/jobs/{id}/confirm")
     public Map<String, Object> confirmPendingJob(@PathVariable("id") Long id) {
         BossJobDataEntity job = bossService.getBossJobById(id);
@@ -118,7 +127,22 @@ public class BossAnalyticsController {
     @PostMapping("/jobs/confirm-batch")
     public Map<String, Object> confirmBatch(@RequestBody ConfirmBatchRequest request) {
         List<BossJobDataEntity> candidates = new ArrayList<>();
-        if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
+        boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
+        if (aiRecommendedOnly) {
+            BossService.PagedResult page = bossService.listBossJobs(
+                    List.of("待确认"),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    1,
+                    5000,
+                    false
+            );
+            if (page != null && page.items != null) candidates.addAll(page.items);
+        } else if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
             for (Long id : request.getIds()) {
                 BossJobDataEntity job = bossService.getBossJobById(id);
                 if (job != null) candidates.add(job);
@@ -141,11 +165,13 @@ public class BossAnalyticsController {
 
         List<Map<String, Object>> tasks = candidates.stream()
                 .filter(job -> "待确认".equals(job.getDeliveryStatus()))
+                .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
+                .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
                 .map(this::toDeliveryTask)
                 .collect(Collectors.toList());
         return Map.of(
                 "success", true,
-                "message", "已生成批量 Chrome 投递任务",
+                "message", aiRecommendedOnly ? "已生成 AI 推荐待确认 Chrome 投递任务" : "已生成批量 Chrome 投递任务",
                 "tasks", tasks,
                 "count", tasks.size()
         );
@@ -194,7 +220,12 @@ public class BossAnalyticsController {
         task.put("companyName", Objects.toString(job.getCompanyName(), ""));
         task.put("jobName", Objects.toString(job.getJobName(), ""));
         task.put("salary", Objects.toString(job.getSalary(), ""));
-        task.put("greeting", "");
+        task.put("greeting", bossSayHi());
         return task;
+    }
+
+    private String bossSayHi() {
+        BossConfigEntity config = bossService.getFirstConfig();
+        return config == null || config.getSayHi() == null ? "" : config.getSayHi();
     }
 }
