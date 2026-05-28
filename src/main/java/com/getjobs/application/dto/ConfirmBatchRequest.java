@@ -14,6 +14,7 @@ public class ConfirmBatchRequest {
     private Double minK;
     private Double maxK;
     private String keyword;
+    private String scanRunId;
     private Boolean filterHeadhunter;
     private Boolean aiRecommendedOnly;
 }

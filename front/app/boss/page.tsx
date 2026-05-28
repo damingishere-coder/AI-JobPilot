@@ -85,6 +85,18 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
     || message.includes('扫描失败')
 }
 
+const shouldRefreshAnalysisFromProgress = (payload: Record<string, unknown>) => {
+  const stage = String(payload.stage || '')
+  const message = String(payload.message || '')
+  return ['submitted', 'complete'].includes(stage)
+    || message.includes('已提交后台AI队列')
+    || message.includes('待确认')
+    || message.includes('跳过：')
+    || message.includes('AI分析失败')
+    || message.includes('恢复已有分析')
+    || message.includes('采集信息不足')
+}
+
 export default function BossPage() {
   const [config, setConfig] = useState<BossConfig>({
     keywords: '',
@@ -263,7 +275,7 @@ export default function BossPage() {
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
-              if (String(data.message || '').includes('入库完成')) {
+              if (shouldRefreshAnalysisFromProgress(data)) {
                 setAnalysisRefreshSignal((value) => value + 1)
               }
               if (data.type === 'error') {
@@ -292,8 +304,7 @@ export default function BossPage() {
         timestamp: payload.timestamp,
       })
 
-      const message = String(payload.message || '')
-      if (message.includes('入库完成') || message.includes('扫描完成')) {
+      if (shouldRefreshAnalysisFromProgress(payload)) {
         setAnalysisRefreshSignal((value) => value + 1)
       }
       if (isTerminalScanPayload(payload)) {

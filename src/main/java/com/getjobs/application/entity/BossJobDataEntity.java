@@ -77,6 +77,9 @@ public class BossJobDataEntity {
     @TableField("company_scale")
     private String companyScale;
 
+    @TableField("scan_run_id")
+    private String scanRunId;
+
     @TableField("ai_score")
     private Integer aiScore;
 

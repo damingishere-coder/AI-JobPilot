@@ -206,6 +206,7 @@ public class ZhilianService {
                 " company_name VARCHAR(200)," +
                 " delivery_status VARCHAR(20) DEFAULT '未投递'," +
                 " job_description TEXT," +
+                " scan_run_id TEXT," +
                 " ai_score INTEGER," +
                 " ai_decision TEXT," +
                 " ai_reason TEXT," +
@@ -221,6 +222,7 @@ public class ZhilianService {
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_decision TEXT"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_reason TEXT"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN priority_company INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN scan_run_id TEXT"); } catch (Exception ignored) {}
             log.info("确保 zhilian_data 表已存在");
         } catch (Exception e) {
             log.warn("创建 zhilian_data 表失败: {}", e.getMessage());
@@ -260,18 +262,28 @@ public class ZhilianService {
     }
 
     public ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity) {
+        return upsertChromeJob(entity, null);
+    }
+
+    public ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity, String scanRunId) {
         if (entity == null) return null;
+        if (scanRunId != null && !scanRunId.isBlank()) {
+            entity.setScanRunId(scanRunId.trim());
+        }
         ZhilianJobDataEntity existing = null;
         if (entity.getJobId() != null && !entity.getJobId().isBlank()) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-            wrapper.eq("job_id", entity.getJobId()).last("LIMIT 1");
+            wrapper.eq("job_id", entity.getJobId());
+            applyScanRunFilter(wrapper, scanRunId);
+            wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
         if (existing == null && entity.getJobTitle() != null && entity.getCompanyName() != null) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("job_title", entity.getJobTitle())
-                    .eq("company_name", entity.getCompanyName())
-                    .last("LIMIT 1");
+                    .eq("company_name", entity.getCompanyName());
+            applyScanRunFilter(wrapper, scanRunId);
+            wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
 
@@ -288,8 +300,27 @@ public class ZhilianService {
         entity.setCreateTime(existing.getCreateTime());
         entity.setUpdateTime(now);
         entity.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), entity.getDeliveryStatus()));
+        entity.setScanRunId(firstNonBlank(entity.getScanRunId(), existing.getScanRunId()));
+        entity.setAiScore(existing.getAiScore());
+        entity.setAiDecision(existing.getAiDecision());
+        entity.setAiReason(existing.getAiReason());
+        entity.setPriorityCompany(existing.getPriorityCompany());
         zhilianJobDataMapper.updateById(entity);
         return zhilianJobDataMapper.selectById(existing.getId());
+    }
+
+    private void applyScanRunFilter(QueryWrapper<ZhilianJobDataEntity> wrapper, String scanRunId) {
+        if (scanRunId != null && !scanRunId.isBlank()) {
+            wrapper.eq("scan_run_id", scanRunId.trim());
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
@@ -440,7 +471,22 @@ public class ZhilianService {
             Double maxK,
             String keyword
     ) {
+        return getZhilianStats(statuses, location, experience, degree, minK, maxK, keyword, null);
+    }
+
+    public StatsResponse getZhilianStats(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            String keyword,
+            String scanRunId
+    ) {
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        String effectiveScanRunId = resolveZhilianScanRunId(scanRunId);
+        if (effectiveScanRunId != null && !effectiveScanRunId.isBlank()) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses.stream().filter(Objects::nonNull).map(String::trim).collect(Collectors.toSet()));
         }
@@ -571,10 +617,27 @@ public class ZhilianService {
             int page,
             int size
     ) {
+        return listZhilianJobs(statuses, location, experience, degree, minK, maxK, keyword, page, size, null);
+    }
+
+    public PagedResult listZhilianJobs(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            String keyword,
+            int page,
+            int size,
+            String scanRunId
+    ) {
         if (page <= 0) page = 1;
         if (size <= 0) size = 20;
 
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        String effectiveScanRunId = resolveZhilianScanRunId(scanRunId);
+        if (effectiveScanRunId != null && !effectiveScanRunId.isBlank()) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses.stream().filter(Objects::nonNull).map(String::trim).collect(Collectors.toSet()));
         }
@@ -615,6 +678,18 @@ public class ZhilianService {
         pr.page = page;
         pr.size = size;
         return pr;
+    }
+
+    public String resolveZhilianScanRunId(String scanRunId) {
+        if (scanRunId != null && !scanRunId.isBlank()) return scanRunId.trim();
+        QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        wrapper.select("scan_run_id")
+                .isNotNull("scan_run_id")
+                .ne("scan_run_id", "")
+                .orderByDesc("create_time")
+                .last("LIMIT 1");
+        ZhilianJobDataEntity latest = zhilianJobDataMapper.selectOne(wrapper);
+        return latest == null ? null : latest.getScanRunId();
     }
 
     public static class PagedResult {

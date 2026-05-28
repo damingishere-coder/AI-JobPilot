@@ -485,13 +485,14 @@
     const data = await res.json();
     if (!data.success) throw new Error(data.message || "智联岗位提交失败");
     const nextTotalSaved = totalSaved + (data.saved || 0);
-    postProgress(message, "success", `智联 Chrome已提交后台AI队列：采集 ${data.received ?? jobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，跳过 ${data.skipped ?? 0} 个。`, {
+    postProgress(message, "success", `智联 Chrome已提交后台AI队列：采集 ${data.received ?? jobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个。`, {
       ...baseMeta,
       stage: "submitted",
       collected: data.received ?? jobs.length,
       saved: data.saved ?? 0,
       queued: data.queued ?? 0,
       skipped: data.skipped ?? 0,
+      restored: data.restored ?? 0,
       queueSize: data.queueSize ?? 0,
       totalSaved: nextTotalSaved
     });

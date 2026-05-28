@@ -58,6 +58,7 @@ public class BossService {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             addColumn(stmt, "boss_config", "auto_deliver", "INTEGER DEFAULT 0");
             addColumn(stmt, "boss_config", "search_job_limit", "INTEGER DEFAULT 20");
+            addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
         } catch (Exception e) {
             log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
         }
@@ -584,6 +585,7 @@ public class BossService {
                         "introduce TEXT, " +
                         "financing_stage TEXT, " +
                         "company_scale TEXT, " +
+                        "scan_run_id TEXT, " +
                         "ai_score INTEGER, " +
                         "ai_decision TEXT, " +
                         "ai_reason TEXT, " +
@@ -596,11 +598,12 @@ public class BossService {
                 String copySql = "INSERT INTO boss_data_new (" +
                         "id, encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
+                        "company_address, industry, introduce, financing_stage, company_scale, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
                         ") SELECT " +
                         "id, encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, " +
+                        (cols.contains("scan_run_id") ? "scan_run_id" : "NULL") + ", " +
                         (cols.contains("ai_score") ? "ai_score" : "NULL") + ", " +
                         (cols.contains("ai_decision") ? "ai_decision" : "NULL") + ", " +
                         (cols.contains("ai_reason") ? "ai_reason" : "NULL") + ", " +
@@ -658,23 +661,33 @@ public class BossService {
     }
 
     public BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity) {
+        return upsertChromeBossJob(entity, null);
+    }
+
+    public BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
         if (entity == null) return null;
+        if (scanRunId != null && !scanRunId.isBlank()) {
+            entity.setScanRunId(scanRunId.trim());
+        }
         String encryptId = entity.getEncryptId();
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId);
+            existing = getBossJobByKey(encryptId, encryptUserId, scanRunId);
             if (existing == null) {
                 QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-                wrapper.eq("encrypt_id", encryptId).last("LIMIT 1");
+                wrapper.eq("encrypt_id", encryptId);
+                applyScanRunFilter(wrapper, scanRunId);
+                wrapper.last("LIMIT 1");
                 existing = bossJobDataMapper.selectOne(wrapper);
             }
         }
         if (existing == null && entity.getCompanyName() != null && entity.getJobName() != null) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("company_name", entity.getCompanyName())
-                    .eq("job_name", entity.getJobName())
-                    .last("LIMIT 1");
+                    .eq("job_name", entity.getJobName());
+            applyScanRunFilter(wrapper, scanRunId);
+            wrapper.last("LIMIT 1");
             existing = bossJobDataMapper.selectOne(wrapper);
         }
 
@@ -733,6 +746,7 @@ public class BossService {
         merged.setIntroduce(bestLongText(incoming.getIntroduce(), existing.getIntroduce()));
         merged.setFinancingStage(firstNonBlank(incoming.getFinancingStage(), existing.getFinancingStage()));
         merged.setCompanyScale(firstNonBlank(incoming.getCompanyScale(), existing.getCompanyScale()));
+        merged.setScanRunId(firstNonBlank(incoming.getScanRunId(), existing.getScanRunId()));
         merged.setAiScore(existing.getAiScore());
         merged.setAiDecision(existing.getAiDecision());
         merged.setAiReason(existing.getAiReason());
@@ -786,9 +800,15 @@ public class BossService {
     }
 
     public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName) {
+        return findExistingChromeBossJob(encryptId, companyName, jobName, null);
+    }
+
+    public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName, String scanRunId) {
         if (encryptId != null && !encryptId.isBlank()) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-            wrapper.eq("encrypt_id", encryptId).last("LIMIT 1");
+            wrapper.eq("encrypt_id", encryptId);
+            applyScanRunFilter(wrapper, scanRunId);
+            wrapper.last("LIMIT 1");
             BossJobDataEntity existing = bossJobDataMapper.selectOne(wrapper);
             if (existing != null) return existing;
         }
@@ -796,8 +816,9 @@ public class BossService {
         if (companyName != null && !companyName.isBlank() && jobName != null && !jobName.isBlank()) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("company_name", companyName)
-                    .eq("job_name", jobName)
-                    .last("LIMIT 1");
+                    .eq("job_name", jobName);
+            applyScanRunFilter(wrapper, scanRunId);
+            wrapper.last("LIMIT 1");
             return bossJobDataMapper.selectOne(wrapper);
         }
 
@@ -805,14 +826,25 @@ public class BossService {
     }
 
     public BossJobDataEntity getBossJobByKey(String encryptId, String encryptUserId) {
+        return getBossJobByKey(encryptId, encryptUserId, null);
+    }
+
+    public BossJobDataEntity getBossJobByKey(String encryptId, String encryptUserId, String scanRunId) {
         if (encryptId == null || encryptId.isBlank()) return null;
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("encrypt_id", encryptId);
         if (encryptUserId != null && !encryptUserId.isBlank()) {
             wrapper.eq("encrypt_user_id", encryptUserId);
         }
+        applyScanRunFilter(wrapper, scanRunId);
         wrapper.last("LIMIT 1");
         return bossJobDataMapper.selectOne(wrapper);
+    }
+
+    private void applyScanRunFilter(QueryWrapper<BossJobDataEntity> wrapper, String scanRunId) {
+        if (scanRunId != null && !scanRunId.isBlank()) {
+            wrapper.eq("scan_run_id", scanRunId.trim());
+        }
     }
 
     public BossJobDataEntity updateDeliveryStatusById(Long id, String status) {
@@ -989,18 +1021,25 @@ public class BossService {
         charts.hrActivity = new ArrayList<>();
 
         try (Connection conn = dataSource.getConnection()) {
+            String effectiveScanRunId = resolveBossScanRunId(null);
+            String runWhere = effectiveScanRunId == null || effectiveScanRunId.isBlank()
+                    ? ""
+                    : " WHERE scan_run_id='" + escapeSql(effectiveScanRunId) + "'";
+            String runAnd = effectiveScanRunId == null || effectiveScanRunId.isBlank()
+                    ? " WHERE "
+                    : " WHERE scan_run_id='" + escapeSql(effectiveScanRunId) + "' AND ";
             // KPI 基本计数
-            resp.kpi.total = scalarCount(conn, "SELECT COUNT(*) FROM boss_data");
-            resp.kpi.delivered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='已投递'");
-            resp.kpi.pending = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='未投递'");
-            resp.kpi.waitingConfirm = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='待确认'");
-            resp.kpi.filtered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='已过滤'");
-            resp.kpi.failed = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='投递失败'");
-            resp.kpi.insufficient = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='采集信息不足'");
+            resp.kpi.total = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runWhere);
+            resp.kpi.delivered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已投递'");
+            resp.kpi.pending = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='未投递'");
+            resp.kpi.waitingConfirm = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='待确认'");
+            resp.kpi.filtered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已过滤'");
+            resp.kpi.failed = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='投递失败'");
+            resp.kpi.insufficient = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='采集信息不足'");
 
             // 平均中位数K（忽略面议）
             double sumMedian = 0.0; long countMedian = 0;
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT salary FROM boss_data WHERE salary IS NOT NULL")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT salary FROM boss_data" + runAnd + "salary IS NOT NULL")) {
                 while (rs.next()) {
                     String s = rs.getString(1);
                     SalaryInfo info = parseSalary(s);
@@ -1013,42 +1052,42 @@ public class BossService {
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // byStatus
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT delivery_status, COUNT(*) AS cnt FROM boss_data GROUP BY delivery_status")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT delivery_status, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY delivery_status")) {
                 while (rs.next()) charts.byStatus.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byCity TOP10（保留）
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT location, COUNT(*) AS cnt FROM boss_data GROUP BY location ORDER BY cnt DESC LIMIT 10")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT location, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY location ORDER BY cnt DESC LIMIT 10")) {
                 while (rs.next()) charts.byCity.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byIndustry TOP10（新增）
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT industry, COUNT(*) AS cnt FROM boss_data GROUP BY industry ORDER BY cnt DESC LIMIT 10")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT industry, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY industry ORDER BY cnt DESC LIMIT 10")) {
                 while (rs.next()) charts.byIndustry.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byCompany TOP10
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT company_name, COUNT(*) AS cnt FROM boss_data GROUP BY company_name ORDER BY cnt DESC LIMIT 10")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT company_name, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY company_name ORDER BY cnt DESC LIMIT 10")) {
                 while (rs.next()) charts.byCompany.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byExperience
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT experience, COUNT(*) AS cnt FROM boss_data GROUP BY experience")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT experience, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY experience")) {
                 while (rs.next()) charts.byExperience.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byDegree
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT degree, COUNT(*) AS cnt FROM boss_data GROUP BY degree")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT degree, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY degree")) {
                 while (rs.next()) charts.byDegree.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // dailyTrend（按日期聚合）
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT substr(created_at,1,10) AS d, COUNT(*) AS cnt FROM boss_data GROUP BY d ORDER BY d")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT substr(created_at,1,10) AS d, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY d ORDER BY d")) {
                 while (rs.next()) charts.dailyTrend.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // hrActivity（仅统计活跃状态非空的 hr_name 计数）
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT hr_name, COUNT(*) AS cnt FROM boss_data WHERE hr_active_status IS NOT NULL AND TRIM(hr_active_status) <> '' GROUP BY hr_name")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT hr_name, COUNT(*) AS cnt FROM boss_data" + runAnd + "hr_active_status IS NOT NULL AND TRIM(hr_active_status) <> '' GROUP BY hr_name")) {
                 while (rs.next()) charts.hrActivity.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
@@ -1056,7 +1095,7 @@ public class BossService {
             long b0_10=0,b10_15=0,b15_20=0,b20_top=0,b_ge_top=0;
             double maxMedian = 0.0;
             List<Double> medians = new ArrayList<>();
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT salary FROM boss_data WHERE salary IS NOT NULL")) {
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT salary FROM boss_data" + runAnd + "salary IS NOT NULL")) {
                 while (rs.next()) {
                     SalaryInfo info = parseSalary(rs.getString(1));
                     if (info == null || info.medianK == null) continue;
@@ -1080,7 +1119,7 @@ public class BossService {
             charts.salaryBuckets.add(new BucketValue("20-" + topEdge + "K", b20_top));
             charts.salaryBuckets.add(new BucketValue(">=" + topEdge + "K", b_ge_top));
 
-            resp.overview = buildOverviewFromDatabase(conn);
+            resp.overview = buildOverviewFromDatabase(conn, effectiveScanRunId);
             resp.charts = charts;
             return resp;
         } catch (Exception e) {
@@ -1105,6 +1144,20 @@ public class BossService {
             String keyword,
             boolean filterHeadhunter
     ) {
+        return getBossStats(statuses, location, experience, degree, minK, maxK, keyword, filterHeadhunter, null);
+    }
+
+    public StatsResponse getBossStats(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            String keyword,
+            boolean filterHeadhunter,
+            String scanRunId
+    ) {
         StatsResponse resp = new StatsResponse();
         resp.kpi = new Kpi();
         Charts charts = new Charts();
@@ -1121,6 +1174,8 @@ public class BossService {
         try {
             // 构造与列表相同的筛选条件
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+            if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
             if (statuses != null && !statuses.isEmpty()) {
                 wrapper.in("delivery_status", statuses);
             }
@@ -1269,24 +1324,30 @@ public class BossService {
 
     private String nullSafe(String s) { return s == null || s.isEmpty() ? "未知" : s; }
 
-    private Overview buildOverviewFromDatabase(Connection conn) throws Exception {
+    private Overview buildOverviewFromDatabase(Connection conn, String scanRunId) throws Exception {
         Overview overview = new Overview();
-        overview.aiPassCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='待确认' OR delivery_status='已投递'");
-        overview.aiRejectCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='AI不匹配' OR ai_decision='AI不匹配'");
-        overview.aiFailedCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE delivery_status='AI分析失败' OR ai_decision='AI分析失败'");
-        overview.priorityCompanyCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE priority_company=1");
-        overview.missingLinkCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE job_url IS NULL OR TRIM(job_url)=''");
-        overview.missingSalaryCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE salary IS NULL OR TRIM(salary)=''");
-        overview.latestCreatedAt = scalarString(conn, "SELECT MAX(created_at) FROM boss_data");
-        overview.topCity = scalarString(conn, "SELECT location FROM boss_data WHERE location IS NOT NULL AND TRIM(location)<>'' GROUP BY location ORDER BY COUNT(*) DESC LIMIT 1");
-        overview.topIndustry = scalarString(conn, "SELECT industry FROM boss_data WHERE industry IS NOT NULL AND TRIM(industry)<>'' GROUP BY industry ORDER BY COUNT(*) DESC LIMIT 1");
-        overview.topCompany = scalarString(conn, "SELECT company_name FROM boss_data WHERE company_name IS NOT NULL AND TRIM(company_name)<>'' GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 1");
-        overview.topExperience = scalarString(conn, "SELECT experience FROM boss_data WHERE experience IS NOT NULL AND TRIM(experience)<>'' GROUP BY experience ORDER BY COUNT(*) DESC LIMIT 1");
-        overview.topDegree = scalarString(conn, "SELECT degree FROM boss_data WHERE degree IS NOT NULL AND TRIM(degree)<>'' GROUP BY degree ORDER BY COUNT(*) DESC LIMIT 1");
+        String runWhere = scanRunId == null || scanRunId.isBlank()
+                ? ""
+                : " WHERE scan_run_id='" + escapeSql(scanRunId) + "'";
+        String runAnd = scanRunId == null || scanRunId.isBlank()
+                ? " WHERE "
+                : " WHERE scan_run_id='" + escapeSql(scanRunId) + "' AND ";
+        overview.aiPassCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "(delivery_status='待确认' OR delivery_status='已投递')");
+        overview.aiRejectCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "(delivery_status='AI不匹配' OR ai_decision='AI不匹配')");
+        overview.aiFailedCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "(delivery_status='AI分析失败' OR ai_decision='AI分析失败')");
+        overview.priorityCompanyCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "priority_company=1");
+        overview.missingLinkCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "(job_url IS NULL OR TRIM(job_url)='')");
+        overview.missingSalaryCount = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "(salary IS NULL OR TRIM(salary)='')");
+        overview.latestCreatedAt = scalarString(conn, "SELECT MAX(created_at) FROM boss_data" + runWhere);
+        overview.topCity = scalarString(conn, "SELECT location FROM boss_data" + runAnd + "location IS NOT NULL AND TRIM(location)<>'' GROUP BY location ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topIndustry = scalarString(conn, "SELECT industry FROM boss_data" + runAnd + "industry IS NOT NULL AND TRIM(industry)<>'' GROUP BY industry ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topCompany = scalarString(conn, "SELECT company_name FROM boss_data" + runAnd + "company_name IS NOT NULL AND TRIM(company_name)<>'' GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topExperience = scalarString(conn, "SELECT experience FROM boss_data" + runAnd + "experience IS NOT NULL AND TRIM(experience)<>'' GROUP BY experience ORDER BY COUNT(*) DESC LIMIT 1");
+        overview.topDegree = scalarString(conn, "SELECT degree FROM boss_data" + runAnd + "degree IS NOT NULL AND TRIM(degree)<>'' GROUP BY degree ORDER BY COUNT(*) DESC LIMIT 1");
 
         double scoreSum = 0.0;
         long scoreCount = 0;
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT ai_score FROM boss_data WHERE ai_score IS NOT NULL")) {
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT ai_score FROM boss_data" + runAnd + "ai_score IS NOT NULL")) {
             while (rs.next()) {
                 scoreSum += rs.getDouble(1);
                 scoreCount++;
@@ -1294,6 +1355,10 @@ public class BossService {
         }
         overview.aiAvgScore = scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 10.0) / 10.0 : null;
         return overview;
+    }
+
+    private String escapeSql(String value) {
+        return value == null ? "" : value.replace("'", "''");
     }
 
     private Overview buildOverviewFromJobs(List<BossJobDataEntity> jobs) {
@@ -1384,10 +1449,28 @@ public class BossService {
             int size,
             boolean filterHeadhunter
     ) {
+        return listBossJobs(statuses, location, experience, degree, minK, maxK, keyword, page, size, filterHeadhunter, null);
+    }
+
+    public PagedResult listBossJobs(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            String keyword,
+            int page,
+            int size,
+            boolean filterHeadhunter,
+            String scanRunId
+    ) {
         if (page <= 0) page = 1;
         if (size <= 0) size = 20;
 
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+        String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+        if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses);
         }
@@ -1436,6 +1519,18 @@ public class BossService {
         result.page = page;
         result.size = size;
         return result;
+    }
+
+    public String resolveBossScanRunId(String scanRunId) {
+        if (StringUtils.isNotBlank(scanRunId)) return scanRunId.trim();
+        QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+        wrapper.select("scan_run_id")
+                .isNotNull("scan_run_id")
+                .ne("scan_run_id", "")
+                .orderByDesc("created_at")
+                .last("LIMIT 1");
+        BossJobDataEntity latest = bossJobDataMapper.selectOne(wrapper);
+        return latest == null ? null : latest.getScanRunId();
     }
 
     /**

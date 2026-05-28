@@ -111,7 +111,8 @@ public class BossController {
         int queued = 0;
         int skipped = 0;
         int insufficient = 0;
-        String runId = request == null ? null : request.getRunId();
+        int restored = 0;
+        String runId = normalizeRunId(request == null ? null : request.getRunId());
         boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
         List<Map<String, Object>> analyses = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
@@ -119,7 +120,7 @@ public class BossController {
                 jobRunCoordinator.clearCancel(runId);
                 sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续处理本批岗位"));
                 return ResponseEntity.ok(bossChromeJobsResponse(
-                        true, true, received, 0, 0, 0, 0, autoDeliver, List.of()
+                        true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()
                 ));
             }
             sendBossProgress(JobProgressMessage.info("boss", "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"));
@@ -128,11 +129,11 @@ public class BossController {
                     jobRunCoordinator.clearCancel(runId);
                     sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
                     return ResponseEntity.ok(bossChromeJobsResponse(
-                            true, true, received, insertedOrUpdated, queued, skipped, insufficient, autoDeliver, analyses
+                            true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
                     ));
                 }
                 BossJobDataEntity entity = toBossEntity(dto);
-                BossJobDataEntity saved = bossService.upsertChromeBossJob(entity);
+                BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
                 insertedOrUpdated++;
 
                 if (saved == null) {
@@ -143,6 +144,11 @@ public class BossController {
                 String currentStatus = saved.getDeliveryStatus();
                 if ("AI分析中".equals(currentStatus) || isFinalBossStatus(currentStatus)) {
                     skipped++;
+                    Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
+                    if (snapshot != null) {
+                        analyses.add(snapshot);
+                        restored++;
+                    }
                     continue;
                 }
 
@@ -179,6 +185,7 @@ public class BossController {
                 analysisRequest.setDegree(saved.getDegree());
                 analysisRequest.setCompanyInfo(saved.getIntroduce());
                 analysisRequest.setJobDescription(saved.getJobDescription());
+                analysisRequest.setScanRunId(runId);
                 ChromeJobAnalysisQueueService.AnalysisJob job = new ChromeJobAnalysisQueueService.AnalysisJob();
                 job.setRunId(runId);
                 job.setCurrentStatus(currentStatus);
@@ -191,7 +198,7 @@ public class BossController {
                 if (enqueueResult.isRejected()) {
                     bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, "未投递"));
                     Map<String, Object> response = bossChromeJobsResponse(
-                            false, false, received, insertedOrUpdated, queued, skipped, insufficient, autoDeliver, analyses
+                            false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
                     );
                     response.put("message", enqueueResult.getMessage());
                     return ResponseEntity.status(429).body(response);
@@ -209,9 +216,9 @@ public class BossController {
                 }
             }
         }
-        sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，信息不足 " + insufficient + " 个"));
+        sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
         return ResponseEntity.ok(bossChromeJobsResponse(
-                true, false, received, insertedOrUpdated, queued, skipped, insufficient, autoDeliver, analyses
+                true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
         ));
     }
 
@@ -225,7 +232,8 @@ public class BossController {
             String id = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
             String company = dto == null ? "" : Objects.toString(dto.getCompany(), "");
             String title = dto == null ? "" : Objects.toString(dto.getTitle(), "");
-            BossJobDataEntity existing = bossService.findExistingChromeBossJob(id, company, title);
+            String runId = normalizeRunId(request == null ? null : request.getRunId());
+            BossJobDataEntity existing = bossService.findExistingChromeBossJob(id, company, title, runId);
             boolean duplicate = existing != null;
             if (duplicate) duplicateCount++;
             String reason = "";
@@ -578,6 +586,7 @@ public class BossController {
                                                        int queued,
                                                        int skipped,
                                                        int insufficient,
+                                                       int restored,
                                                        boolean autoDeliver,
                                                        List<Map<String, Object>> analyses) {
         Map<String, Object> response = new HashMap<>();
@@ -589,11 +598,33 @@ public class BossController {
         response.put("queued", queued);
         response.put("skipped", skipped);
         response.put("insufficient", insufficient);
+        response.put("restored", restored);
         response.put("autoDeliver", autoDeliver);
         response.put("queueSize", chromeJobAnalysisQueueService.queueSize());
         response.put("tasks", List.of());
         response.put("analyses", analyses == null ? List.of() : analyses);
         return response;
+    }
+
+    private String normalizeRunId(String runId) {
+        return runId == null || runId.isBlank() ? null : runId.trim();
+    }
+
+    private Map<String, Object> toBossAnalysisSnapshot(BossJobDataEntity job) {
+        if (job == null || job.getId() == null) return null;
+        Map<String, Object> item = new HashMap<>();
+        item.put("id", job.getId());
+        item.put("jobKey", Objects.toString(job.getEncryptId(), ""));
+        item.put("jobName", Objects.toString(job.getJobName(), ""));
+        item.put("companyName", Objects.toString(job.getCompanyName(), ""));
+        item.put("score", job.getAiScore() == null ? 0 : job.getAiScore());
+        item.put("decision", firstNonBlank(job.getAiDecision(), job.getDeliveryStatus()));
+        item.put("deliveryStatus", Objects.toString(job.getDeliveryStatus(), ""));
+        item.put("reason", Objects.toString(job.getAiReason(), ""));
+        item.put("priorityCompany", job.getPriorityCompany() != null && job.getPriorityCompany() == 1);
+        item.put("shouldApply", "待确认".equals(job.getDeliveryStatus()) || "已投递".equals(job.getDeliveryStatus()) || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")));
+        item.put("restored", true);
+        return item;
     }
 
     private Map<String, Object> toDeliveryTask(BossJobDataEntity job) {

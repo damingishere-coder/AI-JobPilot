@@ -38,6 +38,7 @@ public class BossAnalyticsController {
             @RequestParam(value = "minK", required = false) Double minK,
             @RequestParam(value = "maxK", required = false) Double maxK,
             @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "scanRunId", required = false) String scanRunId,
             @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
     ) {
         List<String> statusList = null;
@@ -55,7 +56,8 @@ public class BossAnalyticsController {
                 minK,
                 maxK,
                 keyword,
-                filterHeadhunter != null && filterHeadhunter
+                filterHeadhunter != null && filterHeadhunter,
+                scanRunId
         );
     }
 
@@ -71,6 +73,7 @@ public class BossAnalyticsController {
             @RequestParam(value = "minK", required = false) Double minK,
             @RequestParam(value = "maxK", required = false) Double maxK,
             @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "scanRunId", required = false) String scanRunId,
             @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter,
             @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
             @RequestParam(value = "size", required = false, defaultValue = "20") Integer size
@@ -92,7 +95,8 @@ public class BossAnalyticsController {
                 keyword,
                 page,
                 size,
-                filterHeadhunter != null && filterHeadhunter
+                filterHeadhunter != null && filterHeadhunter,
+                scanRunId
         );
     }
 
@@ -139,7 +143,8 @@ public class BossAnalyticsController {
                     null,
                     1,
                     5000,
-                    false
+                    false,
+                    request == null ? null : request.getScanRunId()
             );
             if (page != null && page.items != null) candidates.addAll(page.items);
         } else if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
@@ -158,7 +163,8 @@ public class BossAnalyticsController {
                     request == null ? null : request.getKeyword(),
                     1,
                     500,
-                    request != null && Boolean.TRUE.equals(request.getFilterHeadhunter())
+                    request != null && Boolean.TRUE.equals(request.getFilterHeadhunter()),
+                    request == null ? null : request.getScanRunId()
             );
             if (page != null && page.items != null) candidates.addAll(page.items);
         }

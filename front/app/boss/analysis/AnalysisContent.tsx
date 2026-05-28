@@ -90,6 +90,7 @@ type BossJob = {
   aiDecision?: string
   aiReason?: string
   priorityCompany?: number
+  scanRunId?: string
   createdAt?: string
 }
 
@@ -470,6 +471,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [actingAiBatch, setActingAiBatch] = useState(false)
+  const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
 
   const openTextDialog = (title: string, content?: string) => {
     setTextDialogTitle(title)
@@ -538,6 +540,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     if (source.maxK) params.set("maxK", String(Number(source.maxK)))
     if (source.keyword.trim()) params.set("keyword", source.keyword.trim())
     if (source.filterHeadhunter) params.set("filterHeadhunter", "true")
+    if (activeScanRunId) params.set("scanRunId", activeScanRunId)
     return params
   }
 
@@ -787,6 +790,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     minK: filters.minK ? Number(filters.minK) : undefined,
     maxK: filters.maxK ? Number(filters.maxK) : undefined,
     keyword: filters.keyword || undefined,
+    scanRunId: activeScanRunId || undefined,
     filterHeadhunter: filters.filterHeadhunter,
   })
 
@@ -827,7 +831,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aiRecommendedOnly: true }),
+        body: JSON.stringify({ aiRecommendedOnly: true, scanRunId: activeScanRunId || undefined }),
       })
       const data = await res.json()
       const tasks = data.tasks || []

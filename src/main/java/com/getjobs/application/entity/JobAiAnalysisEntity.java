@@ -26,6 +26,9 @@ public class JobAiAnalysisEntity {
     @TableField("job_name")
     private String jobName;
 
+    @TableField("scan_run_id")
+    private String scanRunId;
+
     @TableField("score")
     private Integer score;
 

@@ -51,6 +51,7 @@ type ZhilianJob = {
   aiDecision?: string
   aiReason?: string
   priorityCompany?: number
+  scanRunId?: string
   createTime?: string
 }
 
@@ -255,7 +256,7 @@ function badgeClass(type: "status" | "delivery", text?: string) {
   return base
 }
 
-export default function AnalysisContent({ showHeader = false }: { showHeader?: boolean }) {
+export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
 
@@ -279,6 +280,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
+  const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
 
 	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 
@@ -292,6 +294,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       if (minK) params.set("minK", String(Number(minK)))
       if (maxK) params.set("maxK", String(Number(maxK)))
       if (keyword) params.set("keyword", keyword)
+      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
       params.set("page", String(toPage))
       params.set("size", String(toSize))
       const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
@@ -316,6 +319,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       if (minK) params.set("minK", String(Number(minK)))
       if (maxK) params.set("maxK", String(Number(maxK)))
       if (keyword) params.set("keyword", keyword)
+      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
       const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
       const data: StatsResponse = await res.json()
       setStats(data)
@@ -358,6 +362,14 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   }, [])
 
   useEffect(() => {
+    if (!refreshSignal) return
+    loadList(1, size)
+    loadStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal])
+
+  useEffect(() => {
+    loadList(1, size)
     loadStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statuses.join(","), location, experience, degree, minK, maxK, keyword])
@@ -496,6 +508,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     minK: minK ? Number(minK) : undefined,
     maxK: maxK ? Number(maxK) : undefined,
     keyword: keyword || undefined,
+    scanRunId: activeScanRunId || undefined,
   })
 
   const handleConfirmJob = async (job: ZhilianJob) => {

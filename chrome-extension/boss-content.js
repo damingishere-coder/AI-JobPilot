@@ -533,7 +533,7 @@
       const res = await fetch(`${API_BASE}/api/boss/chrome/jobs/dedupe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword: baseMeta.keyword, jobs: list.map(normalizeJobForDedupe) })
+        body: JSON.stringify({ runId: message?.runId, keyword: baseMeta.keyword, jobs: list.map(normalizeJobForDedupe) })
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -738,13 +738,14 @@
       return { success: true, totalSaved: totalSaved + (data.saved || 0) };
     }
     const nextTotalSaved = totalSaved + (data.saved || 0);
-    postProgress(message, "success", `Boss Chrome已提交后台AI队列：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
+    postProgress(message, "success", `Boss Chrome已提交后台AI队列：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
       ...baseMeta,
       stage: "submitted",
       collected: data.received ?? submitJobs.length,
       saved: data.saved ?? 0,
       queued: data.queued ?? 0,
       skipped: data.skipped ?? 0,
+      restored: data.restored ?? 0,
       insufficient: data.insufficient ?? 0,
       queueSize: data.queueSize ?? 0,
       totalSaved: nextTotalSaved

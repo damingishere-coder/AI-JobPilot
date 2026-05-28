@@ -40,6 +40,17 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
     || message.includes('扫描失败')
 }
 
+const shouldRefreshAnalysisFromProgress = (payload: Record<string, unknown>) => {
+  const stage = String(payload.stage || '')
+  const message = String(payload.message || '')
+  return ['submitted', 'complete'].includes(stage)
+    || message.includes('已提交后台AI队列')
+    || message.includes('待确认')
+    || message.includes('跳过：')
+    || message.includes('AI分析失败')
+    || message.includes('恢复已有分析')
+}
+
 export default function ZhilianPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
@@ -57,6 +68,7 @@ export default function ZhilianPage() {
   const [openClawReady, setOpenClawReady] = useState(false)
   const [openClawRunning, setOpenClawRunning] = useState(false)
   const [openClawMessage, setOpenClawMessage] = useState('')
+  const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
 
   const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '', searchJobLimit: 20 })
   const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
@@ -148,6 +160,9 @@ export default function ZhilianPage() {
         timestamp: payload.timestamp,
       })
 
+      if (shouldRefreshAnalysisFromProgress(payload)) {
+        setAnalysisRefreshSignal((value) => value + 1)
+      }
       if (isTerminalScanPayload(payload)) {
         setIsDelivering(false)
         setIsStopping(false)
@@ -190,6 +205,9 @@ export default function ZhilianPage() {
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
+              if (shouldRefreshAnalysisFromProgress(data)) {
+                setAnalysisRefreshSignal((value) => value + 1)
+              }
               if (['success', 'error', 'warning'].includes(data.type) && !String(data.message || '').includes('运行中')) {
                 setIsDelivering(false)
               }
@@ -651,7 +669,7 @@ export default function ZhilianPage() {
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-6 mt-6">
-          <AnalysisContent />
+          <AnalysisContent refreshSignal={analysisRefreshSignal} />
         </TabsContent>
       </Tabs>
 

@@ -47,6 +47,9 @@ public class ZhilianJobDataEntity {
     @TableField("job_description")
     private String jobDescription;
 
+    @TableField("scan_run_id")
+    private String scanRunId;
+
     @TableField("ai_score")
     private Integer aiScore;
 

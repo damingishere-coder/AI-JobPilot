@@ -77,6 +77,7 @@ public class JobAiAnalysisService {
                     "job_key TEXT, " +
                     "company_name TEXT, " +
                     "job_name TEXT, " +
+                    "scan_run_id TEXT, " +
                     "score INTEGER, " +
                     "decision TEXT, " +
                     "summary TEXT, " +
@@ -87,15 +88,18 @@ public class JobAiAnalysisService {
                     "raw_response TEXT, " +
                     "created_at DATETIME, " +
                     "updated_at DATETIME)");
+            addColumn(stmt, "job_ai_analysis", "scan_run_id", "TEXT");
             addColumn(stmt, "boss_data", "ai_score", "INTEGER");
             addColumn(stmt, "boss_data", "ai_decision", "TEXT");
             addColumn(stmt, "boss_data", "ai_reason", "TEXT");
             addColumn(stmt, "boss_data", "priority_company", "INTEGER DEFAULT 0");
+            addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
             addColumn(stmt, "zhilian_data", "job_description", "TEXT");
             addColumn(stmt, "zhilian_data", "ai_score", "INTEGER");
             addColumn(stmt, "zhilian_data", "ai_decision", "TEXT");
             addColumn(stmt, "zhilian_data", "ai_reason", "TEXT");
             addColumn(stmt, "zhilian_data", "priority_company", "INTEGER DEFAULT 0");
+            addColumn(stmt, "zhilian_data", "scan_run_id", "TEXT");
         } catch (Exception e) {
             log.warn("初始化 AI 匹配表失败: {}", e.getMessage());
         }
@@ -423,6 +427,7 @@ public class JobAiAnalysisService {
             entity.setJobKey(request.getJobKey());
             entity.setCompanyName(request.getCompanyName());
             entity.setJobName(request.getJobName());
+            entity.setScanRunId(request.getScanRunId());
             entity.setScore(result.getScore());
             entity.setDecision(result.getDecision());
             entity.setSummary(result.getSummary());
@@ -448,6 +453,9 @@ public class JobAiAnalysisService {
             update.setAiDecision(result.getDecision());
             update.setAiReason(reason);
             update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                update.setScanRunId(request.getScanRunId());
+            }
             if (result.shouldApply()) {
                 update.setDeliveryStatus("待确认");
             } else {
@@ -460,6 +468,9 @@ public class JobAiAnalysisService {
             } else {
                 uw.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
             }
+            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                uw.eq("scan_run_id", request.getScanRunId());
+            }
             bossJobDataMapper.update(update, uw);
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
@@ -467,6 +478,9 @@ public class JobAiAnalysisService {
             update.setAiDecision(result.getDecision());
             update.setAiReason(reason);
             update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                update.setScanRunId(request.getScanRunId());
+            }
             if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
                 update.setJobDescription(request.getJobDescription());
             }
@@ -477,6 +491,9 @@ public class JobAiAnalysisService {
                 uw.eq("job_id", request.getJobKey());
             } else {
                 uw.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
+            }
+            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                uw.eq("scan_run_id", request.getScanRunId());
             }
             zhilianJobDataMapper.update(update, uw);
         }
@@ -521,6 +538,7 @@ public class JobAiAnalysisService {
         private String degree;
         private String companyInfo;
         private String jobDescription;
+        private String scanRunId;
     }
 
     @Data
