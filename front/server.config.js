@@ -32,7 +32,7 @@ module.exports = {
 
   // 其他自定义配置
   app: {
-    name: 'Get Jobs',
+    name: '投递牛马',
     version: '1.0.0',
   }
 }

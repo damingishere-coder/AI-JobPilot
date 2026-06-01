@@ -1,19 +1,20 @@
 (function () {
-  if (window.__GET_JOBS_ZHILIAN_CONTENT__) return;
+  const EXTENSION_VERSION = "2026-05-29-delivery-status-1";
+  if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
+  window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
 
   const API_BASE = "http://localhost:8888";
   const SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
-  const EXTENSION_VERSION = "2026-05-28-async-ai-queue-1";
   let stopRequested = false;
   let activeScanPromise = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "PING_CONTENT") {
-      sendResponse({ success: true });
+      sendResponse({ success: true, version: EXTENSION_VERSION });
       return;
     }
     if (message?.type === "ZHILIAN_SCAN_STOP") {
@@ -389,6 +390,7 @@
       location: "",
       experience: "",
       degree: "",
+      deliveryStatus: detectZhilianDeliveryStatus(root),
       description: text,
       url,
       keyword
@@ -521,6 +523,7 @@
         location: tags.location || job.location,
         experience: tags.experience || job.experience,
         degree: tags.degree || job.degree,
+        deliveryStatus: detectZhilianDeliveryStatus(document) || job.deliveryStatus || "",
         description: detailText || fullText || listDescription,
         url: window.location.href || job.url
       };
@@ -590,6 +593,17 @@
   function findClickable(labels) {
     const all = Array.from(document.querySelectorAll("button, a, div, span")).filter((el) => el.offsetParent !== null);
     return all.find((el) => labels.some((label) => compact(el.innerText || "").includes(label)));
+  }
+
+  function detectZhilianDeliveryStatus(root = document) {
+    const text = compact([
+      ...Array.from(root.querySelectorAll?.("button, a, [role='button'], div, span") || [])
+        .filter((el) => el.offsetParent !== null)
+        .map((el) => [el.innerText, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("title")].filter(Boolean).join(" ")),
+      root === document ? "" : root.innerText
+    ].filter(Boolean).join(" "));
+    if (/(已投递|已申请|投递成功|申请成功|继续沟通)/.test(text)) return "已投递";
+    return "";
   }
 
   async function scrollForCards(searchJobLimit = 20) {

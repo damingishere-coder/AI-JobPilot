@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiBriefcase, BiTrash } from "react-icons/bi"
+import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiBriefcase, BiTrash, BiCheckCircle } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
 type NameValue = { name: string; value: number }
@@ -639,7 +639,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               <CardTitle className="text-base">筛选与操作</CardTitle>
               <CardDescription>按状态、地区、经验、学历与薪资区间过滤列表</CardDescription>
             </div>
-            <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
+            <div className="flex flex-wrap gap-3 rounded-lg px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
               {statusOptions.map((s) => (
                 <button
                   key={s}
@@ -822,17 +822,29 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               </thead>
               <tbody>
                 {items.map((it, idx) => (
-                  <tr key={`${it.jobId}-${idx}`} className="border-t">
+                  <tr
+                    key={`${it.jobId}-${idx}`}
+                    className={`border-t transition-colors ${
+                      (it.deliveryStatus || "").trim() === "已投递"
+                        ? "border-emerald-200 bg-emerald-50/80 hover:bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+                        : "hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
+                    }`}
+                  >
                     <td className="py-2 px-3 whitespace-nowrap">
                       {it.deliveryStatus === "待确认" ? (
                         <Button
                           size="sm"
                           disabled={actingJobId === it.id}
                           onClick={() => handleConfirmJob(it)}
-                          className="h-7 rounded-full px-3 text-xs"
+                          className="h-7 rounded-lg px-3 text-xs"
                         >
                           Chrome投递
                         </Button>
+                      ) : (it.deliveryStatus || "").trim() === "已投递" ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                          <BiCheckCircle className="h-3.5 w-3.5" />
+                          已投递
+                        </span>
                       ) : (
                         <span className="text-muted-foreground">-</span>
                       )}
@@ -844,7 +856,16 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                     <td className="py-2 px-3 whitespace-nowrap">{it.experience || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.degree || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.deliveryStatus)}>{it.deliveryStatus || ""}</span>
+                      <span className={badgeClass("delivery", it.deliveryStatus)}>
+                        {(it.deliveryStatus || "").trim() === "已投递" ? (
+                          <span className="inline-flex items-center gap-1">
+                            <BiCheckCircle className="h-3.5 w-3.5" />
+                            已投递
+                          </span>
+                        ) : (
+                          it.deliveryStatus || ""
+                        )}
+                      </span>
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.aiScore ?? "-"}</td>
                     <td className="py-2 px-3 whitespace-nowrap">

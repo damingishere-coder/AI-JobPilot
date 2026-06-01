@@ -94,7 +94,7 @@ public class ChromeJobAnalysisQueueService {
             ));
             JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(request);
 
-            if ("zhilian".equalsIgnoreCase(platform) && result.shouldApply()) {
+            if ("zhilian".equalsIgnoreCase(platform) && result.shouldApply() && !"已投递".equals(job.getCurrentStatus())) {
                 markZhilianWaitingConfirm(request);
             }
 

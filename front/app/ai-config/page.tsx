@@ -365,7 +365,7 @@ export default function AiConfigPage() {
             <Button
               onClick={handleSave}
               size="sm"
-              className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 px-4 text-white shadow-lg transition-all duration-300 hover:scale-105 hover:from-blue-600 hover:to-indigo-600 hover:shadow-xl"
+              className="app-button-primary px-4"
               type="button"
               disabled={isBusy}
             >
@@ -430,7 +430,7 @@ export default function AiConfigPage() {
 
               <Button
                 onClick={handleSubmitResumeAndGenerate}
-                className="rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 text-white shadow-lg transition-all duration-300 hover:scale-105 hover:from-emerald-600 hover:to-teal-600 hover:shadow-xl"
+                className="app-button-success px-5"
                 type="button"
                 disabled={isBusy}
               >

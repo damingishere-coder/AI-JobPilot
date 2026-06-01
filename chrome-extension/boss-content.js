@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-05-29-boss-delivery-confirm-search-nav-1";
+  const EXTENSION_VERSION = "2026-05-29-delivery-status-1";
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -540,7 +540,7 @@
       if (!data.success || !Array.isArray(data.items)) throw new Error(data.message || "查重接口返回异常");
 
       const duplicateKeys = new Set(data.items.filter((item) => item.duplicate).map(dedupeItemKey));
-      const freshJobs = list.filter((job) => !duplicateKeys.has(dedupeJobKey(job)));
+      const freshJobs = list.filter((job) => isDeliveredStatus(job.deliveryStatus) || !duplicateKeys.has(dedupeJobKey(job)));
       return {
         jobs: freshJobs,
         duplicateCount: Number(data.duplicateCount ?? (list.length - freshJobs.length) ?? 0)
@@ -569,6 +569,7 @@
       url: job?.url || "",
       title: compact(job?.title),
       company: compact(job?.company),
+      deliveryStatus: normalizePlatformDeliveryStatus(job?.deliveryStatus),
       keyword: job?.keyword || ""
     };
   }
@@ -589,6 +590,7 @@
     const salary = textOf(root, [".salary", ".job-salary", "[class*='salary']"]) || guessSalary(text);
     const jobLocation = textOf(root, [".job-area", ".company-location", "[class*='location']"]) || "";
     const id = extractBossId(url);
+    const deliveryStatus = detectBossDeliveryStatus(root);
     return {
       id,
       title,
@@ -601,6 +603,7 @@
       hrTitle: "",
       hrActive: "",
       description: text,
+      deliveryStatus,
       url,
       keyword
     };
@@ -915,6 +918,7 @@
         industry: fields.industry || job.industry || "",
         financingStage: fields.financingStage || job.financingStage || "",
         companyScale: fields.companyScale || job.companyScale || "",
+        deliveryStatus: fields.deliveryStatus || job.deliveryStatus || "",
         recruitmentStatus: fields.recruitmentStatus || job.recruitmentStatus || "",
         url: window.location.href || job.url
       };
@@ -1857,8 +1861,20 @@
       industry: firstNonEmpty(companyFacts.industry, textOf(document, [".company-tags", ".sider-company [class*='industry']"])),
       financingStage: companyFacts.financingStage,
       companyScale: companyFacts.companyScale,
+      deliveryStatus: detectBossDeliveryStatus(document),
       recruitmentStatus: firstNonEmpty(textOf(document, [".job-status", "[class*='job-status']"]), firstMatch(bodyText, /(招聘中|急招|停止招聘|已关闭|暂停招聘)/))
     };
+  }
+
+  function detectBossDeliveryStatus(root = document) {
+    const text = compact([
+      ...Array.from(root.querySelectorAll?.("button, a, [role='button']") || [])
+        .filter((el) => el.offsetParent !== null)
+        .map((el) => [el.innerText, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("title")].filter(Boolean).join(" ")),
+      root === document ? "" : root.innerText
+    ].filter(Boolean).join(" "));
+    if (/(继续沟通|已沟通|已投递|已申请)/.test(text)) return "已投递";
+    return "";
   }
 
   function parseBossTextSections(text) {
@@ -1929,10 +1945,19 @@
       ...job,
       title: compact(job.title),
       company: compact(job.company),
+      deliveryStatus: normalizePlatformDeliveryStatus(job.deliveryStatus),
       description: trimToUsefulLength(job.description || "", 8000),
       companyInfo: trimToUsefulLength(job.companyInfo || "", 3000),
       keyword: job.keyword || ""
     };
+  }
+
+  function normalizePlatformDeliveryStatus(status) {
+    return isDeliveredStatus(status) ? "已投递" : "";
+  }
+
+  function isDeliveredStatus(status) {
+    return compact(status) === "已投递";
   }
 
   function firstNonEmpty(...values) {

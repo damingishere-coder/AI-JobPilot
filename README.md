@@ -1,6 +1,6 @@
-# Get Jobs 工作无忧
+# 投递牛马 工作无忧
 
-Get Jobs 是一个基于 Spring Boot、Next.js 和 Playwright 的本地求职自动化工具，用于在招聘平台上完成配置管理、登录状态维护、岗位筛选、自动投递、进度推送和岗位数据分析。
+投递牛马是一个基于 Spring Boot、Next.js 和 Playwright 的本地求职自动化工具，用于在招聘平台上完成配置管理、登录状态维护、岗位筛选、自动投递、进度推送和岗位数据分析。
 
 当前项目阶段：**1.0 自动投简历脚本**。这一阶段的目标是把本地 GUI、后端任务编排、AI 岗位分析、Chrome 已登录标签页桥接和结果回写串成可用闭环。
 
@@ -43,7 +43,7 @@ Get Jobs 是一个基于 Spring Boot、Next.js 和 Playwright 的本地求职自
 .
 ├── README.md                 # 项目入口说明
 ├── build.gradle.kts          # 后端 Gradle 构建配置
-├── chrome-extension/          # Get Jobs Chrome Bridge 扩展
+├── chrome-extension/          # 投递牛马 Chrome Bridge 扩展
 ├── db/getjobs.db             # 本地 SQLite 数据库
 ├── doc/                      # 项目文档
 ├── front/                    # Next.js 前端

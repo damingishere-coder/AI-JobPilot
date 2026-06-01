@@ -329,26 +329,26 @@ export default function Job51Page() {
         actions={
           <div className="flex items-center gap-2">
             {checkingLogin ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 请先登录51job
               </Button>
             ) : isDelivering ? (
-              <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+              <Button onClick={handleStopDelivery} size="sm" className="app-button-danger px-4">
                 <BiStop className="mr-1" /> 停止投递
               </Button>
             ) : (
-              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
                 <BiPlay className="mr-1" /> 开始投递
               </Button>
             )}
-            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={handleSaveConfig} size="sm" className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={handleSaveConfig} size="sm" className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -471,8 +471,8 @@ export default function Job51Page() {
             <CardContent>
               <p className="text-sm text-muted-foreground mb-4">退出后将清除Cookie并切换为未登录状态。</p>
               <div className="flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-full px-4">取消</Button>
-                <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 text-white px-4">确认退出</Button>
+                <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-lg px-4">取消</Button>
+                <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="app-button-danger px-4">确认退出</Button>
               </div>
             </CardContent>
           </Card>

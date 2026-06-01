@@ -530,10 +530,10 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
           accentBgClass="bg-orange-500"
           actions={
             <div className="flex items-center gap-2">
-              <Button onClick={() => { loadList(1, size); loadStats(); }} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4">
+              <Button onClick={() => { loadList(1, size); loadStats(); }} size="sm" className="app-button-success px-4">
                 <BiRefresh className="mr-1" /> 刷新
               </Button>
-              <Button onClick={exportCSV} disabled={exporting} size="sm" className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4">
+              <Button onClick={exportCSV} disabled={exporting} size="sm" className="app-button-primary px-4">
                 <BiDownload className="mr-1" /> 导出CSV
               </Button>
             </div>
@@ -619,10 +619,10 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
-            <Button onClick={() => { loadList(1, size); loadStats(); }} className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4">
+            <Button onClick={() => { loadList(1, size); loadStats(); }} className="app-button-success px-4">
               <BiRefresh className="mr-1" /> 应用筛选
             </Button>
-            <Button onClick={exportCSV} disabled={exporting} className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4">
+            <Button onClick={exportCSV} disabled={exporting} className="app-button-primary px-4">
               <BiDownload className="mr-1" /> 导出CSV
             </Button>
           </div>
@@ -793,7 +793,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
               <div className="bg-white dark:bg-neutral-900 rounded-lg shadow-xl w-[800px] max-w-[90vw] p-6" onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold">岗位详情</h3>
-                  <Button className="rounded-full bg-white/10" onClick={() => setDetailJob(null)}>关闭</Button>
+                  <Button className="rounded-lg bg-white/80" onClick={() => setDetailJob(null)}>关闭</Button>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div><span className="text-muted-foreground">公司：</span>{detailJob.compName || ""}</div>
@@ -844,10 +844,10 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             />
             <span className="text-sm text-muted-foreground">共 {total} 条</span>
             <div className="ml-auto flex items-center gap-2">
-              <Button onClick={() => loadList(page - 1 > 0 ? page - 1 : 1, size)} disabled={loadingList || page <= 1} className="rounded-full bg-white/10">
+              <Button onClick={() => loadList(page - 1 > 0 ? page - 1 : 1, size)} disabled={loadingList || page <= 1} className="rounded-lg bg-white/80">
                 上一页
               </Button>
-              <Button onClick={() => loadList(page + 1, size)} disabled={loadingList || items.length < size} className="rounded-full bg-white/10">
+              <Button onClick={() => loadList(page + 1, size)} disabled={loadingList || items.length < size} className="rounded-lg bg-white/80">
                 下一页
               </Button>
             </div>

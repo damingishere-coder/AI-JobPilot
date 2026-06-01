@@ -272,26 +272,26 @@ export default function LiepinPage() {
         actions={
           <div className="flex items-center gap-2">
             {checkingLogin ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 请先登录猎聘
               </Button>
             ) : isDelivering ? (
-              <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+              <Button onClick={handleStopDelivery} size="sm" className="app-button-danger px-4">
                 <BiStop className="mr-1" /> 停止投递
               </Button>
             ) : (
-              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
                 <BiPlay className="mr-1" /> 开始投递
               </Button>
             )}
-            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={handleSave} size="sm" className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={handleSave} size="sm" className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -439,7 +439,7 @@ export default function LiepinPage() {
                   <Button
                     variant="ghost"
                     onClick={() => setShowLogoutDialog(false)}
-                    className="rounded-full px-4"
+                    className="rounded-lg px-4"
                   >
                     取消
                   </Button>
@@ -448,7 +448,7 @@ export default function LiepinPage() {
                       await triggerLogout()
                       setShowLogoutDialog(false)
                     }}
-                    className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4"
+                    className="app-button-danger px-4"
                   >
                     确认退出
                   </Button>
@@ -475,7 +475,7 @@ export default function LiepinPage() {
                 <div className="flex justify-end gap-2">
                   <Button
                     onClick={() => setShowLogoutResultDialog(false)}
-                    className={`rounded-full px-4 ${logoutResult.success ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white' : 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white'}`}
+                    className={`rounded-lg px-4 ${logoutResult.success ? 'app-button-success' : 'app-button-danger'}`}
                   >
                     知道了
                   </Button>
@@ -502,7 +502,7 @@ export default function LiepinPage() {
                 <div className="flex justify-end gap-2">
                   <Button
                     onClick={() => setShowSaveDialog(false)}
-                    className={`rounded-full px-4 ${saveResult.success ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white' : 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white'}`}
+                    className={`rounded-lg px-4 ${saveResult.success ? 'app-button-success' : 'app-button-danger'}`}
                   >
                     知道了
                   </Button>

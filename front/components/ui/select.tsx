@@ -108,12 +108,10 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
             disabled={disabled}
             onClick={() => setOpen((v) => !v)}
             className={cn(
-              "flex h-10 w-full rounded-full px-4 py-2 text-sm pr-8",
-              "border border-white/40 bg-white/5 shadow-[inset_0_1px_0_rgba(255,255,255,.25)]",
-              "transition-all duration-200 hover:bg-white/10 hover:shadow-md",
-              disabled ? "cursor-not-allowed opacity-50" : "focus:outline-none focus:ring-2 focus:ring-emerald-400/40 focus:border-emerald-300/60",
+              "flex h-10 w-full rounded-lg border border-slate-200 bg-white/90 px-4 py-2 pr-8 text-sm text-slate-800 shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:border-blue-200 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-slate-100",
+              disabled ? "cursor-not-allowed opacity-50" : "focus:outline-none focus:ring-4 focus:ring-blue-100 focus:border-blue-400 dark:focus:ring-blue-500/20",
               // 自定义箭头（浅灰）
-              "bg-[url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"%23a1a1aa\" stroke-width=\"2\"><path d=\"M6 9l6 6 6-6\"/></svg>')] bg-no-repeat bg-[length:16px_16px] bg-[position:right_12px_center]",
+              "bg-[url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"%2364748b\" stroke-width=\"2\"><path d=\"M6 9l6 6 6-6\"/></svg>')] bg-no-repeat bg-[length:16px_16px] bg-[position:right_12px_center]",
               className
             )}
           >
@@ -137,8 +135,8 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                     <li
                       key={String(o.value)}
                       className={cn(
-                        "group flex items-center justify-between gap-3 px-3 py-2 cursor-pointer transition-all border-b border-white/12 last:border-b-0",
-                        active ? "bg-gradient-to-r from-emerald-500/12 to-cyan-500/12" : "hover:bg-white/12"
+                        "group flex cursor-pointer items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 transition-all last:border-b-0 dark:border-white/10",
+                        active ? "bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-200" : "hover:bg-slate-50 dark:hover:bg-white/5"
                       )}
                       onClick={() => {
                         emitChange(String(o.value))
@@ -146,7 +144,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                       }}
                     >
                       <span className="flex items-center gap-3">
-                        <span className={cn("inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all", active && "bg-emerald-400/60 border-emerald-300/80")}></span>
+                        <span className={cn("inline-flex h-4 w-4 items-center justify-center rounded border border-slate-300 bg-white shadow-inner transition-all dark:border-white/20 dark:bg-white/10", active && "border-blue-400 bg-blue-500")}></span>
                         <span className="text-sm truncate">{o.label}</span>
                       </span>
                     </li>

@@ -755,6 +755,9 @@ public class BossService {
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
+        if ("已投递".equals(incomingStatus)) {
+            return incomingStatus;
+        }
         if (existingStatus != null && List.of(
                 "已投递", "待确认", "已跳过", "AI分析中", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
         ).contains(existingStatus)) {

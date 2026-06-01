@@ -688,9 +688,25 @@ public class ZhilianController {
         entity.setExperience(dto.getExperience());
         entity.setDegree(dto.getDegree());
         entity.setCompanyName(dto.getCompany());
-        entity.setDeliveryStatus("未投递");
+        entity.setDeliveryStatus(normalizeChromeDeliveryStatus(dto.getDeliveryStatus()));
         entity.setJobDescription(dto.getDescription());
         return entity;
+    }
+
+    private String normalizeChromeDeliveryStatus(String status) {
+        if (status == null || status.isBlank()) return "未投递";
+        String value = status.trim();
+        if ("已投递".equals(value)
+                || "待确认".equals(value)
+                || "已跳过".equals(value)
+                || "AI分析中".equals(value)
+                || "AI不匹配".equals(value)
+                || "AI分析失败".equals(value)
+                || "采集信息不足".equals(value)
+                || "投递失败".equals(value)) {
+            return value;
+        }
+        return "未投递";
     }
 
     private ZhilianJobDataEntity getZhilianJobById(Long id) {

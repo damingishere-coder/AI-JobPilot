@@ -518,30 +518,30 @@ export default function ZhilianPage() {
         accentBgClass="bg-purple-500"
         actions={
           <div className="flex items-center gap-2">
-            <Button onClick={handleOpenPlatform} size="sm" className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查Chrome扩展
             </Button>
             {checkingLogin ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 检查扩展中...
               </Button>
             ) : !chromeBridgeReady ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 扩展未连接
               </Button>
 	            ) : isDelivering ? (
-	              <Button onClick={handleStopDelivery} size="sm" disabled={isStopping} className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-70 disabled:hover:scale-100">
+	              <Button onClick={handleStopDelivery} size="sm" disabled={isStopping} className="app-button-danger px-4 disabled:opacity-70">
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+	              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> 开始扫描
 	              </Button>
 	            )}
-            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={handleSaveConfig} size="sm" className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={handleSaveConfig} size="sm" className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -592,14 +592,14 @@ export default function ZhilianPage() {
                   当前状态：{openClawReady ? 'OpenClaw可用' : '未验证'}。{openClawMessage || '点击检查后会尝试读取 OpenClaw browser 插件状态。'}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={checkOpenClawStatus} size="sm" variant="outline" className="rounded-full px-4">
+                  <Button onClick={checkOpenClawStatus} size="sm" variant="outline" className="rounded-lg px-4">
                     <BiLinkExternal className="mr-1" /> 检查OpenClaw
                   </Button>
                   <Button
                     onClick={handleOpenClawProbe}
                     size="sm"
                     disabled={openClawRunning}
-                    className="rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300"
+                    className="app-button-soft px-4"
                   >
                     <BiCodeAlt className="mr-1" /> {openClawRunning ? '实验采集中...' : 'OpenClaw实验采集'}
                   </Button>
@@ -685,8 +685,8 @@ export default function ZhilianPage() {
             <CardContent>
               <p className="text-sm text-muted-foreground mb-4">退出后将清除Cookie并切换为未登录状态。</p>
               <div className="flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-full px-4">取消</Button>
-                <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 text-white px-4">确认退出</Button>
+                <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-lg px-4">取消</Button>
+                <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="app-button-danger px-4">确认退出</Button>
               </div>
             </CardContent>
           </Card>
@@ -772,11 +772,11 @@ function ProgressLogCard({
             {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
           </span>
           {isRunning && (
-            <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-full px-3">
+            <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-lg px-3">
               <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止'}
             </Button>
           )}
-          <Button onClick={onClear} size="sm" variant="ghost" className="rounded-full px-3">清空</Button>
+          <Button onClick={onClear} size="sm" variant="ghost" className="rounded-lg px-3">清空</Button>
         </div>
       </CardHeader>
       <CardContent>

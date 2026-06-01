@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Get Jobs Chrome Bridge",
+  "name": "投递牛马 Chrome Bridge",
   "version": "1.0.0",
-  "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for Get Jobs.",
+  "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for 投递牛马.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["tabs", "scripting"],
   "host_permissions": [
     "http://localhost:6866/*",

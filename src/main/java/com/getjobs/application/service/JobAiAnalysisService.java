@@ -448,6 +448,8 @@ public class JobAiAnalysisService {
         if (request == null || result == null) return;
         String reason = result.toReasonText();
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            BossJobDataEntity existing = findBossJobForAnalysis(request);
+            boolean alreadyDelivered = existing != null && "已投递".equals(existing.getDeliveryStatus());
             BossJobDataEntity update = new BossJobDataEntity();
             update.setAiScore(result.getScore());
             update.setAiDecision(result.getDecision());
@@ -456,10 +458,12 @@ public class JobAiAnalysisService {
             if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
                 update.setScanRunId(request.getScanRunId());
             }
-            if (result.shouldApply()) {
-                update.setDeliveryStatus("待确认");
-            } else {
-                update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+            if (!alreadyDelivered) {
+                if (result.shouldApply()) {
+                    update.setDeliveryStatus("待确认");
+                } else {
+                    update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+                }
             }
             update.setUpdatedAt(LocalDateTime.now());
             UpdateWrapper<BossJobDataEntity> uw = new UpdateWrapper<>();
@@ -473,6 +477,8 @@ public class JobAiAnalysisService {
             }
             bossJobDataMapper.update(update, uw);
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
+            boolean alreadyDelivered = existing != null && "已投递".equals(existing.getDeliveryStatus());
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
             update.setAiScore(result.getScore());
             update.setAiDecision(result.getDecision());
@@ -484,7 +490,7 @@ public class JobAiAnalysisService {
             if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
                 update.setJobDescription(request.getJobDescription());
             }
-            if (!result.shouldApply()) update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+            if (!alreadyDelivered && !result.shouldApply()) update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
             update.setUpdateTime(LocalDateTime.now());
             UpdateWrapper<ZhilianJobDataEntity> uw = new UpdateWrapper<>();
             if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
@@ -497,6 +503,34 @@ public class JobAiAnalysisService {
             }
             zhilianJobDataMapper.update(update, uw);
         }
+    }
+
+    private BossJobDataEntity findBossJobForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("encrypt_id", request.getJobKey());
+        } else {
+            wrapper.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
+        }
+        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+            wrapper.eq("scan_run_id", request.getScanRunId());
+        }
+        wrapper.last("LIMIT 1");
+        return bossJobDataMapper.selectOne(wrapper);
+    }
+
+    private ZhilianJobDataEntity findZhilianJobForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+            wrapper.eq("scan_run_id", request.getScanRunId());
+        }
+        wrapper.last("LIMIT 1");
+        return zhilianJobDataMapper.selectOne(wrapper);
     }
 
     private String toJsonArray(List<String> values) {

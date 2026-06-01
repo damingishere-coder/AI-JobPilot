@@ -1,13 +1,13 @@
 spring:
   application:
-    name: get_jobs
+    name: toudi_niuma
   profiles:
     active: dev
   info:
     app:
-      name: Get Jobs
+      name: 投递牛马
       version: 0.0.1-SNAPSHOT
-      description: Local Get Jobs workspace
+      description: Local 投递牛马 workspace
   banner:
     charset: UTF-8
     location: classpath:banner.txt

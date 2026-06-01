@@ -195,9 +195,9 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
               <CardTitle className="text-base">筛选与操作</CardTitle>
               <CardDescription>按状态、地区、经验、学历与薪资区间过滤列表</CardDescription>
             </div>
-            <div className="flex flex-wrap gap-3 rounded-full px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
+            <div className="flex flex-wrap gap-3 rounded-lg px-3 py-2 border border-white/20 bg-white/5 backdrop-blur-md shadow-sm">
               {statusOptions.map(s=> (
-                <label key={s} className={`group inline-flex items-center gap-2 text-sm rounded-full px-3 py-1.5 transition-all border backdrop-blur-sm ${statuses.includes(s)?"border-cyan-300/60 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 text-cyan-900 dark:text-cyan-200 shadow":"border-white/20 bg-white/8 text-foreground/80 hover:bg-white/12"}`}>
+                <label key={s} className={`group inline-flex items-center gap-2 text-sm rounded-lg px-3 py-1.5 transition-all border backdrop-blur-sm ${statuses.includes(s)?"border-cyan-300/60 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 text-cyan-900 dark:text-cyan-200 shadow":"border-white/20 bg-white/8 text-foreground/80 hover:bg-white/12"}`}>
                   <input type="checkbox" checked={statuses.includes(s)} onChange={(e)=>{ setStatuses(prev=> e.target.checked ? Array.from(new Set([...prev,s])) : prev.filter(x=>x!==s) ) }} className="sr-only peer" />
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all peer-checked:bg-cyan-400/60 peer-checked:border-cyan-300/80"></span>
                   {s}

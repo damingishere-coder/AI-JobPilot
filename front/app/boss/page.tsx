@@ -323,11 +323,11 @@ export default function BossPage() {
       setBossLoginMessage(
         ready
           ? `Chrome扩展已连接。只有点击“开始扫描”时才会控制Boss页面。版本：${status.version || '旧版/未知'}`
-          : status.message || 'Chrome扩展未连接，请加载 Get Jobs Chrome Bridge。'
+          : status.message || 'Chrome扩展未连接，请加载 投递牛马 Chrome Bridge。'
       )
     } catch {
       setChromeBridgeReady(false)
-      setBossLoginMessage('Chrome扩展未连接，请加载 Get Jobs Chrome Bridge。')
+      setBossLoginMessage('Chrome扩展未连接，请加载 投递牛马 Chrome Bridge。')
     } finally {
       setCheckingLogin(false)
     }
@@ -809,30 +809,30 @@ export default function BossPage() {
         accentBgClass="bg-teal-500"
         actions={
           <div className="flex items-center gap-2">
-            <Button onClick={handleOpenPlatform} size="sm" className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查扩展连接
             </Button>
             {checkingLogin ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !chromeBridgeReady ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
+              <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 扩展未连接
               </Button>
 	            ) : isDelivering ? (
-	              <Button onClick={handleStopDelivery} size="sm" disabled={isStopping} className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-70 disabled:hover:scale-100">
+	              <Button onClick={handleStopDelivery} size="sm" disabled={isStopping} className="app-button-danger px-4 disabled:opacity-70">
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" className="rounded-full bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+	              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> 开始扫描
 	              </Button>
 	            )}
-            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={() => handleSave(false)} size="sm" className="rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
+            <Button onClick={() => handleSave(false)} size="sm" className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -1250,7 +1250,7 @@ export default function BossPage() {
                   <Button
                     variant="ghost"
                     onClick={() => setShowLogoutDialog(false)}
-                    className="rounded-full px-4"
+                    className="rounded-lg px-4"
                   >
                     取消
                   </Button>
@@ -1259,7 +1259,7 @@ export default function BossPage() {
                       await triggerLogout()
                       setShowLogoutDialog(false)
                     }}
-                    className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4"
+                    className="app-button-danger px-4"
                   >
                     确认退出
                   </Button>
@@ -1286,7 +1286,7 @@ export default function BossPage() {
                 <div className="flex justify-end gap-2">
                   <Button
                     onClick={() => setShowLogoutResultDialog(false)}
-                    className={`rounded-full px-4 ${logoutResult.success ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white' : 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white'}`}
+                    className={`rounded-lg px-4 ${logoutResult.success ? 'app-button-success' : 'app-button-danger'}`}
                   >
                     知道了
                   </Button>
@@ -1315,7 +1315,7 @@ export default function BossPage() {
                 <div className="flex justify-end gap-2">
                   <Button
                     onClick={() => setShowSaveDialog(false)}
-                    className={`rounded-full px-4 ${saveResult.success ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white' : 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white'}`}
+                    className={`rounded-lg px-4 ${saveResult.success ? 'app-button-success' : 'app-button-danger'}`}
                   >
                     知道了
                   </Button>
@@ -1369,11 +1369,11 @@ function ProgressLogCard({
             {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
           </span>
           {isRunning && (
-            <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-full px-3">
+            <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-lg px-3">
               <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止'}
             </Button>
           )}
-          <Button onClick={onClear} size="sm" variant="ghost" className="rounded-full px-3">清空</Button>
+          <Button onClick={onClear} size="sm" variant="ghost" className="rounded-lg px-3">清空</Button>
         </div>
       </CardHeader>
       <CardContent>

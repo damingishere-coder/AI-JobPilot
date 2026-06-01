@@ -22,6 +22,7 @@ import {
   BiChevronUp,
   BiLinkExternal,
   BiTrash,
+  BiCheckCircle,
 } from "react-icons/bi"
 
 type NameValue = { name: string; value: number }
@@ -1257,10 +1258,14 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   items.map((it, idx) => (
                     <tr
                       key={it.id}
-                      className={`group transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0 ${
-                        idx % 2 === 0
-                          ? 'bg-white dark:bg-blacksection hover:bg-blue-50/50 dark:hover:bg-blue-950/20'
-                          : 'bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20'
+                      className={`group transition-colors border-b last:border-b-0 ${
+                        (it.deliveryStatus || "").includes("已投递")
+                          ? "border-emerald-200 bg-emerald-50/80 hover:bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/30"
+                          : `border-gray-200 dark:border-gray-700 ${
+                              idx % 2 === 0
+                                ? "bg-white dark:bg-blacksection hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
+                                : "bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
+                            }`
                       }`}
                     >
                       <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
@@ -1273,6 +1278,11 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                               跳过
                             </Button>
                           </div>
+                        ) : (it.deliveryStatus || "").includes("已投递") ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                            <BiCheckCircle className="h-3.5 w-3.5" />
+                            已投递
+                          </span>
                         ) : (
                           <span className="text-muted-foreground">-</span>
                         )}
@@ -1299,7 +1309,16 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                         <div className="truncate cursor-pointer hover:text-primary transition-colors" title={it.hrName || '-'} onClick={() => openTextDialog("HR", it.hrName)}>{it.hrName || '-'}</div>
                       </td>
                       <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                        <button className={badgeClass("delivery", it.deliveryStatus)} title={it.deliveryStatus} onClick={() => openTextDialog("投递状态", it.deliveryStatus)}>{it.deliveryStatus || "-"}</button>
+                        <button className={badgeClass("delivery", it.deliveryStatus)} title={it.deliveryStatus} onClick={() => openTextDialog("投递状态", it.deliveryStatus)}>
+                          {(it.deliveryStatus || "").includes("已投递") ? (
+                            <span className="inline-flex items-center gap-1">
+                              <BiCheckCircle className="h-3.5 w-3.5" />
+                              已投递
+                            </span>
+                          ) : (
+                            it.deliveryStatus || "-"
+                          )}
+                        </button>
                       </td>
                       <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         {it.aiScore ?? "-"}
@@ -1412,9 +1431,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   className="w-full h-[50vh] text-sm leading-6 rounded-md border p-2 bg-muted/30 dark:bg-neutral-800"
                 />
                 <div className="flex justify-end gap-2 mt-4">
-                  <Button variant="outline" onClick={selectDialogText} className="rounded-full px-4">全选</Button>
-                  <Button variant="success" onClick={copyDialogText} className="rounded-full px-4">复制</Button>
-                  <Button onClick={() => setShowTextDialog(false)} className="rounded-full px-4">关闭</Button>
+                  <Button variant="outline" onClick={selectDialogText} className="rounded-lg px-4">全选</Button>
+                  <Button variant="success" onClick={copyDialogText} className="rounded-lg px-4">复制</Button>
+                  <Button onClick={() => setShowTextDialog(false)} className="rounded-lg px-4">关闭</Button>
                 </div>
               </CardContent>
             </Card>

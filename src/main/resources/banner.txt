@@ -5,4 +5,4 @@ ${AnsiColor.BRIGHT_CYAN}/ /_/ /  __/ /_   / /_/ / /_/ / /_/ (__  )
 ${AnsiColor.BRIGHT_BLUE}\____/\___/\__/   \____/\____/_.___/____/
 ${AnsiColor.DEFAULT}
 ${AnsiStyle.BOLD}${AnsiColor.BRIGHT_GREEN}Spring Boot: ${spring-boot.formatted-version}${AnsiStyle.NORMAL}${AnsiColor.DEFAULT}
-${AnsiColor.BRIGHT_RED}${AnsiStyle.BOLD}Local Get Jobs Workspace.${AnsiStyle.NORMAL}${AnsiColor.DEFAULT}
+${AnsiColor.BRIGHT_RED}${AnsiStyle.BOLD}Local 投递牛马 Workspace.${AnsiStyle.NORMAL}${AnsiColor.DEFAULT}

@@ -5,29 +5,29 @@
 @layer base {
   :root {
     /* shadcn/ui 原有颜色 - 保留 */
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 214 100% 98%;
+    --foreground: 222 47% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
+    --primary: 217 91% 56%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
+    --secondary: 214 80% 96%;
     --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
+    --muted: 215 56% 94%;
+    --muted-foreground: 219 18% 45%;
+    --accent: 214 80% 96%;
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --border: 214 36% 88%;
+    --input: 214 36% 88%;
+    --ring: 217 91% 56%;
     --radius: 0.5rem;
 
     /* Solid Next.js 模板颜色系统 */
-    --color-stroke: #eeeeee;
+    --color-stroke: #e5edf7;
     --color-strokedark: #2d2f40;
     --color-hoverdark: #252a42;
     --color-titlebg: #adfff8;
@@ -38,13 +38,13 @@
     --color-black: #181c31;
     --color-blackho: #2c3149;
     --color-blacksection: #1c2136;
-    --color-primary: #006bff;
-    --color-primaryho: #0063ec;
+    --color-primary: #2563eb;
+    --color-primaryho: #1d4ed8;
     --color-meta: #20c5a8;
-    --color-waterloo: #757693;
-    --color-manatee: #999aa1;
-    --color-alabaster: #fbfbfb;
-    --color-zumthor: #edf5ff;
+    --color-waterloo: #64748b;
+    --color-manatee: #94a3b8;
+    --color-alabaster: #f8fbff;
+    --color-zumthor: #eff6ff;
     --color-socialicon: #d1d8e0;
   }
 
@@ -77,6 +77,10 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-width: 1180px;
+    background:
+      radial-gradient(circle at 26% -10%, rgba(59, 130, 246, 0.09), transparent 34rem),
+      linear-gradient(180deg, #fbfdff 0%, #f6faff 100%);
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
@@ -89,8 +93,54 @@
 
 .content-bg {
   background-image:
-    radial-gradient(ellipse at top, rgb(var(--accent-rgb) / 0.12) 0%, transparent 60%),
-    linear-gradient(to bottom right, rgb(var(--accent-rgb) / 0.06), transparent);
+    radial-gradient(circle at 36% 0%, rgb(var(--accent-rgb, 37 99 235) / 0.08) 0%, transparent 34rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(246, 250, 255, 0.96));
+}
+
+.app-button-primary {
+  border: 1px solid rgba(37, 99, 235, 0.12) !important;
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+  color: #ffffff !important;
+  box-shadow: 0 14px 26px rgba(37, 99, 235, 0.24) !important;
+}
+
+.app-button-primary:hover {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+}
+
+.app-button-soft {
+  border: 1px solid rgba(191, 219, 254, 0.95) !important;
+  background: rgba(255, 255, 255, 0.84) !important;
+  color: #2563eb !important;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08) !important;
+}
+
+.app-button-soft:hover {
+  border-color: rgba(147, 197, 253, 1) !important;
+  background: #eff6ff !important;
+  color: #1d4ed8 !important;
+}
+
+.app-button-success {
+  border: 1px solid rgba(16, 185, 129, 0.2) !important;
+  background: #ecfdf5 !important;
+  color: #059669 !important;
+}
+
+.app-button-success:hover {
+  background: #d1fae5 !important;
+  color: #047857 !important;
+}
+
+.app-button-danger {
+  border: 1px solid rgba(248, 113, 113, 0.28) !important;
+  background: #fff1f2 !important;
+  color: #ef4444 !important;
+}
+
+.app-button-danger:hover {
+  background: #ffe4e6 !important;
+  color: #dc2626 !important;
 }
 
 /* Solid Next.js 模板工具类 */
