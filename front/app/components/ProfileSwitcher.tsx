@@ -8,6 +8,29 @@ import { Select } from '@/components/ui/select'
 
 const API_BASE = 'http://localhost:8888'
 
+type ApiResponse = {
+  success?: boolean
+  data?: unknown
+  current?: unknown
+  message?: string
+}
+
+const parseApiResponse = async (response: Response, fallback: string): Promise<ApiResponse> => {
+  let result: ApiResponse | null = null
+  try {
+    result = await response.json()
+  } catch {
+    result = null
+  }
+  if (response.status === 404) {
+    throw new Error('档案接口暂不可用，请重启后端服务后再试')
+  }
+  if (!response.ok || result?.success === false) {
+    throw new Error(result?.message || fallback)
+  }
+  return result || {}
+}
+
 export type Profile = {
   id: number
   name: string
@@ -30,10 +53,10 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/profiles`)
-      const result = await response.json()
-      const list = Array.isArray(result.data) ? result.data : []
+      const result = await parseApiResponse(response, '档案加载失败')
+      const list = Array.isArray(result.data) ? result.data as Profile[] : []
       setProfiles(list)
-      const current = result.current || list.find((item: Profile) => item.isActive === 1) || list[0]
+      const current = result.current as Profile | undefined || list.find((item: Profile) => item.isActive === 1) || list[0]
       if (current?.id) {
         setCurrentId(String(current.id))
       }
@@ -54,14 +77,11 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/profiles/${id}/activate`, { method: 'POST' })
-      const result = await response.json()
-      if (!response.ok || result?.success === false) {
-        throw new Error(result?.message || '档案切换失败')
-      }
+      const result = await parseApiResponse(response, '档案切换失败')
       setCurrentId(id)
       await loadProfiles()
       if (result.data) {
-        onProfileChange?.(result.data)
+        onProfileChange?.(result.data as Profile)
       }
     } catch (error) {
       alert(error instanceof Error ? error.message : '档案切换失败')
@@ -81,12 +101,13 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       })
-      const result = await response.json()
-      if (!response.ok || result?.success === false) {
-        throw new Error(result?.message || '档案创建失败')
-      }
+      const result = await parseApiResponse(response, '档案创建失败')
       setNewName('')
-      await activateProfile(String(result.data.id), true)
+      const created = result.data as Profile | undefined
+      if (!created?.id) {
+        throw new Error('档案创建成功但未返回ID，请刷新后重试')
+      }
+      await activateProfile(String(created.id), true)
     } catch (error) {
       alert(error instanceof Error ? error.message : '档案创建失败')
     } finally {
