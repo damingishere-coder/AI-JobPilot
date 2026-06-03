@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-05-29-delivery-status-1";
+  const EXTENSION_VERSION = "2026-06-04-keyword-cursor-1";
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -8,6 +8,7 @@
   const SCAN_TASK_KEY = "__GET_JOBS_BOSS_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_BOSS_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_BOSS_SCAN_STATUS__";
+  const KEYWORD_CURSOR_KEY = "__GET_JOBS_BOSS_KEYWORD_CURSOR__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const SEARCH_NAVIGATION_GRACE_MS = 60 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
@@ -122,6 +123,23 @@
       updatedAt: Date.now()
     });
     const keywords = scanKeywords(task);
+    if (task.keywordCursorReset) {
+      postProgress(task, "warning", "Boss搜索配置已变化，关键词历史已重置。", {
+        operation: "scan",
+        stage: "keywordCursor",
+        keywordTotal: keywords.length
+      });
+    }
+    if (keywords.length) {
+      const startIndex = normalizeKeywordIndex(task.currentIndex, keywords.length);
+      postProgress(task, "info", `Boss关键词历史：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
+        operation: "scan",
+        stage: "keywordCursor",
+        keyword: keywords[startIndex],
+        keywordIndex: startIndex + 1,
+        keywordTotal: keywords.length
+      });
+    }
     postProgress(task, "info", `Boss Chrome扫描任务已接收，正在准备搜索页面。扩展版本：${EXTENSION_VERSION}`, {
       operation: "scan",
       stage: "received",
@@ -222,7 +240,7 @@
     let keywords = scanKeywords(task);
     const runId = message.runId || String(Date.now());
     const city = first(config.cityCode, "101280600");
-    let currentIndex = Number(task.currentIndex || 0);
+    let currentIndex = normalizeTaskIndex(task.currentIndex, keywords.length);
     let totalSaved = Number(task.totalSaved || 0);
 
     if (!keywords.length) {
@@ -240,6 +258,7 @@
         await humanPause(1500, 3000);
       }
       const keyword = keywords[index];
+      markKeywordCursorCurrent(task, index, keyword);
       const url = buildSearchUrl(keyword, city, config);
       const navigationKey = buildNavigationKey(keyword, city);
       const navigationAttempts = task.navigationKey === navigationKey ? Number(task.navigationAttempts || 0) : 0;
@@ -284,6 +303,7 @@
         const detailResult = await continueBossDetailScan(task, keyword, runId, baseMeta);
         if (detailResult.pendingNavigation) return detailResult;
         totalSaved = detailResult.totalSaved;
+        if (!stopRequested) advanceKeywordCursor(task, index + 1, keyword);
         task = {
           ...task,
           phase: "nextKeyword",
@@ -374,6 +394,7 @@
           collected: 0,
           ...diagnostics
         });
+        advanceKeywordCursor(task, index + 1, keyword);
         storeScanTask({ ...task, phase: "nextKeyword", currentIndex: index + 1, totalSaved });
         continue;
       }
@@ -397,6 +418,7 @@
           duplicates: dedupeResult.duplicateCount,
           fresh: 0
         });
+        advanceKeywordCursor(task, index + 1, keyword);
         storeScanTask({ ...task, phase: "nextKeyword", currentIndex: index + 1, totalSaved });
         continue;
       }
@@ -441,11 +463,14 @@
       const aiResult = await appendAiKeywords(task, keywords);
       task = aiResult.task;
       keywords = aiResult.keywords;
-      if (currentIndex < keywords.length) {
+      if (Number(task.currentIndex || 0) < keywords.length) {
         return runScanInternal(task);
       }
     }
 
+    if (!stopRequested) {
+      advanceKeywordCursor(task, userKeywordCount(task), "");
+    }
     clearStoredScanTask();
     const stopped = stopRequested;
     if (stopped) clearStopRequested();
@@ -621,6 +646,7 @@
     }
 
     if (!jobs.length) {
+      advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
       storeScanTask({ ...message, phase: "", currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
       return { success: true, totalSaved };
     }
@@ -725,6 +751,7 @@
         currentIndex: Number(message.currentIndex || 0) + 1,
         totalSaved
       });
+      advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
       return { success: true, totalSaved };
     }
     const res = await fetch(`${API_BASE}/api/boss/chrome/jobs`, {
@@ -767,6 +794,7 @@
       currentIndex: Number(message.currentIndex || 0) + 1,
       totalSaved: nextTotalSaved
     });
+    advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
     return { success: true, totalSaved: nextTotalSaved };
   }
 
@@ -1196,21 +1224,27 @@
   function normalizeScanTask(message) {
     const config = message?.config || {};
     const keywords = uniqueStrings(toList(message?.keywords || config.keywords || config.keyword || "AI产品运营"));
+    const cursorKeywords = uniqueStrings(message?.cursorKeywords || keywords);
     const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
+    const hasExplicitIndex = hasOwn(message, "currentIndex");
+    const cursorState = resolveKeywordCursor(message, cursorKeywords, hasExplicitIndex);
     return {
       ...message,
       config: { ...config, keywords, searchJobLimit },
       keywords,
+      cursorKeywords,
       source: "GET_JOBS_BACKGROUND",
       type: "BOSS_SCAN_START",
-      currentIndex: Number(message.currentIndex || 0),
+      currentIndex: cursorState.currentIndex,
       totalSaved: Number(message.totalSaved || 0),
       phase: message.phase || "searching",
       detailIndex: Number(message.detailIndex || 0),
       jobs: Array.isArray(message.jobs) ? message.jobs : [],
       aiKeywordsLoaded: Boolean(message.aiKeywordsLoaded),
       autoDeliver: isAutoDeliverEnabled(message),
-      startedAt: message.startedAt || Date.now()
+      startedAt: message.startedAt || Date.now(),
+      keywordCursorKey: cursorState.cursorKey,
+      keywordCursorReset: cursorState.reset
     };
   }
 
@@ -1239,6 +1273,139 @@
 
   function clearStoredScanTask() {
     sessionStorage.removeItem(SCAN_TASK_KEY);
+  }
+
+  function resolveKeywordCursor(message, keywords, hasExplicitIndex = false) {
+    const cursorKey = buildKeywordCursorKey(message, keywords);
+    const fallbackIndex = normalizeTaskIndex(message?.currentIndex, keywords.length);
+    if (hasExplicitIndex || !keywords.length) {
+      ensureKeywordCursor(cursorKey, keywords.length, fallbackIndex);
+      return { currentIndex: fallbackIndex, cursorKey, reset: false };
+    }
+
+    const stored = readKeywordCursor(cursorKey);
+    if (stored && stored.keywordTotal === keywords.length) {
+      return {
+        currentIndex: normalizeKeywordIndex(stored.nextIndex, keywords.length),
+        cursorKey,
+        reset: false
+      };
+    }
+
+    const reset = Boolean(readAnyKeywordCursor());
+    writeKeywordCursor(cursorKey, 0, keywords.length, "reset");
+    return { currentIndex: 0, cursorKey, reset };
+  }
+
+  function markKeywordCursorCurrent(task, index, keyword = "") {
+    const total = userKeywordCount(task);
+    const parsed = Math.floor(Number(index));
+    if (!total || !Number.isFinite(parsed) || parsed < 0 || parsed >= total) return;
+    writeKeywordCursor(task?.keywordCursorKey || buildKeywordCursorKey(task, userConfiguredKeywords(task)), parsed, total, "current", keyword);
+  }
+
+  function advanceKeywordCursor(task, nextIndex, keyword = "") {
+    const total = userKeywordCount(task);
+    const parsed = Math.floor(Number(nextIndex));
+    if (!total || !Number.isFinite(parsed) || parsed < 0 || parsed > total) return;
+    writeKeywordCursor(task?.keywordCursorKey || buildKeywordCursorKey(task, userConfiguredKeywords(task)), normalizeKeywordIndex(parsed, total), total, "next", keyword);
+  }
+
+  function ensureKeywordCursor(cursorKey, keywordTotal, nextIndex = 0) {
+    if (!cursorKey || !keywordTotal || readKeywordCursor(cursorKey)) return;
+    writeKeywordCursor(cursorKey, nextIndex, keywordTotal, "init");
+  }
+
+  function readKeywordCursor(cursorKey) {
+    try {
+      const raw = localStorage.getItem(KEYWORD_CURSOR_KEY);
+      if (!raw) return null;
+      const state = JSON.parse(raw);
+      if (!state || state.cursorKey !== cursorKey) return null;
+      return state;
+    } catch {
+      localStorage.removeItem(KEYWORD_CURSOR_KEY);
+      return null;
+    }
+  }
+
+  function readAnyKeywordCursor() {
+    try {
+      const raw = localStorage.getItem(KEYWORD_CURSOR_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      localStorage.removeItem(KEYWORD_CURSOR_KEY);
+      return null;
+    }
+  }
+
+  function writeKeywordCursor(cursorKey, nextIndex, keywordTotal, state, keyword = "") {
+    if (!cursorKey || !keywordTotal) return;
+    localStorage.setItem(KEYWORD_CURSOR_KEY, JSON.stringify({
+      cursorKey,
+      nextIndex: normalizeKeywordIndex(nextIndex, keywordTotal),
+      keywordTotal,
+      state,
+      keyword,
+      updatedAt: Date.now()
+    }));
+  }
+
+  function buildKeywordCursorKey(message, keywords) {
+    const config = message?.config || {};
+    const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
+    return stableKey({
+      platform: "boss",
+      keywords: uniqueStrings(keywords || message?.cursorKeywords || []),
+      cityCode: normalizedList(config.cityCode),
+      jobType: compact(config.jobType || ""),
+      salary: normalizedList(config.salary),
+      experience: normalizedList(config.experience),
+      degree: normalizedList(config.degree),
+      scale: normalizedList(config.scale),
+      industry: normalizedList(config.industry),
+      stage: normalizedList(config.stage),
+      searchJobLimit
+    });
+  }
+
+  function userConfiguredKeywords(task) {
+    const cursorKeywords = uniqueStrings(task?.cursorKeywords || []);
+    if (cursorKeywords.length) return cursorKeywords;
+    return scanKeywords(task);
+  }
+
+  function userKeywordCount(task) {
+    return userConfiguredKeywords(task).length;
+  }
+
+  function normalizedList(value) {
+    return toList(value).map((item) => compact(item)).filter(Boolean);
+  }
+
+  function stableKey(value) {
+    return JSON.stringify(value);
+  }
+
+  function normalizeKeywordIndex(value, total) {
+    const count = Number(total);
+    if (!Number.isFinite(count) || count <= 0) return 0;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    const index = Math.floor(parsed) % count;
+    return index < 0 ? index + count : index;
+  }
+
+  function normalizeTaskIndex(value, total) {
+    const count = Number(total);
+    if (!Number.isFinite(count) || count <= 0) return 0;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.min(Math.max(Math.floor(parsed), 0), count);
+  }
+
+  function hasOwn(value, key) {
+    return Object.prototype.hasOwnProperty.call(value || {}, key);
   }
 
   function isResumableScanTask(task) {
@@ -1617,6 +1784,7 @@
     return `${keyword}::${city}`;
   }
 
+
   function openSearchPage(url, task) {
     const attempts = Number(task.navigationAttempts || 1);
     scheduleSearchNavigationRetry(url, task, attempts);
@@ -1719,6 +1887,7 @@
       expectedSearchUrl: "",
       totalSaved: Number(task.totalSaved || 0)
     };
+    advanceKeywordCursor(task, Number(task.currentIndex || 0) + 1, keyword);
     storeScanTask(nextTask);
     writeScanStatus({
       isRunning: true,
