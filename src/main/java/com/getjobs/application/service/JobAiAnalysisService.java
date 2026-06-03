@@ -24,6 +24,7 @@ import org.json.JSONObject;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.context.annotation.DependsOn;
 
 import javax.sql.DataSource;
 import java.io.ByteArrayInputStream;
@@ -41,12 +42,14 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@DependsOn("profileService")
 public class JobAiAnalysisService {
     private static final int DEFAULT_APPLY_THRESHOLD = 75;
     private static final int PRIORITY_APPLY_THRESHOLD = 65;
 
     private final DataSource dataSource;
     private final AiService aiService;
+    private final ProfileService profileService;
     private final ResumeProfileMapper resumeProfileMapper;
     private final PriorityCompanyMapper priorityCompanyMapper;
     private final JobAiAnalysisMapper jobAiAnalysisMapper;
@@ -58,6 +61,7 @@ public class JobAiAnalysisService {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             stmt.execute("CREATE TABLE IF NOT EXISTS resume_profile (" +
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                    "profile_id INTEGER, " +
                     "resume_text TEXT, " +
                     "source_filename TEXT, " +
                     "parse_status TEXT, " +
@@ -66,6 +70,7 @@ public class JobAiAnalysisService {
                     "updated_at DATETIME)");
             stmt.execute("CREATE TABLE IF NOT EXISTS priority_company (" +
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                    "profile_id INTEGER, " +
                     "company_name TEXT NOT NULL UNIQUE, " +
                     "enabled INTEGER DEFAULT 1, " +
                     "remark TEXT, " +
@@ -89,6 +94,8 @@ public class JobAiAnalysisService {
                     "created_at DATETIME, " +
                     "updated_at DATETIME)");
             addColumn(stmt, "job_ai_analysis", "scan_run_id", "TEXT");
+            addColumn(stmt, "resume_profile", "profile_id", "INTEGER");
+            addColumn(stmt, "priority_company", "profile_id", "INTEGER");
             addColumn(stmt, "boss_data", "ai_score", "INTEGER");
             addColumn(stmt, "boss_data", "ai_decision", "TEXT");
             addColumn(stmt, "boss_data", "ai_reason", "TEXT");
@@ -114,12 +121,15 @@ public class JobAiAnalysisService {
 
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
+        Long profileId = profileService.getCurrentProfileId();
         ResumeProfileEntity current = getResumeProfile();
         LocalDateTime now = LocalDateTime.now();
         if (current == null) {
             current = new ResumeProfileEntity();
+            current.setProfileId(profileId);
             current.setCreatedAt(now);
         }
+        current.setProfileId(profileId);
         current.setResumeText(resumeText == null ? "" : resumeText);
         current.setSourceFilename(sourceFilename);
         current.setParseStatus(status == null ? "manual" : status);
@@ -135,6 +145,7 @@ public class JobAiAnalysisService {
 
     public ResumeProfileEntity getResumeProfile() {
         QueryWrapper<ResumeProfileEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         wrapper.orderByDesc("updated_at").last("LIMIT 1");
         return resumeProfileMapper.selectOne(wrapper);
     }
@@ -150,6 +161,9 @@ public class JobAiAnalysisService {
             String text;
             if (filename.toLowerCase(Locale.ROOT).endsWith(".pdf") || contentType.contains("pdf")) {
                 text = extractPdfText(bytes);
+                if (text == null || text.trim().isEmpty()) {
+                    return saveResumeText("", filename, "empty_text_pdf", "PDF未解析到文字，可能是扫描版PDF，请粘贴文本或上传图片简历");
+                }
                 return saveResumeText(text, filename, "parsed", "PDF解析成功");
             }
             if (contentType.startsWith("image/") || filename.toLowerCase(Locale.ROOT).matches(".*\\.(png|jpg|jpeg|webp)$")) {
@@ -172,13 +186,17 @@ public class JobAiAnalysisService {
 
     @Transactional
     public List<PriorityCompanyEntity> savePriorityCompanies(List<PriorityCompanyRequest> companies) {
-        priorityCompanyMapper.delete(null);
+        Long profileId = profileService.getCurrentProfileId();
+        QueryWrapper<PriorityCompanyEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileId);
+        priorityCompanyMapper.delete(wrapper);
         LocalDateTime now = LocalDateTime.now();
         if (companies != null) {
             for (PriorityCompanyRequest req : companies) {
                 String name = req == null ? null : req.getCompanyName();
                 if (name == null || name.trim().isEmpty()) continue;
                 PriorityCompanyEntity entity = new PriorityCompanyEntity();
+                entity.setProfileId(profileId);
                 entity.setCompanyName(name.trim());
                 entity.setEnabled(req.getEnabled() == null || req.getEnabled() == 1 ? 1 : 0);
                 entity.setRemark(req.getRemark());
@@ -192,6 +210,7 @@ public class JobAiAnalysisService {
 
     public List<PriorityCompanyEntity> listPriorityCompanies() {
         QueryWrapper<PriorityCompanyEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         wrapper.orderByAsc("id");
         return priorityCompanyMapper.selectList(wrapper);
     }

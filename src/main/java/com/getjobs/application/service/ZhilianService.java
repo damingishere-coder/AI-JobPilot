@@ -11,6 +11,7 @@ import com.getjobs.worker.zhilian.ZhilianConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.DependsOn;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@DependsOn("profileService")
 public class ZhilianService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
@@ -34,10 +36,13 @@ public class ZhilianService {
     private final ZhilianOptionMapper zhilianOptionMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
     private final DataSource dataSource;
+    private final ProfileService profileService;
 
     /** 获取第一条配置（通常只有一条） */
     public ZhilianConfigEntity getFirstConfig() {
         QueryWrapper<ZhilianConfigEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.orderByAsc("id");
         wrapper.last("LIMIT 1");
         return zhilianConfigMapper.selectOne(wrapper);
     }
@@ -114,11 +119,8 @@ public class ZhilianService {
      */
     public ZhilianConfigEntity updateConfig(ZhilianConfigEntity config) {
         if (config == null) return null;
+        config.setId(null);
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
-        if (config.getId() != null) {
-            zhilianConfigMapper.updateById(config);
-            return zhilianConfigMapper.selectById(config.getId());
-        }
         return saveOrUpdateFirstSelective(config);
     }
 
@@ -130,6 +132,7 @@ public class ZhilianService {
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
         if (first == null) {
             ZhilianConfigEntity toInsert = new ZhilianConfigEntity();
+            toInsert.setProfileId(profileService.getCurrentProfileId());
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setCityCode(incoming.getCityCode());
             toInsert.setSalary(incoming.getSalary());
@@ -141,6 +144,7 @@ public class ZhilianService {
         } else {
             ZhilianConfigEntity toUpdate = new ZhilianConfigEntity();
             toUpdate.setId(first.getId());
+            toUpdate.setProfileId(profileService.getCurrentProfileId());
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getCityCode() != null) toUpdate.setCityCode(incoming.getCityCode());
             if (incoming.getSalary() != null) toUpdate.setSalary(incoming.getSalary());
@@ -216,6 +220,11 @@ public class ZhilianService {
                 ")";
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN search_job_limit INTEGER DEFAULT 20"); } catch (Exception ignored) {}
+            try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN profile_id INTEGER"); } catch (Exception ignored) {}
+            try {
+                Long profileId = profileService.getCurrentProfileId();
+                stmt.executeUpdate("UPDATE zhilian_config SET profile_id = " + profileId + " WHERE profile_id IS NULL");
+            } catch (Exception ignored) {}
             stmt.execute(createSql);
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN job_description TEXT"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_score INTEGER"); } catch (Exception ignored) {}

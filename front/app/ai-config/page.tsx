@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import PageHeader from '@/app/components/PageHeader'
+import ProfileSwitcher from '@/app/components/ProfileSwitcher'
 
 const API_BASE = 'http://localhost:8888'
 const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
@@ -90,6 +91,7 @@ export default function AiConfigPage() {
     await Promise.all([fetchAiConfig(), fetchBossConfig(), fetchResume(), fetchPriorityCompanies()])
     setHasUnsavedChanges(false)
     setResumeDirty(false)
+    setResumeFile(null)
   }
 
   const fetchAiConfig = async () => {
@@ -342,13 +344,17 @@ export default function AiConfigPage() {
   }
 
   const isBusy = loading || generating
+  const beforeProfileSwitch = () => {
+    if (!hasUnsavedChanges && !resumeDirty && !resumeFile) return true
+    return window.confirm('当前简历配置有未保存更改，切换档案会重新加载当前档案数据。确定继续吗？')
+  }
 
   return (
     <div className="space-y-6">
       <PageHeader
         icon={<BiBrain className="text-2xl" />}
-        title="AI配置"
-        subtitle="先提交简历，再生成自动投递需要的打招呼话术和分析逻辑"
+        title="简历配置"
+        subtitle="按人物档案保存简历、打招呼话术和岗位分析配置"
         iconClass="text-white"
         accentBgClass="bg-purple-500"
         actions={
@@ -374,6 +380,8 @@ export default function AiConfigPage() {
           </div>
         }
       />
+
+      <ProfileSwitcher beforeSwitch={beforeProfileSwitch} onProfileChange={reloadCurrentData} />
 
       {hasUnsavedChanges ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -405,6 +413,9 @@ export default function AiConfigPage() {
                   {resumeFile
                     ? `待提交文件：${resumeFile.name}（${formatFileSize(resumeFile.size)}）`
                     : '也可以直接在下面粘贴简历文本'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  文本型 PDF 可直接解析；扫描版 PDF 可能无法提取文字，请粘贴文本或上传图片简历。
                 </p>
                 {resumeMeta?.sourceFilename ? (
                   <p className="text-xs text-muted-foreground">

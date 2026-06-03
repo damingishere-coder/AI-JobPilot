@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
+import ProfileSwitcher from '@/app/components/ProfileSwitcher'
 
 interface ZhilianConfig {
   id?: number
@@ -250,6 +251,7 @@ export default function ZhilianPage() {
   }
 
   const fetchAllData = async () => {
+    setLoadingConfig(true)
     try {
       const res = await fetch('http://localhost:8888/api/zhilian/config')
       const data = await res.json()
@@ -547,6 +549,8 @@ export default function ZhilianPage() {
           </div>
         }
       />
+
+      <ProfileSwitcher onProfileChange={fetchAllData} />
 
 	      <Tabs defaultValue="config" className="w-full">
         <TabsList className="grid w-full grid-cols-2">

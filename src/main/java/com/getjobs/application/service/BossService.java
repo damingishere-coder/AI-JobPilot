@@ -18,6 +18,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.DependsOn;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -41,6 +42,7 @@ import java.util.regex.Pattern;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@DependsOn("profileService")
 public class BossService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
@@ -52,12 +54,19 @@ public class BossService {
     private final BlacklistMapper blacklistMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final javax.sql.DataSource dataSource;
+    private final ProfileService profileService;
 
     @PostConstruct
     public void ensureBossConfigSchema() {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             addColumn(stmt, "boss_config", "auto_deliver", "INTEGER DEFAULT 0");
             addColumn(stmt, "boss_config", "search_job_limit", "INTEGER DEFAULT 20");
+            addColumn(stmt, "boss_config", "profile_id", "INTEGER");
+            try {
+                Long profileId = profileService.getCurrentProfileId();
+                stmt.executeUpdate("UPDATE boss_config SET profile_id = " + profileId + " WHERE profile_id IS NULL");
+            } catch (Exception ignored) {
+            }
             addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
         } catch (Exception e) {
             log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
@@ -198,6 +207,7 @@ public class BossService {
      */
     public BossConfigEntity getFirstConfig() {
         QueryWrapper<BossConfigEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         wrapper.orderByAsc("id").last("LIMIT 1");
         return bossConfigMapper.selectOne(wrapper);
     }
@@ -206,6 +216,7 @@ public class BossService {
      * 保存配置
      */
     public BossConfigEntity saveConfig(BossConfigEntity config) {
+        config.setProfileId(profileService.getCurrentProfileId());
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         config.setCreatedAt(LocalDateTime.now());
         config.setUpdatedAt(LocalDateTime.now());
@@ -217,6 +228,9 @@ public class BossService {
      * 更新配置
      */
     public BossConfigEntity updateConfig(BossConfigEntity config) {
+        if (config.getProfileId() == null) {
+            config.setProfileId(profileService.getCurrentProfileId());
+        }
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         config.setUpdatedAt(LocalDateTime.now());
         bossConfigMapper.updateById(config);
@@ -234,6 +248,7 @@ public class BossService {
 
         if (existing == null) {
             // 表为空，插入新记录
+            partial.setProfileId(profileService.getCurrentProfileId());
             partial.setSearchJobLimit(normalizeSearchJobLimit(partial.getSearchJobLimit()));
             partial.setCreatedAt(now);
             partial.setUpdatedAt(now);
@@ -241,6 +256,7 @@ public class BossService {
             return partial;
         }
 
+        existing.setProfileId(profileService.getCurrentProfileId());
         // 选择性合并：仅当请求体字段非空时才覆盖
         if (partial.getSayHi() != null) existing.setSayHi(partial.getSayHi());
         if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());

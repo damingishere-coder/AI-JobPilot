@@ -14,6 +14,9 @@ public class PriorityCompanyEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    @TableField("profile_id")
+    private Long profileId;
+
     @TableField("company_name")
     private String companyName;
 

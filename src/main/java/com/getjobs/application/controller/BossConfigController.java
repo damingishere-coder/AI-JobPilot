@@ -125,11 +125,8 @@ public class BossConfigController {
             config.setJobType(name);
         }
 
-        // 为避免每次新增导致错乱：当ID缺失时也执行“选择性更新第一条”策略
-        // 若存在ID，按ID更新；否则更新首条记录（若不存在则插入）
-        if (config.getId() != null) {
-            return bossService.updateConfig(config);
-        }
+        // 档案模式下保存始终落到当前激活档案，避免前端携带旧ID时串档案。
+        config.setId(null);
         return bossService.saveOrUpdateFirstSelective(config);
   }
 

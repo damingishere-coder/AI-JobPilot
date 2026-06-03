@@ -21,6 +21,9 @@ public class AiEntity {
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
+    @TableField("profile_id")
+    private Long profileId;
+
     /**
      * 技能介绍
      */

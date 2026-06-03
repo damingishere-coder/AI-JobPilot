@@ -9,25 +9,16 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("resume_profile")
-public class ResumeProfileEntity {
+@TableName("profile")
+public class ProfileEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    @TableField("profile_id")
-    private Long profileId;
+    @TableField("name")
+    private String name;
 
-    @TableField("resume_text")
-    private String resumeText;
-
-    @TableField("source_filename")
-    private String sourceFilename;
-
-    @TableField("parse_status")
-    private String parseStatus;
-
-    @TableField("parse_message")
-    private String parseMessage;
+    @TableField("is_active")
+    private Integer isActive;
 
     @TableField("created_at")
     private LocalDateTime createdAt;

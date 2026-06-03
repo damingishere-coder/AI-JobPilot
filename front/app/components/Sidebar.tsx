@@ -66,7 +66,7 @@ export default function Sidebar() {
 
   const envGroup = [
     { href: '/env-config', icon: BiEnvelope, label: '环境配置', color: 'text-blue-500' },
-    { href: '/ai-config', icon: BiBrain, label: 'AI配置', color: 'text-violet-500' },
+    { href: '/ai-config', icon: BiBrain, label: '简历配置', color: 'text-violet-500' },
   ]
 
   const platformGroup = [

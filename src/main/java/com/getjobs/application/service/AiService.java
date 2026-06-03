@@ -2,12 +2,14 @@ package com.getjobs.application.service;
 
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.mapper.AiMapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.annotation.DependsOn;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -29,9 +31,11 @@ import java.time.format.DateTimeFormatter;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@DependsOn("profileService")
 public class AiService {
     private final ConfigService configService;
     private final AiMapper aiMapper;
+    private final ProfileService profileService;
     private static final String DEFAULT_GREETING_PROMPT_TEMPLATE =
             "我目前在找工作，%s。我的期望岗位方向是【%s】，我需要投递的岗位名称是【%s】，岗位要求是【%s】。" +
             "如果岗位和我的经历基本符合，请生成一段给HR的中文打招呼文本；如果完全不符合，只返回false。" +
@@ -470,10 +474,13 @@ public class AiService {
     /**
      * 获取AI配置（获取最新一条，如果不存在则创建默认配置）
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public AiEntity getAiConfig() {
-        var list = aiMapper.selectList(null);
-        AiEntity aiEntity = (list == null || list.isEmpty()) ? null : list.get(list.size() - 1);
+        Long profileId = profileService.getCurrentProfileId();
+        AiEntity aiEntity = aiMapper.selectOne(new QueryWrapper<AiEntity>()
+                .eq("profile_id", profileId)
+                .orderByDesc("id")
+                .last("LIMIT 1"));
         if (aiEntity == null) {
             aiEntity = createDefaultConfig();
         }
@@ -501,11 +508,15 @@ public class AiService {
      */
     @Transactional
     public AiEntity saveOrUpdateAiConfig(String introduce, String prompt) {
-        var list = aiMapper.selectList(null);
-        AiEntity aiEntity = (list == null || list.isEmpty()) ? null : list.get(list.size() - 1);
+        Long profileId = profileService.getCurrentProfileId();
+        AiEntity aiEntity = aiMapper.selectOne(new QueryWrapper<AiEntity>()
+                .eq("profile_id", profileId)
+                .orderByDesc("id")
+                .last("LIMIT 1"));
 
         if (aiEntity == null) {
             aiEntity = new AiEntity();
+            aiEntity.setProfileId(profileId);
             aiEntity.setIntroduce(introduce);
             aiEntity.setPrompt(prompt);
             aiEntity.setCreatedAt(java.time.LocalDateTime.now());
@@ -513,6 +524,7 @@ public class AiService {
             aiMapper.insert(aiEntity);
             log.info("创建新的AI配置，ID: {}", aiEntity.getId());
         } else {
+            aiEntity.setProfileId(profileId);
             aiEntity.setIntroduce(introduce);
             aiEntity.setPrompt(prompt);
             aiEntity.setUpdatedAt(java.time.LocalDateTime.now());
@@ -542,6 +554,7 @@ public class AiService {
     @Transactional
     protected AiEntity createDefaultConfig() {
         AiEntity aiEntity = new AiEntity();
+        aiEntity.setProfileId(profileService.getCurrentProfileId());
         aiEntity.setIntroduce("请在此填写您的技能介绍");
         aiEntity.setPrompt("请在此填写AI提示词模板");
         aiEntity.setCreatedAt(java.time.LocalDateTime.now());

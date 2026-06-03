@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
+import ProfileSwitcher from '@/app/components/ProfileSwitcher'
 
 interface BossConfig {
   id?: number
@@ -334,6 +335,7 @@ export default function BossPage() {
   }
 
   const fetchAllData = async () => {
+    setLoading(true)
     try {
       const response = await fetch('http://localhost:8888/api/boss/config')
       const data = await response.json()
@@ -838,6 +840,8 @@ export default function BossPage() {
           </div>
         }
       />
+
+      <ProfileSwitcher onProfileChange={fetchAllData} />
 
       <Tabs defaultValue="config" className="w-full">
         <TabsList className="grid w-full grid-cols-2">
