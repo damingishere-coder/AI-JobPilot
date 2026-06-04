@@ -9,12 +9,16 @@ export default function ContentArea({ children }: { children: ReactNode }) {
   const accentClass = useMemo(() => {
     switch (pathname) {
       case '/boss':
+      case '/boss/analysis':
         return 'accent-teal'
       case '/liepin':
+      case '/liepin/analysis':
         return 'accent-orange'
       case '/51job':
+      case '/51job/analysis':
         return 'accent-amber'
       case '/zhilian':
+      case '/zhilian/analysis':
         return 'accent-sky'
       default:
         return ''

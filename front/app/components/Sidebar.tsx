@@ -4,9 +4,74 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { BiEnvelope, BiBriefcase, BiSearch, BiTask, BiUserCircle, BiBrain, BiMoon, BiSun, BiChevronDown } from 'react-icons/bi'
+import type { IconType } from 'react-icons'
+import {
+  BiBarChart,
+  BiBrain,
+  BiBriefcase,
+  BiChevronDown,
+  BiCog,
+  BiHomeAlt,
+  BiMoon,
+  BiSearch,
+  BiSun,
+  BiTask,
+  BiUserCircle,
+} from 'react-icons/bi'
 import { motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
+
+type NavItem = {
+  href: string
+  icon: IconType
+  label: string
+  color: string
+  disabled?: boolean
+  badge?: string
+}
+
+type NavGroup = {
+  title: string
+  items: NavItem[]
+  experimental?: boolean
+}
+
+const navGroups: NavGroup[] = [
+  {
+    title: '工作台',
+    items: [{ href: '/', icon: BiHomeAlt, label: '首页', color: 'text-blue-500' }],
+  },
+  {
+    title: '求职资料',
+    items: [{ href: '/ai-config', icon: BiBrain, label: 'AI配置', color: 'text-violet-500' }],
+  },
+  {
+    title: '投递平台',
+    items: [
+      { href: '/boss', icon: BiBriefcase, label: 'Boss直聘', color: 'text-blue-500' },
+      { href: '/zhilian', icon: BiUserCircle, label: '智联招聘', color: 'text-cyan-500' },
+    ],
+  },
+  {
+    title: '投递记录',
+    items: [
+      { href: '/boss/analysis', icon: BiBarChart, label: 'Boss分析', color: 'text-teal-500' },
+      { href: '/zhilian/analysis', icon: BiBarChart, label: '智联分析', color: 'text-sky-500' },
+    ],
+  },
+  {
+    title: '系统设置',
+    items: [{ href: '/env-config', icon: BiCog, label: '环境配置', color: 'text-slate-500' }],
+  },
+  {
+    title: '实验功能',
+    experimental: true,
+    items: [
+      { href: '/liepin', icon: BiSearch, label: '猎聘', color: 'text-orange-400', disabled: true, badge: '实验' },
+      { href: '/51job', icon: BiTask, label: '51job', color: 'text-amber-400', disabled: true, badge: '实验' },
+    ],
+  },
+]
 
 export default function Sidebar() {
   const pathname = usePathname()
@@ -32,10 +97,8 @@ export default function Sidebar() {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 3000)
       try {
-        // 先尝试自定义健康接口
         let res = await fetch(`${baseUrl}/api/health`, { signal: controller.signal })
         if (res.status === 404) {
-          // 回退到 Spring Boot Actuator
           res = await fetch(`${baseUrl}/actuator/health`, { signal: controller.signal })
         }
         if (!res.ok) throw new Error(`status ${res.status}`)
@@ -56,7 +119,6 @@ export default function Sidebar() {
       }
     }
 
-    // 首次检查 + 轮询
     check()
     interval = setInterval(check, 30000)
     return () => {
@@ -64,20 +126,7 @@ export default function Sidebar() {
     }
   }, [])
 
-  const envGroup = [
-    { href: '/env-config', icon: BiEnvelope, label: '环境配置', color: 'text-blue-500' },
-    { href: '/ai-config', icon: BiBrain, label: '简历配置', color: 'text-violet-500' },
-  ]
-
-  const platformGroup = [
-    { href: '/boss', icon: BiBriefcase, label: 'Boss直聘', color: 'text-blue-500' },
-    { href: '/zhilian', icon: BiUserCircle, label: '智联招聘', color: 'text-cyan-500' },
-  ]
-
-  const unsupportedPlatformGroup = [
-    { href: '/liepin', icon: BiSearch, label: '猎聘' },
-    { href: '/51job', icon: BiTask, label: '51job' },
-  ]
+  const isActive = (href: string) => pathname === href || (href !== '/' && pathname.startsWith(`${href}/`))
 
   return (
     <motion.aside
@@ -97,14 +146,14 @@ export default function Sidebar() {
           <Image src="/toudi-niuma.svg" alt="投递牛马" width={44} height={44} className="h-11 w-11" priority />
           <div>
             <h1 className="text-xl font-bold text-slate-950 dark:text-white">投递牛马</h1>
-            <p className="text-sm text-slate-500 dark:text-manatee">配置管理中心</p>
+            <p className="text-sm text-slate-500 dark:text-manatee">投递牛马工作台</p>
           </div>
         </div>
 
         {/* 状态指示器（动态健康检查） */}
         <div className="flex items-center gap-2 rounded-lg border border-slate-200/80 bg-white/70 px-3 py-2 text-sm text-slate-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-manatee">
           <div
-            className={`w-2 h-2 rounded-full animate-pulse ${
+            className={`h-2 w-2 rounded-full animate-pulse ${
               health === 'up'
                 ? 'bg-green-400'
                 : health === 'degraded'
@@ -150,108 +199,52 @@ export default function Sidebar() {
       </motion.div>
 
       {/* 导航菜单 */}
-      <nav className="h-[calc(100vh-178px)] space-y-4 overflow-y-auto px-4 pb-4">
-        {/* 环境配置分组 */}
-        <div>
-          <div className="px-2 py-2 text-xs font-medium tracking-normal text-slate-400 dark:text-waterloo">环境配置</div>
-          <div className="space-y-2">
-            {envGroup.map((item, index) => {
-              const Icon = item.icon
-              const isActive = pathname === item.href
-              return (
-                <motion.div
-                  key={item.href}
-                  initial={{ x: -20, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  transition={{ delay: 0.1 * index + 0.3, duration: 0.3 }}
-                >
-                  <Link
-                    href={item.href}
-                    className={`
-                      group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-200
-                      ${isActive
-                        ? 'bg-blue-50 text-blue-600 shadow-sm dark:bg-blue-500/15 dark:text-blue-200'
-                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-manatee dark:hover:bg-white/5'
-                      }
-                    `}
-                  >
-                    <Icon className={`text-xl ${isActive ? 'text-blue-600 dark:text-blue-200' : item.color} transition-transform group-hover:scale-105`} />
-                    <span className="font-medium">{item.label}</span>
-                    {isActive && (
-                      <div className="ml-auto">
-                        <div className="h-2 w-2 rounded-full bg-blue-500"></div>
-                      </div>
-                    )}
-                  </Link>
-                </motion.div>
-              )
-            })}
-          </div>
-        </div>
+      <nav className="h-[calc(100vh-178px)] space-y-3 overflow-y-auto px-4 pb-4">
+        {navGroups.map((group, groupIndex) => (
+          <div key={group.title} className={group.experimental ? 'pt-1 opacity-80' : ''}>
+            <div className="px-2 py-2 text-xs font-medium tracking-normal text-slate-400 dark:text-waterloo">{group.title}</div>
+            <div className="space-y-1.5">
+              {group.items.map((item, itemIndex) => {
+                const Icon = item.icon
+                const active = isActive(item.href)
+                const delay = 0.1 * (groupIndex + itemIndex) + 0.3
+                const linkClass = `
+                  group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-200
+                  ${active
+                    ? 'bg-blue-50 text-blue-600 shadow-sm dark:bg-blue-500/15 dark:text-blue-200'
+                    : group.experimental
+                    ? 'text-slate-400 hover:bg-slate-50 hover:text-slate-600 dark:text-waterloo/80 dark:hover:bg-white/5'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-manatee dark:hover:bg-white/5'
+                  }
+                `
 
-        {/* 平台配置分组 */}
-        <div>
-          <div className="px-2 py-2 text-xs font-medium tracking-normal text-slate-400 dark:text-waterloo">平台配置</div>
-          <div className="space-y-2">
-            {platformGroup.map((item, index) => {
-              const Icon = item.icon
-              const isActive = pathname === item.href
-              return (
-                <motion.div
-                  key={item.href}
-                  initial={{ x: -20, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  transition={{ delay: 0.1 * index + 0.5, duration: 0.3 }}
-                >
-                  <Link
-                    href={item.href}
-                    className={`
-                      group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-200
-                      ${isActive
-                        ? 'bg-blue-50 text-blue-600 shadow-sm dark:bg-blue-500/15 dark:text-blue-200'
-                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-manatee dark:hover:bg-white/5'
-                      }
-                    `}
+                return (
+                  <motion.div
+                    key={item.href}
+                    initial={{ x: -20, opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    transition={{ delay, duration: 0.3 }}
                   >
-                    <Icon className={`text-xl ${isActive ? 'text-blue-600 dark:text-blue-200' : item.color} transition-transform group-hover:scale-105`} />
-                    <span className="font-medium">{item.label}</span>
-                    {isActive && (
-                      <div className="ml-auto">
-                        <div className="h-2 w-2 rounded-full bg-blue-500"></div>
-                      </div>
-                    )}
-                  </Link>
-                </motion.div>
-              )
-            })}
-            {unsupportedPlatformGroup.map((item, index) => {
-              const Icon = item.icon
-              return (
-                <motion.div
-                  key={item.href}
-                  initial={{ x: -20, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  transition={{ delay: 0.1 * (platformGroup.length + index) + 0.5, duration: 0.3 }}
-                >
-                  <div
-                    aria-disabled="true"
-                    title={`${item.label}暂未适配`}
-                    className="
-                      group flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2.5
-                      text-slate-400 grayscale dark:text-waterloo/70
-                    "
-                  >
-                    <Icon className="text-xl text-slate-400 dark:text-waterloo/70" />
-                    <span className="font-medium">{item.label}</span>
-                    <span className="ml-auto rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/5 dark:text-waterloo">
-                      未适配
-                    </span>
-                  </div>
-                </motion.div>
-              )
-            })}
+                    <Link href={item.href} className={linkClass} title={item.disabled ? `${item.label}为实验功能` : item.label}>
+                      <Icon className={`text-xl ${active ? 'text-blue-600 dark:text-blue-200' : item.color} transition-transform group-hover:scale-105`} />
+                      <span className="font-medium">{item.label}</span>
+                      {item.badge && (
+                        <span className="ml-auto rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/5 dark:text-waterloo">
+                          {item.badge}
+                        </span>
+                      )}
+                      {active && !item.badge && (
+                        <div className="ml-auto">
+                          <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                        </div>
+                      )}
+                    </Link>
+                  </motion.div>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        ))}
       </nav>
 
       {/* 底部信息 */}

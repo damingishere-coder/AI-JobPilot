@@ -1,6 +1,5 @@
 "use client";
 
-import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "./components/Sidebar";
 import ContentArea from "./components/ContentArea";
@@ -14,8 +13,8 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head>
-        <title>投递牛马 - 配置管理中心</title>
-        <meta name="description" content="投递牛马配置管理中心，管理 application.yaml 和环境变量配置" />
+        <title>投递牛马 - 投递牛马工作台</title>
+        <meta name="description" content="投递牛马本地求职助手，集中查看平台状态、待确认岗位和投递记录" />
         <link
           rel="icon"
           href="/toudi-niuma.svg"
