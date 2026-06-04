@@ -92,7 +92,7 @@ export default function ZhilianPage() {
     ].slice(0, 80))
   }, [])
 
-  const syncZhilianScanStatus = useCallback(async (silent = false) => {
+  const syncZhilianScanStatus = useCallback(async (silent = false, keepStopping = false) => {
     try {
       const status = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_STATUS',
@@ -101,7 +101,7 @@ export default function ZhilianPage() {
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
         setIsDelivering(true)
-        setIsStopping(false)
+        setIsStopping(keepStopping)
         const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
         if (runId) setActiveRunId(runId)
         if (!silent) {
@@ -435,15 +435,23 @@ export default function ZhilianPage() {
         body: JSON.stringify({ runId }),
       }).catch(() => null)
       const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId }, 1500)
-      appendProgressLog({ type: data.success ? 'warning' : 'error', message: data.message || '智联招聘扫描停止请求已处理。' })
-      setIsDelivering(false)
-      setActiveRunId(null)
+      if (data.success) {
+        appendProgressLog({ type: 'warning', message: data.message || '智联招聘扫描停止请求已处理。' })
+        await syncZhilianScanStatus(true, true)
+      } else {
+        appendProgressLog({ type: 'warning', message: data.message || '已发送后端停止请求，正在等待 Chrome 页面停止。' })
+        setIsDelivering(true)
+      }
     } catch (error) {
-      appendProgressLog({ type: 'error', message: '智联招聘扫描停止失败：网络或服务异常。' })
-      setIsDelivering(false)
-      setActiveRunId(null)
+      appendProgressLog({ type: 'warning', message: '已发送后端停止请求，正在等待 Chrome 页面停止。' })
+      setIsDelivering(true)
     } finally {
-      setIsStopping(false)
+      window.setTimeout(() => {
+        syncZhilianScanStatus(true, true)
+      }, 1200)
+      window.setTimeout(() => {
+        setIsStopping(false)
+      }, 5000)
     }
   }
 

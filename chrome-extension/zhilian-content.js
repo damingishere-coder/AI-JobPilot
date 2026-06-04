@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-04-zhilian-cross-domain-task-1";
+  const EXTENSION_VERSION = "2026-06-05-zhilian-stop-navigation-fix-1";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -8,6 +8,7 @@
   const SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SCAN_TASK__";
   const SHARED_SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SCAN_CANCEL__";
+  const SHARED_SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
@@ -29,32 +30,20 @@
       return;
     }
     if (message?.type === "ZHILIAN_SCAN_STOP") {
-      stopRequested = true;
-      storeStopRequested();
-      clearStoredScanTask();
-      writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "已请求停止智联扫描" });
-      postProgress(message, "warning", "智联 Chrome扫描停止请求已接收，正在中断当前任务。", {
-        operation: "scan",
-        stage: "stopping"
+      handleScanStopMessage(message).then(sendResponse).catch((error) => {
+        sendResponse({ success: false, message: error.message || String(error) });
       });
-      sendResponse({ success: true, message: "已请求停止智联扫描" });
-      return;
+      return true;
     }
     if (message?.type === "ZHILIAN_SCAN_STATUS") {
       handleScanStatusMessage(sendResponse);
       return true;
     }
     if (message?.type === "ZHILIAN_SCAN_START") {
-      stopRequested = false;
-      clearStopRequested();
-      startScan(message).catch((error) => {
-        postProgress(message, "error", error.message || String(error), {
-          operation: "scan",
-          stage: "error"
-        });
+      handleScanStartMessage(message).then(sendResponse).catch((error) => {
+        sendResponse({ success: false, message: error.message || String(error) });
       });
-      sendResponse({ success: true, message: "智联 Chrome扫描任务已启动。" });
-      return;
+      return true;
     }
     if (message?.type === "ZHILIAN_DELIVER_ONE") {
       deliverOne(message.task).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
@@ -70,7 +59,48 @@
     console.warn("[GetJobs] 智联扫描任务恢复失败", error);
   });
 
+  async function handleScanStopMessage(message) {
+    stopRequested = true;
+    await storeStopRequested(message?.runId);
+    clearStoredScanTask();
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: true,
+      stage: "stopped",
+      message: "已请求停止智联扫描",
+      runId: message?.runId || readScanStatus().runId || "",
+      updatedAt: Date.now()
+    });
+    postProgress(message, "warning", "智联 Chrome扫描停止请求已接收，正在中断当前任务。", {
+      operation: "scan",
+      stage: "stopping"
+    });
+    return { success: true, message: "已请求停止智联扫描" };
+  }
+
+  async function handleScanStartMessage(message) {
+    stopRequested = false;
+    await clearStopRequested();
+    startScan(message).catch((error) => {
+      postProgress(message, "error", error.message || String(error), {
+        operation: "scan",
+        stage: "error"
+      });
+    });
+    return { success: true, message: "智联 Chrome扫描任务已启动。" };
+  }
+
   async function handleScanStatusMessage(sendResponse) {
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      clearStoredScanTask();
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: true,
+        stage: "stopped",
+        message: "智联扫描已取消"
+      });
+    }
     const task = await readStoredScanTaskFromAnyStorage();
     const hasResumableTask = Boolean(task && isResumableScanTask(task));
     if (task && !hasResumableTask) {
@@ -147,8 +177,19 @@
   }
 
   async function resumeStoredScanTaskIfActive() {
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      clearStoredScanTask();
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: true,
+        stage: "stopped",
+        message: "智联扫描已取消"
+      });
+      return;
+    }
     const task = await readStoredScanTaskFromAnyStorage();
-    if (isStopRequested()) {
+    if (await hasStopRequested()) {
       stopRequested = true;
       clearStoredScanTask();
       writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "智联扫描已取消" });
@@ -221,15 +262,19 @@
       throw new Error("智联扫描缺少关键词，请先在智联配置中填写关键词。");
     }
 
-    if (isStopRequested()) {
+    if (await hasStopRequested()) {
       stopRequested = true;
     }
 
     for (let keywordIndex = startIndex; keywordIndex < keywords.length; keywordIndex++) {
-      if (isStopRequested()) stopRequested = true;
+      if (await hasStopRequested()) stopRequested = true;
       if (stopRequested) break;
       if (keywordIndex > startIndex || task.phase === "nextKeyword") {
         await humanPause(1500, 3000);
+        if (await hasStopRequested()) {
+          stopRequested = true;
+          break;
+        }
       }
       const keyword = keywords[keywordIndex];
       markKeywordCursorCurrent(task, keywordIndex, keyword);
@@ -301,12 +346,20 @@
         currentUrl: window.location.href
       });
       await waitForPage();
-      if (isStopRequested()) {
+      if (await hasStopRequested()) {
         stopRequested = true;
         break;
       }
       await sleep(2200);
+      if (await hasStopRequested()) {
+        stopRequested = true;
+        break;
+      }
       const waitState = await waitForJobCards();
+      if (await hasStopRequested()) {
+        stopRequested = true;
+        break;
+      }
       if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
         stopRequested = true;
         break;
@@ -318,6 +371,10 @@
       });
       const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
       await scrollForCards(searchJobLimit);
+      if (await hasStopRequested()) {
+        stopRequested = true;
+        break;
+      }
       const collectResult = collectJobs(keyword, task, baseMeta);
       const candidates = collectResult.jobs;
       const jobs = candidates.slice(0, searchJobLimit);
@@ -397,7 +454,7 @@
     }
     clearStoredScanTask();
     const stopped = stopRequested;
-    if (stopped) clearStopRequested();
+    if (stopped) await clearStopRequested();
     writeScanStatus({
       isRunning: false,
       stopRequested: stopped,
@@ -422,7 +479,7 @@
 
   function collectJobs(keyword, message, baseMeta) {
     const links = unique(JOB_LINK_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
-      .filter((link) => isZhilianJobDetailUrl(link.href || link.getAttribute("href") || ""));
+      .filter((link) => isZhilianJobDetailUrl(resolveZhilianJobUrl(link)));
     const jobs = [];
     const seenJobUrls = new Set();
     let skipped = 0;
@@ -464,7 +521,7 @@
   function parseLink(link, keyword) {
     const root = link.closest("li, [class*='job'], [class*='card']") || link;
     const text = compact(root.innerText || link.innerText || "");
-    const url = normalizeZhilianJobUrl(link.getAttribute("href"));
+    const url = resolveZhilianJobUrl(link);
     if (!isZhilianJobDetailUrl(url)) {
       throw new Error("非岗位详情链接");
     }
@@ -491,7 +548,7 @@
     const detailIndex = Number(message.detailIndex || 0);
     const totalSaved = Number(message.totalSaved || 0);
 
-    if (isStopRequested()) {
+    if (await hasStopRequested()) {
       stopRequested = true;
       clearStoredScanTask();
       return { success: true, totalSaved };
@@ -505,7 +562,18 @@
 
     const currentJob = jobs[detailIndex];
     let currentNavigationBlocked = false;
-    if (currentJob && !isSameUrl(window.location.href, currentJob.url)) {
+    if (currentJob && !isZhilianJobDetailUrl(currentJob.url)) {
+      jobs[detailIndex] = markDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, `岗位详情链接无效或不是智联岗位页：${currentJob.url || "空"}`);
+      postProgress(message, "warning", `智联 Chrome跳过无效详情链接 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+        ...baseMeta,
+        stage: "details",
+        detailIndex: detailIndex + 1,
+        detailTotal: jobs.length,
+        targetUrl: currentJob.url
+      });
+      currentNavigationBlocked = true;
+    }
+    if (currentJob && !currentNavigationBlocked && !isSameUrl(window.location.href, currentJob.url)) {
       postProgress(message, "info", `智联 Chrome正在查看详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
         ...baseMeta,
         stage: "details",
@@ -534,6 +602,11 @@
     }
 
     if (currentJob && !currentNavigationBlocked) {
+      if (await hasStopRequested()) {
+        stopRequested = true;
+        clearStoredScanTask();
+        return { success: true, totalSaved };
+      }
       const detailDiagnostics = buildPageBlockDiagnostics();
       if (handleBlockingState(message, detailDiagnostics, { ...baseMeta, stage: "details" })) {
         stopRequested = true;
@@ -551,6 +624,11 @@
         });
       } else {
         await humanPause(900, 1800);
+        if (await hasStopRequested()) {
+          stopRequested = true;
+          clearStoredScanTask();
+          return { success: true, totalSaved };
+        }
         writeScanStatus({
           isRunning: true,
           stopRequested: false,
@@ -577,7 +655,7 @@
     }
 
     const nextIndex = detailIndex + 1;
-    if (isStopRequested()) stopRequested = true;
+    if (await hasStopRequested()) stopRequested = true;
     if (!stopRequested && nextIndex < jobs.length) {
       const nextJob = jobs[nextIndex];
       await storeScanTask({ ...message, jobs, detailIndex: nextIndex, totalSaved });
@@ -588,6 +666,17 @@
         detailIndex: nextIndex + 1,
         detailTotal: jobs.length
       });
+      if (!isZhilianJobDetailUrl(nextJob.url)) {
+        jobs[nextIndex] = markDetailNavigationFailed(nextJob, nextIndex + 1, jobs.length, `岗位详情链接无效或不是智联岗位页：${nextJob.url || "空"}`);
+        postProgress(message, "warning", `智联 Chrome跳过无效详情链接 ${nextIndex + 1}/${jobs.length}：${nextJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: nextIndex + 1,
+          detailTotal: jobs.length,
+          targetUrl: nextJob.url
+        });
+        return await continueZhilianDetailScan({ ...message, jobs, detailIndex: nextIndex + 1, totalSaved }, keyword, runId, baseMeta);
+      }
       const nextNavigation = await navigateToDetail(message, nextJob.url);
       if (nextNavigation.status === "pending") {
         return { success: true, totalSaved, pendingNavigation: true };
@@ -608,6 +697,11 @@
       return await continueZhilianDetailScan({ ...message, jobs, detailIndex: nextIndex, totalSaved }, keyword, runId, baseMeta);
     }
 
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      clearStoredScanTask();
+      return { success: true, totalSaved };
+    }
     postProgress(message, "info", `智联 Chrome已读取 ${jobs.length} 个岗位详情，提交后台AI队列`, {
       ...baseMeta,
       stage: "submitting",
@@ -618,9 +712,19 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ runId, keyword, jobs })
     });
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      clearStoredScanTask();
+      return { success: true, totalSaved };
+    }
     if (!res.ok) throw new Error(`智联岗位提交失败：HTTP ${res.status}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.message || "智联岗位提交失败");
+    if (data.cancelled || await hasStopRequested()) {
+      stopRequested = true;
+      clearStoredScanTask();
+      return { success: true, totalSaved };
+    }
     const nextTotalSaved = totalSaved + (data.saved || 0);
     postProgress(message, "success", `智联 Chrome已提交后台AI队列：采集 ${data.received ?? jobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个。`, {
       ...baseMeta,
@@ -801,7 +905,7 @@
 
   async function scrollForCards(searchJobLimit = 20) {
     const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
-    for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
+    for (let i = 0; i < scrollRounds && !await hasStopRequested(); i++) {
       window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
       await humanPause(550, 950);
     }
@@ -835,6 +939,7 @@
   }
 
   async function readStoredScanTaskFromAnyStorage() {
+    if (await hasStopRequested()) return null;
     const localTask = readStoredScanTask();
     if (localTask) return localTask;
 
@@ -872,6 +977,41 @@
     chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
       console.warn("[GetJobs] 智联共享扫描任务清理失败", error);
     });
+  }
+
+  async function writeSharedStopRequested(runId = "") {
+    if (!chrome?.storage?.local) return;
+    try {
+      await chrome.storage.local.set({
+        [SHARED_SCAN_CANCEL_KEY]: {
+          requested: true,
+          runId: runId || "",
+          updatedAt: Date.now()
+        }
+      });
+    } catch (error) {
+      console.warn("[GetJobs] 智联共享停止标记保存失败", error);
+    }
+  }
+
+  async function readSharedStopRequested() {
+    if (!chrome?.storage?.local) return null;
+    try {
+      const result = await chrome.storage.local.get(SHARED_SCAN_CANCEL_KEY);
+      return result?.[SHARED_SCAN_CANCEL_KEY] || null;
+    } catch (error) {
+      console.warn("[GetJobs] 智联共享停止标记读取失败", error);
+      return null;
+    }
+  }
+
+  async function clearSharedStopRequested() {
+    if (!chrome?.storage?.local) return;
+    try {
+      await chrome.storage.local.remove(SHARED_SCAN_CANCEL_KEY);
+    } catch (error) {
+      console.warn("[GetJobs] 智联共享停止标记清理失败", error);
+    }
   }
 
   function normalizeScanTask(message) {
@@ -1031,22 +1171,50 @@
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhaopin.com")) return false;
-      return Boolean(task.phase);
+
+      const phase = String(task.phase || "");
+      if (phase === "detail") {
+        const jobs = Array.isArray(task.jobs) ? task.jobs : [];
+        const job = jobs[Number(task.detailIndex || 0)];
+        if (buildPageBlockDiagnostics().hasBlockingState) return true;
+        return Boolean(job?.url && isSameUrl(current.href, job.url) && isZhilianJobDetailUrl(current.href))
+          || isZhilianJobDetailUrl(current.href);
+      }
+      if (phase === "searching" || phase === "collecting" || phase === "nextKeyword") {
+        return isZhilianSearchPath(current.pathname) || buildPageBlockDiagnostics().hasBlockingState;
+      }
+
+      return false;
     } catch {
       return false;
     }
   }
 
-  function storeStopRequested() {
+  async function storeStopRequested(runId = "") {
+    stopRequested = true;
     sessionStorage.setItem(SCAN_CANCEL_KEY, "1");
+    await writeSharedStopRequested(runId);
   }
 
-  function clearStopRequested() {
+  async function clearStopRequested() {
+    stopRequested = false;
     sessionStorage.removeItem(SCAN_CANCEL_KEY);
+    await clearSharedStopRequested();
   }
 
   function isStopRequested() {
     return stopRequested || sessionStorage.getItem(SCAN_CANCEL_KEY) === "1";
+  }
+
+  async function hasStopRequested() {
+    if (isStopRequested()) return true;
+    const shared = await readSharedStopRequested();
+    if (shared?.requested) {
+      stopRequested = true;
+      sessionStorage.setItem(SCAN_CANCEL_KEY, "1");
+      return true;
+    }
+    return false;
   }
 
   function writeScanStatus(nextStatus) {
@@ -1115,7 +1283,7 @@
 
   async function waitForJobCards() {
     let diagnostics = buildListDiagnostics();
-    for (let i = 0; i < 30 && !isStopRequested(); i++) {
+    for (let i = 0; i < 30 && !await hasStopRequested(); i++) {
       diagnostics = buildListDiagnostics();
       if (diagnostics.jobNodes > 0 || diagnostics.detailLinks > 0 || diagnostics.hasBlockingState) {
         return { ready: true, diagnostics };
@@ -1321,6 +1489,15 @@
     }
   }
 
+  function resolveZhilianJobUrl(linkOrUrl) {
+    const raw = typeof linkOrUrl === "string"
+      ? linkOrUrl
+      : linkOrUrl?.getAttribute?.("href") || linkOrUrl?.href || linkOrUrl?.dataset?.url || "";
+    const value = String(raw || "").trim();
+    if (!value || /^(javascript|mailto|tel):/i.test(value)) return "";
+    return normalizeZhilianJobUrl(value);
+  }
+
   function isZhilianJobDetailUrl(rawUrl) {
     if (!rawUrl) return false;
     try {
@@ -1329,12 +1506,19 @@
       const path = parsed.pathname.toLowerCase();
       const text = `${host}${path}${parsed.search.toLowerCase()}`;
       if (!host.endsWith("zhaopin.com")) return false;
-      if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(text)) return false;
-      if (/\/sou\/|\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
-      return host.startsWith("jobs.") || /\/job\//.test(path) || /jobdetail|positiondetail|job_detail/.test(text);
+      if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(`${host}${path}`)) return false;
+      if (isZhilianSearchPath(path) || /\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
+      return host.startsWith("jobs.")
+        || /\/job\/[^/?#]+/.test(path)
+        || /\/jobs\/[^/?#]+/.test(path)
+        || /jobdetail|positiondetail|job_detail|jobposition|position/.test(text);
     } catch {
       return false;
     }
+  }
+
+  function isZhilianSearchPath(pathname) {
+    return /^\/sou(\/|$)/.test(String(pathname || "").toLowerCase());
   }
 
   function isCurrentZhilianJobDetailPage(expectedUrl) {
@@ -1386,29 +1570,41 @@
   }
 
   async function navigateToDetail(message, targetUrl) {
-    if (!targetUrl) return { status: "blocked", message: "岗位缺少详情链接" };
+    const normalizedTargetUrl = normalizeZhilianJobUrl(targetUrl);
+    if (!normalizedTargetUrl) return { status: "blocked", message: "岗位缺少详情链接" };
+    if (!isZhilianJobDetailUrl(normalizedTargetUrl)) {
+      return { status: "blocked", message: `拒绝打开非智联岗位详情页：${normalizedTargetUrl}` };
+    }
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      return { status: "blocked", message: "智联扫描已停止" };
+    }
     const beforeUrl = window.location.href;
-    if (isSameUrl(beforeUrl, targetUrl)) {
+    if (isSameUrl(beforeUrl, normalizedTargetUrl)) {
       postProgress(message, "info", "智联 Chrome详情链接与当前页面相同，直接继续解析当前详情页。", {
         operation: "scan",
         stage: "details",
         currentUrl: beforeUrl,
-        targetUrl
+        targetUrl: normalizedTargetUrl
       });
       return { status: "same" };
     }
 
-    const backgroundNavigation = await requestBackgroundNavigation(targetUrl);
+    const backgroundNavigation = await requestBackgroundNavigation(normalizedTargetUrl);
     if (!backgroundNavigation.success) {
-      postProgress(message, "warning", `智联 Chrome后台跳转详情失败，改用页面跳转：${backgroundNavigation.message}`, {
+      postProgress(message, "warning", `智联 Chrome后台跳转详情失败，已跳过该岗位：${backgroundNavigation.message}`, {
         operation: "scan",
         stage: "details",
         currentUrl: beforeUrl,
-        targetUrl
+        targetUrl: normalizedTargetUrl
       });
-      window.location.assign(targetUrl);
+      return { status: "blocked", message: backgroundNavigation.message };
     }
     await sleep(DETAIL_NAVIGATION_GUARD_MS);
+    if (await hasStopRequested()) {
+      stopRequested = true;
+      return { status: "blocked", message: "智联扫描已停止" };
+    }
     if (!isSameUrl(window.location.href, beforeUrl)) {
       return { status: "pending" };
     }
@@ -1428,7 +1624,7 @@
         url: targetUrl
       });
       return response?.success
-        ? { success: true }
+        ? { success: true, url: response.url || targetUrl }
         : { success: false, message: response?.message || "后台未返回成功状态" };
     } catch (error) {
       return { success: false, message: error.message || String(error) };
@@ -1467,11 +1663,31 @@
 
   function waitForPage() {
     if (document.readyState === "complete" || document.readyState === "interactive") return Promise.resolve();
-    return new Promise((resolve) => window.addEventListener("DOMContentLoaded", resolve, { once: true }));
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const timer = window.setInterval(async () => {
+        if (document.readyState === "complete" || document.readyState === "interactive" || await hasStopRequested() || Date.now() - startedAt > 10000) {
+          window.clearInterval(timer);
+          resolve();
+        }
+      }, 200);
+      window.addEventListener("DOMContentLoaded", () => {
+        window.clearInterval(timer);
+        resolve();
+      }, { once: true });
+    });
   }
 
   function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const timer = window.setInterval(async () => {
+        if (await hasStopRequested() || Date.now() - startedAt >= ms) {
+          window.clearInterval(timer);
+          resolve();
+        }
+      }, Math.min(200, Math.max(50, ms)));
+    });
   }
 
   function randomInt(min, max) {

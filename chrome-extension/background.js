@@ -62,12 +62,14 @@ async function handleBossContentNavigation(message, sender) {
 
 async function handleZhilianContentNavigation(message, sender) {
   const tabId = sender.tab?.id;
-  const targetUrl = String(message?.url || "");
+  const targetUrl = normalizeZhilianUrl(message?.url);
   if (!tabId) return { success: false, message: "缺少智联标签页ID" };
-  if (!isZhilianUrl(targetUrl)) return { success: false, message: "拒绝打开非智联页面" };
+  if (!targetUrl) return { success: false, message: "智联详情链接为空或格式错误" };
+  if (!isZhilianUrl(targetUrl)) return { success: false, message: `拒绝打开非智联页面：${targetUrl}` };
+  if (!isZhilianJobDetailUrl(targetUrl)) return { success: false, message: `拒绝打开非智联岗位详情页：${targetUrl}` };
 
   await chrome.tabs.update(tabId, { url: targetUrl });
-  return { success: true };
+  return { success: true, url: targetUrl };
 }
 
 async function handlePageMessage(message, sender) {
@@ -539,6 +541,34 @@ function isZhilianUrl(url) {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "https:" && parsed.hostname.endsWith("zhaopin.com");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeZhilianUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function isZhilianJobDetailUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    const text = `${host}${path}${parsed.search.toLowerCase()}`;
+    if (parsed.protocol !== "https:" || !host.endsWith("zhaopin.com")) return false;
+    if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(`${host}${path}`)) return false;
+    if (/^\/sou(\/|$)|\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
+    return host.startsWith("jobs.")
+      || /\/job\/[^/?#]+/.test(path)
+      || /\/jobs\/[^/?#]+/.test(path)
+      || /jobdetail|positiondetail|job_detail|jobposition|position/.test(text);
   } catch {
     return false;
   }
