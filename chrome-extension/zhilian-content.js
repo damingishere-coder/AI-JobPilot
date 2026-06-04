@@ -571,13 +571,26 @@
     window.location.href = task.url;
     await waitForPage();
     await sleep(1800);
+    const pageFailure = detectZhilianDeliveryFailure("");
+    if (pageFailure) {
+      const failure = classifyDeliveryFailure(pageFailure);
+      await postDeliveryResult(task, false, failure);
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    }
     const applyButton = findClickable(["立即投递", "申请职位", "投递简历", "投递"]);
     if (!applyButton) {
-      await postDeliveryResult(task, false, "未找到智联投递按钮");
-      return { success: false, message: "未找到智联投递按钮" };
+      const failure = classifyDeliveryFailure("未找到智联投递按钮");
+      await postDeliveryResult(task, false, failure);
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
     }
     applyButton.click();
     await sleep(1500);
+    const clickedFailure = detectZhilianDeliveryFailure("");
+    if (clickedFailure) {
+      const failure = classifyDeliveryFailure(clickedFailure);
+      await postDeliveryResult(task, false, failure);
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    }
     const confirm = findClickable(["确认投递", "确定", "继续投递"]);
     if (confirm) {
       confirm.click();
@@ -592,8 +605,9 @@
     let failed = 0;
     for (const task of tasks) {
       const result = await deliverOne(task).catch(async (error) => {
-        await postDeliveryResult(task, false, error.message || String(error)).catch(() => {});
-        return { success: false, message: error.message || String(error) };
+        const failure = classifyDeliveryFailure(error.message || String(error));
+        await postDeliveryResult(task, false, failure).catch(() => {});
+        return { success: false, message: failure.failureReason, failureType: failure.failureType };
       });
       if (result.success) success += 1;
       else failed += 1;
@@ -602,10 +616,16 @@
   }
 
   async function postDeliveryResult(task, success, message) {
+    const failure = success ? null : normalizeFailurePayload(message);
     await fetch(`${API_BASE}/api/zhilian/jobs/${task.id}/delivery-result`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ success, message })
+      body: JSON.stringify({
+        success,
+        message: success ? message : failure.failureReason,
+        failureType: failure?.failureType,
+        failureReason: failure?.failureReason
+      })
     });
   }
 
@@ -632,6 +652,41 @@
     ].filter(Boolean).join(" "));
     if (/(已投递|已申请|投递成功|申请成功|继续沟通)/.test(text)) return "已投递";
     return "";
+  }
+
+  function detectZhilianDeliveryFailure(fallback) {
+    const text = compact(document.body?.innerText || "");
+    if (isSecurityPrompt(text)) return "智联页面出现平台验证，请处理后重试";
+    if (isStrongLoginPrompt(text, window.location.href)) return "智联登录状态失效，请在Chrome中重新登录后重试";
+    const reason = firstMatch(text, /(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|已投递|已申请|投递成功|申请成功|今日投递.*?已用完|投递上限|账号异常|操作过于频繁|请先完善简历|请上传简历|请先完成实名认证)/);
+    return reason || fallback || "";
+  }
+
+  function classifyDeliveryFailure(message) {
+    const text = compact([message, document.body?.innerText || "", window.location.href || ""].filter(Boolean).join(" "));
+    let failureType = "UNKNOWN_ERROR";
+    if (isStrongLoginPrompt(text, window.location.href) || /(登录|重新登录|未登录|扫码|账号登录)/.test(text)) {
+      failureType = "LOGIN_EXPIRED";
+    } else if (isSecurityPrompt(text) || /(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) {
+      failureType = "PLATFORM_VERIFICATION";
+    } else if (/(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|岗位关闭|已下线)/.test(text)) {
+      failureType = "JOB_CLOSED";
+    } else if (/(已投递|已申请|投递成功|申请成功|重复投递)/.test(text)) {
+      failureType = "ALREADY_DELIVERED";
+    } else if (/(未找到.*按钮|按钮不可点击|无法点击|不可点击|请先完善简历|请上传简历)/.test(text)) {
+      failureType = "BUTTON_UNCLICKABLE";
+    } else if (/(网络|超时|timeout|fetch|HTTP|请求失败|连接失败|未返回结果|发送失败)/i.test(text)) {
+      failureType = "NETWORK_ERROR";
+    }
+    return { failureType, failureReason: message || "智联投递失败" };
+  }
+
+  function normalizeFailurePayload(message) {
+    if (message && typeof message === "object") {
+      const reason = message.failureReason || message.message || "智联投递失败";
+      return { failureType: message.failureType || classifyDeliveryFailure(reason).failureType, failureReason: reason };
+    }
+    return classifyDeliveryFailure(String(message || "智联投递失败"));
   }
 
   async function scrollForCards(searchJobLimit = 20) {

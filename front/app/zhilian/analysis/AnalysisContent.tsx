@@ -32,6 +32,7 @@ type StatsResponse = {
     byDegree: NameValue[]
     salaryBuckets: BucketValue[]
     dailyTrend?: NameValue[]
+    byFailureType?: NameValue[]
   }
 }
 
@@ -45,6 +46,8 @@ type ZhilianJob = {
   experience?: string
   degree?: string
   deliveryStatus?: string
+  failureType?: string
+  failureReason?: string
   jobLink?: string
   jobDescription?: string
   aiScore?: number
@@ -93,6 +96,27 @@ const CATEGORY_COLORS = [
   "#f472b6",
   "#64748b",
 ]
+const FAILURE_TYPE_LABELS: Record<string, string> = {
+  LOGIN_EXPIRED: "登录失效",
+  PLATFORM_VERIFICATION: "平台验证",
+  JOB_CLOSED: "岗位关闭",
+  BUTTON_UNCLICKABLE: "按钮不可点击",
+  ALREADY_DELIVERED: "已投递过",
+  NETWORK_ERROR: "网络异常",
+  UNKNOWN_ERROR: "未知错误",
+}
+
+function failureTypeLabel(type?: string) {
+  const key = (type || "UNKNOWN_ERROR").trim()
+  return FAILURE_TYPE_LABELS[key] || key || "未知错误"
+}
+
+function failureReasonText(job: ZhilianJob) {
+  if (job.deliveryStatus !== "投递失败") return "-"
+  const reason = job.failureReason?.trim()
+  const type = failureTypeLabel(job.failureType)
+  return reason ? `${type}：${reason}` : type
+}
 
 function salaryBucketLabel(x: SalaryBucketLike): string {
   return "bucket" in x && x.bucket ? x.bucket : "name" in x && x.name ? x.name : ""
@@ -412,6 +436,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         "经验",
         "学历",
         "投递状态",
+        "失败类型",
+        "失败原因",
         "AI分",
         "AI决策",
         "AI原因",
@@ -427,6 +453,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         it.experience || "",
         it.degree || "",
         it.deliveryStatus || "",
+        it.deliveryStatus === "投递失败" ? failureTypeLabel(it.failureType) : "",
+        it.deliveryStatus === "投递失败" ? (it.failureReason || "") : "",
         it.aiScore ?? "",
         it.aiDecision || "",
         it.aiReason || "",
@@ -719,6 +747,25 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
 
         <Card>
           <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 失败类型统计</CardTitle>
+            <CardDescription>按 failure_type 聚合投递失败原因</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {stats ? (
+              <ChartCanvas
+                type="pie"
+                labels={(stats.charts.byFailureType || []).map((x) => failureTypeLabel(x.name))}
+                data={(stats.charts.byFailureType || []).map((x) => x.value)}
+                colors={CATEGORY_COLORS}
+              />
+            ) : (
+              <div className="text-muted-foreground">加载中...</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 城市TOP10</CardTitle>
             <CardDescription>按地区聚合</CardDescription>
           </CardHeader>
@@ -812,6 +859,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   <th className="py-2 px-3 text-left">经验</th>
                   <th className="py-2 px-3 text-left">学历</th>
                   <th className="py-2 px-3 text-left">投递状态</th>
+                  <th className="py-2 px-3 text-left">失败原因</th>
                   <th className="py-2 px-3 text-left">AI分</th>
                   <th className="py-2 px-3 text-left">AI决策</th>
                   <th className="py-2 px-3 text-left">优先</th>
@@ -867,6 +915,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                         )}
                       </span>
                     </td>
+                    <td className="py-2 px-3 max-w-[260px] truncate" title={failureReasonText(it)}>{failureReasonText(it)}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.aiScore ?? "-"}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       <span className={badgeClass("delivery", it.aiDecision)}>{it.aiDecision || "-"}</span>

@@ -152,10 +152,11 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   if (message.type === "BOSS_DELIVER_ONE") {
     const result = await deliverBossTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(message.task, false, errorMessage).catch(() => {});
+      await postBossDeliveryResult(message.task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
       return {
         success: false,
-        message: errorMessage
+        message: errorMessage,
+        failureType: classifyDeliveryFailure(errorMessage).failureType
       };
     });
     return result || { success: false, message: "Boss投递未返回结果" };
@@ -172,10 +173,11 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
     const task = tasks[index];
     const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(task, false, errorMessage).catch(() => {});
+      await postBossDeliveryResult(task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
       return {
         success: false,
-        message: errorMessage
+        message: errorMessage,
+        failureType: classifyDeliveryFailure(errorMessage).failureType
       };
     });
     if (result?.success) success += 1;
@@ -193,7 +195,7 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
     if (task?.id) {
-      await postBossDeliveryResult(task, false, "投递任务缺少岗位链接或ID").catch(() => {});
+      await postBossDeliveryResult(task, false, classifyDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
     }
     return { success: false, message: "投递任务缺少岗位链接或ID" };
   }
@@ -220,10 +222,12 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     return await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
-    await postBossDeliveryResult(task, false, errorMessage).catch(() => {});
+    const failure = classifyDeliveryFailure(errorMessage);
+    await postBossDeliveryResult(task, false, failure).catch(() => {});
     return {
       success: false,
-      message: errorMessage
+      message: failure.failureReason,
+      failureType: failure.failureType
     };
   }
 }
@@ -271,11 +275,37 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
 
 async function postBossDeliveryResult(task, success, message) {
   if (!task?.id) return;
+  const failure = success ? null : normalizeFailurePayload(message);
   await fetch(`http://localhost:8888/api/boss/jobs/${task.id}/delivery-result`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ success, message })
+    body: JSON.stringify({
+      success,
+      message: success ? message : failure.failureReason,
+      failureType: failure?.failureType,
+      failureReason: failure?.failureReason
+    })
   });
+}
+
+function classifyDeliveryFailure(message) {
+  const text = String(message || "");
+  let failureType = "UNKNOWN_ERROR";
+  if (/(登录|重新登录|未登录|扫码|账号登录)/.test(text)) failureType = "LOGIN_EXPIRED";
+  else if (/(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) failureType = "PLATFORM_VERIFICATION";
+  else if (/(职位已关闭|停止招聘|职位不存在|该职位.*不存在|岗位关闭|已下线|暂停招聘)/.test(text)) failureType = "JOB_CLOSED";
+  else if (/(已投递|已申请|已沟通|继续沟通|重复投递)/.test(text)) failureType = "ALREADY_DELIVERED";
+  else if (/(未找到.*按钮|按钮不可点击|无法点击|不可点击|未出现聊天窗口|未出现沟通页|暂不接受沟通|无法与该职位沟通|缺少岗位链接|缺少.*ID)/.test(text)) failureType = "BUTTON_UNCLICKABLE";
+  else if (/(网络|超时|timeout|fetch|HTTP|请求失败|连接失败|未返回结果|发送失败|未能打开)/i.test(text)) failureType = "NETWORK_ERROR";
+  return { failureType, failureReason: text || "Boss投递失败" };
+}
+
+function normalizeFailurePayload(message) {
+  if (message && typeof message === "object") {
+    const reason = message.failureReason || message.message || "Boss投递失败";
+    return { failureType: message.failureType || classifyDeliveryFailure(reason).failureType, failureReason: reason };
+  }
+  return classifyDeliveryFailure(message);
 }
 
 function postPlatformProgress(pageTabId, payload) {

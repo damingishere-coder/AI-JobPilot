@@ -74,6 +74,8 @@ public class BossService {
             } catch (Exception ignored) {
             }
             addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
+            addColumn(stmt, "boss_data", "failure_type", "TEXT");
+            addColumn(stmt, "boss_data", "failure_reason", "TEXT");
         } catch (Exception e) {
             log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
         }
@@ -605,6 +607,8 @@ public class BossService {
                         "hr_position TEXT, " +
                         "hr_active_status TEXT, " +
                         "delivery_status TEXT, " +
+                        "failure_type TEXT, " +
+                        "failure_reason TEXT, " +
                         "job_description TEXT, " +
                         "job_url TEXT, " +
                         "recruitment_status TEXT, " +
@@ -625,11 +629,13 @@ public class BossService {
 
                 String copySql = "INSERT INTO boss_data_new (" +
                         "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, job_description, job_url, recruitment_status, " +
+                        "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
                         ") SELECT " +
                         "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, job_description, job_url, recruitment_status, " +
+                        "hr_name, hr_position, hr_active_status, delivery_status, " +
+                        (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
+                        (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, " +
                         (cols.contains("scan_run_id") ? "scan_run_id" : "NULL") + ", " +
                         (cols.contains("ai_score") ? "ai_score" : "NULL") + ", " +
@@ -780,6 +786,8 @@ public class BossService {
         merged.setHrPosition(firstNonBlank(incoming.getHrPosition(), existing.getHrPosition()));
         merged.setHrActiveStatus(firstNonBlank(incoming.getHrActiveStatus(), existing.getHrActiveStatus()));
         merged.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), incoming.getDeliveryStatus()));
+        merged.setFailureType(existing.getFailureType());
+        merged.setFailureReason(existing.getFailureReason());
         merged.setJobDescription(bestLongText(incoming.getJobDescription(), existing.getJobDescription()));
         merged.setJobUrl(firstNonBlank(incoming.getJobUrl(), existing.getJobUrl()));
         merged.setRecruitmentStatus(firstNonBlank(incoming.getRecruitmentStatus(), existing.getRecruitmentStatus()));
@@ -839,6 +847,13 @@ public class BossService {
         if (profileId == null) return;
         BossJobDataEntity update = new BossJobDataEntity();
         update.setDeliveryStatus(status);
+        if ("已投递".equals(status)) {
+            update.setFailureType("");
+            update.setFailureReason("");
+        } else if ("投递失败".equals(status)) {
+            update.setFailureType("UNKNOWN_ERROR");
+            update.setFailureReason("投递失败");
+        }
         update.setUpdatedAt(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
@@ -919,6 +934,10 @@ public class BossService {
     }
 
     public BossJobDataEntity updateDeliveryStatusById(Long id, String status) {
+        return updateDeliveryStatusById(id, status, null, null);
+    }
+
+    public BossJobDataEntity updateDeliveryStatusById(Long id, String status, String failureType, String failureReason) {
         if (id == null || status == null || status.isBlank()) {
             throw new IllegalArgumentException("岗位ID和状态不能为空");
         }
@@ -927,9 +946,21 @@ public class BossService {
         BossJobDataEntity update = new BossJobDataEntity();
         update.setId(id);
         update.setDeliveryStatus(status);
+        if ("已投递".equals(status)) {
+            update.setFailureType("");
+            update.setFailureReason("");
+        } else if ("投递失败".equals(status)) {
+            update.setFailureType(normalizeFailureType(failureType));
+            update.setFailureReason(firstNonBlank(failureReason, "投递失败"));
+        }
         update.setUpdatedAt(LocalDateTime.now());
         bossJobDataMapper.updateById(update);
         return getBossJobById(id);
+    }
+
+    private String normalizeFailureType(String failureType) {
+        if (failureType == null || failureType.isBlank()) return "UNKNOWN_ERROR";
+        return failureType.trim();
     }
 
     // ==================== 投递分析（Dashboard）相关方法 ====================
@@ -1042,6 +1073,7 @@ public class BossService {
         public List<BucketValue> salaryBuckets;
         public List<NameValue> dailyTrend; // date 作为 name
         public List<NameValue> hrActivity;
+        public List<NameValue> byFailureType;
     }
 
     /** Boss 分析页总览 */
@@ -1092,6 +1124,7 @@ public class BossService {
         charts.salaryBuckets = new ArrayList<>();
         charts.dailyTrend = new ArrayList<>();
         charts.hrActivity = new ArrayList<>();
+        charts.byFailureType = new ArrayList<>();
 
         try (Connection conn = dataSource.getConnection()) {
             Long profileId = profileService.getCurrentProfileIdOrNull();
@@ -1129,6 +1162,10 @@ public class BossService {
             // byStatus
             try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT delivery_status, COUNT(*) AS cnt FROM boss_data" + runWhere + " GROUP BY delivery_status")) {
                 while (rs.next()) charts.byStatus.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
+            }
+
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT COALESCE(NULLIF(TRIM(failure_type), ''), 'UNKNOWN_ERROR') AS t, COUNT(*) AS cnt FROM boss_data" + runAnd + "delivery_status='投递失败' GROUP BY t")) {
+                while (rs.next()) charts.byFailureType.add(new NameValue(nullSafe(rs.getString(1)), rs.getLong(2)));
             }
 
             // byCity TOP10（保留）
@@ -1245,6 +1282,7 @@ public class BossService {
         charts.salaryBuckets = new ArrayList<>();
         charts.dailyTrend = new ArrayList<>();
         charts.hrActivity = new ArrayList<>();
+        charts.byFailureType = new ArrayList<>();
 
         try {
             // 构造与列表相同的筛选条件
@@ -1314,6 +1352,11 @@ public class BossService {
             Map<String, Long> byStatus = filtered.stream()
                     .collect(Collectors.groupingBy(e -> nullSafe(e.getDeliveryStatus()), Collectors.counting()));
             byStatus.forEach((k, v) -> charts.byStatus.add(new NameValue(k, v)));
+
+            Map<String, Long> byFailureType = filtered.stream()
+                    .filter(e -> "投递失败".equals(e.getDeliveryStatus()))
+                    .collect(Collectors.groupingBy(e -> nullSafeFailureType(e.getFailureType()), Collectors.counting()));
+            byFailureType.forEach((k, v) -> charts.byFailureType.add(new NameValue(k, v)));
 
             Map<String, Long> byCity = filtered.stream()
                     .collect(Collectors.groupingBy(e -> nullSafe(e.getLocation()), Collectors.counting()));
@@ -1405,6 +1448,8 @@ public class BossService {
     }
 
     private String nullSafe(String s) { return s == null || s.isEmpty() ? "未知" : s; }
+
+    private String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? "UNKNOWN_ERROR" : s.trim(); }
 
     private Overview buildOverviewFromDatabase(Connection conn, Long profileId, String scanRunId) throws Exception {
         Overview overview = new Overview();

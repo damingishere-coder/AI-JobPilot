@@ -188,10 +188,12 @@ public class BossAnalyticsController {
         BossJobDataEntity job = bossService.getBossJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
         String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? "已投递" : "投递失败";
-        BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, status);
+        String message = request == null ? null : request.getMessage();
+        String failureReason = request == null ? null : request.getFailureReason();
+        BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, status, request == null ? null : request.getFailureType(), firstNonBlank(failureReason, message));
         return Map.of(
                 "success", true,
-                "message", request == null || request.getMessage() == null ? "投递状态已更新" : request.getMessage(),
+                "message", message == null ? "投递状态已更新" : message,
                 "status", updated.getDeliveryStatus()
         );
     }
@@ -233,5 +235,9 @@ public class BossAnalyticsController {
     private String bossSayHi() {
         BossConfigEntity config = bossService.getFirstConfig();
         return config == null || config.getSayHi() == null ? "" : config.getSayHi();
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
     }
 }

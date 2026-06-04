@@ -1054,13 +1054,13 @@
         || findClickable(["立即沟通", "继续沟通", "沟通", "立即投递"]);
     }
     if (!chatButton) {
-      const failure = detectDeliveryFailure("未找到立即沟通按钮");
+      const failure = classifyDeliveryFailure("未找到立即沟通按钮");
       await postDeliveryResult(task, false, failure);
-      postProgress(message, "warning", `Boss Chrome投递失败：${failure}`, {
+      postProgress(message, "warning", `Boss Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure };
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
     }
     postProgress(message, "info", "Boss Chrome已找到沟通入口，准备点击立即沟通。", {
       operation: "deliver",
@@ -1070,12 +1070,13 @@
     const successMessage = favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通";
     const deliveryCheck = await waitForDeliveryOpened(beforeUrl, task, 9000);
     if (!deliveryCheck.success) {
-      await postDeliveryResult(task, false, deliveryCheck.message);
-      postProgress(message, "warning", `Boss Chrome投递失败：${deliveryCheck.message}`, {
+      const failure = classifyDeliveryFailure(deliveryCheck.message);
+      await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `Boss Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return deliveryCheck;
+      return { ...deliveryCheck, message: failure.failureReason, failureType: failure.failureType };
     }
     const greetingResult = await sendConfiguredGreeting(task, message);
     const finalMessage = greetingResult?.sent ? `${successMessage}，已发送开场白` : successMessage;
@@ -1197,8 +1198,9 @@
         saved: success
       });
       const result = await deliverOne(task, message).catch(async (error) => {
-        await postDeliveryResult(task, false, error.message || String(error)).catch(() => {});
-        return { success: false, message: error.message || String(error) };
+        const failure = classifyDeliveryFailure(error.message || String(error));
+        await postDeliveryResult(task, false, failure).catch(() => {});
+        return { success: false, message: failure.failureReason, failureType: failure.failureType };
       });
       if (result.success) success += 1;
       else failed += 1;
@@ -1213,10 +1215,16 @@
   }
 
   async function postDeliveryResult(task, success, message) {
+    const failure = success ? null : normalizeFailurePayload(message);
     await fetch(`${API_BASE}/api/boss/jobs/${task.id}/delivery-result`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ success, message })
+      body: JSON.stringify({
+        success,
+        message: success ? message : failure.failureReason,
+        failureType: failure?.failureType,
+        failureReason: failure?.failureReason
+      })
     });
   }
 
@@ -1559,6 +1567,33 @@
     if (isStrongLoginPrompt(text, window.location.href)) return "Boss登录状态失效，请在Chrome中重新登录后重试";
     const reason = firstMatch(text, /(今日沟通.*?已用完|沟通次数.*?已用完|沟通上限|已达上限|账号异常|操作过于频繁|职位已关闭|停止招聘|职位不存在|该职位.*?不存在|暂不接受沟通|无法与该职位沟通|请先完善在线简历|请上传简历|请先完成实名认证)/);
     return reason || fallback || "";
+  }
+
+  function classifyDeliveryFailure(message) {
+    const text = compact([message, document.body?.innerText || "", window.location.href || ""].filter(Boolean).join(" "));
+    let failureType = "UNKNOWN_ERROR";
+    if (isStrongLoginPrompt(text, window.location.href) || /(登录|重新登录|未登录|扫码|账号登录)/.test(text)) {
+      failureType = "LOGIN_EXPIRED";
+    } else if (isSecurityPrompt(text) || /(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) {
+      failureType = "PLATFORM_VERIFICATION";
+    } else if (/(职位已关闭|停止招聘|职位不存在|该职位.*不存在|岗位关闭|已下线|暂停招聘)/.test(text)) {
+      failureType = "JOB_CLOSED";
+    } else if (/(已投递|已申请|已沟通|继续沟通|重复投递)/.test(text)) {
+      failureType = "ALREADY_DELIVERED";
+    } else if (/(未找到.*按钮|按钮不可点击|无法点击|不可点击|未出现聊天窗口|未出现沟通页|暂不接受沟通|无法与该职位沟通)/.test(text)) {
+      failureType = "BUTTON_UNCLICKABLE";
+    } else if (/(网络|超时|timeout|fetch|HTTP|请求失败|连接失败|未返回结果|发送失败)/i.test(text)) {
+      failureType = "NETWORK_ERROR";
+    }
+    return { failureType, failureReason: message || "Boss投递失败" };
+  }
+
+  function normalizeFailurePayload(message) {
+    if (message && typeof message === "object") {
+      const reason = message.failureReason || message.message || "Boss投递失败";
+      return { failureType: message.failureType || classifyDeliveryFailure(reason).failureType, failureReason: reason };
+    }
+    return classifyDeliveryFailure(String(message || "Boss投递失败"));
   }
 
   function isBossChatPage(url) {

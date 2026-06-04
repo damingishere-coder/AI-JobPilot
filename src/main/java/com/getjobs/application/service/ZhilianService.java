@@ -216,6 +216,8 @@ public class ZhilianService {
                 " degree VARCHAR(100)," +
                 " company_name VARCHAR(200)," +
                 " delivery_status VARCHAR(20) DEFAULT '未投递'," +
+                " failure_type TEXT," +
+                " failure_reason TEXT," +
                 " job_description TEXT," +
                 " scan_run_id TEXT," +
                 " ai_score INTEGER," +
@@ -241,6 +243,8 @@ public class ZhilianService {
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_reason TEXT"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN priority_company INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN scan_run_id TEXT"); } catch (Exception ignored) {}
+            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN failure_type TEXT"); } catch (Exception ignored) {}
+            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN failure_reason TEXT"); } catch (Exception ignored) {}
             log.info("确保 zhilian_data 表已存在");
         } catch (Exception e) {
             log.warn("创建 zhilian_data 表失败: {}", e.getMessage());
@@ -327,6 +331,8 @@ public class ZhilianService {
         entity.setCreateTime(existing.getCreateTime());
         entity.setUpdateTime(now);
         entity.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), entity.getDeliveryStatus()));
+        entity.setFailureType(existing.getFailureType());
+        entity.setFailureReason(existing.getFailureReason());
         entity.setScanRunId(firstNonBlank(entity.getScanRunId(), existing.getScanRunId()));
         entity.setAiScore(existing.getAiScore());
         entity.setAiDecision(existing.getAiDecision());
@@ -389,15 +395,31 @@ public class ZhilianService {
     }
 
     public void updateDeliveryStatusByJobId(String jobId, String status, Long profileId) {
+        updateDeliveryStatusByJobId(jobId, status, profileId, null, null);
+    }
+
+    public void updateDeliveryStatusByJobId(String jobId, String status, Long profileId, String failureType, String failureReason) {
         if (jobId == null || jobId.trim().isEmpty()) return;
         if (profileId == null) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
         upd.setDeliveryStatus(status);
+        if ("已投递".equals(status)) {
+            upd.setFailureType("");
+            upd.setFailureReason("");
+        } else if ("投递失败".equals(status)) {
+            upd.setFailureType(normalizeFailureType(failureType));
+            upd.setFailureReason(firstNonBlank(failureReason, "投递失败"));
+        }
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("job_id", jobId);
         zhilianJobDataMapper.update(upd, uw);
+    }
+
+    private String normalizeFailureType(String failureType) {
+        if (failureType == null || failureType.isBlank()) return "UNKNOWN_ERROR";
+        return failureType.trim();
     }
 
     public void markDeliveredByTitleAndCompany(String jobTitle, String companyName) {
@@ -508,6 +530,7 @@ public class ZhilianService {
         public List<NameValue> byDegree;
         public List<BucketValue> salaryBuckets;
         public List<NameValue> dailyTrend; // date 作为 name
+        public List<NameValue> byFailureType;
     }
 
     /** 统计响应 */
@@ -596,10 +619,16 @@ public class ZhilianService {
         charts.byDegree = new ArrayList<>();
         charts.salaryBuckets = new ArrayList<>();
         charts.dailyTrend = new ArrayList<>();
+        charts.byFailureType = new ArrayList<>();
 
         Map<String, Long> byStatus = filtered.stream()
                 .collect(Collectors.groupingBy(e -> nullSafe(e.getDeliveryStatus()), Collectors.counting()));
         byStatus.forEach((k, v) -> charts.byStatus.add(new NameValue(k, v)));
+
+        Map<String, Long> byFailureType = filtered.stream()
+                .filter(e -> "投递失败".equals(nullSafe(e.getDeliveryStatus())))
+                .collect(Collectors.groupingBy(e -> nullSafeFailureType(e.getFailureType()), Collectors.counting()));
+        byFailureType.forEach((k, v) -> charts.byFailureType.add(new NameValue(k, v)));
 
         Map<String, Long> byCity = filtered.stream()
                 .filter(e -> e.getLocation() != null && !e.getLocation().trim().isEmpty())
@@ -808,6 +837,8 @@ public class ZhilianService {
 
     private static String nullSafe(String s) { return s == null ? "" : s.trim(); }
 
+    private static String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? "UNKNOWN_ERROR" : s.trim(); }
+
     private StatsResponse emptyStatsResponse() {
         StatsResponse resp = new StatsResponse();
         resp.kpi = new Kpi();
@@ -819,6 +850,7 @@ public class ZhilianService {
         resp.charts.byDegree = new ArrayList<>();
         resp.charts.salaryBuckets = new ArrayList<>();
         resp.charts.dailyTrend = new ArrayList<>();
+        resp.charts.byFailureType = new ArrayList<>();
         return resp;
     }
 }

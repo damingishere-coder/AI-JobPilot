@@ -56,6 +56,12 @@ public class BossJobDataEntity {
     @TableField("delivery_status")
     private String deliveryStatus; // 默认 未投递 / 已投递 / 已过滤 / 投递失败
 
+    @TableField("failure_type")
+    private String failureType;
+
+    @TableField("failure_reason")
+    private String failureReason;
+
     @TableField("job_description")
     private String jobDescription;
 

@@ -65,6 +65,7 @@ type StatsResponse = {
     salaryBuckets: BucketValue[]
     dailyTrend: NameValue[]
     hrActivity: NameValue[]
+    byFailureType?: NameValue[]
   }
 }
 
@@ -80,6 +81,8 @@ type BossJob = {
   hrPosition?: string
   hrActiveStatus?: string
   deliveryStatus?: string
+  failureType?: string
+  failureReason?: string
   jobUrl?: string
   recruitmentStatus?: string
   companyAddress?: string
@@ -143,6 +146,15 @@ const EMPTY_FILTERS: FilterState = {
   filterHeadhunter: false,
 }
 const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
+const FAILURE_TYPE_LABELS: Record<string, string> = {
+  LOGIN_EXPIRED: "登录失效",
+  PLATFORM_VERIFICATION: "平台验证",
+  JOB_CLOSED: "岗位关闭",
+  BUTTON_UNCLICKABLE: "按钮不可点击",
+  ALREADY_DELIVERED: "已投递过",
+  NETWORK_ERROR: "网络异常",
+  UNKNOWN_ERROR: "未知错误",
+}
 
 // 通用分类颜色（用于柱状/饼状图每个分类不同颜色）
 const CATEGORY_COLORS = [
@@ -331,6 +343,18 @@ function OverviewMetric({ label, value }: { label: string; value: string | numbe
       </div>
     </div>
   )
+}
+
+function failureTypeLabel(type?: string) {
+  const key = (type || "UNKNOWN_ERROR").trim()
+  return FAILURE_TYPE_LABELS[key] || key || "未知错误"
+}
+
+function failureReasonText(job: BossJob) {
+  if (job.deliveryStatus !== "投递失败") return "-"
+  const reason = job.failureReason?.trim()
+  const type = failureTypeLabel(job.failureType)
+  return reason ? `${type}：${reason}` : type
 }
 
 function OverviewSection({
@@ -865,6 +889,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         "学历",
         "HR",
         "投递状态",
+        "失败类型",
+        "失败原因",
         "AI分",
         "AI决策",
         "AI原因",
@@ -881,6 +907,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         it.degree || "",
         it.hrName || "",
         it.deliveryStatus || "",
+        it.deliveryStatus === "投递失败" ? failureTypeLabel(it.failureType) : "",
+        it.deliveryStatus === "投递失败" ? (it.failureReason || "") : "",
         it.aiScore ?? "",
         it.aiDecision || "",
         it.aiReason || "",
@@ -1293,7 +1321,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           </div>
 
           <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
-            <table className={`${showDetailColumns ? "min-w-[1800px]" : "min-w-[1180px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
+            <table className={`${showDetailColumns ? "min-w-[1920px]" : "min-w-[1320px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
               <thead>
                 <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
                   <th className={`${showDetailColumns ? "w-[80px]" : "w-[86px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>操作</th>
@@ -1305,6 +1333,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   <th className="w-[76px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">学历</th>
                   <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">HR</th>
                   <th className="w-[136px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">投递状态</th>
+                  <th className={`${showDetailColumns ? "w-[170px]" : "w-[210px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>失败原因</th>
                   <th className="w-[70px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI分</th>
                   <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">AI决策</th>
                   <th className={`${showDetailColumns ? "w-[160px]" : "w-[230px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>AI原因</th>
@@ -1327,7 +1356,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               <tbody>
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={showDetailColumns ? 22 : 16} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
+                    <td colSpan={showDetailColumns ? 23 : 17} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
                       <div className="flex flex-col items-center gap-3">
                         <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
                         <p className="text-sm">当前还没有入库岗位；请查看 Boss 页进度日志里的采集数量、详情缺失和提交结果。</p>
@@ -1399,6 +1428,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                             it.deliveryStatus || "-"
                           )}
                         </button>
+                      </td>
+                      <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                        <div className="line-clamp-2 cursor-pointer hover:text-primary transition-colors" title={failureReasonText(it)} onClick={() => openTextDialog("失败原因", failureReasonText(it))}>{failureReasonText(it)}</div>
                       </td>
                       <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                         {it.aiScore ?? "-"}
@@ -1533,6 +1565,26 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                       type="pie"
                       labels={stats.charts.byStatus.map((x) => x.name)}
                       data={stats.charts.byStatus.map((x) => x.value)}
+                    />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">
+                      加载中...
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiPieChart /> 失败类型统计</CardTitle>
+                  <CardDescription>按 failure_type 聚合投递失败原因</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas
+                      type="pie"
+                      labels={(stats.charts.byFailureType || []).map((x) => failureTypeLabel(x.name))}
+                      data={(stats.charts.byFailureType || []).map((x) => x.value)}
                     />
                   ) : (
                     <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">

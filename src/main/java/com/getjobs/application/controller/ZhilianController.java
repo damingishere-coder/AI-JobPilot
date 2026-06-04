@@ -498,7 +498,15 @@ public class ZhilianController {
         ZhilianJobDataEntity job = getZhilianJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
         String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? "已投递" : "投递失败";
-        zhilianService.updateDeliveryStatusByJobId(job.getJobId(), status);
+        String message = request == null ? null : request.getMessage();
+        String failureReason = request == null ? null : request.getFailureReason();
+        zhilianService.updateDeliveryStatusByJobId(
+                job.getJobId(),
+                status,
+                profileService.getCurrentProfileIdOrNull(),
+                request == null ? null : request.getFailureType(),
+                firstNonBlank(failureReason, message)
+        );
         return Map.of("success", true, "message", request == null || request.getMessage() == null ? "投递状态已更新" : request.getMessage(), "status", status);
     }
 
