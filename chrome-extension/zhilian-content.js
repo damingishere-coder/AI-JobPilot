@@ -12,6 +12,14 @@
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
+  const JOB_LINK_SELECTORS = [
+    "a[href*='jobs.zhaopin.com']",
+    "a[href*='/job/']",
+    "a[href*='jobdetail']",
+    "[class*='joblist'] a[href]",
+    "[class*='job-card'] a[href]",
+    "[class*='position'] a[href]"
+  ];
   let stopRequested = false;
   let activeScanPromise = null;
 
@@ -74,7 +82,13 @@
         message: "智联旧扫描任务已清理"
       });
     }
-    sendResponse({ success: true, ...readScanStatus(), hasStoredTask: hasResumableTask });
+    const status = readScanStatus();
+    sendResponse({
+      success: true,
+      ...status,
+      runId: status.runId || task?.runId || "",
+      hasStoredTask: hasResumableTask
+    });
   }
 
   async function startScan(message) {
@@ -407,13 +421,8 @@
   }
 
   function collectJobs(keyword, message, baseMeta) {
-    const selectors = [
-      "a[href*='jobs.zhaopin.com']",
-      "a[href*='/job/']",
-      "[class*='joblist'] a",
-      "[class*='job-card'] a"
-    ];
-    const links = unique(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))));
+    const links = unique(JOB_LINK_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
+      .filter((link) => isZhilianJobDetailUrl(link.href || link.getAttribute("href") || ""));
     const jobs = [];
     const seenJobUrls = new Set();
     let skipped = 0;
@@ -455,8 +464,12 @@
   function parseLink(link, keyword) {
     const root = link.closest("li, [class*='job'], [class*='card']") || link;
     const text = compact(root.innerText || link.innerText || "");
-    const url = new URL(link.getAttribute("href"), window.location.origin).href;
-    const title = textOf(root, ["[class*='job-title']", "[class*='position']", "a"]) || firstLine(text);
+    const url = normalizeZhilianJobUrl(link.getAttribute("href"));
+    if (!isZhilianJobDetailUrl(url)) {
+      throw new Error("非岗位详情链接");
+    }
+    const linkText = compact(link.innerText || link.textContent || link.getAttribute("title") || "");
+    const title = textOf(root, ["[class*='job-title']", "[class*='jobTitle']", "[class*='position-name']", "[class*='positionName']", "[class*='position']"]) || linkText || firstLine(text);
     const company = textOf(root, ["[class*='company']", "[class*='com-name']"]) || guessCompany(text);
     return {
       id: extractUrlId(url),
@@ -467,7 +480,7 @@
       experience: "",
       degree: "",
       deliveryStatus: detectZhilianDeliveryStatus(root),
-      description: text,
+      description: stripCompanyOnlyText(text),
       url,
       keyword
     };
@@ -526,29 +539,41 @@
         stopRequested = true;
         return { success: true, totalSaved };
       }
-      await humanPause(900, 1800);
-      writeScanStatus({
-        isRunning: true,
-        stopRequested: false,
-        stage: "details",
-        message: `智联 Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`,
-        keyword,
-        keywordIndex: baseMeta.keywordIndex,
-        keywordTotal: baseMeta.keywordTotal,
-        detailIndex: detailIndex + 1,
-        detailTotal: jobs.length,
-        totalSaved,
-        startedAt: message.startedAt,
-        updatedAt: Date.now()
-      });
-      postProgress(message, "info", `智联 Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
-        ...baseMeta,
-        stage: "details",
-        collected: jobs.length,
-        detailIndex: detailIndex + 1,
-        detailTotal: jobs.length
-      });
-      jobs[detailIndex] = enrichZhilianJobFromCurrentDetail(currentJob, message, detailIndex + 1, jobs.length);
+      if (!isCurrentZhilianJobDetailPage(currentJob.url)) {
+        jobs[detailIndex] = markDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, `当前页面不是智联岗位详情页：${window.location.href}`);
+        postProgress(message, "warning", `智联 Chrome跳过疑似公司页 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: currentJob.url
+        });
+      } else {
+        await humanPause(900, 1800);
+        writeScanStatus({
+          isRunning: true,
+          stopRequested: false,
+          stage: "details",
+          message: `智联 Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`,
+          keyword,
+          keywordIndex: baseMeta.keywordIndex,
+          keywordTotal: baseMeta.keywordTotal,
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          totalSaved,
+          startedAt: message.startedAt,
+          updatedAt: Date.now()
+        });
+        postProgress(message, "info", `智联 Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          collected: jobs.length,
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length
+        });
+        jobs[detailIndex] = enrichZhilianJobFromCurrentDetail(currentJob, message, detailIndex + 1, jobs.length);
+      }
     }
 
     const nextIndex = detailIndex + 1;
@@ -626,23 +651,25 @@
       const detailText = zhilianDetailDescription();
       const fullText = compact(document.body?.innerText || "");
       const tags = zhilianDetailTags();
+      const detailUrl = isZhilianJobDetailUrl(window.location.href) ? window.location.href : job.url;
+      const description = detailText || stripCompanyOnlyText(fullText) || listDescription;
       return {
         ...job,
-        title: textOf(document, ["[class*='job-title']", "[class*='position']", "h1"]) || job.title,
-        company: textOf(document, ["[class*='company-name']", "[class*='com-name']", "[class*='company']"]) || job.company,
+        title: zhilianDetailTitle() || job.title,
+        company: zhilianDetailCompany() || job.company,
         salary: textOf(document, ["[class*='salary']", "[class*='job-salary']"]) || job.salary,
         location: tags.location || job.location,
         experience: tags.experience || job.experience,
         degree: tags.degree || job.degree,
         deliveryStatus: detectZhilianDeliveryStatus(document) || job.deliveryStatus || "",
-        description: detailText || fullText || listDescription,
-        url: window.location.href || job.url
+        description,
+        url: detailUrl
       };
     } catch (error) {
       postProgress(message, "warning", `智联 Chrome详情读取失败，改用列表文本：${job.title}`);
       return {
         ...job,
-        description: listDescription,
+        description: stripCompanyOnlyText(listDescription),
         detailIndex,
         detailTotal
       };
@@ -1101,7 +1128,8 @@
   function buildListDiagnostics() {
     const bodyText = compact(document.body?.innerText || "");
     const currentUrl = window.location.href;
-    const detailLinks = document.querySelectorAll("a[href*='jobs.zhaopin.com'], a[href*='/job/']").length;
+    const detailLinks = unique(JOB_LINK_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
+      .filter((link) => isZhilianJobDetailUrl(link.href || link.getAttribute("href") || "")).length;
     const jobNodes = document.querySelectorAll("[class*='joblist'], [class*='job-card'], [class*='position']").length;
     const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
     const hasSecurityPrompt = isSecurityPrompt(bodyText);
@@ -1213,16 +1241,42 @@
 
   function zhilianDetailDescription() {
     const selectors = [
+      "[class*='job-sec-text']",
+      "[class*='job-sec']",
       "[class*='job-description']",
+      "[class*='jobDescription']",
       "[class*='job-detail']",
+      "[class*='jobDetail']",
       "[class*='describ']",
-      "[class*='description']",
       "[class*='responsibility']",
       "[class*='position-detail']",
-      "section"
+      "[class*='positionDetail']",
+      "[class*='requirement']"
     ];
-    const parts = selectors.map((selector) => textOf(document, [selector])).filter(Boolean);
-    return compact(unique(parts).join("\n"));
+    const parts = selectors.map((selector) => textOf(document, [selector]))
+      .filter((text) => text && !looksLikeCompanyOnlyText(text));
+    const selected = parts.find((text) => hasJobRequirementText(text)) || parts.sort((a, b) => b.length - a.length)[0] || "";
+    return compact(selected);
+  }
+
+  function zhilianDetailTitle() {
+    return textOf(document, [
+      "[class*='job-title']",
+      "[class*='jobTitle']",
+      "[class*='position-name']",
+      "[class*='positionName']",
+      "h1"
+    ]);
+  }
+
+  function zhilianDetailCompany() {
+    return textOf(document, [
+      "[class*='company-name']",
+      "[class*='companyName']",
+      "[class*='com-name']",
+      "[class*='company'] a",
+      "a[href*='company']"
+    ]);
   }
 
   function zhilianDetailTags() {
@@ -1255,6 +1309,62 @@
   function guessCompany(text) {
     const parts = compact(text).split(" ");
     return parts.length > 1 ? parts[1] : "";
+  }
+
+  function normalizeZhilianJobUrl(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl || "", window.location.origin);
+      parsed.hash = "";
+      return parsed.href;
+    } catch {
+      return String(rawUrl || "");
+    }
+  }
+
+  function isZhilianJobDetailUrl(rawUrl) {
+    if (!rawUrl) return false;
+    try {
+      const parsed = new URL(rawUrl, window.location.origin);
+      const host = parsed.hostname.toLowerCase();
+      const path = parsed.pathname.toLowerCase();
+      const text = `${host}${path}${parsed.search.toLowerCase()}`;
+      if (!host.endsWith("zhaopin.com")) return false;
+      if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(text)) return false;
+      if (/\/sou\/|\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
+      return host.startsWith("jobs.") || /\/job\//.test(path) || /jobdetail|positiondetail|job_detail/.test(text);
+    } catch {
+      return false;
+    }
+  }
+
+  function isCurrentZhilianJobDetailPage(expectedUrl) {
+    const currentUrl = window.location.href;
+    if (!isZhilianJobDetailUrl(currentUrl)) return false;
+    const text = compact(document.body?.innerText || "");
+    if (looksLikeCompanyOnlyText(text)) return false;
+    if (!zhilianDetailTitle() && !hasJobRequirementText(text)) return false;
+    const expectedId = extractUrlId(expectedUrl);
+    const currentId = extractUrlId(currentUrl);
+    return !expectedId || !currentId || expectedId === currentId;
+  }
+
+  function stripCompanyOnlyText(text) {
+    const value = compact(text);
+    return looksLikeCompanyOnlyText(value) ? "" : value;
+  }
+
+  function looksLikeCompanyOnlyText(text) {
+    const value = compact(text);
+    if (!value) return true;
+    return hasCompanyProfileText(value) && !hasJobRequirementText(value);
+  }
+
+  function hasCompanyProfileText(text) {
+    return /(公司介绍|企业介绍|工商信息|公司信息|经营范围|企业信息|统一社会信用代码|法定代表人|注册资本)/.test(text || "");
+  }
+
+  function hasJobRequirementText(text) {
+    return /(岗位职责|职位描述|职位要求|任职要求|岗位要求|工作职责|工作内容|岗位描述|招聘人数|职位亮点|任职资格)/.test(text || "");
   }
 
   function extractUrlId(url) {

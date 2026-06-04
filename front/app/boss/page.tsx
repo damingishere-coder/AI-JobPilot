@@ -194,6 +194,37 @@ export default function BossPage() {
     ].slice(0, 80))
   }, [])
 
+  const syncBossScanStatus = useCallback(async (silent = false) => {
+    try {
+      const status = await sendChromeBridgeMessage({
+        type: 'BOSS_SCAN_STATUS',
+        platform: 'boss',
+      }, 2000)
+      const running = Boolean(status.isRunning || status.hasStoredTask)
+      if (running) {
+        setIsDelivering(true)
+        setIsStopping(false)
+        const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+        if (runId) setActiveRunId(runId)
+        if (!silent) {
+          appendProgressLog({
+            type: 'info',
+            message: String(status.message || '检测到Boss扫描仍在运行，已恢复停止按钮。'),
+            timestamp: typeof status.updatedAt === 'number' ? status.updatedAt : Date.now(),
+          })
+        }
+        return
+      }
+      if (status.success) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setActiveRunId(null)
+      }
+    } catch {
+      // 扩展未连接或平台页未打开时，保持当前前端状态。
+    }
+  }, [appendProgressLog])
+
   const focusLogSection = useCallback(() => {
     setActiveStep('scan')
     setLogSpotlight(true)
@@ -211,6 +242,7 @@ export default function BossPage() {
   useEffect(() => {
     fetchAllData()
     checkChromeBridge()
+    syncBossScanStatus(true)
 
     // 确保在客户端环境且 EventSource 可用
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -266,6 +298,7 @@ export default function BossPage() {
       if (document.visibilityState === 'visible') {
         fetchAllData()
         setAnalysisRefreshSignal((value) => value + 1)
+        syncBossScanStatus(true)
       }
     }
     window.addEventListener('focus', refreshWhenVisible)
@@ -275,15 +308,16 @@ export default function BossPage() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [syncBossScanStatus])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       checkChromeBridge()
+      syncBossScanStatus(true)
     }, 3000)
 
     return () => window.clearInterval(timer)
-  }, [])
+  }, [syncBossScanStatus])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -324,6 +358,8 @@ export default function BossPage() {
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
+                setIsStopping(false)
+                setActiveRunId(null)
               }
             } catch (error) {
               console.warn('解析Boss进度消息失败:', error)

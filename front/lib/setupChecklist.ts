@@ -172,21 +172,19 @@ async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem>
 
   try {
     const data = await fetchJson<LoginStatusResponse>(`${API_BASE}/api/${platform}/login-status`, 5000)
-    const done = platform === "boss" ? !!data.searchReady || !!data.isLoggedIn || !!data.chromePageReady : !!data.isLoggedIn
+    const done = !!data.isLoggedIn
     return item(
-      platform === "boss" ? "bossLogin" : "zhilianLogin",
+      "zhilianLogin",
       title,
       !!data.success && done,
       done
         ? "登录态可用，可以扫描"
-        : platform === "boss"
-          ? "Chrome扩展状态暂不可用，后端Boss浏览器未就绪；Chrome扫描/投递可用时可继续使用"
-          : data.failureReason || data.message || "请先完成平台登录",
+        : data.failureReason || data.message || "请先完成平台登录",
       "去登录",
       href
     )
   } catch {
-    return item(platform === "boss" ? "bossLogin" : "zhilianLogin", title, false, "登录状态接口暂不可用", "去登录", href, true)
+    return item("zhilianLogin", title, false, "登录状态接口暂不可用", "去登录", href, true)
   }
 }
 

@@ -69,7 +69,13 @@
           message: "Boss旧扫描任务已清理"
         });
       }
-      sendResponse({ success: true, ...readScanStatus(), hasStoredTask: hasResumableTask });
+      const status = readScanStatus();
+      sendResponse({
+        success: true,
+        ...status,
+        runId: status.runId || task?.runId || "",
+        hasStoredTask: hasResumableTask
+      });
       return;
     }
     if (message?.type === "BOSS_PAGE_STATUS") {

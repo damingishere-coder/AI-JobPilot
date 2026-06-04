@@ -92,8 +92,40 @@ export default function ZhilianPage() {
     ].slice(0, 80))
   }, [])
 
+  const syncZhilianScanStatus = useCallback(async (silent = false) => {
+    try {
+      const status = await sendChromeBridgeMessage({
+        type: 'ZHILIAN_SCAN_STATUS',
+        platform: 'zhilian',
+      }, 2000)
+      const running = Boolean(status.isRunning || status.hasStoredTask)
+      if (running) {
+        setIsDelivering(true)
+        setIsStopping(false)
+        const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+        if (runId) setActiveRunId(runId)
+        if (!silent) {
+          appendProgressLog({
+            type: 'info',
+            message: String(status.message || '检测到智联招聘扫描仍在运行，已恢复停止按钮。'),
+            timestamp: typeof status.updatedAt === 'number' ? status.updatedAt : Date.now(),
+          })
+        }
+        return
+      }
+      if (status.success) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setActiveRunId(null)
+      }
+    } catch {
+      // 扩展未连接或平台页未打开时，保持当前前端状态。
+    }
+  }, [appendProgressLog])
+
   useEffect(() => {
     checkChromeBridge()
+    syncZhilianScanStatus(true)
 
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
       console.warn('[智联招聘] EventSource 不可用，无法连接SSE')
@@ -143,13 +175,14 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
-  }, [])
+  }, [syncZhilianScanStatus])
 
   useEffect(() => {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') {
         fetchAllData()
         setAnalysisRefreshSignal((value) => value + 1)
+        syncZhilianScanStatus(true)
       }
     }
     window.addEventListener('focus', refreshWhenVisible)
@@ -159,15 +192,16 @@ export default function ZhilianPage() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [syncZhilianScanStatus])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       checkChromeBridge()
+      syncZhilianScanStatus(true)
     }, 3000)
 
     return () => window.clearInterval(timer)
-  }, [])
+  }, [syncZhilianScanStatus])
 
   useEffect(() => {
     return subscribeChromeBridgeEvents((event) => {
@@ -228,8 +262,10 @@ export default function ZhilianPage() {
               if (shouldRefreshAnalysisFromProgress(data)) {
                 setAnalysisRefreshSignal((value) => value + 1)
               }
-              if (['success', 'error', 'warning'].includes(data.type) && !String(data.message || '').includes('运行中')) {
+              if (isTerminalScanPayload(data)) {
                 setIsDelivering(false)
+                setIsStopping(false)
+                setActiveRunId(null)
               }
             } catch (error) {
               console.warn('[智联] 解析进度消息失败:', error)

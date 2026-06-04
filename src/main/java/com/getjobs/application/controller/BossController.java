@@ -330,13 +330,6 @@ public class BossController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
-            if (jobRunCoordinator.isRunningForAnotherPlatform("boss")) {
-                String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
-                response.put("success", false);
-                response.put("message", "已有" + active + "任务运行中，请等待当前任务完成");
-                response.put("status", "running");
-                return ResponseEntity.badRequest().body(response);
-            }
             CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {
                 sendBossProgress(pm);
                 log.info("[{}] {}", pm.getPlatform(), pm.getMessage());

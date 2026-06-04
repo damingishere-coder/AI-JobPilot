@@ -42,8 +42,7 @@ public class ZhilianJobService implements JobPlatformService {
             return;
         }
         if (!jobRunCoordinator.tryStart(PLATFORM)) {
-            String active = jobRunCoordinator.getActivePlatform().orElse("其他平台");
-            progressCallback.accept(JobProgressMessage.warning(PLATFORM, "已有" + active + "任务运行中，请等待当前任务完成"));
+            progressCallback.accept(JobProgressMessage.warning(PLATFORM, "智联招聘任务已在运行中"));
             return;
         }
 
