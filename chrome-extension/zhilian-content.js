@@ -11,6 +11,7 @@
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
+  const DETAIL_NAVIGATION_GUARD_MS = 800;
   let stopRequested = false;
   let activeScanPromise = null;
 
@@ -329,12 +330,13 @@
         collected: jobs.length,
         searchJobLimit
       });
-      await storeScanTask({
+      const detailTask = {
         ...baseTask,
         phase: "detail",
         detailIndex: 0,
         jobs
-      });
+      };
+      await storeScanTask(detailTask);
       postProgress(task, "info", `智联 Chrome正在查看详情 1/${jobs.length}：${jobs[0].title}`, {
         ...baseMeta,
         stage: "details",
@@ -342,8 +344,38 @@
         detailIndex: 1,
         detailTotal: jobs.length
       });
-      window.location.href = jobs[0].url;
-      return { success: true, saved: totalSaved, pendingNavigation: true };
+      const firstNavigation = await navigateToDetail(task, jobs[0].url);
+      if (firstNavigation.status === "pending") {
+        return { success: true, saved: totalSaved, pendingNavigation: true };
+      }
+      if (firstNavigation.status === "blocked") {
+        jobs[0] = markDetailNavigationFailed(jobs[0], 1, jobs.length, firstNavigation.message);
+        postProgress(task, "warning", `智联 Chrome详情页跳转无响应，已跳过 1/${jobs.length}：${jobs[0].title}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: jobs[0].url,
+          reason: firstNavigation.message
+        });
+        detailTask.jobs = jobs;
+        detailTask.detailIndex = 1;
+      }
+      const detailResult = await continueZhilianDetailScan(detailTask, keyword, runId, baseMeta);
+      if (detailResult.pendingNavigation) return { success: true, saved: totalSaved, pendingNavigation: true };
+      totalSaved = detailResult.totalSaved;
+      if (!stopRequested) advanceKeywordCursor(task, keywordIndex + 1, keyword);
+      task = {
+        ...task,
+        phase: "nextKeyword",
+        jobs: [],
+        detailIndex: 0,
+        currentIndex: keywordIndex + 1,
+        totalSaved
+      };
+      await storeScanTask(task);
+      continue;
     }
 
     if (!stopRequested) {
@@ -383,14 +415,19 @@
     ];
     const links = unique(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))));
     const jobs = [];
+    const seenJobUrls = new Set();
     let skipped = 0;
     let errorCount = 0;
+    let duplicated = 0;
     links.slice(0, Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))).forEach((link, index) => {
       try {
         const job = parseLink(link, keyword);
-        if (job.title && job.company && job.url) {
+        const urlKey = normalizeJobUrlKey(job);
+        if (job.title && job.company && job.url && !seenJobUrls.has(urlKey)) {
+          seenJobUrls.add(urlKey);
           jobs.push(job);
         } else {
+          if (job.url && seenJobUrls.has(urlKey)) duplicated += 1;
           skipped += 1;
         }
       } catch (error) {
@@ -410,7 +447,8 @@
       nodeCount: links.length,
       parsed: jobs.length,
       skipped,
-      errorCount
+      errorCount,
+      duplicated
     };
   }
 
@@ -453,6 +491,7 @@
     }
 
     const currentJob = jobs[detailIndex];
+    let currentNavigationBlocked = false;
     if (currentJob && !isSameUrl(window.location.href, currentJob.url)) {
       postProgress(message, "info", `智联 Chrome正在查看详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
         ...baseMeta,
@@ -462,11 +501,26 @@
         detailTotal: jobs.length
       });
       await storeScanTask({ ...message, phase: "detail", jobs, detailIndex, totalSaved });
-      window.location.href = currentJob.url;
-      return { success: true, totalSaved, pendingNavigation: true };
+      const currentNavigation = await navigateToDetail(message, currentJob.url);
+      if (currentNavigation.status === "pending") {
+        return { success: true, totalSaved, pendingNavigation: true };
+      }
+      if (currentNavigation.status === "blocked") {
+        jobs[detailIndex] = markDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, currentNavigation.message);
+        postProgress(message, "warning", `智联 Chrome详情页跳转无响应，已跳过 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: currentJob.url,
+          reason: currentNavigation.message
+        });
+        currentNavigationBlocked = true;
+      }
     }
 
-    if (currentJob) {
+    if (currentJob && !currentNavigationBlocked) {
       const detailDiagnostics = buildPageBlockDiagnostics();
       if (handleBlockingState(message, detailDiagnostics, { ...baseMeta, stage: "details" })) {
         stopRequested = true;
@@ -509,8 +563,24 @@
         detailIndex: nextIndex + 1,
         detailTotal: jobs.length
       });
-      window.location.href = nextJob.url;
-      return { success: true, totalSaved, pendingNavigation: true };
+      const nextNavigation = await navigateToDetail(message, nextJob.url);
+      if (nextNavigation.status === "pending") {
+        return { success: true, totalSaved, pendingNavigation: true };
+      }
+      if (nextNavigation.status === "blocked") {
+        jobs[nextIndex] = markDetailNavigationFailed(nextJob, nextIndex + 1, jobs.length, nextNavigation.message);
+        postProgress(message, "warning", `智联 Chrome详情页跳转无响应，已跳过 ${nextIndex + 1}/${jobs.length}：${nextJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: nextIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: nextJob.url,
+          reason: nextNavigation.message
+        });
+        return await continueZhilianDetailScan({ ...message, jobs, detailIndex: nextIndex + 1, totalSaved }, keyword, runId, baseMeta);
+      }
+      return await continueZhilianDetailScan({ ...message, jobs, detailIndex: nextIndex, totalSaved }, keyword, runId, baseMeta);
     }
 
     postProgress(message, "info", `智联 Chrome已读取 ${jobs.length} 个岗位详情，提交后台AI队列`, {
@@ -1194,17 +1264,94 @@
     return last;
   }
 
+  function markDetailNavigationFailed(job, detailIndex, detailTotal, reason) {
+    return {
+      ...job,
+      description: job.description || "",
+      detailIndex,
+      detailTotal,
+      detailNavigationFailed: true,
+      detailNavigationFailureReason: reason || "详情页跳转失败"
+    };
+  }
+
+  async function navigateToDetail(message, targetUrl) {
+    if (!targetUrl) return { status: "blocked", message: "岗位缺少详情链接" };
+    const beforeUrl = window.location.href;
+    if (isSameUrl(beforeUrl, targetUrl)) {
+      postProgress(message, "info", "智联 Chrome详情链接与当前页面相同，直接继续解析当前详情页。", {
+        operation: "scan",
+        stage: "details",
+        currentUrl: beforeUrl,
+        targetUrl
+      });
+      return { status: "same" };
+    }
+
+    const backgroundNavigation = await requestBackgroundNavigation(targetUrl);
+    if (!backgroundNavigation.success) {
+      postProgress(message, "warning", `智联 Chrome后台跳转详情失败，改用页面跳转：${backgroundNavigation.message}`, {
+        operation: "scan",
+        stage: "details",
+        currentUrl: beforeUrl,
+        targetUrl
+      });
+      window.location.assign(targetUrl);
+    }
+    await sleep(DETAIL_NAVIGATION_GUARD_MS);
+    if (!isSameUrl(window.location.href, beforeUrl)) {
+      return { status: "pending" };
+    }
+    return {
+      status: "blocked",
+      message: backgroundNavigation.success
+        ? "已请求后台跳转，但页面URL未变化"
+        : backgroundNavigation.message
+    };
+  }
+
+  async function requestBackgroundNavigation(targetUrl) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        source: "GET_JOBS_ZHILIAN_CONTENT",
+        type: "ZHILIAN_NAVIGATE_TAB",
+        url: targetUrl
+      });
+      return response?.success
+        ? { success: true }
+        : { success: false, message: response?.message || "后台未返回成功状态" };
+    } catch (error) {
+      return { success: false, message: error.message || String(error) };
+    }
+  }
+
   function unique(nodes) {
     return Array.from(new Set(nodes));
+  }
+
+  function normalizeUrlKey(url) {
+    try {
+      const parsed = new URL(url, window.location.origin);
+      parsed.hash = "";
+      parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      return parsed.href;
+    } catch {
+      return String(url || "").split("#")[0].replace(/\/+$/, "");
+    }
+  }
+
+  function normalizeJobUrlKey(job) {
+    const id = extractUrlId(job?.url || "");
+    return id || normalizeUrlKey(job?.url || "");
   }
 
   function isSameUrl(left, right) {
     try {
       const leftUrl = new URL(left, window.location.origin);
       const rightUrl = new URL(right, window.location.origin);
-      return leftUrl.origin === rightUrl.origin && leftUrl.pathname === rightUrl.pathname;
+      return normalizeUrlKey(leftUrl.href) === normalizeUrlKey(rightUrl.href);
     } catch {
-      return String(left || "") === String(right || "");
+      return normalizeUrlKey(left) === normalizeUrlKey(right);
     }
   }
 

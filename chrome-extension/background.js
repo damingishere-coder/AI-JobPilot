@@ -27,6 +27,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.source === "GET_JOBS_ZHILIAN_CONTENT" && message.type === "ZHILIAN_NAVIGATE_TAB") {
+    handleZhilianContentNavigation(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_PAGE") {
     handlePageMessage(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
@@ -48,6 +55,16 @@ async function handleBossContentNavigation(message, sender) {
   const targetUrl = String(message?.url || "");
   if (!tabId) return { success: false, message: "缺少Boss标签页ID" };
   if (!isBossSearchUrl(targetUrl)) return { success: false, message: "拒绝打开非Boss搜索页" };
+
+  await chrome.tabs.update(tabId, { url: targetUrl });
+  return { success: true };
+}
+
+async function handleZhilianContentNavigation(message, sender) {
+  const tabId = sender.tab?.id;
+  const targetUrl = String(message?.url || "");
+  if (!tabId) return { success: false, message: "缺少智联标签页ID" };
+  if (!isZhilianUrl(targetUrl)) return { success: false, message: "拒绝打开非智联页面" };
 
   await chrome.tabs.update(tabId, { url: targetUrl });
   return { success: true };
@@ -513,6 +530,15 @@ function isBossSearchUrl(url) {
     return parsed.protocol === "https:"
       && parsed.hostname.endsWith("zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
+  } catch {
+    return false;
+  }
+}
+
+function isZhilianUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname.endsWith("zhaopin.com");
   } catch {
     return false;
   }
