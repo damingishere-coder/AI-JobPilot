@@ -1,11 +1,12 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-04-keyword-cursor-1";
+  const EXTENSION_VERSION = "2026-06-04-zhilian-cross-domain-task-1";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
 
   const API_BASE = "http://localhost:8888";
   const SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SCAN_TASK__";
+  const SHARED_SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
@@ -31,24 +32,18 @@
       return;
     }
     if (message?.type === "ZHILIAN_SCAN_STATUS") {
-      const task = readStoredScanTask();
-      const hasResumableTask = Boolean(task && isResumableScanTask(task));
-      if (task && !hasResumableTask) {
-        clearStoredScanTask();
-        writeScanStatus({
-          isRunning: false,
-          stopRequested: false,
-          stage: "idle",
-          message: "智联旧扫描任务已清理"
-        });
-      }
-      sendResponse({ success: true, ...readScanStatus(), hasStoredTask: hasResumableTask });
-      return;
+      handleScanStatusMessage(sendResponse);
+      return true;
     }
     if (message?.type === "ZHILIAN_SCAN_START") {
       stopRequested = false;
       clearStopRequested();
-      startScan(message);
+      startScan(message).catch((error) => {
+        postProgress(message, "error", error.message || String(error), {
+          operation: "scan",
+          stage: "error"
+        });
+      });
       sendResponse({ success: true, message: "智联 Chrome扫描任务已启动。" });
       return;
     }
@@ -62,11 +57,28 @@
     }
 	  });
 
-  resumeStoredScanTaskIfActive();
+  resumeStoredScanTaskIfActive().catch((error) => {
+    console.warn("[GetJobs] 智联扫描任务恢复失败", error);
+  });
 
-  function startScan(message) {
+  async function handleScanStatusMessage(sendResponse) {
+    const task = await readStoredScanTaskFromAnyStorage();
+    const hasResumableTask = Boolean(task && isResumableScanTask(task));
+    if (task && !hasResumableTask) {
+      clearStoredScanTask();
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: false,
+        stage: "idle",
+        message: "智联旧扫描任务已清理"
+      });
+    }
+    sendResponse({ success: true, ...readScanStatus(), hasStoredTask: hasResumableTask });
+  }
+
+  async function startScan(message) {
     const task = normalizeScanTask(message);
-    storeScanTask(task);
+    await storeScanTask(task);
     writeScanStatus({
       isRunning: true,
       stopRequested: false,
@@ -119,8 +131,8 @@
     });
   }
 
-  function resumeStoredScanTaskIfActive() {
-    const task = readStoredScanTask();
+  async function resumeStoredScanTaskIfActive() {
+    const task = await readStoredScanTaskFromAnyStorage();
     if (isStopRequested()) {
       stopRequested = true;
       clearStoredScanTask();
@@ -251,7 +263,7 @@
           currentIndex: keywordIndex + 1,
           totalSaved
         };
-        storeScanTask(task);
+        await storeScanTask(task);
         continue;
       }
 
@@ -262,12 +274,12 @@
           currentUrl: window.location.href,
           targetUrl: searchUrl
         });
-        storeScanTask(baseTask);
+        await storeScanTask(baseTask);
         window.location.assign(searchUrl);
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
 
-      storeScanTask({ ...baseTask, phase: "collecting" });
+      await storeScanTask({ ...baseTask, phase: "collecting" });
       postProgress(task, "info", `智联 Chrome开始搜索：${keyword}，当前URL：${window.location.href}`, {
         ...baseMeta,
         stage: "searching",
@@ -307,7 +319,7 @@
           ...diagnostics
         });
         advanceKeywordCursor(task, keywordIndex + 1, keyword);
-        storeScanTask({ ...baseTask, phase: "nextKeyword", currentIndex: keywordIndex + 1, totalSaved });
+        await storeScanTask({ ...baseTask, phase: "nextKeyword", currentIndex: keywordIndex + 1, totalSaved });
         continue;
       }
 
@@ -317,7 +329,7 @@
         collected: jobs.length,
         searchJobLimit
       });
-      storeScanTask({
+      await storeScanTask({
         ...baseTask,
         phase: "detail",
         detailIndex: 0,
@@ -436,7 +448,7 @@
 
     if (!jobs.length) {
       advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
-      storeScanTask({ ...message, phase: "nextKeyword", currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
+      await storeScanTask({ ...message, phase: "nextKeyword", currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
       return { success: true, totalSaved };
     }
 
@@ -449,6 +461,7 @@
         detailIndex: detailIndex + 1,
         detailTotal: jobs.length
       });
+      await storeScanTask({ ...message, phase: "detail", jobs, detailIndex, totalSaved });
       window.location.href = currentJob.url;
       return { success: true, totalSaved, pendingNavigation: true };
     }
@@ -488,7 +501,7 @@
     if (isStopRequested()) stopRequested = true;
     if (!stopRequested && nextIndex < jobs.length) {
       const nextJob = jobs[nextIndex];
-      storeScanTask({ ...message, jobs, detailIndex: nextIndex, totalSaved });
+      await storeScanTask({ ...message, jobs, detailIndex: nextIndex, totalSaved });
       postProgress(message, "info", `智联 Chrome正在查看详情 ${nextIndex + 1}/${jobs.length}：${nextJob.title}`, {
         ...baseMeta,
         stage: "details",
@@ -525,7 +538,7 @@
       queueSize: data.queueSize ?? 0,
       totalSaved: nextTotalSaved
     });
-    storeScanTask({
+    await storeScanTask({
       ...message,
       phase: "nextKeyword",
       jobs: [],
@@ -698,13 +711,15 @@
     window.scrollTo(0, 0);
   }
 
-  function storeScanTask(task) {
-    sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify({
+  async function storeScanTask(task) {
+    const normalized = {
       ...normalizeScanTask(task),
       source: "GET_JOBS_BACKGROUND",
       type: "ZHILIAN_SCAN_START",
       updatedAt: Date.now()
-    }));
+    };
+    sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(normalized));
+    await writeSharedScanTask(normalized);
   }
 
   function readStoredScanTask() {
@@ -712,13 +727,54 @@
       const raw = sessionStorage.getItem(SCAN_TASK_KEY);
       return raw ? normalizeScanTask(JSON.parse(raw)) : null;
     } catch {
-      clearStoredScanTask();
+      sessionStorage.removeItem(SCAN_TASK_KEY);
       return null;
     }
   }
 
   function clearStoredScanTask() {
     sessionStorage.removeItem(SCAN_TASK_KEY);
+    clearSharedScanTask();
+  }
+
+  async function readStoredScanTaskFromAnyStorage() {
+    const localTask = readStoredScanTask();
+    if (localTask) return localTask;
+
+    const sharedTask = await readSharedScanTask();
+    if (sharedTask) {
+      sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(sharedTask));
+      return sharedTask;
+    }
+    return null;
+  }
+
+  async function writeSharedScanTask(task) {
+    if (!chrome?.storage?.local) return;
+    try {
+      await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: task });
+    } catch (error) {
+      console.warn("[GetJobs] 智联共享扫描任务保存失败", error);
+    }
+  }
+
+  async function readSharedScanTask() {
+    if (!chrome?.storage?.local) return null;
+    try {
+      const result = await chrome.storage.local.get(SHARED_SCAN_TASK_KEY);
+      const task = result?.[SHARED_SCAN_TASK_KEY];
+      return task ? normalizeScanTask(task) : null;
+    } catch (error) {
+      console.warn("[GetJobs] 智联共享扫描任务读取失败", error);
+      return null;
+    }
+  }
+
+  function clearSharedScanTask() {
+    if (!chrome?.storage?.local) return;
+    chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
+      console.warn("[GetJobs] 智联共享扫描任务清理失败", error);
+    });
   }
 
   function normalizeScanTask(message) {
@@ -878,18 +934,7 @@
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhaopin.com")) return false;
-
-      const phase = String(task.phase || "");
-      if (phase === "detail") {
-        const jobs = Array.isArray(task.jobs) ? task.jobs : [];
-        const job = jobs[Number(task.detailIndex || 0)];
-        return Boolean(job?.url && isSameUrl(current.href, job.url)) || current.hostname.includes("jobs.zhaopin.com") || current.pathname.includes("/job/");
-      }
-      if (phase === "searching" || phase === "collecting" || phase === "nextKeyword") {
-        return current.pathname.startsWith("/sou/");
-      }
-
-      return false;
+      return Boolean(task.phase);
     } catch {
       return false;
     }
