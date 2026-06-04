@@ -472,9 +472,9 @@ public class AiService {
     // ================= 合并的 AI 配置管理方法 =================
 
     /**
-     * 获取AI配置（获取最新一条，如果不存在则创建默认配置）
+     * 获取当前档案的 AI 配置；不存在时只返回空草稿，不自动写入数据库。
      */
-    @Transactional
+    @Transactional(readOnly = true)
     public AiEntity getAiConfig() {
         Long profileId = profileService.getCurrentProfileId();
         AiEntity aiEntity = aiMapper.selectOne(new QueryWrapper<AiEntity>()
@@ -482,7 +482,10 @@ public class AiService {
                 .orderByDesc("id")
                 .last("LIMIT 1"));
         if (aiEntity == null) {
-            aiEntity = createDefaultConfig();
+            aiEntity = new AiEntity();
+            aiEntity.setProfileId(profileId);
+            aiEntity.setIntroduce("");
+            aiEntity.setPrompt("");
         }
         return aiEntity;
     }

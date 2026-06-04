@@ -411,6 +411,7 @@ public class Boss {
                 analyzedCount++;
                 progressCallback.accept("正在分析：" + jobName, analyzedCount, searchJobLimit);
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                analysisRequest.setProfileId(bossService.getCurrentProfileId());
                 analysisRequest.setPlatform("boss");
                 analysisRequest.setKeyword(keyword);
                 analysisRequest.setJobKey(extractEncryptIdFromCurrentDetailLink());

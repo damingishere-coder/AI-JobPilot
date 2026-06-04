@@ -21,4 +21,13 @@ public class GlobalExceptionHandler {
         response.put("message", "文件过大，请压缩到30MB以内后再上传");
         return ResponseEntity.badRequest().body(response);
     }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException e) {
+        log.warn("请求状态不满足: {}", e.getMessage());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("message", e.getMessage());
+        return ResponseEntity.badRequest().body(response);
+    }
 }

@@ -38,10 +38,16 @@ public class ZhilianService {
     private final DataSource dataSource;
     private final ProfileService profileService;
 
+    public Long getCurrentProfileId() {
+        return profileService.getCurrentProfileId();
+    }
+
     /** 获取第一条配置（通常只有一条） */
     public ZhilianConfigEntity getFirstConfig() {
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return null;
         QueryWrapper<ZhilianConfigEntity> wrapper = new QueryWrapper<>();
-        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.eq("profile_id", profileId);
         wrapper.orderByAsc("id");
         wrapper.last("LIMIT 1");
         return zhilianConfigMapper.selectOne(wrapper);
@@ -200,6 +206,7 @@ public class ZhilianService {
     public void ensureZhilianDataTableExists() {
         String createSql = "CREATE TABLE IF NOT EXISTS zhilian_data (" +
                 " id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                " profile_id INTEGER," +
                 " job_id VARCHAR(64)," +
                 " job_title VARCHAR(200)," +
                 " job_link VARCHAR(300)," +
@@ -221,9 +228,11 @@ public class ZhilianService {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN search_job_limit INTEGER DEFAULT 20"); } catch (Exception ignored) {}
             try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN profile_id INTEGER"); } catch (Exception ignored) {}
+            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN profile_id INTEGER"); } catch (Exception ignored) {}
             try {
-                Long profileId = profileService.getCurrentProfileId();
+                Long profileId = profileService.getCurrentProfileIdOrNull();
                 stmt.executeUpdate("UPDATE zhilian_config SET profile_id = " + profileId + " WHERE profile_id IS NULL");
+                stmt.executeUpdate("UPDATE zhilian_data SET profile_id = " + profileId + " WHERE profile_id IS NULL");
             } catch (Exception ignored) {}
             stmt.execute(createSql);
             try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN job_description TEXT"); } catch (Exception ignored) {}
@@ -247,22 +256,27 @@ public class ZhilianService {
 
     public boolean existsByJobId(String jobId) {
         if (jobId == null || jobId.trim().isEmpty()) return false;
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return false;
         QueryWrapper<ZhilianJobDataEntity> w = new QueryWrapper<>();
-        w.eq("job_id", jobId).last("LIMIT 1");
+        w.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
         Long c = zhilianJobDataMapper.selectCount(w);
         return c != null && c > 0;
     }
 
     public boolean existsByTitleAndCompany(String jobTitle, String companyName) {
         if (jobTitle == null || companyName == null) return false;
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return false;
         QueryWrapper<ZhilianJobDataEntity> w = new QueryWrapper<>();
-        w.eq("job_title", jobTitle).eq("company_name", companyName).last("LIMIT 1");
+        w.eq("profile_id", profileId).eq("job_title", jobTitle).eq("company_name", companyName).last("LIMIT 1");
         Long c = zhilianJobDataMapper.selectCount(w);
         return c != null && c > 0;
     }
 
     public void insertJob(ZhilianJobDataEntity entity) {
         if (entity == null) return;
+        entity.setProfileId(profileService.getCurrentProfileId());
         LocalDateTime now = LocalDateTime.now();
         entity.setCreateTime(now);
         entity.setUpdateTime(now);
@@ -276,20 +290,23 @@ public class ZhilianService {
 
     public ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity, String scanRunId) {
         if (entity == null) return null;
+        Long profileId = profileService.getCurrentProfileId();
+        entity.setProfileId(profileId);
         if (scanRunId != null && !scanRunId.isBlank()) {
             entity.setScanRunId(scanRunId.trim());
         }
         ZhilianJobDataEntity existing = null;
         if (entity.getJobId() != null && !entity.getJobId().isBlank()) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-            wrapper.eq("job_id", entity.getJobId());
+            wrapper.eq("profile_id", profileId).eq("job_id", entity.getJobId());
             applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
         if (existing == null && entity.getJobTitle() != null && entity.getCompanyName() != null) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-            wrapper.eq("job_title", entity.getJobTitle())
+            wrapper.eq("profile_id", profileId)
+                    .eq("job_title", entity.getJobTitle())
                     .eq("company_name", entity.getCompanyName());
             applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
@@ -306,6 +323,7 @@ public class ZhilianService {
         }
 
         entity.setId(existing.getId());
+        entity.setProfileId(profileId);
         entity.setCreateTime(existing.getCreateTime());
         entity.setUpdateTime(now);
         entity.setDeliveryStatus(nextChromeDeliveryStatus(existing.getDeliveryStatus(), entity.getDeliveryStatus()));
@@ -347,7 +365,11 @@ public class ZhilianService {
 
     public ZhilianJobDataEntity getZhilianJobById(Long id) {
         if (id == null) return null;
-        return zhilianJobDataMapper.selectById(id);
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return null;
+        QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("id", id).eq("profile_id", profileId).last("LIMIT 1");
+        return zhilianJobDataMapper.selectOne(wrapper);
     }
 
     public void markDeliveredByJobId(String jobId) {
@@ -358,14 +380,23 @@ public class ZhilianService {
         updateDeliveryStatusByJobId(jobId, "待确认");
     }
 
+    public void markWaitingConfirmByJobId(String jobId, Long profileId) {
+        updateDeliveryStatusByJobId(jobId, "待确认", profileId);
+    }
+
     public void updateDeliveryStatusByJobId(String jobId, String status) {
+        updateDeliveryStatusByJobId(jobId, status, profileService.getCurrentProfileIdOrNull());
+    }
+
+    public void updateDeliveryStatusByJobId(String jobId, String status, Long profileId) {
         if (jobId == null || jobId.trim().isEmpty()) return;
+        if (profileId == null) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
         upd.setDeliveryStatus(status);
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
-        uw.eq("job_id", jobId);
+        uw.eq("profile_id", profileId).eq("job_id", jobId);
         zhilianJobDataMapper.update(upd, uw);
     }
 
@@ -377,14 +408,23 @@ public class ZhilianService {
         updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "待确认");
     }
 
+    public void markWaitingConfirmByTitleAndCompany(String jobTitle, String companyName, Long profileId) {
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "待确认", profileId);
+    }
+
     public void updateDeliveryStatusByTitleAndCompany(String jobTitle, String companyName, String status) {
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, status, profileService.getCurrentProfileIdOrNull());
+    }
+
+    public void updateDeliveryStatusByTitleAndCompany(String jobTitle, String companyName, String status, Long profileId) {
         if (jobTitle == null || companyName == null) return;
+        if (profileId == null) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
         upd.setDeliveryStatus(status);
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
-        uw.eq("job_title", jobTitle).eq("company_name", companyName);
+        uw.eq("profile_id", profileId).eq("job_title", jobTitle).eq("company_name", companyName);
         zhilianJobDataMapper.update(upd, uw);
     }
 
@@ -512,6 +552,9 @@ public class ZhilianService {
         }
 
         wrapper.orderByDesc("create_time");
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return emptyStatsResponse();
+        wrapper.eq("profile_id", profileId);
         List<ZhilianJobDataEntity> all = zhilianJobDataMapper.selectList(wrapper);
 
         List<ZhilianJobDataEntity> filtered = new ArrayList<>();
@@ -648,6 +691,16 @@ public class ZhilianService {
         if (size <= 0) size = 20;
 
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) {
+            PagedResult empty = new PagedResult();
+            empty.items = Collections.emptyList();
+            empty.total = 0;
+            empty.page = page;
+            empty.size = size;
+            return empty;
+        }
+        wrapper.eq("profile_id", profileId);
         String effectiveScanRunId = resolveZhilianScanRunId(scanRunId);
         if (effectiveScanRunId != null && !effectiveScanRunId.isBlank()) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
@@ -694,8 +747,11 @@ public class ZhilianService {
 
     public String resolveZhilianScanRunId(String scanRunId) {
         if (scanRunId != null && !scanRunId.isBlank()) return scanRunId.trim();
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return null;
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
         wrapper.select("scan_run_id")
+                .eq("profile_id", profileId)
                 .isNotNull("scan_run_id")
                 .ne("scan_run_id", "")
                 .orderByDesc("create_time")
@@ -726,8 +782,9 @@ public class ZhilianService {
             int analysisDeleted;
             int jobsDeleted;
             try (Statement st = conn.createStatement()) {
-                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian'");
-                jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data");
+                Long profileId = profileService.getCurrentProfileId();
+                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
+                jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data WHERE profile_id=" + profileId);
                 try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='zhilian_data'"); } catch (Exception ignore) {}
             }
 
@@ -750,4 +807,18 @@ public class ZhilianService {
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s.trim(); }
+
+    private StatsResponse emptyStatsResponse() {
+        StatsResponse resp = new StatsResponse();
+        resp.kpi = new Kpi();
+        resp.charts = new Charts();
+        resp.charts.byStatus = new ArrayList<>();
+        resp.charts.byCity = new ArrayList<>();
+        resp.charts.byCompany = new ArrayList<>();
+        resp.charts.byExperience = new ArrayList<>();
+        resp.charts.byDegree = new ArrayList<>();
+        resp.charts.salaryBuckets = new ArrayList<>();
+        resp.charts.dailyTrend = new ArrayList<>();
+        return resp;
+    }
 }

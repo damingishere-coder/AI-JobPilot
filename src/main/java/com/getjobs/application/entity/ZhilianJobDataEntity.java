@@ -17,6 +17,9 @@ public class ZhilianJobDataEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    @TableField("profile_id")
+    private Long profileId;
+
     @TableField("job_id")
     private String jobId;
 

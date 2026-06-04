@@ -13,7 +13,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
-import ProfileSwitcher from '@/app/components/ProfileSwitcher'
+import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
 
 interface BossConfig {
   id?: number
@@ -152,6 +152,8 @@ export default function BossPage() {
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
+  const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
+  const [hasProfile, setHasProfile] = useState(false)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
     const parsed = Number(value)
@@ -232,6 +234,22 @@ export default function BossPage() {
     return () => {
       client.close()
     }
+  }, [])
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchAllData()
+        setAnalysisRefreshSignal((value) => value + 1)
+      }
+    }
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -342,6 +360,8 @@ export default function BossPage() {
 
       console.log('Fetched data:', data)
       console.log('Blacklist:', data.blacklist)
+      setCurrentProfile(data.currentProfile || null)
+      setHasProfile(Boolean(data.hasProfile || data.currentProfile))
 
       if (data.config) {
         // 规范化城市编码：后端可能返回单值或括号列表，此处取第一个值用于下拉回显
@@ -552,6 +572,12 @@ export default function BossPage() {
   }
 
   const handleSave = async (silent: boolean = false, overrides?: Partial<BossConfig>) => {
+    if (!hasProfile) {
+      setSaveDialogKind('save')
+      setSaveResult({ success: false, message: '请先在简历配置页新建档案。' })
+      setShowSaveDialog(true)
+      return
+    }
     try {
       const searchJobLimit = commitSearchJobLimit(overrides?.searchJobLimit)
       // 组装要保存的负载：多选使用括号列表
@@ -663,6 +689,10 @@ export default function BossPage() {
 
   const handleStartDelivery = async () => {
     try {
+      if (!hasProfile) {
+        appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
+        return
+      }
       if (!chromeBridgeReady) {
         appendProgressLog({ type: 'error', message: 'Chrome扩展未连接，请先在Chrome扩展页加载 chrome-extension 目录。' })
         return
@@ -827,21 +857,27 @@ export default function BossPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
+	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> 开始扫描
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={() => handleSave(false)} size="sm" className="app-button-primary px-4">
+            <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
         }
       />
 
-      <ProfileSwitcher onProfileChange={fetchAllData} />
+      <CurrentProfileBadge profile={currentProfile} onRefresh={fetchAllData} />
+
+      {!hasProfile ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          未新建档案时不能保存 Boss 配置或扫描岗位。请到“简历配置”新建/切换档案。
+        </div>
+      ) : null}
 
       <Tabs defaultValue="config" className="w-full">
         <TabsList className="grid w-full grid-cols-2">
@@ -888,6 +924,7 @@ export default function BossPage() {
                     value={keywordsDisplay}
                     onChange={(e) => setKeywordsDisplay(e.target.value)}
                     placeholder="例如：Java开发工程师"
+                    disabled={!hasProfile}
                   />
                   <p className="text-xs text-muted-foreground">职位搜索的关键词</p>
                 </div>
@@ -898,6 +935,7 @@ export default function BossPage() {
                     id="city"
                     value={config.cityCode || ''}
                     onChange={(e) => setConfig({ ...config, cityCode: e.target.value })}
+                    disabled={!hasProfile}
                   >
                     {options.city.map((city) => (
                       <option key={city.id} value={city.code}>
@@ -914,6 +952,7 @@ export default function BossPage() {
                   id="jobType"
                   value={config.jobType || ''}
                   onChange={(e) => setConfig({ ...config, jobType: e.target.value })}
+                  disabled={!hasProfile}
                 >
                   {options.jobType.map((type) => (
                     <option key={type.id} value={type.code}>
@@ -929,6 +968,7 @@ export default function BossPage() {
                 <Select
                   id="searchJobLimit"
                   value={searchJobLimitMode === 'custom' ? SEARCH_JOB_LIMIT_CUSTOM_VALUE : String(normalizeSearchJobLimit(config.searchJobLimit))}
+                  disabled={!hasProfile}
                   onChange={(e) => {
                     const value = e.target.value
                     if (value === SEARCH_JOB_LIMIT_CUSTOM_VALUE) {
@@ -965,6 +1005,7 @@ export default function BossPage() {
                     }}
                     onBlur={() => commitSearchJobLimit(customSearchJobLimit)}
                     placeholder="输入 1-200"
+                    disabled={!hasProfile}
                   />
                 )}
                 <p className="text-xs text-muted-foreground">每个关键词最多进入AI打分的岗位数，范围 1-200。</p>
@@ -975,8 +1016,9 @@ export default function BossPage() {
                 <MultiSelect
                   options={options.industry}
                   selected={selectedIndustry}
-                    onChange={setSelectedIndustry}
-                    placeholder="选择公司行业"
+                  onChange={setSelectedIndustry}
+                  placeholder="选择公司行业"
+                  disabled={!hasProfile}
                   />
                   <p className="text-xs text-muted-foreground">可多选</p>
                 </div>
@@ -988,6 +1030,7 @@ export default function BossPage() {
                   id="filterDeadHr"
                   value={String(config.filterDeadHr ?? 0)}
                   onChange={(e) => setConfig({ ...config, filterDeadHr: Number(e.target.value) })}
+                  disabled={!hasProfile}
                 >
                   <option value="0">关闭</option>
                   <option value="1">开启</option>
@@ -1000,6 +1043,7 @@ export default function BossPage() {
                   id="autoDeliver"
                   value={String(config.autoDeliver ?? 0)}
                   onChange={(e) => setConfig({ ...config, autoDeliver: Number(e.target.value) })}
+                  disabled={!hasProfile}
                 >
                   <option value="0">关闭</option>
                   <option value="1">开启</option>
@@ -1028,6 +1072,7 @@ export default function BossPage() {
                   selected={selectedSalary}
                   onChange={setSelectedSalary}
                   placeholder="选择薪资待遇"
+                  disabled={!hasProfile}
                 />
                 <p className="text-xs text-muted-foreground">选项来源：字典表 type=salary（可多选）</p>
               </div>
@@ -1038,6 +1083,7 @@ export default function BossPage() {
                   selected={selectedExperience}
                   onChange={setSelectedExperience}
                   placeholder="选择工作经验"
+                  disabled={!hasProfile}
                 />
               </div>
             </div>
@@ -1062,6 +1108,7 @@ export default function BossPage() {
                   selected={selectedDegree}
                   onChange={setSelectedDegree}
                   placeholder="选择学历要求"
+                  disabled={!hasProfile}
                 />
               </div>
 
@@ -1072,6 +1119,7 @@ export default function BossPage() {
                   selected={selectedScale}
                   onChange={setSelectedScale}
                   placeholder="选择公司规模"
+                  disabled={!hasProfile}
                 />
               </div>
 
@@ -1082,6 +1130,7 @@ export default function BossPage() {
                   selected={selectedStage}
                   onChange={setSelectedStage}
                   placeholder="选择融资阶段"
+                  disabled={!hasProfile}
                 />
               </div>
             </div>
@@ -1406,12 +1455,14 @@ function MultiSelect({
   onChange,
   placeholder,
   onClose,
+  disabled = false,
 }: {
   options: BossOption[]
   selected: string[]
   onChange: (v: string[]) => void
   placeholder?: string
   onClose?: () => void
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -1504,6 +1555,7 @@ function MultiSelect({
   }, [open, onClose])
 
   const toggle = (code: string) => {
+    if (disabled) return
     console.log('[MultiSelect] toggle 被调用', { code, currentSelected: selected })
     if (selected.includes(code)) {
       const newSelected = selected.filter((c) => c !== code)
@@ -1525,8 +1577,9 @@ function MultiSelect({
       <button
         ref={buttonRef}
         type="button"
-        onClick={() => { const next = !open; setOpen(next); if (!next) onClose?.() }}
-        className="flex h-10 w-full items-center justify-between rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,.25)] transition-all duration-200 hover:bg-white/15 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-cyan-400/40 focus:ring-offset-0"
+        disabled={disabled}
+        onClick={() => { if (disabled) return; const next = !open; setOpen(next); if (!next) onClose?.() }}
+        className="flex h-10 w-full items-center justify-between rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,.25)] transition-all duration-200 hover:bg-white/15 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-cyan-400/40 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="truncate text-sm">
           {selectedNames.length > 0 ? selectedNames.join('，') : (placeholder || '请选择')}

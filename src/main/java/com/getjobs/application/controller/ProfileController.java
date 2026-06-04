@@ -24,6 +24,7 @@ public class ProfileController {
         response.put("success", true);
         response.put("data", profileService.listProfiles());
         response.put("current", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
         return response;
     }
 
@@ -32,6 +33,7 @@ public class ProfileController {
         Map<String, Object> response = new HashMap<>();
         response.put("success", true);
         response.put("data", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
         return response;
     }
 

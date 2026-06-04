@@ -21,8 +21,6 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class ProfileService {
-    public static final String DEFAULT_PROFILE_NAME = "默认档案";
-
     private final DataSource dataSource;
     private final ProfileMapper profileMapper;
 
@@ -36,36 +34,21 @@ public class ProfileService {
                     "created_at DATETIME, " +
                     "updated_at DATETIME)");
 
-            Long defaultProfileId = ensureDefaultProfile(stmt);
             ensureAiTable(stmt);
             ensureBossConfigTable(stmt);
             ensureZhilianConfigTable(stmt);
-            addProfileColumn(stmt, "resume_profile", defaultProfileId);
-            addProfileColumn(stmt, "ai", defaultProfileId);
-            addProfileColumn(stmt, "boss_config", defaultProfileId);
-            addProfileColumn(stmt, "zhilian_config", defaultProfileId);
-            ensurePriorityCompanyTable(stmt, defaultProfileId);
-            normalizeActiveProfile(stmt, defaultProfileId);
+            addProfileColumn(stmt, "resume_profile");
+            addProfileColumn(stmt, "ai");
+            addProfileColumn(stmt, "boss_config");
+            addProfileColumn(stmt, "zhilian_config");
+            addProfileColumn(stmt, "boss_data");
+            addProfileColumn(stmt, "zhilian_data");
+            addProfileColumn(stmt, "job_ai_analysis");
+            ensurePriorityCompanyTable(stmt);
+            normalizeActiveProfile(stmt);
         } catch (Exception e) {
             log.warn("初始化档案表失败: {}", e.getMessage());
         }
-    }
-
-    private Long ensureDefaultProfile(Statement stmt) throws Exception {
-        try (ResultSet rs = stmt.executeQuery("SELECT id FROM profile ORDER BY id ASC LIMIT 1")) {
-            if (rs.next()) {
-                return rs.getLong("id");
-            }
-        }
-        String now = LocalDateTime.now().toString();
-        stmt.executeUpdate("INSERT INTO profile (name, is_active, created_at, updated_at) " +
-                "VALUES ('" + DEFAULT_PROFILE_NAME + "', 1, '" + now + "', '" + now + "')");
-        try (ResultSet rs = stmt.executeQuery("SELECT id FROM profile ORDER BY id ASC LIMIT 1")) {
-            if (rs.next()) {
-                return rs.getLong("id");
-            }
-        }
-        throw new IllegalStateException("默认档案创建失败");
     }
 
     private void ensureAiTable(Statement stmt) throws Exception {
@@ -118,19 +101,14 @@ public class ProfileService {
                 "updated_at DATETIME)");
     }
 
-    private void addProfileColumn(Statement stmt, String table, Long defaultProfileId) {
+    private void addProfileColumn(Statement stmt, String table) {
         try {
             stmt.execute("ALTER TABLE " + table + " ADD COLUMN profile_id INTEGER");
         } catch (Exception ignored) {
         }
-        try {
-            stmt.executeUpdate("UPDATE " + table + " SET profile_id = " + defaultProfileId +
-                    " WHERE profile_id IS NULL");
-        } catch (Exception ignored) {
-        }
     }
 
-    private void ensurePriorityCompanyTable(Statement stmt, Long defaultProfileId) throws Exception {
+    private void ensurePriorityCompanyTable(Statement stmt) throws Exception {
         stmt.execute("CREATE TABLE IF NOT EXISTS priority_company (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                 "profile_id INTEGER, " +
@@ -162,7 +140,7 @@ public class ProfileService {
         }
 
         if (!needsRebuild) {
-            addProfileColumn(stmt, "priority_company", defaultProfileId);
+            addProfileColumn(stmt, "priority_company");
             try {
                 stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_priority_company_profile_name " +
                         "ON priority_company(profile_id, company_name)");
@@ -180,7 +158,7 @@ public class ProfileService {
                 "created_at DATETIME, " +
                 "updated_at DATETIME, " +
                 "UNIQUE(profile_id, company_name))");
-        String profileExpr = hasProfileId ? "COALESCE(profile_id, " + defaultProfileId + ")" : String.valueOf(defaultProfileId);
+        String profileExpr = hasProfileId ? "profile_id" : "NULL";
         stmt.executeUpdate("INSERT OR IGNORE INTO priority_company_profile_new " +
                 "(id, profile_id, company_name, enabled, remark, created_at, updated_at) " +
                 "SELECT id, " + profileExpr + ", company_name, enabled, remark, created_at, updated_at " +
@@ -189,9 +167,17 @@ public class ProfileService {
         stmt.execute("ALTER TABLE priority_company_profile_new RENAME TO priority_company");
     }
 
-    private void normalizeActiveProfile(Statement stmt, Long defaultProfileId) {
+    private void normalizeActiveProfile(Statement stmt) {
         try (ResultSet rs = stmt.executeQuery("SELECT id FROM profile WHERE is_active = 1 ORDER BY id ASC LIMIT 1")) {
-            Long activeId = rs.next() ? rs.getLong("id") : defaultProfileId;
+            Long activeId = rs.next() ? rs.getLong("id") : null;
+            if (activeId == null) {
+                try (ResultSet first = stmt.executeQuery("SELECT id FROM profile ORDER BY id ASC LIMIT 1")) {
+                    activeId = first.next() ? first.getLong("id") : null;
+                }
+            }
+            if (activeId == null) {
+                return;
+            }
             stmt.executeUpdate("UPDATE profile SET is_active = CASE WHEN id = " + activeId + " THEN 1 ELSE 0 END");
         } catch (Exception e) {
             log.warn("规范化当前档案失败: {}", e.getMessage());
@@ -219,9 +205,21 @@ public class ProfileService {
     public Long getCurrentProfileId() {
         ProfileEntity current = getCurrentProfile();
         if (current == null || current.getId() == null) {
-            throw new IllegalStateException("当前档案不存在");
+            throw new IllegalStateException("请先在简历配置页新建档案");
         }
         return current.getId();
+    }
+
+    @Transactional(readOnly = true)
+    public Long getCurrentProfileIdOrNull() {
+        ProfileEntity current = getCurrentProfile();
+        return current == null ? null : current.getId();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean hasProfiles() {
+        Long count = profileMapper.selectCount(null);
+        return count != null && count > 0;
     }
 
     @Transactional
@@ -230,7 +228,7 @@ public class ProfileService {
         LocalDateTime now = LocalDateTime.now();
         ProfileEntity entity = new ProfileEntity();
         entity.setName(normalized);
-        entity.setIsActive(0);
+        entity.setIsActive(hasProfiles() ? 0 : 1);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         profileMapper.insert(entity);
@@ -260,9 +258,6 @@ public class ProfileService {
     public void deleteProfile(Long id) {
         ProfileEntity entity = requireProfile(id);
         Long count = profileMapper.selectCount(null);
-        if (count != null && count <= 1) {
-            throw new IllegalStateException("至少需要保留一个档案");
-        }
         boolean wasActive = entity.getIsActive() != null && entity.getIsActive() == 1;
         profileMapper.deleteById(id);
         if (wasActive) {

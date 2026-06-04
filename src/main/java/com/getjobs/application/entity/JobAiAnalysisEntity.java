@@ -14,6 +14,9 @@ public class JobAiAnalysisEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    @TableField("profile_id")
+    private Long profileId;
+
     @TableField("platform")
     private String platform;
 

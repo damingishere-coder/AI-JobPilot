@@ -59,6 +59,9 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       const current = result.current as Profile | undefined || list.find((item: Profile) => item.isActive === 1) || list[0]
       if (current?.id) {
         setCurrentId(String(current.id))
+        onProfileChange?.(current)
+      } else {
+        setCurrentId('')
       }
     } catch (error) {
       console.error('加载档案失败:', error)

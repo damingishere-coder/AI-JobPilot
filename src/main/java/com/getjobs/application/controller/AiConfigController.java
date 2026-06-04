@@ -3,6 +3,7 @@ package com.getjobs.application.controller;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.service.AiService;
 import com.getjobs.application.service.JobAiAnalysisService;
+import com.getjobs.application.service.ProfileService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -30,6 +31,9 @@ public class AiConfigController {
     @Autowired
     private JobAiAnalysisService jobAiAnalysisService;
 
+    @Autowired
+    private ProfileService profileService;
+
     /**
      * 获取AI配置
      * @return AI配置信息
@@ -43,6 +47,8 @@ public class AiConfigController {
 
             response.put("success", true);
             response.put("data", aiEntity);
+            response.put("currentProfile", profileService.getCurrentProfile());
+            response.put("hasProfile", profileService.hasProfiles());
             response.put("message", "获取AI配置成功");
 
             return ResponseEntity.ok(response);
@@ -96,6 +102,8 @@ public class AiConfigController {
         Map<String, Object> response = new HashMap<>();
         response.put("success", true);
         response.put("data", jobAiAnalysisService.getResumeProfile());
+        response.put("currentProfile", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
         return ResponseEntity.ok(response);
     }
 
@@ -149,6 +157,8 @@ public class AiConfigController {
         Map<String, Object> response = new HashMap<>();
         response.put("success", true);
         response.put("data", jobAiAnalysisService.listPriorityCompanies());
+        response.put("currentProfile", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
         return ResponseEntity.ok(response);
     }
 

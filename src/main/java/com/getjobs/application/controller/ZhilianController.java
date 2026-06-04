@@ -52,6 +52,9 @@ public class ZhilianController {
     private ZhilianService zhilianService;
 
     @Autowired
+    private com.getjobs.application.service.ProfileService profileService;
+
+    @Autowired
     private PlaywrightManager playwrightManager;
 
     @Autowired
@@ -101,6 +104,8 @@ public class ZhilianController {
 
         result.put("config", config);
         result.put("options", options);
+        result.put("currentProfile", profileService.getCurrentProfile());
+        result.put("hasProfile", profileService.hasProfiles());
         return result;
     }
 
@@ -311,6 +316,7 @@ public class ZhilianController {
 
     @PostMapping("/chrome/jobs")
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        Long profileId = profileService.getCurrentProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int savedCount = 0;
         int queued = 0;
@@ -369,6 +375,7 @@ public class ZhilianController {
                 }
 
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("zhilian");
                 analysisRequest.setJobKey(saved.getJobId());
                 analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());

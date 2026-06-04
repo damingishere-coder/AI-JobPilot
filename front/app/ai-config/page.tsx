@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import PageHeader from '@/app/components/PageHeader'
-import ProfileSwitcher from '@/app/components/ProfileSwitcher'
+import ProfileSwitcher, { type Profile } from '@/app/components/ProfileSwitcher'
 
 const API_BASE = 'http://localhost:8888'
 const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
@@ -66,6 +66,8 @@ export default function AiConfigPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [enableAi, setEnableAi] = useState<number>(0)
+  const [currentProfile, setCurrentProfile] = useState<Profile | null>(null)
+  const [hasProfile, setHasProfile] = useState(false)
 
   useEffect(() => {
     reloadCurrentData()
@@ -107,9 +109,14 @@ export default function AiConfigPage() {
           introduce: result.data.introduce || '',
           prompt: result.data.prompt || '',
         })
+      } else {
+        setAiConfig({ introduce: '', prompt: '' })
       }
+      setCurrentProfile(result.currentProfile || null)
+      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
       console.error('加载AI配置失败:', error)
+      setAiConfig({ introduce: '', prompt: '' })
     }
   }
 
@@ -124,9 +131,16 @@ export default function AiConfigPage() {
           parseStatus: result.data.parseStatus,
           parseMessage: result.data.parseMessage,
         })
+      } else {
+        setResumeText('')
+        setResumeMeta(null)
       }
+      setCurrentProfile(result.currentProfile || null)
+      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
       console.error('加载简历失败:', error)
+      setResumeText('')
+      setResumeMeta(null)
     }
   }
 
@@ -136,9 +150,14 @@ export default function AiConfigPage() {
       const result = await response.json()
       if (result.success && Array.isArray(result.data)) {
         setPriorityCompanies(result.data.map((it: PriorityCompany) => it.companyName).filter(Boolean).join('\n'))
+      } else {
+        setPriorityCompanies('')
       }
+      setCurrentProfile(result.currentProfile || null)
+      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
       console.error('加载优先公司失败:', error)
+      setPriorityCompanies('')
     }
   }
 
@@ -152,6 +171,8 @@ export default function AiConfigPage() {
       const result = await response.json()
       setEnableAi(parseEnableAi(result?.config?.enableAi))
       setSayHi(result?.config?.sayHi || '')
+      setCurrentProfile(result?.currentProfile || null)
+      setHasProfile(Boolean(result?.hasProfile || result?.currentProfile))
     } catch (e) {
       console.error('加载Boss AI配置失败:', e)
     }
@@ -171,6 +192,10 @@ export default function AiConfigPage() {
   }
 
   const toggleEnableAi = async () => {
+    if (!hasProfile) {
+      alert('请先新建档案')
+      return
+    }
     try {
       const next = enableAi ? 0 : 1
       setEnableAi(next)
@@ -276,6 +301,10 @@ export default function AiConfigPage() {
   }
 
   const handleSave = async () => {
+    if (!hasProfile) {
+      alert('请先新建档案')
+      return
+    }
     setLoading(true)
     try {
       await saveEverything()
@@ -288,6 +317,10 @@ export default function AiConfigPage() {
   }
 
   const handleSubmitResumeAndGenerate = async () => {
+    if (!hasProfile) {
+      alert('请先新建档案')
+      return
+    }
     setGenerating(true)
     try {
       const savedResume = resumeFile || resumeDirty
@@ -373,7 +406,7 @@ export default function AiConfigPage() {
               size="sm"
               className="app-button-primary px-4"
               type="button"
-              disabled={isBusy}
+              disabled={!hasProfile || isBusy}
             >
               <BiSave className="mr-1" /> {loading ? '保存中...' : '保存配置'}
             </Button>
@@ -381,7 +414,24 @@ export default function AiConfigPage() {
         }
       />
 
-      <ProfileSwitcher beforeSwitch={beforeProfileSwitch} onProfileChange={reloadCurrentData} />
+      <ProfileSwitcher
+        beforeSwitch={beforeProfileSwitch}
+        onProfileChange={(profile) => {
+          setCurrentProfile(profile)
+          setHasProfile(true)
+          reloadCurrentData()
+        }}
+      />
+
+      {!hasProfile ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          请先在上方新建档案；没有档案时，下方简历、AI配置、平台参数和投递分析都不会写入。
+        </div>
+      ) : currentProfile ? (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          当前正在编辑：{currentProfile.name}
+        </div>
+      ) : null}
 
       {hasUnsavedChanges ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -407,6 +457,7 @@ export default function AiConfigPage() {
                   type="file"
                   accept=".pdf,.txt,.png,.jpg,.jpeg,.webp"
                   onChange={(e) => handleResumeFileChange(e.target.files?.[0] || null)}
+                  disabled={!hasProfile || isBusy}
                   className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:text-white"
                 />
                 <p className="text-xs text-muted-foreground">
@@ -434,6 +485,7 @@ export default function AiConfigPage() {
                     setResumeDirty(true)
                     markDirty()
                   }}
+                  disabled={!hasProfile || isBusy}
                   placeholder="上传 PDF/图片后会在这里显示解析结果；也可以直接粘贴完整简历文本"
                   className="min-h-[240px] resize-y"
                 />
@@ -443,7 +495,7 @@ export default function AiConfigPage() {
                 onClick={handleSubmitResumeAndGenerate}
                 className="app-button-success px-5"
                 type="button"
-                disabled={isBusy}
+                disabled={!hasProfile || isBusy}
               >
                 <BiBrain className="mr-1" /> {generating ? '提交并生成中...' : '提交简历并生成AI配置'}
               </Button>
@@ -465,6 +517,7 @@ export default function AiConfigPage() {
                 type="button"
                 aria-label="AI启用开关"
                 onClick={toggleEnableAi}
+                disabled={!hasProfile || isBusy}
                 className={`relative inline-flex h-7 w-14 rounded-full border border-white/30 shadow-[inset_0_1px_0_rgba(255,255,255,.25)] transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${enableAi ? 'bg-emerald-500/80 hover:bg-emerald-500' : 'bg-white/10 hover:bg-white/15'}`}
               >
                 <span
@@ -484,6 +537,7 @@ export default function AiConfigPage() {
                     setSayHi(e.target.value)
                     markDirty()
                   }}
+                  disabled={!hasProfile || isBusy}
                   placeholder="您好，我对这个岗位很感兴趣，希望可以进一步沟通，谢谢！"
                   className="min-h-[120px] resize-y"
                 />
@@ -514,6 +568,7 @@ export default function AiConfigPage() {
                     setAiConfig({ ...aiConfig, prompt: e.target.value })
                     markDirty()
                   }}
+                  disabled={!hasProfile || isBusy}
                   placeholder="用于生成Boss打招呼语，支持5个 %s 占位符"
                   className="min-h-[120px] resize-y"
                 />
@@ -530,6 +585,7 @@ export default function AiConfigPage() {
                     setAiConfig({ ...aiConfig, introduce: e.target.value })
                     markDirty()
                   }}
+                  disabled={!hasProfile || isBusy}
                   placeholder="提交简历并生成AI配置后，这里会保存AI提取的个人技能和经历摘要"
                   className="mt-3 min-h-[120px] resize-y"
                 />
@@ -550,6 +606,7 @@ export default function AiConfigPage() {
                 setPriorityCompanies(e.target.value)
                 markDirty()
               }}
+              disabled={!hasProfile || isBusy}
               placeholder={'OpenAI\n微软\n字节跳动'}
               className="min-h-[150px] resize-y"
             />

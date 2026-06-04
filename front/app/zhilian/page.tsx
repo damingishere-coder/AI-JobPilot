@@ -12,7 +12,7 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
-import ProfileSwitcher from '@/app/components/ProfileSwitcher'
+import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
 
 interface ZhilianConfig {
   id?: number
@@ -70,6 +70,8 @@ export default function ZhilianPage() {
   const [openClawRunning, setOpenClawRunning] = useState(false)
   const [openClawMessage, setOpenClawMessage] = useState('')
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+  const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
+  const [hasProfile, setHasProfile] = useState(false)
 
   const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '', searchJobLimit: 20 })
   const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
@@ -140,6 +142,22 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
+  }, [])
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchAllData()
+        setAnalysisRefreshSignal((value) => value + 1)
+      }
+    }
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -255,6 +273,8 @@ export default function ZhilianPage() {
     try {
       const res = await fetch('http://localhost:8888/api/zhilian/config')
       const data = await res.json()
+      setCurrentProfile(data.currentProfile || null)
+      setHasProfile(Boolean(data.hasProfile || data.currentProfile))
       if (data.config) {
         const normalized = { ...data.config }
         normalized.keywords = parseKeywordsFromDb(data.config.keywords)
@@ -325,6 +345,10 @@ export default function ZhilianPage() {
 
   const handleStartDelivery = async () => {
     try {
+      if (!hasProfile) {
+        appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
+        return
+      }
       if (!chromeBridgeReady) {
         appendProgressLog({ type: 'error', message: 'Chrome扩展未连接，请先在Chrome扩展页加载 chrome-extension 目录。' })
         return
@@ -383,6 +407,10 @@ export default function ZhilianPage() {
   }
 
   const handleOpenClawProbe = async () => {
+    if (!hasProfile) {
+      appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
+      return
+    }
     if (openClawRunning) return
     setOpenClawRunning(true)
     appendProgressLog({ type: 'info', message: 'OpenClaw智联实验采集已启动：只读取页面并提交现有AI分析入库接口，不会真实申请职位。' })
@@ -484,6 +512,11 @@ export default function ZhilianPage() {
   }
 
   const handleSaveConfig = async () => {
+    if (!hasProfile) {
+      setSaveResult({ success: false, message: '请先在简历配置页新建档案。' })
+      setShowSaveDialog(true)
+      return
+    }
     try {
       const payload = {
         ...config,
@@ -536,21 +569,27 @@ export default function ZhilianPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
+	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> 开始扫描
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={handleSaveConfig} size="sm" className="app-button-primary px-4">
+            <Button onClick={handleSaveConfig} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
         }
       />
 
-      <ProfileSwitcher onProfileChange={fetchAllData} />
+      <CurrentProfileBadge profile={currentProfile} onRefresh={fetchAllData} />
+
+      {!hasProfile ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          未新建档案时不能保存智联配置或扫描岗位。请到“简历配置”新建/切换档案。
+        </div>
+      ) : null}
 
 	      <Tabs defaultValue="config" className="w-full">
         <TabsList className="grid w-full grid-cols-2">
@@ -602,7 +641,7 @@ export default function ZhilianPage() {
                   <Button
                     onClick={handleOpenClawProbe}
                     size="sm"
-                    disabled={openClawRunning}
+                    disabled={!hasProfile || openClawRunning}
                     className="app-button-soft px-4"
                   >
                     <BiCodeAlt className="mr-1" /> {openClawRunning ? '实验采集中...' : 'OpenClaw实验采集'}
@@ -632,6 +671,7 @@ export default function ZhilianPage() {
                       placeholder="如：Java, 后端, Spring"
                       value={config.keywords || ''}
                       onChange={(e) => setConfig((c) => ({ ...c, keywords: e.target.value }))}
+                      disabled={!hasProfile}
                     />
                   </div>
                   <div className="space-y-2">
@@ -640,6 +680,7 @@ export default function ZhilianPage() {
                       value={config.cityCode || ''}
                       onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value }))}
                       placeholder="请选择城市"
+                      disabled={!hasProfile}
                     >
                       {options.city.map((o) => (
                         <option key={o.code} value={o.code}>{o.name}</option>
@@ -656,6 +697,7 @@ export default function ZhilianPage() {
                       placeholder="20"
                       value={config.searchJobLimit ?? 20}
                       onChange={(e) => setConfig((c) => ({ ...c, searchJobLimit: normalizeSearchJobLimit(e.target.value) }))}
+                      disabled={!hasProfile}
                     />
                   </div>
                   <div className="space-y-2">
@@ -664,6 +706,7 @@ export default function ZhilianPage() {
                       placeholder="如：12000, 20000 或 不限"
                       value={config.salary || ''}
                       onChange={(e) => setConfig((c) => ({ ...c, salary: e.target.value }))}
+                      disabled={!hasProfile}
                     />
                   </div>
                 </div>

@@ -54,6 +54,7 @@ public class BossController {
     private final ConfigService configService;
     private final ObjectProvider<Boss> bossProvider;
     private final com.getjobs.application.service.BossService bossService;
+    private final com.getjobs.application.service.ProfileService profileService;
     private final JobAiAnalysisService jobAiAnalysisService;
     private final ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
 
@@ -106,6 +107,7 @@ public class BossController {
 
     @PostMapping("/chrome/jobs")
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        Long profileId = profileService.getCurrentProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int insertedOrUpdated = 0;
         int queued = 0;
@@ -174,6 +176,7 @@ public class BossController {
 
                 saved = bossService.updateDeliveryStatusById(saved.getId(), "AI分析中");
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("boss");
                 analysisRequest.setJobKey(saved.getEncryptId());
                 analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());

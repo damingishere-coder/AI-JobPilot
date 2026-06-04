@@ -468,7 +468,7 @@ function isBossSearchUrl(url) {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
       && parsed.hostname.endsWith("zhipin.com")
-      && parsed.pathname === "/web/geek/job";
+      && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
   } catch {
     return false;
   }

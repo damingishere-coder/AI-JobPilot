@@ -125,9 +125,9 @@ public class ChromeJobAnalysisQueueService {
 
     private void markZhilianWaitingConfirm(JobAiAnalysisService.JobAnalysisRequest request) {
         if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
-            zhilianService.markWaitingConfirmByJobId(request.getJobKey());
+            zhilianService.markWaitingConfirmByJobId(request.getJobKey(), request.getProfileId());
         } else if (request.getJobName() != null && request.getCompanyName() != null) {
-            zhilianService.markWaitingConfirmByTitleAndCompany(request.getJobName(), request.getCompanyName());
+            zhilianService.markWaitingConfirmByTitleAndCompany(request.getJobName(), request.getCompanyName(), request.getProfileId());
         }
     }
 

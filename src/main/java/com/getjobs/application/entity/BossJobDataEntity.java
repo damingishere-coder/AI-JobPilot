@@ -17,6 +17,9 @@ public class BossJobDataEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    @TableField("profile_id")
+    private Long profileId;
+
     @TableField("encrypt_id")
     private String encryptId;
 

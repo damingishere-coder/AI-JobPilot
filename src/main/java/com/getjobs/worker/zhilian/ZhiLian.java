@@ -332,6 +332,7 @@ public class ZhiLian {
                     scanState.analyzed++;
                     sendProgress("正在AI分析：" + pj.jobTitle, scanState.analyzed, scanState.limit);
                     JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                    analysisRequest.setProfileId(zhilianService.getCurrentProfileId());
                     analysisRequest.setPlatform("zhilian");
                     analysisRequest.setKeyword(keyword);
                     analysisRequest.setJobKey(pj.jobId);

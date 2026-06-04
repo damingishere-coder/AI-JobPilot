@@ -78,6 +78,7 @@ public class JobAiAnalysisService {
                     "updated_at DATETIME)");
             stmt.execute("CREATE TABLE IF NOT EXISTS job_ai_analysis (" +
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                    "profile_id INTEGER, " +
                     "platform TEXT, " +
                     "job_key TEXT, " +
                     "company_name TEXT, " +
@@ -94,14 +95,17 @@ public class JobAiAnalysisService {
                     "created_at DATETIME, " +
                     "updated_at DATETIME)");
             addColumn(stmt, "job_ai_analysis", "scan_run_id", "TEXT");
+            addColumn(stmt, "job_ai_analysis", "profile_id", "INTEGER");
             addColumn(stmt, "resume_profile", "profile_id", "INTEGER");
             addColumn(stmt, "priority_company", "profile_id", "INTEGER");
+            addColumn(stmt, "boss_data", "profile_id", "INTEGER");
             addColumn(stmt, "boss_data", "ai_score", "INTEGER");
             addColumn(stmt, "boss_data", "ai_decision", "TEXT");
             addColumn(stmt, "boss_data", "ai_reason", "TEXT");
             addColumn(stmt, "boss_data", "priority_company", "INTEGER DEFAULT 0");
             addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
             addColumn(stmt, "zhilian_data", "job_description", "TEXT");
+            addColumn(stmt, "zhilian_data", "profile_id", "INTEGER");
             addColumn(stmt, "zhilian_data", "ai_score", "INTEGER");
             addColumn(stmt, "zhilian_data", "ai_decision", "TEXT");
             addColumn(stmt, "zhilian_data", "ai_reason", "TEXT");
@@ -144,8 +148,15 @@ public class JobAiAnalysisService {
     }
 
     public ResumeProfileEntity getResumeProfile() {
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return null;
+        return getResumeProfile(profileId);
+    }
+
+    public ResumeProfileEntity getResumeProfile(Long profileId) {
+        if (profileId == null) return null;
         QueryWrapper<ResumeProfileEntity> wrapper = new QueryWrapper<>();
-        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.eq("profile_id", profileId);
         wrapper.orderByDesc("updated_at").last("LIMIT 1");
         return resumeProfileMapper.selectOne(wrapper);
     }
@@ -209,16 +220,27 @@ public class JobAiAnalysisService {
     }
 
     public List<PriorityCompanyEntity> listPriorityCompanies() {
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        if (profileId == null) return List.of();
+        return listPriorityCompanies(profileId);
+    }
+
+    public List<PriorityCompanyEntity> listPriorityCompanies(Long profileId) {
+        if (profileId == null) return List.of();
         QueryWrapper<PriorityCompanyEntity> wrapper = new QueryWrapper<>();
-        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.eq("profile_id", profileId);
         wrapper.orderByAsc("id");
         return priorityCompanyMapper.selectList(wrapper);
     }
 
     public boolean isPriorityCompany(String companyName) {
+        return isPriorityCompany(companyName, profileService.getCurrentProfileIdOrNull());
+    }
+
+    public boolean isPriorityCompany(String companyName, Long profileId) {
         if (companyName == null || companyName.trim().isEmpty()) return false;
         String normalized = companyName.trim();
-        return listPriorityCompanies().stream()
+        return listPriorityCompanies(profileId).stream()
                 .filter(e -> e.getEnabled() == null || e.getEnabled() == 1)
                 .map(PriorityCompanyEntity::getCompanyName)
                 .filter(s -> s != null && !s.trim().isEmpty())
@@ -227,9 +249,11 @@ public class JobAiAnalysisService {
 
     public AnalysisResult analyzeJob(JobAnalysisRequest request) {
         if (request == null) throw new IllegalArgumentException("岗位分析请求不能为空");
-        boolean priority = isPriorityCompany(request.getCompanyName());
+        Long profileId = resolveAnalysisProfileId(request);
+        request.setProfileId(profileId);
+        boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
         int threshold = priority ? PRIORITY_APPLY_THRESHOLD : DEFAULT_APPLY_THRESHOLD;
-        ResumeProfileEntity resume = getResumeProfile();
+        ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
             AnalysisResult result = AnalysisResult.failed("AI分析失败", "请先在AI配置页保存简历内容");
@@ -442,6 +466,7 @@ public class JobAiAnalysisService {
     private void persistAnalysis(JobAnalysisRequest request, AnalysisResult result, String raw) {
         try {
             JobAiAnalysisEntity entity = new JobAiAnalysisEntity();
+            entity.setProfileId(request.getProfileId());
             entity.setPlatform(request.getPlatform());
             entity.setJobKey(request.getJobKey());
             entity.setCompanyName(request.getCompanyName());
@@ -486,6 +511,9 @@ public class JobAiAnalysisService {
             }
             update.setUpdatedAt(LocalDateTime.now());
             UpdateWrapper<BossJobDataEntity> uw = new UpdateWrapper<>();
+            if (request.getProfileId() != null) {
+                uw.eq("profile_id", request.getProfileId());
+            }
             if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
                 uw.eq("encrypt_id", request.getJobKey());
             } else {
@@ -512,6 +540,9 @@ public class JobAiAnalysisService {
             if (!alreadyDelivered && !result.shouldApply()) update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
             update.setUpdateTime(LocalDateTime.now());
             UpdateWrapper<ZhilianJobDataEntity> uw = new UpdateWrapper<>();
+            if (request.getProfileId() != null) {
+                uw.eq("profile_id", request.getProfileId());
+            }
             if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
                 uw.eq("job_id", request.getJobKey());
             } else {
@@ -526,6 +557,9 @@ public class JobAiAnalysisService {
 
     private BossJobDataEntity findBossJobForAnalysis(JobAnalysisRequest request) {
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) {
+            wrapper.eq("profile_id", request.getProfileId());
+        }
         if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("encrypt_id", request.getJobKey());
         } else {
@@ -540,6 +574,9 @@ public class JobAiAnalysisService {
 
     private ZhilianJobDataEntity findZhilianJobForAnalysis(JobAnalysisRequest request) {
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) {
+            wrapper.eq("profile_id", request.getProfileId());
+        }
         if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("job_id", request.getJobKey());
         } else {
@@ -571,6 +608,13 @@ public class JobAiAnalysisService {
         return s == null ? "" : s.replace("\"", "\\\"");
     }
 
+    private Long resolveAnalysisProfileId(JobAnalysisRequest request) {
+        if (request != null && request.getProfileId() != null) {
+            return request.getProfileId();
+        }
+        return profileService.getCurrentProfileId();
+    }
+
     @Data
     public static class PriorityCompanyRequest {
         private String companyName;
@@ -580,6 +624,7 @@ public class JobAiAnalysisService {
 
     @Data
     public static class JobAnalysisRequest {
+        private Long profileId;
         private String platform;
         private String jobKey;
         private String keyword;

@@ -2,6 +2,7 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.entity.BossOptionEntity;
+import com.getjobs.application.service.ProfileService;
 import com.getjobs.application.service.BossService;
 import com.getjobs.application.entity.BlacklistEntity;
 import org.springframework.web.bind.annotation.*;
@@ -23,9 +24,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 public class BossConfigController {
 
     private final BossService bossService;
+    private final ProfileService profileService;
 
-    public BossConfigController(BossService bossService) {
+    public BossConfigController(BossService bossService, ProfileService profileService) {
         this.bossService = bossService;
+        this.profileService = profileService;
     }
 
     /**
@@ -66,6 +69,8 @@ public class BossConfigController {
         result.put("config", config);
         result.put("options", options);
         result.put("blacklist", blacklist);
+        result.put("currentProfile", profileService.getCurrentProfile());
+        result.put("hasProfile", profileService.hasProfiles());
 
         return result;
     }

@@ -12,7 +12,7 @@
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const SEARCH_NAVIGATION_GRACE_MS = 60 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
-  const SEARCH_NAVIGATION_MAX_ATTEMPTS = 4;
+  const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
   const SEARCH_PARAM_KEYS = ["city", "jobType", "salary", "experience", "degree", "scale", "industry", "stage", "query"];
   const JOB_CARD_SELECTORS = [
     "li.job-card-box",
@@ -323,6 +323,14 @@
       }
 
       if (!isCurrentSearchPage(keyword, city, url)) {
+        if (navigationAttempts >= SEARCH_NAVIGATION_MAX_ATTEMPTS) {
+          const failedTaskState = {
+            ...searchTaskState,
+            navigationAttempts
+          };
+          task = skipSearchNavigationKeyword(failedTaskState, url, { resume: false });
+          continue;
+        }
         postProgress(task, "info", `Boss Chrome准备打开搜索页：${keyword}（第 ${nextNavigationAttempts} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
           ...baseMeta,
           stage: "searching",
@@ -1431,7 +1439,7 @@
         return Boolean(job?.url && isSameBossJobUrl(current.href, job.url)) || current.pathname.includes("/job_detail/");
       }
       if (phase === "searching" || phase === "collecting" || phase === "nextKeyword") {
-        if (current.pathname === "/web/geek/job") return true;
+        if (isBossSearchPath(current.pathname)) return true;
         return phase === "searching" && isSearchNavigationPending(task);
       }
 
@@ -1662,7 +1670,7 @@
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhipin.com")) return false;
-      if (current.pathname !== "/web/geek/job") return false;
+      if (!isBossSearchPath(current.pathname)) return false;
       if (expectedUrl) return isSameSearchUrl(current.href, expectedUrl);
       const query = current.searchParams.get("query") || "";
       const currentCity = current.searchParams.get("city") || "";
@@ -1677,7 +1685,7 @@
       const leftUrl = new URL(left, window.location.origin);
       const rightUrl = new URL(right, window.location.origin);
       return leftUrl.origin === rightUrl.origin
-        && leftUrl.pathname === rightUrl.pathname
+        && sameBossSearchPath(leftUrl.pathname, rightUrl.pathname)
         && SEARCH_PARAM_KEYS.every((key) => (leftUrl.searchParams.get(key) || "") === (rightUrl.searchParams.get(key) || ""));
     } catch {
       return String(left || "") === String(right || "");
@@ -1784,6 +1792,14 @@
     return `${keyword}::${city}`;
   }
 
+  function isBossSearchPath(pathname) {
+    return pathname === "/web/geek/job" || pathname === "/web/geek/jobs";
+  }
+
+  function sameBossSearchPath(left, right) {
+    if (isBossSearchPath(left) && isBossSearchPath(right)) return true;
+    return left === right;
+  }
 
   function openSearchPage(url, task) {
     const attempts = Number(task.navigationAttempts || 1);
@@ -1871,7 +1887,7 @@
     }, SEARCH_NAVIGATION_RETRY_MS);
   }
 
-  function skipSearchNavigationKeyword(task, url) {
+  function skipSearchNavigationKeyword(task, url, options = {}) {
     const keyword = task.expectedKeyword || scanKeywords(task)[Number(task.currentIndex || 0)] || "";
     const keywordTotal = scanKeywords(task).length;
     const nextTask = {
@@ -1913,22 +1929,25 @@
       navigationAttempts: Number(task.navigationAttempts || 0),
       totalSaved: Number(task.totalSaved || 0)
     });
-    runScan(nextTask).catch((error) => {
-      clearStoredScanTask();
-      writeScanStatus({
-        isRunning: false,
-        stopRequested: false,
-        stage: "error",
-        message: error.message || String(error),
-        runId: task.runId,
-        startedAt: task.startedAt,
-        updatedAt: Date.now()
+    if (options.resume !== false) {
+      runScan(nextTask).catch((error) => {
+        clearStoredScanTask();
+        writeScanStatus({
+          isRunning: false,
+          stopRequested: false,
+          stage: "error",
+          message: error.message || String(error),
+          runId: task.runId,
+          startedAt: task.startedAt,
+          updatedAt: Date.now()
+        });
+        postProgress(task, "error", error.message || String(error), {
+          operation: "scan",
+          stage: "error"
+        });
       });
-      postProgress(task, "error", error.message || String(error), {
-        operation: "scan",
-        stage: "error"
-      });
-    });
+    }
+    return nextTask;
   }
 
   function isSearchNavigationPending(task) {
