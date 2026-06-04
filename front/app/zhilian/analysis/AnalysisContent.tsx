@@ -1,13 +1,24 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiBriefcase, BiTrash, BiCheckCircle } from "react-icons/bi"
+import {
+  BiRefresh,
+  BiDownload,
+  BiBarChart,
+  BiLineChart,
+  BiBriefcase,
+  BiTrash,
+  BiCheckCircle,
+  BiChevronDown,
+  BiChevronUp,
+  BiLinkExternal,
+} from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
 type NameValue = { name: string; value: number }
@@ -280,9 +291,236 @@ function badgeClass(type: "status" | "delivery", text?: string) {
   return base
 }
 
+function OverviewMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold text-foreground" title={String(value)}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function OverviewSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description: string
+  children: ReactNode
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-white/20 bg-white/35 p-4 dark:bg-white/5">
+      <div className="mb-4">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{description}</div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function topName(items?: NameValue[]) {
+  return items && items.length > 0 ? items[0].name || "暂无数据" : "暂无数据"
+}
+
+function OverviewPanel({
+  stats,
+  items,
+  loading,
+}: {
+  stats: StatsResponse | null
+  items: ZhilianJob[]
+  loading: boolean
+}) {
+  const k = stats?.kpi
+  const statusCount = (name: string) => stats?.charts.byStatus.find((item) => item.name === name)?.value ?? 0
+  const total = k?.total ?? 0
+  const delivered = k?.delivered ?? 0
+  const waitingConfirm = k?.waitingConfirm ?? 0
+  const filtered = k?.filtered ?? 0
+  const failed = k?.failed ?? 0
+  const skipped = statusCount("已跳过")
+  const insufficient = statusCount("采集信息不足")
+  const remainder = Math.max(0, total - delivered - waitingConfirm - filtered - failed - skipped - insufficient)
+  const segments = [
+    { label: "已投递", value: delivered, className: "bg-emerald-500" },
+    { label: "待确认", value: waitingConfirm, className: "bg-cyan-500" },
+    { label: "采集不足", value: insufficient, className: "bg-orange-500" },
+    { label: "已过滤", value: filtered, className: "bg-pink-500" },
+    { label: "失败/跳过", value: failed + skipped, className: "bg-amber-500" },
+    { label: "其他", value: remainder, className: "bg-slate-400" },
+  ].filter((segment) => segment.value > 0)
+  const scoredItems = items.filter((item) => item.aiScore || item.aiScore === 0)
+  const aiAvgScore = scoredItems.length
+    ? Math.round((scoredItems.reduce((sum, item) => sum + (item.aiScore || 0), 0) / scoredItems.length) * 10) / 10
+    : "暂无数据"
+  const aiRejectCount = statusCount("AI不匹配")
+  const aiFailedCount = statusCount("AI分析失败")
+  const priorityCompanyCount = items.filter((item) => item.priorityCompany).length
+  const missingLinkCount = items.filter((item) => !item.jobLink?.trim()).length
+  const missingSalaryCount = items.filter((item) => !item.salary?.trim()).length
+  const latestCreatedAt = items[0]?.createTime ? formatDateOnly(items[0].createTime) : "暂无数据"
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 数据总览</CardTitle>
+        <CardDescription>基于当前智联岗位库生成的投递进度、AI 判断、岗位画像与数据质量概况</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading && !stats ? (
+          <div className="flex h-40 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+            加载中...
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
+            <OverviewSection title="投递进度" description="按当前状态查看岗位流转">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="总岗位" value={total} />
+                <OverviewMetric label="待确认" value={waitingConfirm} />
+                <OverviewMetric label="已投递" value={delivered} />
+                <OverviewMetric label="过滤/失败/跳过" value={filtered + failed + skipped} />
+              </div>
+              <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
+                {total > 0 ? (
+                  <div className="flex h-full w-full">
+                    {segments.map((segment) => (
+                      <div
+                        key={segment.label}
+                        className={segment.className}
+                        style={{ width: `${(segment.value / total) * 100}%` }}
+                        title={`${segment.label}: ${segment.value}`}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </OverviewSection>
+
+            <OverviewSection title="AI判断" description="查看 AI 分析后的通过与风险">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="平均AI分" value={aiAvgScore} />
+                <OverviewMetric label="AI通过" value={waitingConfirm + delivered} />
+                <OverviewMetric label="AI不匹配" value={aiRejectCount} />
+                <OverviewMetric label="优先公司" value={priorityCompanyCount} />
+              </div>
+              <div className="mt-4 text-xs text-muted-foreground">分析失败 {aiFailedCount} 个</div>
+            </OverviewSection>
+
+            <OverviewSection title="岗位画像" description="从城市、公司与要求看集中度">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="TOP城市" value={topName(stats?.charts.byCity)} />
+                <OverviewMetric label="TOP公司" value={topName(stats?.charts.byCompany)} />
+                <OverviewMetric label="主流经验" value={topName(stats?.charts.byExperience)} />
+                <OverviewMetric label="主流学历" value={topName(stats?.charts.byDegree)} />
+              </div>
+            </OverviewSection>
+
+            <OverviewSection title="数据质量" description="检查采集完整度与最近入库时间">
+              <div className="grid grid-cols-2 gap-4">
+                <OverviewMetric label="采集不足" value={insufficient} />
+                <OverviewMetric label="缺少链接" value={missingLinkCount} />
+                <OverviewMetric label="缺少薪资" value={missingSalaryCount} />
+                <OverviewMetric label="最近入库" value={latestCreatedAt} />
+              </div>
+            </OverviewSection>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function PendingJobCard({
+  job,
+  acting,
+  onConfirm,
+}: {
+  job: ZhilianJob
+  acting: boolean
+  onConfirm: () => void
+}) {
+  const jobTitle = job.jobTitle || "未命名岗位"
+  const company = job.companyName || "未知公司"
+  const riskText = job.aiReason?.trim() || (!job.jobLink ? "缺少原岗位链接，确认前建议核对岗位来源。" : "暂无明显风险点。")
+
+  return (
+    <Card className="border-cyan-200 bg-cyan-50/50 dark:border-cyan-900/60 dark:bg-cyan-950/10">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="line-clamp-2 text-base">{jobTitle}</CardTitle>
+            <CardDescription className="mt-1">{company}</CardDescription>
+          </div>
+          <div className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-cyan-700 shadow-sm dark:bg-cyan-950/60 dark:text-cyan-200">
+            AI {job.aiScore ?? "-"}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+          <div>
+            <div className="text-xs text-muted-foreground">薪资</div>
+            <div className="mt-1 font-medium">{job.salary || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">地点</div>
+            <div className="mt-1 font-medium">{job.location || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">经验</div>
+            <div className="mt-1 font-medium">{job.experience || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">学历</div>
+            <div className="mt-1 font-medium">{job.degree || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">状态</div>
+            <div className="mt-1 font-medium">{job.deliveryStatus || "-"}</div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-white/60 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-neutral-900/50">
+            <div className="mb-1 text-xs font-semibold text-muted-foreground">AI理由</div>
+            <div className="line-clamp-3 leading-6">{job.aiReason || "暂无AI理由"}</div>
+          </div>
+          <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
+            <div className="mb-1 text-xs font-semibold">风险点</div>
+            <div className="line-clamp-3 leading-6">{riskText}</div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {job.jobLink ? (
+            <Button asChild size="sm" variant="outline">
+              <a href={job.jobLink} target="_blank" rel="noreferrer">
+                <BiLinkExternal className="mr-1" /> 查看原岗位
+              </a>
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" disabled>
+              <BiLinkExternal className="mr-1" /> 无岗位链接
+            </Button>
+          )}
+          <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
+            <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
+  const [dashboardStats, setDashboardStats] = useState<StatsResponse | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
+  const [loadingDashboardStats, setLoadingDashboardStats] = useState(true)
 
   const [items, setItems] = useState<ZhilianJob[]>([])
   const [total, setTotal] = useState(0)
@@ -304,6 +542,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
+  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
   const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
 
 	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
@@ -354,6 +593,21 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
+  const loadDashboardStats = async () => {
+    try {
+      setLoadingDashboardStats(true)
+      const params = new URLSearchParams()
+      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
+      const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
+      const data: StatsResponse = await res.json()
+      setDashboardStats(data)
+    } catch (e) {
+      console.error("fetch zhilian dashboard stats failed", e)
+    } finally {
+      setLoadingDashboardStats(false)
+    }
+  }
+
   const clearAnalysisData = async () => {
     const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
     if (!ok) return
@@ -369,9 +623,11 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       setPage(1)
       setInputPage(1)
       setStats(null)
+      setDashboardStats(null)
       setComputedSalaryBuckets([])
       await loadList(1, size)
       await loadStats()
+      await loadDashboardStats()
       alert(data.message || "智联投递分析数据已清空。")
     } catch (error) {
       alert(error instanceof Error ? error.message : "清空失败：网络或服务异常。")
@@ -389,12 +645,14 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     if (!refreshSignal) return
     loadList(1, size)
     loadStats()
+    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal])
 
   useEffect(() => {
     loadList(1, size)
     loadStats()
+    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statuses.join(","), location, experience, degree, minK, maxK, keyword])
 
@@ -562,6 +820,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       alert(result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       alert("确认投递失败：网络或服务异常。")
     } finally {
@@ -593,6 +852,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       alert(result.message || "批量投递任务已结束。")
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       alert("批量投递失败：网络或服务异常。")
     } finally {
@@ -612,7 +872,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   }, [stats, statuses.join(","), location, experience, degree, minK, maxK, keyword])
 
   const kpiCards = useMemo(() => {
-    const k = stats?.kpi
+    const k = dashboardStats?.kpi
+    const statusCount = (name: string) => dashboardStats?.charts.byStatus.find((item) => item.name === name)?.value ?? 0
     const avgMonthlyKFromItems = (() => {
       if (!items?.length) return undefined
       const ks: number[] = []
@@ -626,11 +887,22 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     })()
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
-	      { title: "待确认", value: k?.waitingConfirm ?? 0 },
-	      { title: "未投递", value: k?.pending ?? 0 },
+      { title: "已投递", value: k?.delivered ?? 0 },
+      { title: "待确认", value: k?.waitingConfirm ?? 0 },
+      { title: "采集不足", value: statusCount("采集信息不足") },
+      { title: "未投递", value: k?.pending ?? 0 },
+      { title: "已过滤", value: k?.filtered ?? 0 },
+      { title: "投递失败", value: k?.failed ?? 0 },
       { title: "平均月薪(K)", value: (k?.avgMonthlyK ?? avgMonthlyKFromItems ?? 0) },
     ]
-  }, [stats, items])
+  }, [dashboardStats, items])
+
+  const pendingJobs = useMemo(() => (
+    items.filter((item) => item.deliveryStatus === "待确认")
+  ), [items])
+  const visiblePendingJobs = useMemo(() => (
+    pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
+  ), [pendingCardsExpanded, pendingJobs])
 
   return (
     <div className="space-y-8">
@@ -647,16 +919,19 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         />
       )}
 
-      {/* KPI 卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {kpiCards.map((c, idx) => (
-          <Card key={idx} className="border">
-            <CardHeader>
-              <CardTitle className="text-sm">{c.title}</CardTitle>
-              <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
-            </CardHeader>
-          </Card>
-        ))}
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
+          {kpiCards.map((c, idx) => (
+            <Card key={idx} className="border">
+              <CardHeader>
+                <CardTitle className="text-sm">{c.title}</CardTitle>
+                <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+
+        <OverviewPanel stats={dashboardStats} items={items} loading={loadingDashboardStats} />
       </div>
 
       {/* 操作栏 */}
@@ -728,6 +1003,49 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           </div>
         </CardContent>
       </Card>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <BiCheckCircle className="text-cyan-600" />
+              待确认岗位卡片
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">优先处理待确认投递，确认前可查看原岗位和 AI 理由。</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingJobs.length > 2 && (
+              <Button size="sm" variant="outline" onClick={() => setPendingCardsExpanded((expanded) => !expanded)}>
+                {pendingCardsExpanded ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
+                {pendingCardsExpanded ? "收起，只留 2 个" : `展开全部 ${pendingJobs.length} 个`}
+              </Button>
+            )}
+            <Button size="sm" variant="outline" onClick={() => setStatuses(["待确认"])}>
+              <BiBarChart className="mr-1" /> 只看待确认
+            </Button>
+            <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+              <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
+            </Button>
+          </div>
+        </div>
+
+        {pendingJobs.length === 0 ? (
+          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+            当前筛选下没有待确认岗位。
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {visiblePendingJobs.map((job) => (
+              <PendingJobCard
+                key={job.id || job.jobId}
+                job={job}
+                acting={actingJobId === job.id}
+                onConfirm={() => handleConfirmJob(job)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* 图表区 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

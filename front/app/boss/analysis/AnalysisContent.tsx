@@ -576,7 +576,8 @@ function PendingJobCard({
 
 export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
-  const [loadingStats, setLoadingStats] = useState(true)
+  const [dashboardStats, setDashboardStats] = useState<StatsResponse | null>(null)
+  const [loadingDashboardStats, setLoadingDashboardStats] = useState(true)
 
   const [items, setItems] = useState<BossJob[]>([])
   const [total, setTotal] = useState(0)
@@ -590,6 +591,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [draftFilters, setDraftFilters] = useState<FilterState>(DEFAULT_PENDING_FILTERS)
   const [filtersOpen, setFiltersOpen] = useState(true)
   const [analyticsOpen, setAnalyticsOpen] = useState(false)
+  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
   const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
@@ -636,11 +638,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
     }
   }
-
-  useEffect(() => {
-    // 初次加载统计（应用当前筛选条件）
-    loadStats()
-  }, [])
 
   // 当实际页码/每页条数变化时，同步到输入框
   useEffect(() => {
@@ -717,6 +714,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const pendingJobs = useMemo(() => (
     items.filter((item) => item.deliveryStatus === "待确认")
   ), [items])
+  const visiblePendingJobs = useMemo(() => (
+    pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
+  ), [pendingCardsExpanded, pendingJobs])
 
   const riskTextOf = (job: BossJob) => {
     const reason = (job.aiReason || "").trim()
@@ -779,14 +779,26 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     const params = buildFilterParams()
 
     try {
-      setLoadingStats(true)
       const res = await fetch(`${API_BASE}/api/boss/stats?${params.toString()}`)
       const data: StatsResponse = await res.json()
       setStats(data)
     } catch (e) {
       console.error("fetch stats failed", e)
+    }
+  }
+
+  const loadDashboardStats = async () => {
+    try {
+      setLoadingDashboardStats(true)
+      const params = new URLSearchParams()
+      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
+      const res = await fetch(`${API_BASE}/api/boss/stats?${params.toString()}`)
+      const data: StatsResponse = await res.json()
+      setDashboardStats(data)
+    } catch (e) {
+      console.error("fetch dashboard stats failed", e)
     } finally {
-      setLoadingStats(false)
+      setLoadingDashboardStats(false)
     }
   }
 
@@ -799,12 +811,14 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     if (!refreshSignal) return
     loadList(1, size)
     loadStats()
+    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal])
 
   useEffect(() => {
     loadList(1, size)
     loadStats()
+    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters])
 
@@ -816,6 +830,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       console.log("reload", data)
       await loadList(1, size)
       await loadStats()
+      await loadDashboardStats()
     } catch (e) {
       console.error("reload failed", e)
     } finally {
@@ -838,8 +853,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       setPage(1)
       setInputPage(1)
       setStats(null)
+      setDashboardStats(null)
       await loadList(1, size)
       await loadStats()
+      await loadDashboardStats()
       openTextDialog("清空投递分析", data.message || "Boss投递分析数据已清空。")
     } catch (error) {
       openTextDialog("清空投递分析", error instanceof Error ? error.message : "清空失败：网络或服务异常。")
@@ -953,6 +970,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       openTextDialog("确认投递", result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       openTextDialog("待确认发送", "确认失败：网络或服务异常。")
     } finally {
@@ -995,6 +1013,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       openTextDialog("批量投递", result.message || "批量投递任务已结束。")
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       openTextDialog("批量投递", "批量投递失败：网络或服务异常。")
     } finally {
@@ -1026,6 +1045,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       openTextDialog("AI推荐一键投递", result.message || "AI推荐批量投递任务已结束。")
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       openTextDialog("AI推荐一键投递", "AI推荐批量投递失败：网络或服务异常。")
     } finally {
@@ -1043,6 +1063,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       await loadList(page, size)
       await loadStats()
+      await loadDashboardStats()
     } catch {
       openTextDialog("跳过岗位", "跳过失败：网络或服务异常。")
     } finally {
@@ -1079,7 +1100,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   }
 
   const kpiCards = useMemo(() => {
-    const k = stats?.kpi
+    const k = dashboardStats?.kpi
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
       { title: "已投递", value: k?.delivered ?? 0 },
@@ -1090,7 +1111,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       { title: "投递失败", value: k?.failed ?? 0 },
       { title: "平均月薪(K)", value: k?.avgMonthlyK ?? 0 },
     ]
-  }, [stats])
+  }, [dashboardStats])
 
   return (
     <div className="space-y-8">
@@ -1106,6 +1127,21 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           }
         />
       )}
+
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
+          {kpiCards.map((c, idx) => (
+            <Card key={idx} className="border">
+              <CardHeader>
+                <CardTitle className="text-sm">{c.title}</CardTitle>
+                <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+
+        <OverviewPanel stats={dashboardStats} loading={loadingDashboardStats} />
+      </div>
 
       {/* 列表 */}
       <Card>
@@ -1286,6 +1322,12 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                 <div className="mt-1 text-xs text-muted-foreground">优先处理待确认投递，确认前可查看原岗位、跳过或加入公司黑名单。</div>
               </div>
               <div className="flex flex-wrap gap-2">
+                {pendingJobs.length > 2 && (
+                  <Button size="sm" variant="outline" onClick={() => setPendingCardsExpanded((expanded) => !expanded)}>
+                    {pendingCardsExpanded ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
+                    {pendingCardsExpanded ? "收起，只留 2 个" : `展开全部 ${pendingJobs.length} 个`}
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={resetToPendingFilters}>
                   <BiFilterAlt className="mr-1" /> 只看待确认
                 </Button>
@@ -1303,7 +1345,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                {pendingJobs.map((job) => (
+                {visiblePendingJobs.map((job) => (
                   <PendingJobCard
                     key={job.id}
                     job={job}
@@ -1540,19 +1582,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         </CardHeader>
         {analyticsOpen && (
           <CardContent className="space-y-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
-              {kpiCards.map((c, idx) => (
-                <Card key={idx} className="border">
-                  <CardHeader>
-                    <CardTitle className="text-sm">{c.title}</CardTitle>
-                    <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
-                  </CardHeader>
-                </Card>
-              ))}
-            </div>
-
-            <OverviewPanel stats={stats} loading={loadingStats} />
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Card>
                 <CardHeader className="p-4 pb-2">
