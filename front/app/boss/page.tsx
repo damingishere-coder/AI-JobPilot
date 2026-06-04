@@ -4,13 +4,12 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
 import { createPortal } from 'react-dom'
-import { BiBriefcase, BiSave, BiSearch, BiMap, BiMoney, BiBuilding, BiTime, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
+import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
@@ -65,6 +64,7 @@ interface BlacklistItem {
 }
 
 type DialogKind = 'save' | 'platform'
+type BossStep = 'config' | 'scan' | 'confirm'
 
 interface ProgressLog {
   id: number
@@ -72,6 +72,12 @@ interface ProgressLog {
   message: string
   timestamp?: number
 }
+
+const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
+  { key: 'config', title: '配置条件', description: '关键词与筛选条件' },
+  { key: 'scan', title: '扫描岗位', description: '实时日志与采集进度' },
+  { key: 'confirm', title: '确认投递', description: '待确认岗位处理' },
+]
 
 const SEARCH_JOB_LIMIT_PRESETS = [10, 20, 30, 50, 100, 200]
 const SEARCH_JOB_LIMIT_CUSTOM_VALUE = 'custom'
@@ -154,6 +160,10 @@ export default function BossPage() {
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
+  const [activeStep, setActiveStep] = useState<BossStep>('config')
+  const [hasScanResult, setHasScanResult] = useState(false)
+  const [logSpotlight, setLogSpotlight] = useState(false)
+  const logSectionRef = useRef<HTMLDivElement | null>(null)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
     const parsed = Number(value)
@@ -181,6 +191,20 @@ export default function BossPage() {
       { ...entry, timestamp, id: timestamp + Math.random() },
       ...prev,
     ].slice(0, 80))
+  }, [])
+
+  const focusLogSection = useCallback(() => {
+    setActiveStep('scan')
+    setLogSpotlight(true)
+    window.setTimeout(() => {
+      logSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 80)
+    window.setTimeout(() => setLogSpotlight(false), 2200)
+  }, [])
+
+  const guideToConfirmStep = useCallback(() => {
+    setHasScanResult(true)
+    setAnalysisRefreshSignal((value) => value + 1)
   }, [])
 
   useEffect(() => {
@@ -295,7 +319,7 @@ export default function BossPage() {
                 timestamp: data.timestamp,
               })
               if (shouldRefreshAnalysisFromProgress(data)) {
-                setAnalysisRefreshSignal((value) => value + 1)
+                guideToConfirmStep()
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
@@ -310,7 +334,7 @@ export default function BossPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog])
+  }, [appendProgressLog, guideToConfirmStep])
 
   useEffect(() => {
     return subscribeChromeBridgeEvents((event) => {
@@ -324,7 +348,7 @@ export default function BossPage() {
       })
 
       if (shouldRefreshAnalysisFromProgress(payload)) {
-        setAnalysisRefreshSignal((value) => value + 1)
+        guideToConfirmStep()
       }
       if (isTerminalScanPayload(payload)) {
         setIsDelivering(false)
@@ -332,7 +356,7 @@ export default function BossPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog])
+  }, [appendProgressLog, guideToConfirmStep])
 
   const checkChromeBridge = async () => {
     try {
@@ -699,6 +723,8 @@ export default function BossPage() {
       }
       setIsDelivering(true)
       setIsStopping(false)
+      setHasScanResult(false)
+      focusLogSection()
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
@@ -879,14 +905,19 @@ export default function BossPage() {
         </div>
       ) : null}
 
-      <Tabs defaultValue="config" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="config">平台配置</TabsTrigger>
-          <TabsTrigger value="analytics">投递分析</TabsTrigger>
-        </TabsList>
+      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering} />
 
-	          <TabsContent value="config" className="space-y-6 mt-6">
-	          <ProgressLogCard logs={progressLogs} isRunning={isDelivering} isStopping={isStopping} onStop={handleStopDelivery} onClear={() => setProgressLogs([])} />
+      {hasScanResult && activeStep !== 'confirm' ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-900/60 dark:bg-cyan-950/30 dark:text-cyan-100">
+          <span>扫描结果已更新，待确认岗位可以进入确认投递区处理。</span>
+          <Button size="sm" onClick={() => setActiveStep('confirm')} className="app-button-primary px-4">
+            <BiBriefcase className="mr-1" /> 进入确认投递
+          </Button>
+        </div>
+      ) : null}
+
+      {activeStep === 'config' ? (
+        <div className="space-y-6">
 
 	          {/* 平台说明 */}
 	          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
@@ -1278,12 +1309,47 @@ export default function BossPage() {
         </Card>
 
         
-        </TabsContent>
+        </div>
+      ) : null}
 
-        <TabsContent value="analytics" className="space-y-6 mt-6">
+      {activeStep === 'scan' ? (
+        <div ref={logSectionRef} className="scroll-mt-6 space-y-6">
+          <ProgressLogCard
+            logs={progressLogs}
+            isRunning={isDelivering}
+            isStopping={isStopping}
+            spotlight={logSpotlight}
+            onStop={handleStopDelivery}
+            onClear={() => setProgressLogs([])}
+          />
+
+          {hasScanResult ? (
+            <Card className="border-cyan-200 bg-cyan-50/70 dark:border-cyan-900/60 dark:bg-cyan-950/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <BiBriefcase className="text-cyan-600" />
+                  待确认列表已更新
+                </CardTitle>
+                <CardDescription>已生成或刷新待确认岗位，下一步可以统一确认、跳过或拉黑。</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                <Button onClick={() => setActiveStep('confirm')} className="app-button-primary px-4">
+                  <BiBriefcase className="mr-1" /> 查看待确认岗位
+                </Button>
+                <Button variant="outline" onClick={() => setAnalysisRefreshSignal((value) => value + 1)} className="rounded-lg px-4">
+                  <BiBarChart className="mr-1" /> 刷新结果
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
+
+      {activeStep === 'confirm' ? (
+        <div className="space-y-6">
           <AnalysisContent refreshSignal={analysisRefreshSignal} />
-        </TabsContent>
-      </Tabs>
+        </div>
+      ) : null}
 
       {/* 统计卡片已移除 */}
       {/* 退出确认弹框 */}
@@ -1382,16 +1448,83 @@ export default function BossPage() {
   )
 }
 
+function BossStepBar({
+  activeStep,
+  onChange,
+  hasScanResult,
+  isRunning,
+}: {
+  activeStep: BossStep
+  onChange: (step: BossStep) => void
+  hasScanResult: boolean
+  isRunning: boolean
+}) {
+  const activeIndex = BOSS_DELIVERY_STEPS.findIndex((step) => step.key === activeStep)
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {BOSS_DELIVERY_STEPS.map((step, index) => {
+            const isActive = step.key === activeStep
+            const isComplete = index < activeIndex || (step.key === 'scan' && hasScanResult)
+            const canOpen = step.key !== 'confirm' || hasScanResult || activeStep === 'confirm'
+            return (
+              <button
+                key={step.key}
+                type="button"
+                onClick={() => canOpen && onChange(step.key)}
+                disabled={!canOpen}
+                className={`flex min-h-20 items-center gap-3 rounded-lg border p-4 text-left transition-colors ${
+                  isActive
+                    ? 'border-teal-500 bg-teal-50 text-teal-900 shadow-sm dark:border-teal-700 dark:bg-teal-950/30 dark:text-teal-100'
+                    : isComplete
+                      ? 'border-cyan-200 bg-cyan-50/60 text-cyan-900 hover:border-cyan-300 dark:border-cyan-900/60 dark:bg-cyan-950/20 dark:text-cyan-100'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-neutral-900 dark:text-slate-200'
+                } ${!canOpen ? 'cursor-not-allowed opacity-60' : ''}`}
+              >
+                <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                  isActive
+                    ? 'bg-teal-600 text-white'
+                    : isComplete
+                      ? 'bg-cyan-600 text-white'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                }`}>
+                  {index + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2 text-sm font-semibold">
+                    {step.title}
+                    {step.key === 'scan' && isRunning ? (
+                      <span className="rounded-full bg-teal-100 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-900/40 dark:text-teal-200">扫描中</span>
+                    ) : null}
+                    {step.key === 'confirm' && hasScanResult ? (
+                      <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-xs text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200">可处理</span>
+                    ) : null}
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">{step.description}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function ProgressLogCard({
   logs,
   isRunning,
   isStopping,
+  spotlight = false,
   onStop,
   onClear,
 }: {
   logs: ProgressLog[]
   isRunning: boolean
   isStopping: boolean
+  spotlight?: boolean
   onStop: () => void
   onClear: () => void
 }) {
@@ -1408,7 +1541,9 @@ function ProgressLogCard({
   }
 
   return (
-    <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+    <Card className={`animate-in fade-in slide-in-from-bottom-5 duration-700 transition-all ${
+      spotlight ? 'border-teal-400 shadow-[0_0_0_4px_rgba(20,184,166,0.18)]' : ''
+    }`}>
       <CardHeader className="flex flex-row items-center justify-between gap-4">
         <div>
           <CardTitle className="flex items-center gap-2">
