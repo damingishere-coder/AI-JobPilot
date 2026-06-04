@@ -23,6 +23,7 @@ import {
   BiLinkExternal,
   BiTrash,
   BiCheckCircle,
+  BiBlock,
 } from "react-icons/bi"
 
 type NameValue = { name: string; value: number }
@@ -141,6 +142,7 @@ const EMPTY_FILTERS: FilterState = {
   keyword: "",
   filterHeadhunter: false,
 }
+const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
 
 // 通用分类颜色（用于柱状/饼状图每个分类不同颜色）
 const CATEGORY_COLORS = [
@@ -443,6 +445,111 @@ function OverviewPanel({ stats, loading }: { stats: StatsResponse | null; loadin
   )
 }
 
+function PendingJobCard({
+  job,
+  acting,
+  blacklisting,
+  riskText,
+  onOpenText,
+  onConfirm,
+  onSkip,
+  onBlacklist,
+}: {
+  job: BossJob
+  acting: boolean
+  blacklisting: boolean
+  riskText: string
+  onOpenText: (title: string, content?: string) => void
+  onConfirm: () => void
+  onSkip: () => void
+  onBlacklist: () => void
+}) {
+  const jobTitle = job.jobName || "未命名岗位"
+  const company = job.companyName || "未知公司"
+
+  return (
+    <Card className="border-cyan-200 bg-cyan-50/50 dark:border-cyan-900/60 dark:bg-cyan-950/10">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="line-clamp-2 text-base">{jobTitle}</CardTitle>
+            <CardDescription className="mt-1">{company}</CardDescription>
+          </div>
+          <div className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-cyan-700 shadow-sm dark:bg-cyan-950/60 dark:text-cyan-200">
+            AI {job.aiScore ?? "-"}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+          <div>
+            <div className="text-xs text-muted-foreground">薪资</div>
+            <div className="mt-1 font-medium">{job.salary || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">地点</div>
+            <div className="mt-1 font-medium">{job.location || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">经验</div>
+            <div className="mt-1 font-medium">{job.experience || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">学历</div>
+            <div className="mt-1 font-medium">{job.degree || "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">状态</div>
+            <div className="mt-1 font-medium">{job.deliveryStatus || "-"}</div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            className="rounded-lg border border-white/60 bg-white/70 p-3 text-left text-sm dark:border-white/10 dark:bg-neutral-900/50"
+            onClick={() => onOpenText("AI理由", job.aiReason)}
+          >
+            <div className="mb-1 text-xs font-semibold text-muted-foreground">AI理由</div>
+            <div className="line-clamp-3 leading-6">{job.aiReason || "暂无AI理由"}</div>
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-left text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100"
+            onClick={() => onOpenText("风险点", riskText)}
+          >
+            <div className="mb-1 text-xs font-semibold">风险点</div>
+            <div className="line-clamp-3 leading-6">{riskText}</div>
+          </button>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {job.jobUrl ? (
+            <Button asChild size="sm" variant="outline">
+              <a href={job.jobUrl} target="_blank" rel="noreferrer">
+                <BiLinkExternal className="mr-1" /> 查看原岗位
+              </a>
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" disabled>
+              <BiLinkExternal className="mr-1" /> 无岗位链接
+            </Button>
+          )}
+          <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
+            <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onSkip}>
+            <BiX className="mr-1" /> 跳过
+          </Button>
+          <Button size="sm" variant="destructive" disabled={blacklisting} onClick={onBlacklist}>
+            <BiBlock className="mr-1" /> {blacklisting ? "加入中..." : "加入黑名单"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
@@ -455,9 +562,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [inputPage, setInputPage] = useState<number | string>(1)
   const [inputSize, setInputSize] = useState<number | string>(20)
 
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS)
-  const [draftFilters, setDraftFilters] = useState<FilterState>(EMPTY_FILTERS)
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_PENDING_FILTERS)
+  const [draftFilters, setDraftFilters] = useState<FilterState>(DEFAULT_PENDING_FILTERS)
   const [filtersOpen, setFiltersOpen] = useState(true)
+  const [analyticsOpen, setAnalyticsOpen] = useState(false)
   const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
@@ -470,6 +578,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [textDialogContent, setTextDialogContent] = useState<string>("")
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
   const [actingJobId, setActingJobId] = useState<number | null>(null)
+  const [blacklistingJobId, setBlacklistingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [actingAiBatch, setActingAiBatch] = useState(false)
   const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
@@ -574,6 +683,45 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const resetFilters = () => {
     setDraftFilters(EMPTY_FILTERS)
     setFilters(EMPTY_FILTERS)
+  }
+
+  const resetToPendingFilters = () => {
+    setDraftFilters(DEFAULT_PENDING_FILTERS)
+    setFilters(DEFAULT_PENDING_FILTERS)
+  }
+
+  const pendingJobs = useMemo(() => (
+    items.filter((item) => item.deliveryStatus === "待确认")
+  ), [items])
+
+  const riskTextOf = (job: BossJob) => {
+    const reason = (job.aiReason || "").trim()
+    if (reason) return reason
+    if (!job.jobUrl) return "缺少原岗位链接，确认前建议核对岗位来源。"
+    if (!job.aiScore && job.aiScore !== 0) return "暂无AI分数，确认前建议人工复核。"
+    return "暂无明显风险点。"
+  }
+
+  const handleBlacklistCompany = async (job: BossJob) => {
+    const value = (job.companyName || "").trim()
+    if (!value) {
+      openTextDialog("加入黑名单", "该岗位缺少公司名称，无法加入公司黑名单。")
+      return
+    }
+    try {
+      setBlacklistingJobId(job.id)
+      const res = await fetch(`${API_BASE}/api/boss/config/blacklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "company", value }),
+      })
+      if (!res.ok) throw new Error("加入黑名单失败")
+      openTextDialog("加入黑名单", `${value} 已加入公司黑名单。`)
+    } catch (error) {
+      openTextDialog("加入黑名单", error instanceof Error ? error.message : "加入黑名单失败：网络或服务异常。")
+    } finally {
+      setBlacklistingJobId(null)
+    }
   }
 
   const loadList = async (toPage = page, toSize = size) => {
@@ -931,118 +1079,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         />
       )}
 
-      {/* KPI 卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
-        {kpiCards.map((c, idx) => (
-          <Card key={idx} className="border">
-            <CardHeader>
-              <CardTitle className="text-sm">{c.title}</CardTitle>
-              <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
-            </CardHeader>
-          </Card>
-        ))}
-      </div>
-
-      <OverviewPanel stats={stats} loading={loadingStats} />
-
-      {/* 图表区：6个图表（已移除每日趋势与HR活跃度） */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiPieChart /> 投递状态分布</CardTitle>
-            <CardDescription>已投递/未投递/已过滤/失败等占比</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas
-                type="pie"
-                labels={stats.charts.byStatus.map((x) => x.name)}
-                data={stats.charts.byStatus.map((x) => x.value)}
-              />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">
-                加载中...
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 行业TOP10</CardTitle>
-            <CardDescription>岗位按行业聚合</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas
-                type="bar"
-                labels={stats.charts.byIndustry.map((x) => x.name)}
-                data={stats.charts.byIndustry.map((x) => x.value)}
-                colors={CATEGORY_COLORS}
-              />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 公司岗位数TOP10</CardTitle>
-            <CardDescription>按公司名称聚合</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byCompany.map((x) => x.name)} data={stats.charts.byCompany.map((x) => x.value)} colors={CATEGORY_COLORS} />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 经验分布</CardTitle>
-            <CardDescription>不同经验要求的岗位数</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byExperience.map((x) => x.name)} data={stats.charts.byExperience.map((x) => x.value)} colors={CATEGORY_COLORS} />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 学历分布</CardTitle>
-            <CardDescription>不同学历要求的岗位数</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byDegree.map((x) => x.name)} data={stats.charts.byDegree.map((x) => x.value)} colors={CATEGORY_COLORS} />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle>
-            <CardDescription>基于中位数K的桶聚合</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            {stats ? (
-              <ChartCanvas type="line" labels={stats.charts.salaryBuckets.map((x) => x.bucket)} data={stats.charts.salaryBuckets.map((x) => x.value)} color="#ef4444" />
-            ) : (
-              <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
       {/* 列表 */}
       <Card>
         <CardHeader>
@@ -1208,6 +1244,50 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                     </Button>
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mb-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <BiCheckCircle className="text-cyan-600" />
+                  待确认岗位卡片
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">优先处理待确认投递，确认前可查看原岗位、跳过或加入公司黑名单。</div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={resetToPendingFilters}>
+                  <BiFilterAlt className="mr-1" /> 只看待确认
+                </Button>
+                <Button size="sm" variant="success" onClick={handleConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch}>
+                  <BiBriefcase className="mr-1" /> {actingAiBatch ? "投递中..." : "一键投递AI推荐"}
+                </Button>
+              </div>
+            </div>
+
+            {loadingList && items.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">待确认岗位加载中...</div>
+            ) : pendingJobs.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                当前筛选下没有待确认岗位。
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                {pendingJobs.map((job) => (
+                  <PendingJobCard
+                    key={job.id}
+                    job={job}
+                    acting={actingJobId === job.id}
+                    blacklisting={blacklistingJobId === job.id}
+                    riskText={riskTextOf(job)}
+                    onOpenText={openTextDialog}
+                    onConfirm={() => handleConfirmJob(job)}
+                    onSkip={() => handleSkipJob(job)}
+                    onBlacklist={() => handleBlacklistCompany(job)}
+                  />
+                ))}
               </div>
             )}
           </div>
@@ -1413,6 +1493,132 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             <div className="ml-auto text-sm text-muted-foreground">共 {total} 条</div>
           </div>
       </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 统计分析</CardTitle>
+            <CardDescription>岗位库概览和图表保留在下方，默认收起，不影响待确认投递。</CardDescription>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setAnalyticsOpen((open) => !open)}>
+            {analyticsOpen ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
+            {analyticsOpen ? "收起统计" : "展开统计"}
+          </Button>
+        </CardHeader>
+        {analyticsOpen && (
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+              {kpiCards.map((c, idx) => (
+                <Card key={idx} className="border">
+                  <CardHeader>
+                    <CardTitle className="text-sm">{c.title}</CardTitle>
+                    <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
+                  </CardHeader>
+                </Card>
+              ))}
+            </div>
+
+            <OverviewPanel stats={stats} loading={loadingStats} />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiPieChart /> 投递状态分布</CardTitle>
+                  <CardDescription>已投递/未投递/已过滤/失败等占比</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas
+                      type="pie"
+                      labels={stats.charts.byStatus.map((x) => x.name)}
+                      data={stats.charts.byStatus.map((x) => x.value)}
+                    />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">
+                      加载中...
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 行业TOP10</CardTitle>
+                  <CardDescription>岗位按行业聚合</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas
+                      type="bar"
+                      labels={stats.charts.byIndustry.map((x) => x.name)}
+                      data={stats.charts.byIndustry.map((x) => x.value)}
+                      colors={CATEGORY_COLORS}
+                    />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 公司岗位数TOP10</CardTitle>
+                  <CardDescription>按公司名称聚合</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas type="bar" labels={stats.charts.byCompany.map((x) => x.name)} data={stats.charts.byCompany.map((x) => x.value)} colors={CATEGORY_COLORS} />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 经验分布</CardTitle>
+                  <CardDescription>不同经验要求的岗位数</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas type="bar" labels={stats.charts.byExperience.map((x) => x.name)} data={stats.charts.byExperience.map((x) => x.value)} colors={CATEGORY_COLORS} />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 学历分布</CardTitle>
+                  <CardDescription>不同学历要求的岗位数</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas type="bar" labels={stats.charts.byDegree.map((x) => x.name)} data={stats.charts.byDegree.map((x) => x.value)} colors={CATEGORY_COLORS} />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle>
+                  <CardDescription>基于中位数K的桶聚合</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  {stats ? (
+                    <ChartCanvas type="line" labels={stats.charts.salaryBuckets.map((x) => x.bucket)} data={stats.charts.salaryBuckets.map((x) => x.value)} color="#ef4444" />
+                  ) : (
+                    <div className="h-44 md:h-48 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       {/* 查看全文弹框 */}
