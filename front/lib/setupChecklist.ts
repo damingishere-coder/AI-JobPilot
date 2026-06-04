@@ -1,4 +1,4 @@
-import { getChromeBridgeStatus } from "@/lib/chromeBridge"
+import { getChromeBridgeStatus, sendChromeBridgeMessage } from "@/lib/chromeBridge"
 
 const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 
@@ -28,6 +28,10 @@ export type SetupChecklistResult = {
   missing: SetupCheckItem[]
 }
 
+export type ValidateSetupOptions = {
+  requirePlatformLogin?: boolean
+}
+
 type AiConfigResponse = {
   success?: boolean
   data?: {
@@ -49,6 +53,10 @@ type LoginStatusResponse = {
   success?: boolean
   isLoggedIn?: boolean
   searchReady?: boolean
+  chromePageReady?: boolean
+  hasLoginPrompt?: boolean
+  hasSecurityPrompt?: boolean
+  pageState?: string
   message?: string
   failureReason?: string
 }
@@ -139,14 +147,41 @@ async function checkResume(): Promise<SetupCheckItem> {
 async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem> {
   const title = platform === "boss" ? "Boss登录状态" : "智联登录状态"
   const href = platform === "boss" ? "/boss" : "/zhilian"
+
+  if (platform === "boss") {
+    try {
+      const status = await sendChromeBridgeMessage<LoginStatusResponse>({ type: "BOSS_PAGE_STATUS", platform: "boss" }, 1800)
+      const blocked = !!status.hasLoginPrompt || !!status.hasSecurityPrompt
+      const done = !!status.success && !blocked
+      const detail = blocked
+        ? status.hasSecurityPrompt
+          ? "Boss页面出现安全验证，请在Chrome中处理后再扫描"
+          : status.hasLoginPrompt
+            ? "Boss页面出现登录提示，请在Chrome中重新登录"
+            : "Boss页面需要处理后再扫描"
+        : status.chromePageReady || status.isLoggedIn
+          ? status.message || "Chrome中的Boss页面可用，可以扫描或投递"
+          : status.success
+            ? "未检测到Boss阻塞状态，开始扫描时会使用Chrome登录态确认"
+            : status.message || "Chrome扩展暂不可用，无法读取Boss登录状态"
+      return item("bossLogin", title, done, detail, "去登录", href, false)
+    } catch {
+      return item("bossLogin", title, true, "Boss登录状态将在Chrome扫描启动时确认", "去登录", href)
+    }
+  }
+
   try {
     const data = await fetchJson<LoginStatusResponse>(`${API_BASE}/api/${platform}/login-status`, 5000)
-    const done = platform === "boss" ? !!data.searchReady || !!data.isLoggedIn : !!data.isLoggedIn
+    const done = platform === "boss" ? !!data.searchReady || !!data.isLoggedIn || !!data.chromePageReady : !!data.isLoggedIn
     return item(
       platform === "boss" ? "bossLogin" : "zhilianLogin",
       title,
       !!data.success && done,
-      done ? "登录态可用，可以扫描" : data.failureReason || data.message || "请先完成平台登录",
+      done
+        ? "登录态可用，可以扫描"
+        : platform === "boss"
+          ? "Chrome扩展状态暂不可用，后端Boss浏览器未就绪；Chrome扫描/投递可用时可继续使用"
+          : data.failureReason || data.message || "请先完成平台登录",
       "去登录",
       href
     )
@@ -168,11 +203,24 @@ export async function loadSetupChecklist(): Promise<SetupChecklistResult> {
   return { items, missing, ready: missing.length === 0 }
 }
 
-export async function validateSetupForPlatform(platform: "boss" | "zhilian"): Promise<SetupChecklistResult> {
-  const result = await loadSetupChecklist()
-  const requiredKeys: SetupCheckKey[] = ["backend", "chromeBridge", "aiConfig", "resume", platform === "boss" ? "bossLogin" : "zhilianLogin"]
-  const missing = result.items.filter((entry) => requiredKeys.includes(entry.key) && !entry.done)
-  return { items: result.items, missing, ready: missing.length === 0 }
+export async function validateSetupForPlatform(platform: "boss" | "zhilian", options: ValidateSetupOptions = {}): Promise<SetupChecklistResult> {
+  const requirePlatformLogin = options.requirePlatformLogin ?? true
+  const checkers: Array<Promise<SetupCheckItem>> = [
+    checkBackend(),
+    checkChromeBridge(),
+    checkAiConfig(),
+    checkResume(),
+  ]
+  if (requirePlatformLogin) {
+    checkers.push(checkLogin(platform))
+  }
+  const items = await Promise.all(checkers)
+  const requiredKeys: SetupCheckKey[] = ["backend", "chromeBridge", "aiConfig", "resume"]
+  if (requirePlatformLogin) {
+    requiredKeys.push(platform === "boss" ? "bossLogin" : "zhilianLogin")
+  }
+  const missing = items.filter((entry) => requiredKeys.includes(entry.key) && !entry.done)
+  return { items, missing, ready: missing.length === 0 }
 }
 
 export function formatSetupMissingMessage(platformLabel: string, missing: SetupCheckItem[]) {

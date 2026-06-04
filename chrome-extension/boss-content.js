@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-04-keyword-cursor-1";
+  const EXTENSION_VERSION = "2026-06-04-boss-page-status-1";
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -70,6 +70,10 @@
         });
       }
       sendResponse({ success: true, ...readScanStatus(), hasStoredTask: hasResumableTask });
+      return;
+    }
+    if (message?.type === "BOSS_PAGE_STATUS") {
+      sendResponse(buildBossPageStatus());
       return;
     }
     if (message?.type === "BOSS_SCAN_START") {
@@ -1499,6 +1503,39 @@
     } catch {
       return { isRunning: false, stopRequested: false, stage: "idle" };
     }
+  }
+
+  function buildBossPageStatus() {
+    const diagnostics = buildPageBlockDiagnostics();
+    const onBossPage = location.hostname.includes("zhipin.com");
+    const searchLike = isBossSearchPath(location.pathname) || document.querySelectorAll("a[href*='/job_detail/']").length > 0;
+    const detailLike = /\/job_detail\//.test(location.pathname) || Boolean(textOf(document, [".job-title", ".job-name", ".job-banner"]));
+    const deliveryStatus = detectBossDeliveryStatus(document);
+    const usable = onBossPage && !diagnostics.hasLoginPrompt && !diagnostics.hasSecurityPrompt;
+    const message = !onBossPage
+      ? "未检测到Boss页面"
+      : diagnostics.hasSecurityPrompt
+        ? "Boss页面出现安全验证，请在Chrome中处理后再扫描"
+        : diagnostics.hasLoginPrompt
+          ? "Boss页面出现登录提示，请在Chrome中重新登录"
+          : "Chrome中的Boss页面可用，可以扫描或投递";
+
+    return {
+      success: true,
+      platform: "boss",
+      isLoggedIn: usable,
+      chromePageReady: usable,
+      searchReady: usable && searchLike,
+      currentUrl: diagnostics.currentUrl,
+      title: diagnostics.title,
+      pageState: diagnostics.pageState,
+      hasLoginPrompt: diagnostics.hasLoginPrompt,
+      hasSecurityPrompt: diagnostics.hasSecurityPrompt,
+      searchLike,
+      detailLike,
+      deliveryStatus,
+      message
+    };
   }
 
   function findClickable(labels) {

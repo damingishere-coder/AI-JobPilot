@@ -719,7 +719,8 @@ export default function BossPage() {
         alert('请先在简历配置页新建档案。')
         return
       }
-      const setup = await validateSetupForPlatform('boss')
+      focusLogSection()
+      const setup = await validateSetupForPlatform('boss', { requirePlatformLogin: false })
       if (!setup.ready) {
         const message = formatSetupMissingMessage('Boss', setup.missing)
         appendProgressLog({ type: 'error', message })
@@ -728,8 +729,6 @@ export default function BossPage() {
       }
       setIsDelivering(true)
       setIsStopping(false)
-      setHasScanResult(false)
-      focusLogSection()
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
@@ -758,6 +757,7 @@ export default function BossPage() {
       })
 
       if (data.success) {
+        setHasScanResult(false)
         appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
         console.warn('启动失败：', data.message)

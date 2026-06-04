@@ -12,12 +12,12 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-04-keyword-cursor-1";
+const BACKGROUND_VERSION = "2026-06-04-boss-page-status-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-keyword-cursor-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
@@ -120,7 +120,7 @@ function inferPlatform(type) {
 }
 
 function isNoFocusPlatformMessage(type) {
-  return type === "BOSS_SCAN_STATUS" || type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STATUS" || type === "ZHILIAN_SCAN_STOP";
+  return type === "BOSS_SCAN_STATUS" || type === "BOSS_PAGE_STATUS" || type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STATUS" || type === "ZHILIAN_SCAN_STOP";
 }
 
 function isNoCreatePlatformMessage(type) {
@@ -128,7 +128,7 @@ function isNoCreatePlatformMessage(type) {
 }
 
 function isPassiveStatusMessage(type) {
-  return type === "BOSS_SCAN_STATUS" || type === "ZHILIAN_SCAN_STATUS";
+  return type === "BOSS_SCAN_STATUS" || type === "BOSS_PAGE_STATUS" || type === "ZHILIAN_SCAN_STATUS";
 }
 
 function isPassiveStopMessage(type) {
@@ -321,6 +321,20 @@ function postPlatformProgress(pageTabId, payload) {
 }
 
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
+  if (message?.type === "BOSS_PAGE_STATUS") {
+    try {
+      await ensureContentScript(tabId, PLATFORM_CONFIG[platform].contentScript);
+    } catch (error) {
+      return {
+        success: true,
+        message: buildContentScriptError(platform, error),
+        isRunning: false,
+        hasStoredTask: false,
+        stage: "idle"
+      };
+    }
+  }
+
   if (!await pingContentScript(tabId)) {
     return {
       success: true,
