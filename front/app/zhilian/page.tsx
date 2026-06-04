@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 
 interface ZhilianConfig {
   id?: number
@@ -347,10 +348,14 @@ export default function ZhilianPage() {
     try {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
+        alert('请先在简历配置页新建档案。')
         return
       }
-      if (!chromeBridgeReady) {
-        appendProgressLog({ type: 'error', message: 'Chrome扩展未连接，请先在Chrome扩展页加载 chrome-extension 目录。' })
+      const setup = await validateSetupForPlatform('zhilian')
+      if (!setup.ready) {
+        const message = formatSetupMissingMessage('智联招聘', setup.missing)
+        appendProgressLog({ type: 'error', message })
+        alert(message)
         return
       }
       const runId = `zhilian-${Date.now()}`

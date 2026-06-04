@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/select'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 
 interface BossConfig {
   id?: number
@@ -715,10 +716,14 @@ export default function BossPage() {
     try {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
+        alert('请先在简历配置页新建档案。')
         return
       }
-      if (!chromeBridgeReady) {
-        appendProgressLog({ type: 'error', message: 'Chrome扩展未连接，请先在Chrome扩展页加载 chrome-extension 目录。' })
+      const setup = await validateSetupForPlatform('boss')
+      if (!setup.ready) {
+        const message = formatSetupMissingMessage('Boss', setup.missing)
+        appendProgressLog({ type: 'error', message })
+        alert(message)
         return
       }
       setIsDelivering(true)
