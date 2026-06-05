@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-05-zhilian-list-card-parse-fix-1";
+  const EXTENSION_VERSION = "2026-06-05-zhilian-detail-deliver-1";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -100,12 +100,16 @@
       });
       return true;
     }
+    if (messageType === "ZHILIAN_DELIVER_CURRENT") {
+      handleDeliverCurrentMessage(message, sendResponse);
+      return true;
+    }
     if (messageType === "ZHILIAN_DELIVER_ONE") {
-      deliverOne(message.task).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
+      deliverOne(message.task, message).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
       return true;
     }
     if (messageType === "ZHILIAN_DELIVER_BATCH") {
-      deliverBatch(message.tasks || []).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
+      deliverBatch(message.tasks || [], message).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
       return true;
     }
   });
@@ -867,45 +871,177 @@
     }
   }
 
-  async function deliverOne(task) {
+  async function deliverOne(task, message = {}) {
     if (!task?.url || !task?.id) throw new Error("投递任务缺少岗位链接或ID");
-    window.location.href = task.url;
+    postProgress(message, "info", `智联 Chrome准备投递当前岗位：${task.companyName || ""} ${task.jobName || ""}`.trim(), {
+      operation: "deliver",
+      stage: "checking",
+      keyword: task.jobName || task.title || "",
+      keywordTotal: 1,
+      keywordIndex: 1
+    });
     await waitForPage();
-    await sleep(1800);
+    if (!isCurrentZhilianJobDetailPage(task.url) && !isSameUrl(window.location.href, task.url)) {
+      const failure = classifyDeliveryFailure("当前智联页面不是目标岗位详情页，已取消投递。");
+      await postDeliveryResult(task, false, failure);
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    }
+    return deliverOnCurrentPage(task, message);
+  }
+
+  function handleDeliverCurrentMessage(message, sendResponse) {
+    let responded = false;
+    const respondOnce = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (error) {
+        console.warn("Zhilian deliver response failed", error);
+      }
+    };
+
+    deliverOnCurrentPage(message.task, message, respondOnce).then((result) => {
+      respondOnce(result);
+    }).catch((error) => {
+      postProgress(message, "error", error.message || String(error), {
+        operation: "deliver",
+        stage: "error"
+      });
+      respondOnce({ success: false, message: error.message || String(error) });
+    });
+  }
+
+  async function deliverOnCurrentPage(task, message = {}, earlyRespond) {
+    if (!task?.url || !task?.id) {
+      return { success: false, message: "投递任务缺少岗位链接或ID" };
+    }
+    await waitForPage();
+    if (!isCurrentZhilianJobDetailPage(task.url) && !isSameUrl(window.location.href, task.url)) {
+      const failure = classifyDeliveryFailure("当前智联页面不是目标岗位详情页，已取消投递。");
+      await postDeliveryResult(task, false, failure);
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    }
+
+    await sleep(1500);
+    postProgress(message, "info", `智联 Chrome正在当前详情页收藏并投递：${task.companyName || ""} ${task.jobName || ""}`.trim(), {
+      operation: "deliver",
+      stage: "submitting",
+      keyword: task.jobName || task.title || "",
+      keywordIndex: Number(message.deliveryIndex || 1),
+      keywordTotal: Number(message.deliveryTotal || 1)
+    });
+
+    if (detectZhilianDeliveryStatus(document)) {
+      const successMessage = "智联岗位已是已投递状态";
+      await postDeliveryResult(task, true, successMessage);
+      earlyRespond?.({ success: true, message: successMessage, early: true });
+      postProgress(message, "success", successMessage, {
+        operation: "deliver",
+        stage: "complete",
+        saved: 1
+      });
+      return { success: true, message: successMessage };
+    }
+
     const pageFailure = detectZhilianDeliveryFailure("");
     if (pageFailure) {
       const failure = classifyDeliveryFailure(pageFailure);
       await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
+        operation: "deliver",
+        stage: "error"
+      });
       return { success: false, message: failure.failureReason, failureType: failure.failureType };
     }
-    const applyButton = findClickable(["立即投递", "申请职位", "投递简历", "投递"]);
+
+    const favoriteButton = findZhilianActionButton(["收藏"], ["已收藏", "取消收藏"]);
+    if (favoriteButton) {
+      clickElement(favoriteButton);
+      await sleep(700);
+      postProgress(message, "info", "智联 Chrome已点击收藏。", {
+        operation: "deliver",
+        stage: "submitting"
+      });
+    }
+
+    let applyButton = findZhilianActionButton(["立即投递", "申请职位", "投递简历", "投递"], ["已投递", "已申请", "投递成功", "申请成功"]);
+    if (!applyButton && favoriteButton) {
+      applyButton = await waitForZhilianActionButton(["立即投递", "申请职位", "投递简历", "投递"], ["已投递", "已申请", "投递成功", "申请成功"], 3500);
+    }
     if (!applyButton) {
       const failure = classifyDeliveryFailure("未找到智联投递按钮");
       await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
+        operation: "deliver",
+        stage: "error"
+      });
       return { success: false, message: failure.failureReason, failureType: failure.failureType };
     }
-    applyButton.click();
+
+    postProgress(message, "info", "智联 Chrome已找到投递入口，准备点击立即投递。", {
+      operation: "deliver",
+      stage: "submitting"
+    });
+    clickElement(applyButton);
     await sleep(1500);
+
+    if (detectZhilianDeliveryStatus(document)) {
+      const successMessage = favoriteButton ? "智联岗位已收藏并投递" : "智联岗位已投递";
+      await postDeliveryResult(task, true, successMessage);
+      earlyRespond?.({ success: true, message: successMessage, early: true });
+      postProgress(message, "success", `智联 Chrome投递完成：${successMessage}。`, {
+        operation: "deliver",
+        stage: "complete",
+        saved: 1
+      });
+      return { success: true, message: successMessage };
+    }
+
     const clickedFailure = detectZhilianDeliveryFailure("");
     if (clickedFailure) {
       const failure = classifyDeliveryFailure(clickedFailure);
       await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
+        operation: "deliver",
+        stage: "error"
+      });
       return { success: false, message: failure.failureReason, failureType: failure.failureType };
     }
-    const confirm = findClickable(["确认投递", "确定", "继续投递"]);
+
+    const confirm = await waitForZhilianActionButton(["确认投递", "确定", "继续投递"], ["取消"], 2500);
     if (confirm) {
-      confirm.click();
-      await sleep(1000);
+      clickElement(confirm);
+      await sleep(1200);
     }
-    await postDeliveryResult(task, true, "智联岗位已在Chrome中投递");
-    return { success: true, message: "智联岗位已在Chrome中投递" };
+
+    const finalFailure = detectZhilianDeliveryFailure("");
+    if (finalFailure && !detectZhilianDeliveryStatus(document)) {
+      const failure = classifyDeliveryFailure(finalFailure);
+      await postDeliveryResult(task, false, failure);
+      postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
+        operation: "deliver",
+        stage: "error"
+      });
+      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    }
+
+    const successMessage = favoriteButton ? "智联岗位已收藏并在Chrome中投递" : "智联岗位已在Chrome中投递";
+    await postDeliveryResult(task, true, successMessage);
+    earlyRespond?.({ success: true, message: successMessage, early: true });
+    postProgress(message, "success", `智联 Chrome投递完成：${successMessage}。`, {
+      operation: "deliver",
+      stage: "complete",
+      saved: 1
+    });
+    return { success: true, message: successMessage };
   }
 
-  async function deliverBatch(tasks) {
+  async function deliverBatch(tasks, message = {}) {
     let success = 0;
     let failed = 0;
     for (const task of tasks) {
-      const result = await deliverOne(task).catch(async (error) => {
+      const result = await deliverOne(task, message).catch(async (error) => {
         const failure = classifyDeliveryFailure(error.message || String(error));
         await postDeliveryResult(task, false, failure).catch(() => {});
         return { success: false, message: failure.failureReason, failureType: failure.failureType };
@@ -942,6 +1078,79 @@
   function findClickable(labels) {
     const all = Array.from(document.querySelectorAll("button, a, div, span")).filter((el) => el.offsetParent !== null);
     return all.find((el) => labels.some((label) => compact(el.innerText || "").includes(label)));
+  }
+
+  function findZhilianActionButton(labels, excludeLabels = []) {
+    const candidates = Array.from(document.querySelectorAll("button, a, [role='button'], div, span"))
+      .filter((el) => el.offsetParent !== null && !isDisabledElement(el));
+    return candidates
+      .map((el) => ({ el, text: elementActionText(el) }))
+      .filter(({ el, text }) => {
+        if (!text || excludeLabels.some((label) => text.includes(label))) return false;
+        if (!labels.some((label) => text.includes(label))) return false;
+        return isDirectClickableElement(el) || !hasMatchingActionDescendant(el, labels, excludeLabels);
+      })
+      .sort((left, right) => actionButtonScore(right.el, right.text, labels) - actionButtonScore(left.el, left.text, labels))
+      .map(({ el }) => el)[0] || null;
+  }
+
+  async function waitForZhilianActionButton(labels, excludeLabels = [], timeoutMs = 3500) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const button = findZhilianActionButton(labels, excludeLabels);
+      if (button) return button;
+      await sleep(250);
+    }
+    return null;
+  }
+
+  function clickElement(element) {
+    element.scrollIntoView?.({ block: "center", inline: "center" });
+    element.focus?.();
+    for (const type of ["mouseover", "mousedown", "mouseup", "click"]) {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+
+  function elementActionText(element) {
+    return compact([
+      element.innerText,
+      element.textContent,
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title")
+    ].filter(Boolean).join(" "));
+  }
+
+  function hasMatchingActionDescendant(element, labels, excludeLabels) {
+    return Array.from(element.querySelectorAll?.("button, a, [role='button'], span") || []).some((child) => {
+      if (child === element || child.offsetParent === null || isDisabledElement(child)) return false;
+      const text = elementActionText(child);
+      if (!text || excludeLabels.some((label) => text.includes(label))) return false;
+      return labels.some((label) => text.includes(label));
+    });
+  }
+
+  function actionButtonScore(element, text, labels) {
+    let score = 0;
+    if (isDirectClickableElement(element)) score += 20;
+    if (labels.some((label) => text === label)) score += 10;
+    if (text.length <= 8) score += 4;
+    if (text.length > 24) score -= 8;
+    return score;
+  }
+
+  function isDirectClickableElement(element) {
+    const tagName = String(element.tagName || "").toLowerCase();
+    return tagName === "button" || tagName === "a" || element.getAttribute?.("role") === "button";
+  }
+
+  function isDisabledElement(element) {
+    return Boolean(
+      element.disabled
+      || element.getAttribute?.("disabled") !== null
+      || element.getAttribute?.("aria-disabled") === "true"
+      || /\bdisabled\b/.test(String(element.className || ""))
+    );
   }
 
   function detectZhilianDeliveryStatus(root = document) {
@@ -1716,10 +1925,21 @@
   }
 
   function extractUrlId(url) {
-    let last = "";
-    const matcher = String(url || "").match(/[A-Za-z0-9_-]{8,}/g);
-    if (matcher?.length) last = matcher[matcher.length - 1];
-    return last;
+    try {
+      const parsed = new URL(url, window.location.origin);
+      const path = parsed.pathname;
+      const detailMatch = path.match(/jobdetail\/([^/?#]+?)(?:\.htm|\/|$)/i);
+      if (detailMatch) return detailMatch[1];
+      const pathMatch = path.match(/\/(?:job|jobs|positiondetail|job_detail)\/([^/?#]+)/i);
+      if (pathMatch) return pathMatch[1].replace(/\.htm$/i, "");
+      return "";
+    } catch {
+      const value = String(url || "");
+      const detailMatch = value.match(/jobdetail\/([^/?#]+?)(?:\.htm|[/?#]|$)/i);
+      if (detailMatch) return detailMatch[1];
+      const pathMatch = value.match(/\/(?:job|jobs|positiondetail|job_detail)\/([^/?#]+)/i);
+      return pathMatch ? pathMatch[1].replace(/\.htm$/i, "") : "";
+    }
   }
 
   function markDetailNavigationFailed(job, detailIndex, detailTotal, reason) {

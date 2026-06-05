@@ -12,13 +12,13 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-05-zhilian-list-card-parse-fix-1";
+const BACKGROUND_VERSION = "2026-06-05-zhilian-detail-deliver-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-05-zhilian-list-card-parse-fix-1";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-05-zhilian-detail-deliver-1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
@@ -107,8 +107,10 @@ async function handlePageMessage(message, sender) {
     return await sendPassiveStop(tab.id, platform, message, pageTabId);
   }
 
-  if (platform === "boss" && isBossDeliverMessage(message.type)) {
-    return await handleBossDeliver(tab, config, message, pageTabId);
+  if (isDeliverMessage(platform, message.type)) {
+    return platform === "boss"
+      ? await handleBossDeliver(tab, config, message, pageTabId)
+      : await handleZhilianDeliver(tab, config, message, pageTabId);
   }
 
   await waitForSupportedTab(tab.id, config);
@@ -159,10 +161,22 @@ function isBossDeliverMessage(type) {
   return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH";
 }
 
+function isZhilianDeliverMessage(type) {
+  return type === "ZHILIAN_DELIVER_ONE" || type === "ZHILIAN_DELIVER_BATCH";
+}
+
+function isDeliverMessage(platform, type) {
+  return platform === "boss" ? isBossDeliverMessage(type) : isZhilianDeliverMessage(type);
+}
+
 function platformStartUrl(message) {
   if (message?.startUrl) return message.startUrl;
   if (message?.type === "BOSS_DELIVER_ONE" && message?.task?.url) return message.task.url;
   if (message?.type === "BOSS_DELIVER_BATCH" && Array.isArray(message.tasks) && message.tasks[0]?.url) {
+    return message.tasks[0].url;
+  }
+  if (message?.type === "ZHILIAN_DELIVER_ONE" && message?.task?.url) return message.task.url;
+  if (message?.type === "ZHILIAN_DELIVER_BATCH" && Array.isArray(message.tasks) && message.tasks[0]?.url) {
     return message.tasks[0].url;
   }
   return undefined;
@@ -276,6 +290,136 @@ async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, to
   throw lastError || new Error("Boss投递请求发送失败");
 }
 
+async function handleZhilianDeliver(tab, config, message, pageTabId) {
+  if (message.type === "ZHILIAN_DELIVER_ONE") {
+    const result = await deliverZhilianTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
+      const errorMessage = error.message || String(error);
+      await postZhilianDeliveryResult(message.task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      return {
+        success: false,
+        message: errorMessage,
+        failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
+      };
+    });
+    return result || { success: false, message: "智联投递未返回结果" };
+  }
+
+  const tasks = Array.isArray(message.tasks) ? message.tasks : [];
+  if (!tasks.length) {
+    return { success: false, message: "智联批量投递任务为空" };
+  }
+
+  let success = 0;
+  let failed = 0;
+  for (let index = 0; index < tasks.length; index++) {
+    const task = tasks[index];
+    const result = await deliverZhilianTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
+      const errorMessage = error.message || String(error);
+      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      return {
+        success: false,
+        message: errorMessage,
+        failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
+      };
+    });
+    if (result?.success) success += 1;
+    else failed += 1;
+  }
+
+  return {
+    success: true,
+    message: `智联批量投递完成：成功${success}，失败${failed}`,
+    successCount: success,
+    failedCount: failed
+  };
+}
+
+async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
+  if (!task?.url || !task?.id) {
+    if (task?.id) {
+      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
+    }
+    return { success: false, message: "投递任务缺少岗位链接或ID" };
+  }
+
+  const targetUrl = normalizeZhilianUrl(task.url);
+  if (!targetUrl || !isZhilianJobDetailUrl(targetUrl)) {
+    const failure = classifyZhilianDeliveryFailure(`拒绝打开非智联岗位详情页：${task.url || ""}`);
+    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
+    return { success: false, message: failure.failureReason, failureType: failure.failureType };
+  }
+
+  postPlatformProgress(pageTabId, {
+    platform: "zhilian",
+    type: "info",
+    message: `智联 Chrome准备打开投递岗位 ${index}/${total}：${task.companyName || ""} ${task.jobName || ""}`.trim(),
+    operation: "deliver",
+    stage: "navigating",
+    keyword: task.jobName || task.title || "",
+    keywordIndex: index,
+    keywordTotal: total
+  });
+  await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { zhilianJobUrl: targetUrl });
+  await ensureContentScript(tab.id, config.contentScript);
+  if (!isNoFocusPlatformMessage(message.type)) {
+    const updatedTab = await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(updatedTab.windowId || tab.windowId, { focused: true }).catch(() => {});
+  }
+
+  try {
+    return await sendZhilianDeliverCurrent(tab.id, message, { ...task, url: targetUrl }, pageTabId, index, total);
+  } catch (error) {
+    const errorMessage = buildContentScriptError("zhilian", error, "投递");
+    const failure = classifyZhilianDeliveryFailure(errorMessage);
+    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
+    return {
+      success: false,
+      message: failure.failureReason,
+      failureType: failure.failureType
+    };
+  }
+}
+
+async function sendZhilianDeliverCurrent(tabId, message, task, pageTabId, index, total) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        ...message,
+        type: "ZHILIAN_DELIVER_CURRENT_V2",
+        source: "GET_JOBS_BACKGROUND",
+        task,
+        pageTabId,
+        deliveryIndex: index,
+        deliveryTotal: total
+      });
+      if (response) return response;
+      const fallback = await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
+      if (fallback.success) return fallback;
+    } catch (error) {
+      lastError = error;
+      await sleep(500);
+    }
+  }
+  throw lastError || new Error("智联投递请求发送失败");
+}
+
+async function inferZhilianDeliveryAfterEmptyResponse(tabId, task) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const currentUrl = tab.url || tab.pendingUrl || "";
+    if (isZhilianUrl(currentUrl)) {
+      return {
+        success: false,
+        message: "智联投递未返回结果，请在详情页确认是否出现投递成功状态。"
+      };
+    }
+    return { success: false, message: "智联投递未返回结果，当前标签页已离开智联页面。" };
+  } catch {
+    return { success: false, message: "智联投递未返回结果" };
+  }
+}
+
 async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -308,6 +452,21 @@ async function postBossDeliveryResult(task, success, message) {
   });
 }
 
+async function postZhilianDeliveryResult(task, success, message) {
+  if (!task?.id) return;
+  const failure = success ? null : normalizeZhilianFailurePayload(message);
+  await fetch(`http://localhost:8888/api/zhilian/jobs/${task.id}/delivery-result`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      success,
+      message: success ? message : failure.failureReason,
+      failureType: failure?.failureType,
+      failureReason: failure?.failureReason
+    })
+  });
+}
+
 function classifyDeliveryFailure(message) {
   const text = String(message || "");
   let failureType = "UNKNOWN_ERROR";
@@ -326,6 +485,26 @@ function normalizeFailurePayload(message) {
     return { failureType: message.failureType || classifyDeliveryFailure(reason).failureType, failureReason: reason };
   }
   return classifyDeliveryFailure(message);
+}
+
+function classifyZhilianDeliveryFailure(message) {
+  const text = String(message || "");
+  let failureType = "UNKNOWN_ERROR";
+  if (/(登录|重新登录|未登录|扫码|账号登录)/.test(text)) failureType = "LOGIN_EXPIRED";
+  else if (/(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) failureType = "PLATFORM_VERIFICATION";
+  else if (/(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|岗位关闭|已下线)/.test(text)) failureType = "JOB_CLOSED";
+  else if (/(已投递|已申请|投递成功|申请成功|重复投递)/.test(text)) failureType = "ALREADY_DELIVERED";
+  else if (/(未找到.*按钮|按钮不可点击|无法点击|不可点击|请先完善简历|请上传简历|缺少岗位链接|缺少.*ID|非智联岗位详情页)/.test(text)) failureType = "BUTTON_UNCLICKABLE";
+  else if (/(网络|超时|timeout|fetch|HTTP|请求失败|连接失败|未返回结果|发送失败|未能打开)/i.test(text)) failureType = "NETWORK_ERROR";
+  return { failureType, failureReason: text || "智联投递失败" };
+}
+
+function normalizeZhilianFailurePayload(message) {
+  if (message && typeof message === "object") {
+    const reason = message.failureReason || message.message || "智联投递失败";
+    return { failureType: message.failureType || classifyZhilianDeliveryFailure(reason).failureType, failureReason: reason };
+  }
+  return classifyZhilianDeliveryFailure(message);
 }
 
 function postPlatformProgress(pageTabId, payload) {
@@ -463,7 +642,7 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
   if (!isSupportedUrl(tabUrl, config)) {
     throw new Error("请先打开支持的招聘平台页面后再投递。");
   }
-  throw new Error(`Boss页面未能打开目标岗位详情页。当前URL：${tabUrl || "未知"}`);
+  throw new Error(`${platformDisplayNameByConfig(config)}页面未能打开目标岗位详情页。当前URL：${tabUrl || "未知"}`);
 }
 
 async function ensureContentScript(tabId, file) {
@@ -538,8 +717,15 @@ function isSupportedUrl(url, config) {
   return /^https?:\/\//.test(url) && config.hosts.some((host) => url.includes(host));
 }
 
+function platformDisplayNameByConfig(config) {
+  if (config?.contentScript === "boss-content.js") return "Boss";
+  if (config?.contentScript === "zhilian-content.js") return "智联";
+  return "招聘平台";
+}
+
 function isSameNavigationUrl(left, right, options = {}) {
   if (options.bossJobUrl && sameBossJobDetailUrl(left, options.bossJobUrl)) return true;
+  if (options.zhilianJobUrl && sameZhilianJobDetailUrl(left, options.zhilianJobUrl)) return true;
   try {
     const leftUrl = new URL(left);
     const rightUrl = new URL(right);
@@ -552,6 +738,12 @@ function isSameNavigationUrl(left, right, options = {}) {
 function sameBossJobDetailUrl(left, right) {
   const leftId = extractBossJobId(left);
   const rightId = extractBossJobId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+}
+
+function sameZhilianJobDetailUrl(left, right) {
+  const leftId = extractZhilianJobId(left);
+  const rightId = extractZhilianJobId(right);
   return Boolean(leftId && rightId && leftId === rightId);
 }
 
@@ -617,8 +809,26 @@ function extractBossJobId(url) {
   return match ? match[1] : "";
 }
 
+function extractZhilianJobId(url) {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    const detailMatch = path.match(/jobdetail\/([^/?#]+?)(?:\.htm|\/|$)/i);
+    if (detailMatch) return detailMatch[1];
+    const pathMatch = path.match(/\/(?:job|jobs|positiondetail|job_detail)\/([^/?#]+)/i);
+    if (pathMatch) return pathMatch[1].replace(/\.htm$/i, "");
+    return "";
+  } catch {
+    const value = String(url || "");
+    const detailMatch = value.match(/jobdetail\/([^/?#]+?)(?:\.htm|[/?#]|$)/i);
+    if (detailMatch) return detailMatch[1];
+    const pathMatch = value.match(/\/(?:job|jobs|positiondetail|job_detail)\/([^/?#]+)/i);
+    return pathMatch ? pathMatch[1].replace(/\.htm$/i, "") : "";
+  }
+}
+
 function buildContentScriptError(platform, error, operation = "扫描") {
-  const platformName = platform === "boss" ? "Boss直聘" : "招聘平台";
+  const platformName = platform === "boss" ? "Boss直聘" : platform === "zhilian" ? "智联招聘" : "招聘平台";
   const detail = error?.message || String(error || "");
   if (detail.includes("Receiving end does not exist") || detail.includes("Could not establish connection")) {
     return `${platformName}页面还没有准备好接收${operation}请求。请刷新${platformName}页面，确认扩展已重新加载后再试。`;
