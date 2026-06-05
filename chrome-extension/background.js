@@ -12,13 +12,13 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-05-zhilian-detail-deliver-1";
+const BACKGROUND_VERSION = "2026-06-05-zhilian-http-detail-url-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-05-zhilian-detail-deliver-1";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-05-zhilian-http-detail-url-1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
@@ -175,9 +175,9 @@ function platformStartUrl(message) {
   if (message?.type === "BOSS_DELIVER_BATCH" && Array.isArray(message.tasks) && message.tasks[0]?.url) {
     return message.tasks[0].url;
   }
-  if (message?.type === "ZHILIAN_DELIVER_ONE" && message?.task?.url) return message.task.url;
+  if (message?.type === "ZHILIAN_DELIVER_ONE" && message?.task?.url) return normalizeZhilianUrl(message.task.url) || message.task.url;
   if (message?.type === "ZHILIAN_DELIVER_BATCH" && Array.isArray(message.tasks) && message.tasks[0]?.url) {
-    return message.tasks[0].url;
+    return normalizeZhilianUrl(message.tasks[0].url) || message.tasks[0].url;
   }
   return undefined;
 }
@@ -770,6 +770,9 @@ function isZhilianUrl(url) {
 function normalizeZhilianUrl(url) {
   try {
     const parsed = new URL(String(url || ""));
+    if (parsed.hostname.endsWith("zhaopin.com") && parsed.protocol === "http:") {
+      parsed.protocol = "https:";
+    }
     parsed.hash = "";
     return parsed.href;
   } catch {

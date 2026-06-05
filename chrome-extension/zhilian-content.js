@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-05-zhilian-detail-deliver-1";
+  const EXTENSION_VERSION = "2026-06-05-zhilian-http-detail-url-1";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -1855,6 +1855,9 @@
   function normalizeZhilianJobUrl(rawUrl) {
     try {
       const parsed = new URL(rawUrl || "", window.location.origin);
+      if (parsed.hostname.endsWith("zhaopin.com") && parsed.protocol === "http:") {
+        parsed.protocol = "https:";
+      }
       parsed.hash = "";
       return parsed.href;
     } catch {
