@@ -12,12 +12,13 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-04-boss-page-status-1";
+const BACKGROUND_VERSION = "2026-06-05-zhilian-list-card-parse-fix-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-05-zhilian-list-card-parse-fix-1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
@@ -119,7 +120,7 @@ async function handlePageMessage(message, sender) {
 
   try {
     const response = await chrome.tabs.sendMessage(tab.id, {
-      ...message,
+      ...toPlatformContentMessage(message, platform),
       source: "GET_JOBS_BACKGROUND",
       pageTabId
     });
@@ -340,7 +341,7 @@ function postPlatformProgress(pageTabId, payload) {
 }
 
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
-  if (message?.type === "BOSS_PAGE_STATUS") {
+  if (message?.type === "BOSS_PAGE_STATUS" || platform === "zhilian") {
     try {
       await ensureContentScript(tabId, PLATFORM_CONFIG[platform].contentScript);
     } catch (error) {
@@ -366,7 +367,7 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
 
   try {
     const response = await chrome.tabs.sendMessage(tabId, {
-      ...message,
+      ...toPlatformContentMessage(message, platform),
       source: "GET_JOBS_BACKGROUND",
       pageTabId
     });
@@ -481,8 +482,9 @@ async function ensureContentScript(tabId, file) {
 async function isContentScriptReady(tabId, file) {
   const ping = await pingContentScript(tabId);
   if (!ping) return false;
-  if (file !== "boss-content.js") return true;
-  return await isBossContentVersionReady(tabId);
+  if (file === "boss-content.js") return await isBossContentVersionReady(tabId);
+  if (file === "zhilian-content.js") return await isZhilianContentVersionReady(tabId);
+  return true;
 }
 
 async function pingContentScript(tabId) {
@@ -503,6 +505,33 @@ async function isBossContentVersionReady(tabId) {
   } catch {
     return false;
   }
+}
+
+async function isZhilianContentVersionReady(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      source: "GET_JOBS_BACKGROUND",
+      type: "GET_ZHILIAN_CONTENT_VERSION"
+    });
+    return response?.version === REQUIRED_ZHILIAN_CONTENT_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+function toPlatformContentMessage(message, platform) {
+  const type = message?.type;
+  if (platform === "zhilian" && isZhilianVersionedContentMessage(type)) {
+    return { ...message, type: `${type}_V2` };
+  }
+  return message;
+}
+
+function isZhilianVersionedContentMessage(type) {
+  return type === "ZHILIAN_SCAN_START"
+    || type === "ZHILIAN_SCAN_STATUS"
+    || type === "ZHILIAN_DELIVER_ONE"
+    || type === "ZHILIAN_DELIVER_BATCH";
 }
 
 function isSupportedUrl(url, config) {
