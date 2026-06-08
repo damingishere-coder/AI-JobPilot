@@ -75,6 +75,7 @@ export default function ZhilianPage() {
   const [hasProfile, setHasProfile] = useState(false)
 
   const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '', searchJobLimit: 20 })
+  const [searchJobLimitInput, setSearchJobLimitInput] = useState('20')
   const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
   const [loadingConfig, setLoadingConfig] = useState(true)
 
@@ -82,6 +83,13 @@ export default function ZhilianPage() {
     const parsed = Number(value)
     if (!Number.isFinite(parsed) || parsed < 1) return 20
     return Math.min(Math.floor(parsed), 200)
+  }
+
+  const commitSearchJobLimit = (value?: number | string): number => {
+    const limit = normalizeSearchJobLimit(value ?? searchJobLimitInput)
+    setSearchJobLimitInput(String(limit))
+    setConfig((prev) => ({ ...prev, searchJobLimit: limit }))
+    return limit
   }
 
   const appendProgressLog = useCallback((entry: Omit<ProgressLog, 'id'>) => {
@@ -316,6 +324,7 @@ export default function ZhilianPage() {
         const normalized = { ...data.config }
         normalized.keywords = parseKeywordsFromDb(data.config.keywords)
         normalized.searchJobLimit = normalizeSearchJobLimit(data.config.searchJobLimit)
+        setSearchJobLimitInput(String(normalized.searchJobLimit))
         setConfig(normalized)
       }
       if (data.options) setOptions(data.options)
@@ -399,13 +408,14 @@ export default function ZhilianPage() {
       setIsStopping(false)
       setIsDelivering(true)
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
+      const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
         platform: 'zhilian',
         runId,
         config: {
           ...config,
-          searchJobLimit: normalizeSearchJobLimit(config.searchJobLimit),
+          searchJobLimit,
         },
       })
       if (data.success) {
@@ -464,13 +474,14 @@ export default function ZhilianPage() {
     setOpenClawRunning(true)
     appendProgressLog({ type: 'info', message: 'OpenClaw智联实验采集已启动：只读取页面并提交现有AI分析入库接口，不会真实申请职位。' })
     try {
+      const searchJobLimit = commitSearchJobLimit()
       const probeResponse = await fetch('http://localhost:8888/api/zhilian/openclaw/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profile: 'user',
           detailLimit: 5,
-          config,
+          config: { ...config, searchJobLimit },
         }),
       })
       const probeData = await probeResponse.json()
@@ -567,10 +578,11 @@ export default function ZhilianPage() {
       return
     }
     try {
+      const searchJobLimit = commitSearchJobLimit()
       const payload = {
         ...config,
         keywords: serializeKeywordsForDb(config.keywords),
-        searchJobLimit: normalizeSearchJobLimit(config.searchJobLimit),
+        searchJobLimit,
       }
       const response = await fetch('http://localhost:8888/api/zhilian/config', {
         method: 'PUT',
@@ -744,8 +756,16 @@ export default function ZhilianPage() {
                       max={200}
                       step={1}
                       placeholder="20"
-                      value={config.searchJobLimit ?? 20}
-                      onChange={(e) => setConfig((c) => ({ ...c, searchJobLimit: normalizeSearchJobLimit(e.target.value) }))}
+                      value={searchJobLimitInput}
+                      onChange={(e) => {
+                        const rawValue = e.target.value
+                        setSearchJobLimitInput(rawValue)
+                        const parsed = Number(rawValue)
+                        if (Number.isFinite(parsed) && parsed >= 1) {
+                          setConfig((c) => ({ ...c, searchJobLimit: Math.min(Math.floor(parsed), 200) }))
+                        }
+                      }}
+                      onBlur={() => commitSearchJobLimit(searchJobLimitInput)}
                       disabled={!hasProfile}
                     />
                   </div>

@@ -418,66 +418,37 @@
         stopRequested = true;
         break;
       }
-      const waitState = await waitForJobCards();
-      if (await hasStopRequested()) {
-        stopRequested = true;
-        break;
-      }
-      if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
-        stopRequested = true;
-        break;
-      }
-      postProgress(task, "info", `智联岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，岗位节点 ${waitState.diagnostics.jobNodes} 个。`, {
-        ...baseMeta,
-        stage: "collecting",
-        ...waitState.diagnostics
-      });
       const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
-      await scrollForCards(searchJobLimit);
-      if (await hasStopRequested()) {
+      const collectionResult = await collectJobsAcrossSearchPages(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved);
+      if (collectionResult.pendingNavigation) {
+        return { success: true, saved: totalSaved, pendingNavigation: true };
+      }
+      if (collectionResult.stopped) {
         stopRequested = true;
         break;
       }
-      const collectResult = collectJobs(keyword, task, baseMeta);
-      const candidates = collectResult.jobs;
-      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联 Chrome卡片解析完成：候选节点 ${collectResult.nodeCount} 个，成功 ${collectResult.parsed} 个，跳过 ${collectResult.skipped} 个，重复 ${collectResult.duplicated} 个。`, {
-        ...baseMeta,
-        stage: "collecting",
-        nodeCount: collectResult.nodeCount,
-        parsed: collectResult.parsed,
-        skipped: collectResult.skipped,
-        duplicated: collectResult.duplicated,
-        errorCount: collectResult.errorCount
-      });
-      const jobs = candidates.slice(0, searchJobLimit);
-      if (!jobs.length) {
-        const diagnostics = buildListDiagnostics();
-        if (handleBlockingState(task, diagnostics, baseMeta)) {
-          stopRequested = true;
-          break;
-        }
-        postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
-          ...baseMeta,
-          stage: "empty",
-          collected: 0,
-          ...diagnostics
-        });
+      if (collectionResult.empty) {
         advanceKeywordCursor(task, keywordIndex + 1, keyword);
         await storeScanTask({ ...baseTask, phase: "nextKeyword", currentIndex: keywordIndex + 1, totalSaved });
         continue;
       }
+      const jobs = collectionResult.jobs;
 
-      postProgress(task, "info", `智联 Chrome采集到 ${candidates.length} 个岗位，将按配置进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对`, {
+      postProgress(task, "info", `智联 Chrome已按配置采集 ${collectionResult.candidateCount} 个候选岗位，将进入 ${jobs.length}/${searchJobLimit} 个详情页做AI比对`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
-        searchJobLimit
+        searchJobLimit,
+        pagesScanned: collectionResult.pagesScanned
       });
       const detailTask = {
         ...baseTask,
         phase: "detail",
         detailIndex: 0,
-        jobs
+        jobs,
+        collectedJobs: [],
+        searchPage: 1,
+        pagesScanned: 0
       };
       await storeScanTask(detailTask);
       postProgress(task, "info", `智联 Chrome正在查看详情 1/${jobs.length}：${jobs[0].title}`, {
@@ -513,6 +484,9 @@
         ...task,
         phase: "nextKeyword",
         jobs: [],
+        collectedJobs: [],
+        searchPage: 1,
+        pagesScanned: 0,
         detailIndex: 0,
         currentIndex: keywordIndex + 1,
         totalSaved
@@ -587,6 +561,188 @@
       errorCount,
       duplicated
     };
+  }
+
+  async function collectJobsAcrossSearchPages(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved) {
+    let collectedJobs = normalizeCollectedJobs(task.collectedJobs);
+    const seenJobUrls = new Set(collectedJobs.map((job) => normalizeJobUrlKey(job)).filter(Boolean));
+    let pageNumber = Math.max(1, Number(task.searchPage || currentSearchPageNumber() || 1));
+    let pagesScanned = Number(task.pagesScanned || 0);
+    let lastDiagnostics = null;
+
+    while (collectedJobs.length < searchJobLimit && pagesScanned < 50) {
+      if (await hasStopRequested()) {
+        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      }
+
+      if (!isCurrentSearchPage(keyword, config, pageNumber)) {
+        const pageUrl = buildSearchUrl(keyword, config, pageNumber);
+        postProgress(task, "info", `智联 Chrome准备打开第 ${pageNumber} 页继续采集：${keyword}，目标URL：${pageUrl}`, {
+          ...baseMeta,
+          stage: "collecting",
+          pageNumber,
+          collected: collectedJobs.length,
+          searchJobLimit,
+          targetUrl: pageUrl
+        });
+        await storeScanTask({
+          ...baseTask,
+          phase: "collecting",
+          searchPage: pageNumber,
+          pagesScanned,
+          collectedJobs,
+          totalSaved
+        });
+        window.location.assign(pageUrl);
+        return { pendingNavigation: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      }
+
+      const waitState = await waitForJobCards();
+      if (await hasStopRequested()) {
+        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      }
+      lastDiagnostics = waitState.diagnostics;
+      if (handleBlockingState(task, waitState.diagnostics, { ...baseMeta, pageNumber })) {
+        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      }
+
+      postProgress(task, "info", `智联第 ${pageNumber} 页加载完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，岗位节点 ${waitState.diagnostics.jobNodes} 个。`, {
+        ...baseMeta,
+        stage: "collecting",
+        pageNumber,
+        collected: collectedJobs.length,
+        searchJobLimit,
+        ...waitState.diagnostics
+      });
+
+      await scrollForCards(searchJobLimit - collectedJobs.length);
+      if (await hasStopRequested()) {
+        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      }
+
+      const collectResult = collectJobs(keyword, task, { ...baseMeta, pageNumber });
+      let added = 0;
+      for (const job of collectResult.jobs) {
+        const key = normalizeJobUrlKey(job);
+        if (!key || seenJobUrls.has(key)) continue;
+        seenJobUrls.add(key);
+        collectedJobs.push(job);
+        added += 1;
+        if (collectedJobs.length >= searchJobLimit) break;
+      }
+      pagesScanned += 1;
+
+      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，成功 ${collectResult.parsed} 个，本页新增 ${added} 个，累计 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个，重复 ${collectResult.duplicated} 个。`, {
+        ...baseMeta,
+        stage: "collecting",
+        pageNumber,
+        collected: collectedJobs.length,
+        searchJobLimit,
+        nodeCount: collectResult.nodeCount,
+        parsed: collectResult.parsed,
+        added,
+        skipped: collectResult.skipped,
+        duplicated: collectResult.duplicated,
+        errorCount: collectResult.errorCount,
+        pagesScanned
+      });
+
+      await storeScanTask({
+        ...baseTask,
+        phase: "collecting",
+        searchPage: pageNumber,
+        pagesScanned,
+        collectedJobs,
+        totalSaved
+      });
+
+      if (collectedJobs.length >= searchJobLimit) break;
+
+      const nextPageNumber = pageNumber + 1;
+      if (!hasNextSearchPage(nextPageNumber)) {
+        postProgress(task, "info", `智联 Chrome已无下一页，本关键词采集结束：累计 ${collectedJobs.length}/${searchJobLimit} 个岗位进入详情/AI流程。`, {
+          ...baseMeta,
+          stage: "collecting",
+          collected: collectedJobs.length,
+          searchJobLimit,
+          pageNumber,
+          pagesScanned
+        });
+        break;
+      }
+      pageNumber = nextPageNumber;
+    }
+
+    const jobs = collectedJobs.slice(0, searchJobLimit);
+    if (!jobs.length) {
+      const diagnostics = lastDiagnostics || buildListDiagnostics();
+      if (handleBlockingState(task, diagnostics, baseMeta)) {
+        return { stopped: true, empty: true, jobs: [], candidateCount: 0, pagesScanned };
+      }
+      postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
+        ...baseMeta,
+        stage: "empty",
+        collected: 0,
+        searchJobLimit,
+        ...diagnostics
+      });
+      return { empty: true, jobs: [], candidateCount: 0, pagesScanned };
+    }
+
+    return { jobs, candidateCount: collectedJobs.length, pagesScanned, empty: false };
+  }
+
+  function normalizeCollectedJobs(value) {
+    if (!Array.isArray(value)) return [];
+    const jobs = [];
+    const seen = new Set();
+    value.forEach((job) => {
+      if (!job || !job.url) return;
+      const key = normalizeJobUrlKey(job);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      jobs.push(job);
+    });
+    return jobs;
+  }
+
+  function currentSearchPageNumber() {
+    try {
+      const parsed = new URL(window.location.href);
+      const match = parsed.pathname.match(/\/p(\d+)(?:\/|$)/i);
+      const page = match ? Number(match[1]) : 1;
+      return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  function hasNextSearchPage(nextPageNumber) {
+    const diagnostics = buildListDiagnostics();
+    if (diagnostics.hasEmptyPrompt) return false;
+    const nextSelectors = [
+      "a.soupager__btn:has-text('下一页')",
+      "a[class*='pager']:not([class*='disable'])",
+      "button[class*='next']",
+      "a[aria-label*='下一页']",
+      "button[aria-label*='下一页']"
+    ];
+    for (const selector of nextSelectors) {
+      try {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        const next = nodes.find((node) => /下一页|next/i.test(compact(node.innerText || node.textContent || node.getAttribute("aria-label") || "")));
+        if (!next) continue;
+        const cls = String(next.getAttribute("class") || "").toLowerCase();
+        const disabled = next.disabled
+          || next.getAttribute("disabled") != null
+          || next.getAttribute("aria-disabled") === "true"
+          || /disable|disabled/.test(cls);
+        if (!disabled) return true;
+      } catch {
+        // Try the next selector.
+      }
+    }
+    return diagnostics.detailLinks > 0 && nextPageNumber <= 50;
   }
 
   function collectJobEntries() {
