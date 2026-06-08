@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-05-zhilian-http-detail-url-1";
+  const EXTENSION_VERSION = "2026-06-08-zhilian-cross-page-limit-1";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -341,7 +341,8 @@
       }
       const keyword = keywords[keywordIndex];
       markKeywordCursorCurrent(task, keywordIndex, keyword);
-      const searchUrl = buildSearchUrl(keyword, config);
+      const searchPage = Math.max(1, Number(task.searchPage || 1));
+      const searchUrl = buildSearchUrl(keyword, config, searchPage);
       const baseTask = {
         ...task,
         source: "GET_JOBS_BACKGROUND",
@@ -390,7 +391,7 @@
         continue;
       }
 
-      if (!isCurrentSearchPage(keyword, config)) {
+      if (!isCurrentSearchPage(keyword, config, searchPage)) {
         postProgress(task, "info", `智联 Chrome准备打开搜索页：${keyword}，目标URL：${searchUrl}，当前URL：${window.location.href}`, {
           ...baseMeta,
           stage: "searching",
@@ -1483,6 +1484,9 @@
       phase: message.phase || "searching",
       detailIndex: Number(message.detailIndex || 0),
       jobs: Array.isArray(message.jobs) ? message.jobs : [],
+      collectedJobs: normalizeCollectedJobs(message.collectedJobs),
+      searchPage: Math.max(1, Number(message.searchPage || 1)),
+      pagesScanned: Math.max(0, Number(message.pagesScanned || 0)),
       startedAt: message.startedAt || Date.now(),
       keywordCursorKey: cursorState.cursorKey,
       keywordCursorReset: cursorState.reset
@@ -1708,23 +1712,27 @@
     return uniqueStrings(toList(message?.keywords || config.keywords || config.keyword || "AI产品运营"));
   }
 
-  function buildSearchUrl(keyword, config) {
+  function buildSearchUrl(keyword, config, pageNumber = 1) {
     const city = first(config.cityCode, "0");
     const pathCity = city && city !== "0" ? city : "0";
-    return `https://www.zhaopin.com/sou/jl${pathCity}/kw${encodeURIComponent(keyword)}/p1`;
+    const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
+    return `https://www.zhaopin.com/sou/jl${pathCity}/kw${encodeURIComponent(keyword)}/p${page}`;
   }
 
-  function isCurrentSearchPage(keyword, config) {
+  function isCurrentSearchPage(keyword, config, pageNumber = 1) {
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhaopin.com")) return false;
       if (!current.pathname.startsWith("/sou/")) return false;
 
-      const target = new URL(buildSearchUrl(keyword, config));
+      const target = new URL(buildSearchUrl(keyword, config, pageNumber));
       if (current.pathname === target.pathname) return true;
 
       const keywordInPath = current.pathname.match(/\/kw([^/]+)/);
       if (!keywordInPath) return false;
+      const currentPage = currentSearchPageNumber();
+      const expectedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+      if (currentPage !== expectedPage) return false;
       const encodedKeyword = encodeURIComponent(keyword);
       const rawKeyword = keywordInPath[1] || "";
       if (rawKeyword === encodedKeyword || decodeURIComponentSafe(rawKeyword) === keyword) return true;
