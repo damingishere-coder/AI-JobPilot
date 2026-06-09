@@ -9,7 +9,6 @@ import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
@@ -25,20 +24,14 @@ public class ChromeJobAnalysisQueueService {
     private static final int AI_CONCURRENCY = 2;
     private static final int QUEUE_CAPACITY = 200;
     private static final long COMPLETED_KEY_TTL_MS = TimeUnit.MINUTES.toMillis(30);
-    private static final Set<String> FINAL_STATUSES = Set.of(
-            "待确认", "已投递", "已跳过", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
-    );
 
     private final JobAiAnalysisService jobAiAnalysisService;
-    private final ZhilianService zhilianService;
     private final ThreadPoolExecutor executor;
-    private final Set<String> activeKeys = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<String> activeKeys = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> completedKeys = new ConcurrentHashMap<>();
 
-    public ChromeJobAnalysisQueueService(JobAiAnalysisService jobAiAnalysisService,
-                                         ZhilianService zhilianService) {
+    public ChromeJobAnalysisQueueService(JobAiAnalysisService jobAiAnalysisService) {
         this.jobAiAnalysisService = jobAiAnalysisService;
-        this.zhilianService = zhilianService;
         this.executor = new ThreadPoolExecutor(
                 AI_CONCURRENCY,
                 AI_CONCURRENCY,
@@ -94,10 +87,6 @@ public class ChromeJobAnalysisQueueService {
             ));
             JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(request);
 
-            if ("zhilian".equalsIgnoreCase(platform) && result.shouldApply() && !"已投递".equals(job.getCurrentStatus())) {
-                markZhilianWaitingConfirm(request);
-            }
-
             if (result.isFailure()) {
                 emit(progress, JobProgressMessage.warning(
                         platform,
@@ -107,7 +96,7 @@ public class ChromeJobAnalysisQueueService {
 
             emit(progress, JobProgressMessage.progress(
                     platform,
-                    (result.shouldApply() ? "待确认：" : result.isFailure() ? "AI分析失败：" : "跳过：") + jobName,
+                    (result.shouldApply() ? DeliveryStatus.WAITING_CONFIRM + "：" : result.isFailure() ? DeliveryStatus.AI_ANALYSIS_FAILED + "：" : "跳过：") + jobName,
                     job.getCurrent(),
                     job.getTotal()
             ));
@@ -123,14 +112,6 @@ public class ChromeJobAnalysisQueueService {
         }
     }
 
-    private void markZhilianWaitingConfirm(JobAiAnalysisService.JobAnalysisRequest request) {
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
-            zhilianService.markWaitingConfirmByJobId(request.getJobKey(), request.getProfileId());
-        } else if (request.getJobName() != null && request.getCompanyName() != null) {
-            zhilianService.markWaitingConfirmByTitleAndCompany(request.getJobName(), request.getCompanyName(), request.getProfileId());
-        }
-    }
-
     private void emit(Consumer<JobProgressMessage> progress, JobProgressMessage message) {
         if (progress == null || message == null) return;
         try {
@@ -141,7 +122,7 @@ public class ChromeJobAnalysisQueueService {
     }
 
     private boolean isFinalStatus(String status) {
-        return status != null && FINAL_STATUSES.contains(status.trim());
+        return DeliveryStatus.isFinalStatus(status);
     }
 
     private String dedupeKey(AnalysisJob job) {

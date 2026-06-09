@@ -4,6 +4,7 @@ import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.BossConfigEntity;
+import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.BossService;
 import org.springframework.web.bind.annotation.*;
 
@@ -134,7 +135,7 @@ public class BossAnalyticsController {
         boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
         if (aiRecommendedOnly) {
             BossService.PagedResult page = bossService.listBossJobs(
-                    List.of("待确认"),
+                    List.of(DeliveryStatus.WAITING_CONFIRM),
                     null,
                     null,
                     null,
@@ -154,7 +155,7 @@ public class BossAnalyticsController {
             }
         } else {
             BossService.PagedResult page = bossService.listBossJobs(
-                    List.of("待确认"),
+                    List.of(DeliveryStatus.WAITING_CONFIRM),
                     request == null ? null : request.getLocation(),
                     request == null ? null : request.getExperience(),
                     request == null ? null : request.getDegree(),
@@ -170,7 +171,7 @@ public class BossAnalyticsController {
         }
 
         List<Map<String, Object>> tasks = candidates.stream()
-                .filter(job -> "待确认".equals(job.getDeliveryStatus()))
+                .filter(job -> DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()))
                 .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
                 .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
                 .map(this::toDeliveryTask)
@@ -187,7 +188,7 @@ public class BossAnalyticsController {
     public Map<String, Object> updateDeliveryResult(@PathVariable("id") Long id, @RequestBody DeliveryResultRequest request) {
         BossJobDataEntity job = bossService.getBossJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
-        String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? "已投递" : "投递失败";
+        String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? DeliveryStatus.DELIVERED : DeliveryStatus.DELIVERY_FAILED;
         String message = request == null ? null : request.getMessage();
         String failureReason = request == null ? null : request.getFailureReason();
         BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, status, request == null ? null : request.getFailureType(), firstNonBlank(failureReason, message));
@@ -200,18 +201,18 @@ public class BossAnalyticsController {
 
     @PostMapping("/jobs/{id}/skip")
     public Map<String, Object> skipPendingJob(@PathVariable("id") Long id) {
-        BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, "已跳过");
+        BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, DeliveryStatus.SKIPPED);
         if (updated == null) {
             return Map.of("success", false, "message", "岗位不存在");
         }
-        return Map.of("success", true, "message", "已跳过该岗位", "status", "已跳过");
+        return Map.of("success", true, "message", "已跳过该岗位", "status", DeliveryStatus.SKIPPED);
     }
 
     private Map<String, Object> validateDeliverable(BossJobDataEntity job) {
         if (job == null) {
             return Map.of("success", false, "message", "岗位不存在");
         }
-        if (!"待确认".equals(job.getDeliveryStatus())) {
+        if (!DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())) {
             return Map.of("success", false, "message", "只有待确认岗位可以确认投递", "status", job.getDeliveryStatus() == null ? "" : job.getDeliveryStatus());
         }
         if (job.getJobUrl() == null || job.getJobUrl().isBlank()) {

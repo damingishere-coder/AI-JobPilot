@@ -179,12 +179,13 @@ public class JobAiAnalysisService {
         if (request == null) throw new IllegalArgumentException("岗位分析请求不能为空");
         Long profileId = resolveAnalysisProfileId(request);
         request.setProfileId(profileId);
+        markPlatformAnalysisStarted(request);
         boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
         int threshold = priority ? PRIORITY_APPLY_THRESHOLD : DEFAULT_APPLY_THRESHOLD;
         ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
-            AnalysisResult result = AnalysisResult.failed("AI分析失败", "请先在AI配置页保存简历内容");
+            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
             result.setPriorityCompany(priority);
             persistAnalysis(request, result, "{\"error\":\"missing resume\"}");
             updatePlatformCache(request, result);
@@ -213,7 +214,7 @@ public class JobAiAnalysisService {
             return result;
         } catch (Exception e) {
             log.warn("AI岗位分析失败: {}", e.getMessage());
-            AnalysisResult result = AnalysisResult.failed("AI分析失败", e.getMessage());
+            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, e.getMessage());
             result.setPriorityCompany(priority);
             result.setThreshold(threshold);
             persistAnalysis(request, result, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
@@ -421,7 +422,10 @@ public class JobAiAnalysisService {
         String reason = result.toReasonText();
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
             BossJobDataEntity existing = findBossJobForAnalysis(request);
-            boolean alreadyDelivered = existing != null && "已投递".equals(existing.getDeliveryStatus());
+            String nextStatus = DeliveryStatus.protectDelivered(
+                    existing == null ? null : existing.getDeliveryStatus(),
+                    DeliveryStatus.fromAiResult(result)
+            );
             BossJobDataEntity update = new BossJobDataEntity();
             update.setAiScore(result.getScore());
             update.setAiDecision(result.getDecision());
@@ -430,30 +434,17 @@ public class JobAiAnalysisService {
             if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
                 update.setScanRunId(request.getScanRunId());
             }
-            if (!alreadyDelivered) {
-                if (result.shouldApply()) {
-                    update.setDeliveryStatus("待确认");
-                } else {
-                    update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
-                }
+            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
+                update.setDeliveryStatus(nextStatus);
             }
             update.setUpdatedAt(LocalDateTime.now());
-            UpdateWrapper<BossJobDataEntity> uw = new UpdateWrapper<>();
-            if (request.getProfileId() != null) {
-                uw.eq("profile_id", request.getProfileId());
-            }
-            if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
-                uw.eq("encrypt_id", request.getJobKey());
-            } else {
-                uw.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
-            }
-            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
-                uw.eq("scan_run_id", request.getScanRunId());
-            }
-            bossJobDataMapper.update(update, uw);
+            bossJobDataMapper.update(update, bossUpdateWrapper(request));
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
-            boolean alreadyDelivered = existing != null && "已投递".equals(existing.getDeliveryStatus());
+            String nextStatus = DeliveryStatus.protectDelivered(
+                    existing == null ? null : existing.getDeliveryStatus(),
+                    DeliveryStatus.fromAiResult(result)
+            );
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
             update.setAiScore(result.getScore());
             update.setAiDecision(result.getDecision());
@@ -465,22 +456,63 @@ public class JobAiAnalysisService {
             if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
                 update.setJobDescription(request.getJobDescription());
             }
-            if (!alreadyDelivered && !result.shouldApply()) update.setDeliveryStatus(result.isFailure() ? "AI分析失败" : "AI不匹配");
+            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
+                update.setDeliveryStatus(nextStatus);
+            }
             update.setUpdateTime(LocalDateTime.now());
-            UpdateWrapper<ZhilianJobDataEntity> uw = new UpdateWrapper<>();
-            if (request.getProfileId() != null) {
-                uw.eq("profile_id", request.getProfileId());
-            }
-            if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
-                uw.eq("job_id", request.getJobKey());
-            } else {
-                uw.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
-            }
-            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
-                uw.eq("scan_run_id", request.getScanRunId());
-            }
-            zhilianJobDataMapper.update(update, uw);
+            zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
         }
+    }
+
+    private void markPlatformAnalysisStarted(JobAnalysisRequest request) {
+        if (request == null) return;
+        if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            BossJobDataEntity existing = findBossJobForAnalysis(request);
+            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            BossJobDataEntity update = new BossJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdatedAt(LocalDateTime.now());
+            bossJobDataMapper.update(update, bossUpdateWrapper(request));
+        } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
+            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdateTime(LocalDateTime.now());
+            zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
+        }
+    }
+
+    private UpdateWrapper<BossJobDataEntity> bossUpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<BossJobDataEntity> uw = new UpdateWrapper<>();
+        if (request.getProfileId() != null) {
+            uw.eq("profile_id", request.getProfileId());
+        }
+        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            uw.eq("encrypt_id", request.getJobKey());
+        } else {
+            uw.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
+        }
+        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+            uw.eq("scan_run_id", request.getScanRunId());
+        }
+        return uw;
+    }
+
+    private UpdateWrapper<ZhilianJobDataEntity> zhilianUpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<ZhilianJobDataEntity> uw = new UpdateWrapper<>();
+        if (request.getProfileId() != null) {
+            uw.eq("profile_id", request.getProfileId());
+        }
+        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            uw.eq("job_id", request.getJobKey());
+        } else {
+            uw.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+            uw.eq("scan_run_id", request.getScanRunId());
+        }
+        return uw;
     }
 
     private BossJobDataEntity findBossJobForAnalysis(JobAnalysisRequest request) {
@@ -583,7 +615,7 @@ public class JobAiAnalysisService {
         }
 
         public boolean isFailure() {
-            return "AI分析失败".equals(decision);
+            return DeliveryStatus.AI_ANALYSIS_FAILED.equals(decision);
         }
 
         public String toReasonText() {
@@ -599,7 +631,7 @@ public class JobAiAnalysisService {
             AnalysisResult result = new AnalysisResult();
             result.setScore(0);
             result.setDecision(decision);
-            result.setSummary(message == null ? "AI分析失败" : message);
+            result.setSummary(message == null ? DeliveryStatus.AI_ANALYSIS_FAILED : message);
             result.setGreeting("");
             return result;
         }

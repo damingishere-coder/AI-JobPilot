@@ -234,7 +234,7 @@ public class ZhilianService {
         LocalDateTime now = LocalDateTime.now();
         entity.setCreateTime(now);
         entity.setUpdateTime(now);
-        if (entity.getDeliveryStatus() == null) entity.setDeliveryStatus("未投递");
+        if (entity.getDeliveryStatus() == null) entity.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
         zhilianJobDataMapper.insert(entity);
     }
 
@@ -269,7 +269,7 @@ public class ZhilianService {
 
         LocalDateTime now = LocalDateTime.now();
         if (existing == null) {
-            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? "未投递" : entity.getDeliveryStatus());
+            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? DeliveryStatus.NOT_DELIVERED : entity.getDeliveryStatus());
             entity.setCreateTime(now);
             entity.setUpdateTime(now);
             zhilianJobDataMapper.insert(entity);
@@ -307,16 +307,15 @@ public class ZhilianService {
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
-        if ("已投递".equals(incomingStatus)) {
+        if (DeliveryStatus.isDelivered(incomingStatus)) {
             return incomingStatus;
         }
-        if (existingStatus != null && List.of(
-                "已投递", "待确认", "已跳过", "AI分析中", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
-        ).contains(existingStatus)) {
+        if (existingStatus != null && (DeliveryStatus.CHROME_ACCEPTED_STATUSES.contains(existingStatus)
+                || DeliveryStatus.FILTERED.equals(existingStatus))) {
             return existingStatus;
         }
         if (incomingStatus != null && !incomingStatus.isBlank()) return incomingStatus;
-        return existingStatus == null || existingStatus.isBlank() ? "未投递" : existingStatus;
+        return existingStatus == null || existingStatus.isBlank() ? DeliveryStatus.NOT_DELIVERED : existingStatus;
     }
 
     public ZhilianJobDataEntity getZhilianJobById(Long id) {
@@ -329,15 +328,15 @@ public class ZhilianService {
     }
 
     public void markDeliveredByJobId(String jobId) {
-        updateDeliveryStatusByJobId(jobId, "已投递");
+        updateDeliveryStatusByJobId(jobId, DeliveryStatus.DELIVERED);
     }
 
     public void markWaitingConfirmByJobId(String jobId) {
-        updateDeliveryStatusByJobId(jobId, "待确认");
+        updateDeliveryStatusByJobId(jobId, DeliveryStatus.WAITING_CONFIRM);
     }
 
     public void markWaitingConfirmByJobId(String jobId, Long profileId) {
-        updateDeliveryStatusByJobId(jobId, "待确认", profileId);
+        updateDeliveryStatusByJobId(jobId, DeliveryStatus.WAITING_CONFIRM, profileId);
     }
 
     public void updateDeliveryStatusByJobId(String jobId, String status) {
@@ -353,12 +352,12 @@ public class ZhilianService {
         if (profileId == null) return;
         ZhilianJobDataEntity upd = new ZhilianJobDataEntity();
         upd.setDeliveryStatus(status);
-        if ("已投递".equals(status)) {
+        if (DeliveryStatus.isDelivered(status)) {
             upd.setFailureType("");
             upd.setFailureReason("");
-        } else if ("投递失败".equals(status)) {
+        } else if (DeliveryStatus.isDeliveryFailed(status)) {
             upd.setFailureType(normalizeFailureType(failureType));
-            upd.setFailureReason(firstNonBlank(failureReason, "投递失败"));
+            upd.setFailureReason(firstNonBlank(failureReason, DeliveryStatus.DELIVERY_FAILED));
         }
         upd.setUpdateTime(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
@@ -368,20 +367,20 @@ public class ZhilianService {
     }
 
     private String normalizeFailureType(String failureType) {
-        if (failureType == null || failureType.isBlank()) return "UNKNOWN_ERROR";
+        if (failureType == null || failureType.isBlank()) return DeliveryStatus.UNKNOWN_FAILURE_TYPE;
         return failureType.trim();
     }
 
     public void markDeliveredByTitleAndCompany(String jobTitle, String companyName) {
-        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "已投递");
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, DeliveryStatus.DELIVERED);
     }
 
     public void markWaitingConfirmByTitleAndCompany(String jobTitle, String companyName) {
-        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "待确认");
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, DeliveryStatus.WAITING_CONFIRM);
     }
 
     public void markWaitingConfirmByTitleAndCompany(String jobTitle, String companyName, Long profileId) {
-        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, "待确认", profileId);
+        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, DeliveryStatus.WAITING_CONFIRM, profileId);
     }
 
     public void updateDeliveryStatusByTitleAndCompany(String jobTitle, String companyName, String status) {
@@ -398,6 +397,31 @@ public class ZhilianService {
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("job_title", jobTitle).eq("company_name", companyName);
         zhilianJobDataMapper.update(upd, uw);
+    }
+
+    public ZhilianJobDataEntity updateDeliveryStatusById(Long id, String status) {
+        return updateDeliveryStatusById(id, status, null, null);
+    }
+
+    public ZhilianJobDataEntity updateDeliveryStatusById(Long id, String status, String failureType, String failureReason) {
+        if (id == null || status == null || status.isBlank()) {
+            throw new IllegalArgumentException("岗位ID和状态不能为空");
+        }
+        ZhilianJobDataEntity current = getZhilianJobById(id);
+        if (current == null) return null;
+        ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+        update.setId(id);
+        update.setDeliveryStatus(status);
+        if (DeliveryStatus.isDelivered(status)) {
+            update.setFailureType("");
+            update.setFailureReason("");
+        } else if (DeliveryStatus.isDeliveryFailed(status)) {
+            update.setFailureType(normalizeFailureType(failureType));
+            update.setFailureReason(firstNonBlank(failureReason, DeliveryStatus.DELIVERY_FAILED));
+        }
+        update.setUpdateTime(LocalDateTime.now());
+        zhilianJobDataMapper.updateById(update);
+        return getZhilianJobById(id);
     }
 
     // ==================== 投递分析（Dashboard）与列表 ====================
@@ -546,11 +570,11 @@ public class ZhilianService {
 
         Kpi kpi = new Kpi();
         kpi.total = filtered.size();
-        kpi.delivered = filtered.stream().filter(e -> "已投递".equals(nullSafe(e.getDeliveryStatus()))).count();
-        kpi.waitingConfirm = filtered.stream().filter(e -> "待确认".equals(nullSafe(e.getDeliveryStatus()))).count();
-        kpi.pending = filtered.stream().filter(e -> "未投递".equals(nullSafe(e.getDeliveryStatus()))).count();
-        kpi.filtered = filtered.stream().filter(e -> "已过滤".equals(nullSafe(e.getDeliveryStatus()))).count();
-        kpi.failed = filtered.stream().filter(e -> "投递失败".equals(nullSafe(e.getDeliveryStatus()))).count();
+        kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.isDelivered(e.getDeliveryStatus())).count();
+        kpi.waitingConfirm = filtered.stream().filter(e -> DeliveryStatus.isWaitingConfirm(e.getDeliveryStatus())).count();
+        kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(nullSafe(e.getDeliveryStatus()))).count();
+        kpi.filtered = filtered.stream().filter(e -> DeliveryStatus.FILTERED.equals(nullSafe(e.getDeliveryStatus()))).count();
+        kpi.failed = filtered.stream().filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus())).count();
         {
             List<Double> medians = new ArrayList<>();
             for (ZhilianJobDataEntity e : filtered) {
@@ -576,7 +600,7 @@ public class ZhilianService {
         byStatus.forEach((k, v) -> charts.byStatus.add(new NameValue(k, v)));
 
         Map<String, Long> byFailureType = filtered.stream()
-                .filter(e -> "投递失败".equals(nullSafe(e.getDeliveryStatus())))
+                .filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus()))
                 .collect(Collectors.groupingBy(e -> nullSafeFailureType(e.getFailureType()), Collectors.counting()));
         byFailureType.forEach((k, v) -> charts.byFailureType.add(new NameValue(k, v)));
 
@@ -787,7 +811,7 @@ public class ZhilianService {
 
     private static String nullSafe(String s) { return s == null ? "" : s.trim(); }
 
-    private static String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? "UNKNOWN_ERROR" : s.trim(); }
+    private static String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? DeliveryStatus.UNKNOWN_FAILURE_TYPE : s.trim(); }
 
     private StatsResponse emptyStatsResponse() {
         StatsResponse resp = new StatsResponse();

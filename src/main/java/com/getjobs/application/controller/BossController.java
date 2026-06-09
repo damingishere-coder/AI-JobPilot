@@ -7,6 +7,7 @@ import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
 import com.getjobs.application.service.CookieService;
 import com.getjobs.application.service.ConfigService;
+import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.boss.Boss;
@@ -144,7 +145,7 @@ public class BossController {
                 }
 
                 String currentStatus = saved.getDeliveryStatus();
-                if ("AI分析中".equals(currentStatus) || isFinalBossStatus(currentStatus)) {
+                if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
                     skipped++;
                     Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
                     if (snapshot != null) {
@@ -165,7 +166,7 @@ public class BossController {
                             "jobName", Objects.toString(display.getJobName(), ""),
                             "companyName", Objects.toString(display.getCompanyName(), ""),
                             "score", 0,
-                            "decision", "采集信息不足",
+                            "decision", DeliveryStatus.COLLECTION_INSUFFICIENT,
                             "shouldApply", false
                     ));
                     String message = "采集信息不足：" + Objects.toString(display.getCompanyName(), "") + " / " + Objects.toString(display.getJobName(), "") + "，缺少：" + String.join("、", missingFields);
@@ -174,7 +175,7 @@ public class BossController {
                     continue;
                 }
 
-                saved = bossService.updateDeliveryStatusById(saved.getId(), "AI分析中");
+                saved = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.AI_ANALYZING);
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("boss");
@@ -199,7 +200,7 @@ public class BossController {
 
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
-                    bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, "未投递"));
+                    bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
                     Map<String, Object> response = bossChromeJobsResponse(
                             false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
                     );
@@ -556,19 +557,7 @@ public class BossController {
     }
 
     private String normalizeChromeDeliveryStatus(String status) {
-        if (status == null || status.isBlank()) return "未投递";
-        String value = status.trim();
-        if ("已投递".equals(value)
-                || "待确认".equals(value)
-                || "已跳过".equals(value)
-                || "AI分析中".equals(value)
-                || "AI不匹配".equals(value)
-                || "AI分析失败".equals(value)
-                || "采集信息不足".equals(value)
-                || "投递失败".equals(value)) {
-            return value;
-        }
-        return "未投递";
+        return DeliveryStatus.normalizeChromeStatus(status);
     }
 
     private List<String> collectMissingAnalysisFields(BossJobDataEntity job) {
@@ -587,8 +576,7 @@ public class BossController {
 
     private boolean isFinalBossStatus(String status) {
         if (status == null || status.isBlank()) return false;
-        return List.of("待确认", "已投递", "已跳过", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败")
-                .contains(status.trim());
+        return DeliveryStatus.isFinalStatus(status);
     }
 
     private Map<String, Object> bossChromeJobsResponse(boolean success,
@@ -634,7 +622,7 @@ public class BossController {
         item.put("deliveryStatus", Objects.toString(job.getDeliveryStatus(), ""));
         item.put("reason", Objects.toString(job.getAiReason(), ""));
         item.put("priorityCompany", job.getPriorityCompany() != null && job.getPriorityCompany() == 1);
-        item.put("shouldApply", "待确认".equals(job.getDeliveryStatus()) || "已投递".equals(job.getDeliveryStatus()) || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")));
+        item.put("shouldApply", DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()) || DeliveryStatus.isDelivered(job.getDeliveryStatus()) || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")));
         item.put("restored", true);
         return item;
     }

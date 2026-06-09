@@ -710,7 +710,7 @@ public class BossService {
 
         LocalDateTime now = LocalDateTime.now();
         if (existing == null) {
-            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? "未投递" : entity.getDeliveryStatus());
+            entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? DeliveryStatus.NOT_DELIVERED : entity.getDeliveryStatus());
             entity.setCreatedAt(now);
             entity.setUpdatedAt(now);
             bossJobDataMapper.insert(entity);
@@ -731,9 +731,9 @@ public class BossService {
                 : "岗位详情缺失，未调用AI分析；缺少：" + String.join("、", missingFields);
         BossJobDataEntity update = new BossJobDataEntity();
         update.setId(id);
-        update.setDeliveryStatus("采集信息不足");
+        update.setDeliveryStatus(DeliveryStatus.COLLECTION_INSUFFICIENT);
         update.setAiScore(0);
-        update.setAiDecision("采集信息不足");
+        update.setAiDecision(DeliveryStatus.COLLECTION_INSUFFICIENT);
         update.setAiReason(detail);
         update.setUpdatedAt(LocalDateTime.now());
         bossJobDataMapper.updateById(update);
@@ -777,15 +777,14 @@ public class BossService {
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
-        if ("已投递".equals(incomingStatus)) {
+        if (DeliveryStatus.isDelivered(incomingStatus)) {
             return incomingStatus;
         }
-        if (existingStatus != null && List.of(
-                "已投递", "待确认", "已跳过", "AI分析中", "AI不匹配", "AI分析失败", "采集信息不足", "投递失败"
-        ).contains(existingStatus)) {
+        if (existingStatus != null && (DeliveryStatus.CHROME_ACCEPTED_STATUSES.contains(existingStatus)
+                || DeliveryStatus.FILTERED.equals(existingStatus))) {
             return existingStatus;
         }
-        return firstNonBlank(incomingStatus, existingStatus, "未投递");
+        return firstNonBlank(incomingStatus, existingStatus, DeliveryStatus.NOT_DELIVERED);
     }
 
     private String firstNonBlank(String... values) {
@@ -819,12 +818,12 @@ public class BossService {
         if (profileId == null) return;
         BossJobDataEntity update = new BossJobDataEntity();
         update.setDeliveryStatus(status);
-        if ("已投递".equals(status)) {
+        if (DeliveryStatus.isDelivered(status)) {
             update.setFailureType("");
             update.setFailureReason("");
-        } else if ("投递失败".equals(status)) {
-            update.setFailureType("UNKNOWN_ERROR");
-            update.setFailureReason("投递失败");
+        } else if (DeliveryStatus.isDeliveryFailed(status)) {
+            update.setFailureType(DeliveryStatus.UNKNOWN_FAILURE_TYPE);
+            update.setFailureReason(DeliveryStatus.DELIVERY_FAILED);
         }
         update.setUpdatedAt(LocalDateTime.now());
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
@@ -918,12 +917,12 @@ public class BossService {
         BossJobDataEntity update = new BossJobDataEntity();
         update.setId(id);
         update.setDeliveryStatus(status);
-        if ("已投递".equals(status)) {
+        if (DeliveryStatus.isDelivered(status)) {
             update.setFailureType("");
             update.setFailureReason("");
-        } else if ("投递失败".equals(status)) {
+        } else if (DeliveryStatus.isDeliveryFailed(status)) {
             update.setFailureType(normalizeFailureType(failureType));
-            update.setFailureReason(firstNonBlank(failureReason, "投递失败"));
+            update.setFailureReason(firstNonBlank(failureReason, DeliveryStatus.DELIVERY_FAILED));
         }
         update.setUpdatedAt(LocalDateTime.now());
         bossJobDataMapper.updateById(update);
@@ -931,7 +930,7 @@ public class BossService {
     }
 
     private String normalizeFailureType(String failureType) {
-        if (failureType == null || failureType.isBlank()) return "UNKNOWN_ERROR";
+        if (failureType == null || failureType.isBlank()) return DeliveryStatus.UNKNOWN_FAILURE_TYPE;
         return failureType.trim();
     }
 
@@ -1312,12 +1311,12 @@ public class BossService {
 
             // KPI
             resp.kpi.total = filtered.size();
-            resp.kpi.delivered = filtered.stream().filter(e -> "已投递".equals(e.getDeliveryStatus())).count();
-            resp.kpi.pending = filtered.stream().filter(e -> "未投递".equals(e.getDeliveryStatus())).count();
-            resp.kpi.waitingConfirm = filtered.stream().filter(e -> "待确认".equals(e.getDeliveryStatus())).count();
-            resp.kpi.filtered = filtered.stream().filter(e -> "已过滤".equals(e.getDeliveryStatus())).count();
-            resp.kpi.failed = filtered.stream().filter(e -> "投递失败".equals(e.getDeliveryStatus())).count();
-            resp.kpi.insufficient = filtered.stream().filter(e -> "采集信息不足".equals(e.getDeliveryStatus())).count();
+            resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.isDelivered(e.getDeliveryStatus())).count();
+            resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(e.getDeliveryStatus())).count();
+            resp.kpi.waitingConfirm = filtered.stream().filter(e -> DeliveryStatus.isWaitingConfirm(e.getDeliveryStatus())).count();
+            resp.kpi.filtered = filtered.stream().filter(e -> DeliveryStatus.FILTERED.equals(e.getDeliveryStatus())).count();
+            resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus())).count();
+            resp.kpi.insufficient = filtered.stream().filter(e -> DeliveryStatus.COLLECTION_INSUFFICIENT.equals(e.getDeliveryStatus())).count();
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // Charts - 分组聚合（在内存中统计）
@@ -1326,7 +1325,7 @@ public class BossService {
             byStatus.forEach((k, v) -> charts.byStatus.add(new NameValue(k, v)));
 
             Map<String, Long> byFailureType = filtered.stream()
-                    .filter(e -> "投递失败".equals(e.getDeliveryStatus()))
+                    .filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus()))
                     .collect(Collectors.groupingBy(e -> nullSafeFailureType(e.getFailureType()), Collectors.counting()));
             byFailureType.forEach((k, v) -> charts.byFailureType.add(new NameValue(k, v)));
 
@@ -1421,7 +1420,7 @@ public class BossService {
 
     private String nullSafe(String s) { return s == null || s.isEmpty() ? "未知" : s; }
 
-    private String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? "UNKNOWN_ERROR" : s.trim(); }
+    private String nullSafeFailureType(String s) { return s == null || s.trim().isEmpty() ? DeliveryStatus.UNKNOWN_FAILURE_TYPE : s.trim(); }
 
     private Overview buildOverviewFromDatabase(Connection conn, Long profileId, String scanRunId) throws Exception {
         Overview overview = new Overview();
@@ -1480,9 +1479,9 @@ public class BossService {
         for (BossJobDataEntity job : jobs) {
             String status = nullSafeRaw(job.getDeliveryStatus());
             String decision = nullSafeRaw(job.getAiDecision());
-            if ("待确认".equals(status) || "已投递".equals(status)) overview.aiPassCount++;
-            if ("AI不匹配".equals(status) || "AI不匹配".equals(decision)) overview.aiRejectCount++;
-            if ("AI分析失败".equals(status) || "AI分析失败".equals(decision)) overview.aiFailedCount++;
+            if (DeliveryStatus.isWaitingConfirm(status) || DeliveryStatus.isDelivered(status)) overview.aiPassCount++;
+            if (DeliveryStatus.AI_NOT_MATCH.equals(status) || DeliveryStatus.AI_NOT_MATCH.equals(decision)) overview.aiRejectCount++;
+            if (DeliveryStatus.AI_ANALYSIS_FAILED.equals(status) || DeliveryStatus.AI_ANALYSIS_FAILED.equals(decision)) overview.aiFailedCount++;
             if (job.getPriorityCompany() != null && job.getPriorityCompany() == 1) overview.priorityCompanyCount++;
             if (isBlank(job.getJobUrl())) overview.missingLinkCount++;
             if (isBlank(job.getSalary())) overview.missingSalaryCount++;
