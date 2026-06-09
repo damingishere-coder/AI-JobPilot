@@ -40,6 +40,19 @@ http://localhost:8888
 | `GET` | `/api/cookie` | 获取 Cookie |
 | `POST` | `/api/cookie/save` | 保存 Cookie |
 
+## Profile 档案
+
+Profile 用于区分不同候选人或简历上下文。当前档案会影响 AI 配置、简历、平台配置、岗位数据和 AI 分析结果的读取与写入。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/profiles` | 获取全部档案、当前档案和是否已有档案 |
+| `GET` | `/api/profiles/current` | 获取当前激活档案 |
+| `POST` | `/api/profiles` | 创建档案，请求体可传 `name` |
+| `PUT` | `/api/profiles/{id}` | 重命名指定档案，请求体可传 `name` |
+| `POST` | `/api/profiles/{id}/activate` | 切换当前激活档案 |
+| `DELETE` | `/api/profiles/{id}` | 删除指定档案并返回删除后的当前档案 |
+
 ## Boss 直聘
 
 ### 配置与黑名单
@@ -74,8 +87,9 @@ http://localhost:8888
 | `GET` | `/api/boss/stats` | Boss 统计数据 |
 | `GET` | `/api/boss/list` | Boss 投递结果列表 |
 | `GET` | `/api/boss/reload` | 重新加载 Boss 数据 |
-| `POST` | `/api/boss/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 投递任务 |
-| `POST` | `/api/boss/jobs/confirm-batch` | 按 id 或筛选条件生成 Boss 批量 Chrome 投递任务 |
+| `DELETE` | `/api/boss/analysis` | 清空当前档案下的 Boss 岗位分析数据 |
+| `POST` | `/api/boss/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 用户确认后投递任务 |
+| `POST` | `/api/boss/jobs/confirm-batch` | 按 id 或筛选条件生成 Boss 批量 Chrome 用户确认后投递任务 |
 | `POST` | `/api/boss/jobs/{id}/delivery-result` | Chrome Bridge 回写 Boss 投递成功或失败 |
 | `POST` | `/api/boss/jobs/{id}/skip` | 手动跳过 Boss 待确认岗位 |
 
@@ -134,11 +148,12 @@ http://localhost:8888
 | `POST` | `/api/zhilian/save-cookie` | 保存智联 Cookie |
 | `GET` | `/api/zhilian/stats` | 智联统计数据 |
 | `GET` | `/api/zhilian/list` | 智联投递结果列表 |
+| `DELETE` | `/api/zhilian/analysis` | 清空当前档案下的智联岗位分析数据 |
 | `POST` | `/api/zhilian/chrome/jobs` | 接收 Chrome Bridge 采集的智联岗位并执行 AI 分析 |
 | `GET` | `/api/zhilian/openclaw/status` | 检查 OpenClaw 实验浏览器通路 |
-| `POST` | `/api/zhilian/openclaw/probe` | OpenClaw 实验采集智联岗位，不执行真实投递 |
-| `POST` | `/api/zhilian/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 投递任务 |
-| `POST` | `/api/zhilian/jobs/confirm-batch` | 按 id 或筛选条件生成智联批量 Chrome 投递任务 |
+| `POST` | `/api/zhilian/openclaw/probe` | OpenClaw 实验采集智联岗位，不执行投递 |
+| `POST` | `/api/zhilian/jobs/{id}/confirm` | 校验待确认岗位并生成单个 Chrome 用户确认后投递任务 |
+| `POST` | `/api/zhilian/jobs/confirm-batch` | 按 id 或筛选条件生成智联批量 Chrome 用户确认后投递任务 |
 | `POST` | `/api/zhilian/jobs/{id}/delivery-result` | Chrome Bridge 回写智联投递成功或失败 |
 | `POST` | `/api/zhilian/start` | 启动智联任务 |
 | `POST` | `/api/zhilian/stop` | 停止智联任务 |
@@ -170,7 +185,7 @@ Chrome Bridge 采集岗位时提交到后端的主要请求：
 }
 ```
 
-后端返回 `tasks` 时，前端会交给 Chrome Bridge 执行投递。投递完成后扩展调用 `delivery-result`，请求体为：
+Boss/智联推荐工作流是“扫描岗位 → AI 分析 → 待确认 → 用户确认后投递”。只有用户在分析页确认待确认岗位后，后端才会返回 `tasks`，前端再交给 Chrome Bridge 执行投递。投递完成后扩展调用 `delivery-result`，请求体为：
 
 ```json
 {
