@@ -8,8 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import PageHeader from '@/app/components/PageHeader'
 import ProfileSwitcher, { type Profile } from '@/app/components/ProfileSwitcher'
+import { API_BASE } from '@/lib/api'
 
-const API_BASE = 'http://localhost:8888'
 const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
 
 const ANALYSIS_LOGIC_TEXT = `1. 平台配置页先决定怎么找岗位：关键词、城市、薪资、学历、经验、行业、公司规模等。

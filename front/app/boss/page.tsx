@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
+import { API_BASE } from '@/lib/api'
 import { createPortal } from 'react-dom'
 import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
@@ -251,7 +252,7 @@ export default function BossPage() {
       return
     }
 
-    const client = createSSEWithBackoff('http://localhost:8888/api/jobs/login-status/stream', {
+    const client = createSSEWithBackoff(`${API_BASE}/api/jobs/login-status/stream`, {
       onOpen: () => {
         console.log('[SSE] 连接已打开')
       },
@@ -325,7 +326,7 @@ export default function BossPage() {
       return
     }
 
-    const client = createSSEWithBackoff('http://localhost:8888/api/boss/stream', {
+    const client = createSSEWithBackoff(`${API_BASE}/api/boss/stream`, {
       onOpen: () => appendProgressLog({ type: 'info', message: 'Boss 运行日志已连接。' }),
       onError: (_e, attempt, delay) => {
         appendProgressLog({ type: 'warning', message: `Boss 运行日志连接中断，${Math.round(delay / 1000)}秒后第${attempt}次重连。` })
@@ -416,7 +417,7 @@ export default function BossPage() {
   const fetchAllData = async () => {
     setLoading(true)
     try {
-      const response = await fetch('http://localhost:8888/api/boss/config')
+      const response = await fetch(`${API_BASE}/api/boss/config`)
       const data = await response.json()
 
       console.log('Fetched data:', data)
@@ -656,7 +657,7 @@ export default function BossPage() {
         stage: toBracketList(selectedStage),
         salary: toBracketList(selectedSalary),
       }
-      const response = await fetch('http://localhost:8888/api/boss/config', {
+      const response = await fetch(`${API_BASE}/api/boss/config`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -706,7 +707,7 @@ export default function BossPage() {
     }
 
     try {
-      const response = await fetch('http://localhost:8888/api/boss/config/blacklist', {
+      const response = await fetch(`${API_BASE}/api/boss/config/blacklist`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -732,7 +733,7 @@ export default function BossPage() {
 
   const handleDeleteBlacklist = async (id: number) => {
     try {
-      const response = await fetch(`http://localhost:8888/api/boss/config/blacklist/${id}`, {
+      const response = await fetch(`${API_BASE}/api/boss/config/blacklist/${id}`, {
         method: 'DELETE',
       })
 
@@ -816,7 +817,7 @@ export default function BossPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
-      await fetch('http://localhost:8888/api/boss/chrome/stop', {
+      await fetch(`${API_BASE}/api/boss/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runId }),
@@ -875,7 +876,7 @@ export default function BossPage() {
 
   const triggerLogout = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/boss/logout', { method: 'POST' })
+      const response = await fetch(`${API_BASE}/api/boss/logout`, { method: 'POST' })
       const data = await response.json()
       if (data.success) {
         setIsDelivering(false)

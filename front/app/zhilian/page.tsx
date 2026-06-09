@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
+import { API_BASE } from '@/lib/api'
 import { BiLogOut, BiSave, BiBriefcase, BiPlay, BiStop, BiLinkExternal, BiCodeAlt } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -141,7 +142,7 @@ export default function ZhilianPage() {
       return
     }
 
-    const client = createSSEWithBackoff('http://localhost:8888/api/jobs/login-status/stream', {
+    const client = createSSEWithBackoff(`${API_BASE}/api/jobs/login-status/stream`, {
       onOpen: () => console.log('[智联招聘 SSE] 连接已打开'),
       onError: (e, attempt, delay) => {
         console.warn(`[智联招聘 SSE] 连接错误，第${attempt}次重连，延迟 ${delay}ms`, e)
@@ -239,7 +240,7 @@ export default function ZhilianPage() {
       return
     }
 
-    const client = createSSEWithBackoff('http://localhost:8888/api/zhilian/stream', {
+    const client = createSSEWithBackoff(`${API_BASE}/api/zhilian/stream`, {
       onOpen: () => appendProgressLog({ type: 'info', message: '智联招聘运行日志已连接。' }),
       onError: (_e, attempt, delay) => {
         appendProgressLog({ type: 'warning', message: `智联招聘运行日志连接中断，${Math.round(delay / 1000)}秒后第${attempt}次重连。` })
@@ -316,7 +317,7 @@ export default function ZhilianPage() {
   const fetchAllData = async () => {
     setLoadingConfig(true)
     try {
-      const res = await fetch('http://localhost:8888/api/zhilian/config')
+      const res = await fetch(`${API_BASE}/api/zhilian/config`)
       const data = await res.json()
       setCurrentProfile(data.currentProfile || null)
       setHasProfile(Boolean(data.hasProfile || data.currentProfile))
@@ -353,7 +354,7 @@ export default function ZhilianPage() {
 
   const checkOpenClawStatus = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/zhilian/openclaw/status')
+      const response = await fetch(`${API_BASE}/api/zhilian/openclaw/status`)
       const data = await response.json()
       const ready = !!data.success
       setOpenClawReady(ready)
@@ -373,7 +374,7 @@ export default function ZhilianPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('http://localhost:8888/api/zhilian/config', { method: 'GET' })
+        const res = await fetch(`${API_BASE}/api/zhilian/config`, { method: 'GET' })
         const ok = !!res && res.ok
         setBackendAvailable(ok)
         if (ok) {
@@ -439,7 +440,7 @@ export default function ZhilianPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
-      await fetch('http://localhost:8888/api/zhilian/chrome/stop', {
+      await fetch(`${API_BASE}/api/zhilian/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runId }),
@@ -475,7 +476,7 @@ export default function ZhilianPage() {
     appendProgressLog({ type: 'info', message: 'OpenClaw智联实验采集已启动：只读取页面并提交现有AI分析入库接口，不会真实申请职位。' })
     try {
       const searchJobLimit = commitSearchJobLimit()
-      const probeResponse = await fetch('http://localhost:8888/api/zhilian/openclaw/probe', {
+      const probeResponse = await fetch(`${API_BASE}/api/zhilian/openclaw/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -497,7 +498,7 @@ export default function ZhilianPage() {
         return
       }
 
-      const submitResponse = await fetch('http://localhost:8888/api/zhilian/chrome/jobs', {
+      const submitResponse = await fetch(`${API_BASE}/api/zhilian/chrome/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -548,7 +549,7 @@ export default function ZhilianPage() {
 
   const triggerLogout = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/zhilian/logout', { method: 'POST' })
+      const response = await fetch(`${API_BASE}/api/zhilian/logout`, { method: 'POST' })
       const data = await response.json()
       setIsLoggedIn(false)
       setLogoutResult({ success: data.success, message: data.success ? '已退出登录，Cookie已清空。' : data.message })
@@ -561,7 +562,7 @@ export default function ZhilianPage() {
 
   const handleSaveCookie = async () => {
     try {
-      const response = await fetch('http://localhost:8888/api/cookie/save?platform=zhilian', { method: 'POST' })
+      const response = await fetch(`${API_BASE}/api/cookie/save?platform=zhilian`, { method: 'POST' })
       const data = await response.json()
       setSaveResult({ success: data.success, message: data.success ? '配置保存成功。' : data.message })
       setShowSaveDialog(true)
@@ -584,13 +585,13 @@ export default function ZhilianPage() {
         keywords: serializeKeywordsForDb(config.keywords),
         searchJobLimit,
       }
-      const response = await fetch('http://localhost:8888/api/zhilian/config', {
+      const response = await fetch(`${API_BASE}/api/zhilian/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
       if (response.ok) {
-        try { await fetch('http://localhost:8888/api/cookie/save?platform=zhilian', { method: 'POST' }) } catch {}
+        try { await fetch(`${API_BASE}/api/cookie/save?platform=zhilian`, { method: 'POST' }) } catch {}
         await fetchAllData()
         setSaveResult({ success: true, message: '保存成功，配置已更新。' })
       } else {

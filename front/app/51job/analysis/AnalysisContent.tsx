@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
+import { API_BASE } from "@/lib/api"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
 
 type NameValue = { name: string; value: number }
@@ -56,7 +57,6 @@ type PagedResult51 = {
   size: number
 }
 
-const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 const CATEGORY_COLORS = [
   "#3b82f6","#10b981","#f59e0b","#ef4444","#6366f1","#22c55e","#fb7185","#a78bfa","#f97316","#06b6d4"
 ]

@@ -5,8 +5,7 @@ import { BiPlus, BiRefresh, BiUserCircle } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-
-const API_BASE = 'http://localhost:8888'
+import { API_BASE } from '@/lib/api'
 
 type ApiResponse = {
   success?: boolean

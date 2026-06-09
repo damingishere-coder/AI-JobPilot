@@ -1,6 +1,5 @@
+import { API_BASE } from "@/lib/api"
 import { getChromeBridgeStatus, sendChromeBridgeMessage } from "@/lib/chromeBridge"
-
-const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 
 export type SetupCheckKey =
   | "backend"
@@ -100,7 +99,7 @@ async function checkBackend(): Promise<SetupCheckItem> {
     const done = status === "HEALTHY" || status === "UP"
     return item("backend", "后端连接", done, done ? "本地后端服务运行正常" : "后端健康检查返回异常", "环境配置", "/env-config", !done)
   } catch {
-    return item("backend", "后端连接", false, "未检测到 localhost:8888 后端服务", "环境配置", "/env-config", true)
+    return item("backend", "后端连接", false, `未检测到 ${API_BASE} 后端服务`, "环境配置", "/env-config", true)
   }
 }
 

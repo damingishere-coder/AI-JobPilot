@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
+import { API_BASE } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import {
   BiRefresh,
@@ -88,8 +89,6 @@ type ChartConstructor = new (
     options: Record<string, unknown>
   }
 ) => ChartInstance
-
-const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 
 const CATEGORY_COLORS = [
   "#3b82f6",

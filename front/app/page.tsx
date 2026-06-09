@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import PageHeader from "@/app/components/PageHeader"
 import SetupChecklist from "@/app/components/SetupChecklist"
+import { API_BASE } from "@/lib/api"
 import {
   BiBarChart,
   BiBrain,
@@ -17,8 +18,6 @@ import {
   BiRefresh,
   BiSearch,
 } from "react-icons/bi"
-
-const API_BASE = process.env.API_BASE_URL || "http://localhost:8888"
 
 type PlatformStats = {
   pendingConfirm: number

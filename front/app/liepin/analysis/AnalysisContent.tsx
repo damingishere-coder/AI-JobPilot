@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
+import { API_BASE } from "@/lib/api"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
@@ -60,7 +61,6 @@ type PagedResult = {
   size: number
 }
 
-const API_BASE = "http://localhost:8888"
 const CATEGORY_COLORS = [
   "#3b82f6",
   "#10b981",

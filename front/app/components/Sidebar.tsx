@@ -20,6 +20,7 @@ import {
 } from 'react-icons/bi'
 import { motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
+import { API_BASE } from '@/lib/api'
 
 type NavItem = {
   href: string
@@ -92,14 +93,12 @@ export default function Sidebar() {
     const check = async () => {
       if (checkingRef.current) return
       checkingRef.current = true
-      const baseUrl = process.env.API_BASE_URL || 'http://localhost:8888'
-
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 3000)
       try {
-        let res = await fetch(`${baseUrl}/api/health`, { signal: controller.signal })
+        let res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal })
         if (res.status === 404) {
-          res = await fetch(`${baseUrl}/actuator/health`, { signal: controller.signal })
+          res = await fetch(`${API_BASE}/actuator/health`, { signal: controller.signal })
         }
         if (!res.ok) throw new Error(`status ${res.status}`)
         const data = await res.json()

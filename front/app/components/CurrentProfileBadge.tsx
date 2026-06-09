@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react'
 import { BiRefresh, BiUserCircle } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
-
-const API_BASE = 'http://localhost:8888'
+import { API_BASE } from '@/lib/api'
 
 export type CurrentProfile = {
   id: number

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
+import { API_BASE } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import {
   BiRefresh,
@@ -106,7 +107,6 @@ type PagedResult = {
   size: number
 }
 
-const API_BASE = "http://localhost:8888"
 const DELIVERY_STATUS_OPTIONS = ["待确认", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
 const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
 const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
