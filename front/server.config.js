@@ -33,6 +33,6 @@ module.exports = {
   // 其他自定义配置
   app: {
     name: '投递牛马',
-    version: '1.0.0',
+    version: '1.2.0',
   }
 }
