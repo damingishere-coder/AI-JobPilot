@@ -1,8 +1,9 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-08-zhilian-cross-page-limit-1";
-  if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
+  const EXTENSION_VERSION = "2026-06-09-zhilian-reinject-listener-1";
+  const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
+  window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ = CONTENT_INSTANCE_ID;
 
   const API_BASE = "http://localhost:8888";
   const SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SCAN_TASK__";
@@ -74,14 +75,14 @@
   let activeScanPromise = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ !== EXTENSION_VERSION) return;
+    if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
     const messageType = normalizeRuntimeMessageType(message?.type);
     if (messageType === "PING_CONTENT") {
-      sendResponse({ success: true, version: EXTENSION_VERSION });
+      sendResponse({ success: true, version: EXTENSION_VERSION, instanceId: CONTENT_INSTANCE_ID });
       return;
     }
     if (messageType === "GET_ZHILIAN_CONTENT_VERSION") {
-      sendResponse({ success: true, version: EXTENSION_VERSION });
+      sendResponse({ success: true, version: EXTENSION_VERSION, instanceId: CONTENT_INSTANCE_ID });
       return;
     }
     if (messageType === "ZHILIAN_SCAN_STOP") {
