@@ -1,6 +1,19 @@
 "use client"
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import {
+  ArcElement,
+  BarElement,
+  CategoryScale,
+  Chart,
+  Legend,
+  LinearScale,
+  LineElement,
+  PointElement,
+  Title,
+  Tooltip,
+} from "chart.js"
+import type { ChartDataset } from "chart.js"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -77,18 +90,7 @@ type PagedResult = {
   size: number
 }
 
-type ChartInstance = { destroy: () => void }
-type ChartConstructor = new (
-  context: CanvasRenderingContext2D,
-  config: {
-    type: "pie" | "bar" | "line"
-    data: {
-      labels: string[]
-      datasets: Array<Record<string, unknown>>
-    }
-    options: Record<string, unknown>
-  }
-) => ChartInstance
+type ChartRef = { destroy: () => void }
 
 const CATEGORY_COLORS = [
   "#3b82f6",
@@ -106,6 +108,8 @@ const CATEGORY_COLORS = [
   "#f472b6",
   "#64748b",
 ]
+
+Chart.register(ArcElement, BarElement, LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Title)
 const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",
   PLATFORM_VERIFICATION: "平台验证",
@@ -148,34 +152,8 @@ function ChartCanvas({
   colors?: string[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<ChartInstance | null>(null)
+  const chartRef = useRef<ChartRef | null>(null)
   const toSolid = (hex: string) => hex
-
-  async function ensureChart(): Promise<ChartConstructor> {
-    const chartWindow = window as Window & { Chart?: ChartConstructor }
-    if (typeof window !== "undefined" && chartWindow.Chart) return chartWindow.Chart
-    return new Promise<ChartConstructor>((resolve, reject) => {
-      const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
-      if (existing) {
-        existing.addEventListener("load", () => {
-          if (chartWindow.Chart) resolve(chartWindow.Chart)
-          else reject(new Error("Chart.js unavailable after load"))
-        })
-        existing.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
-        return
-      }
-      const script = document.createElement("script")
-      script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
-      script.async = true
-      script.setAttribute("data-chartjs-cdn", "true")
-      script.addEventListener("load", () => {
-        if (chartWindow.Chart) resolve(chartWindow.Chart)
-        else reject(new Error("Chart.js unavailable after load"))
-      })
-      script.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
-      document.head.appendChild(script)
-    })
-  }
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d")
@@ -185,8 +163,6 @@ function ChartCanvas({
       chartRef.current.destroy()
       chartRef.current = null
     }
-
-    let cancelled = false
 
     const pieColorsBase = [
       "#3b82f6",
@@ -218,43 +194,35 @@ function ChartCanvas({
       return color
     })()
 
-    const dataset: Record<string, unknown> = {
+    const dataset: ChartDataset<"pie" | "bar" | "line", number[]> = {
       label: title || "",
       data,
       backgroundColor,
       borderColor,
+      ...(type === "line"
+        ? {
+            fill: false,
+            pointBackgroundColor: toSolid(color),
+            pointBorderColor: toSolid(color),
+          }
+        : {}),
     }
 
-    if (type === "line") {
-      dataset.fill = false
-      dataset.pointBackgroundColor = toSolid(color)
-      dataset.pointBorderColor = toSolid(color)
-    }
-
-    ;(async () => {
-      try {
-        const Chart = await ensureChart()
-        if (cancelled) return
-        chartRef.current = new Chart(ctx, {
-          type,
-          data: { labels, datasets: [dataset] },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: { display: type === "pie" },
-              title: { display: !!title, text: title },
-            },
-            scales: type !== "pie" ? { x: { ticks: { autoSkip: true } }, y: { beginAtZero: true } } : undefined,
-          },
-        })
-      } catch (error) {
-        console.error("Failed to create chart:", error)
-      }
-    })()
+    chartRef.current = new Chart(ctx, {
+      type,
+      data: { labels, datasets: [dataset] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: type === "pie" },
+          title: { display: !!title, text: title },
+        },
+        scales: type !== "pie" ? { x: { ticks: { autoSkip: true } }, y: { beginAtZero: true } } : undefined,
+      },
+    })
 
     return () => {
-      cancelled = true
       if (chartRef.current) {
         chartRef.current.destroy()
         chartRef.current = null
