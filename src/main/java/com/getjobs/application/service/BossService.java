@@ -14,7 +14,6 @@ import com.getjobs.application.mapper.BossConfigMapper;
 import com.getjobs.application.mapper.BossIndustryMapper;
 import com.getjobs.application.mapper.BossOptionMapper;
 import com.getjobs.worker.boss.BossConfig;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,7 +41,7 @@ import java.util.regex.Pattern;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-@DependsOn("profileService")
+@DependsOn("databaseSchemaService")
 public class BossService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
@@ -58,34 +57,6 @@ public class BossService {
 
     public Long getCurrentProfileId() {
         return profileService.getCurrentProfileId();
-    }
-
-    @PostConstruct
-    public void ensureBossConfigSchema() {
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            addColumn(stmt, "boss_config", "auto_deliver", "INTEGER DEFAULT 0");
-            addColumn(stmt, "boss_config", "search_job_limit", "INTEGER DEFAULT 20");
-            addColumn(stmt, "boss_config", "profile_id", "INTEGER");
-            addColumn(stmt, "boss_data", "profile_id", "INTEGER");
-            try {
-                Long profileId = profileService.getCurrentProfileIdOrNull();
-                stmt.executeUpdate("UPDATE boss_config SET profile_id = " + profileId + " WHERE profile_id IS NULL");
-                stmt.executeUpdate("UPDATE boss_data SET profile_id = " + profileId + " WHERE profile_id IS NULL");
-            } catch (Exception ignored) {
-            }
-            addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
-            addColumn(stmt, "boss_data", "failure_type", "TEXT");
-            addColumn(stmt, "boss_data", "failure_reason", "TEXT");
-        } catch (Exception e) {
-            log.warn("检查 boss_config 表结构失败：{}", e.getMessage());
-        }
-    }
-
-    private void addColumn(Statement stmt, String table, String column, String type) {
-        try {
-            stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
-        } catch (Exception ignored) {
-        }
     }
 
     // ==================== Option相关方法 ====================
@@ -560,6 +531,7 @@ public class BossService {
     /**
      * 确保 boss_data 表的列顺序以 encrypt_id、encrypt_user_id 开头。
      * 若不满足，则进行一次在线迁移：创建新表、复制数据、替换旧表。
+     * 该迁移会重建 boss_data，比普通补列风险更高，暂时保留在业务刷新入口中按需执行。
      */
     public void ensureBossDataColumnOrder() {
         java.sql.Connection conn = null;

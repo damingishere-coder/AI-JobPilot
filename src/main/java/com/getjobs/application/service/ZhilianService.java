@@ -16,7 +16,6 @@ import org.springframework.context.annotation.DependsOn;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import jakarta.annotation.PostConstruct;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.Statement;
@@ -26,7 +25,7 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-@DependsOn("profileService")
+@DependsOn("databaseSchemaService")
 public class ZhilianService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
@@ -200,56 +199,7 @@ public class ZhilianService {
         return e == null ? null : e.getName();
     }
 
-    // ==================== 数据表初始化与数据操作 ====================
-
-    @PostConstruct
-    public void ensureZhilianDataTableExists() {
-        String createSql = "CREATE TABLE IF NOT EXISTS zhilian_data (" +
-                " id INTEGER PRIMARY KEY AUTOINCREMENT," +
-                " profile_id INTEGER," +
-                " job_id VARCHAR(64)," +
-                " job_title VARCHAR(200)," +
-                " job_link VARCHAR(300)," +
-                " salary VARCHAR(100)," +
-                " location VARCHAR(100)," +
-                " experience VARCHAR(100)," +
-                " degree VARCHAR(100)," +
-                " company_name VARCHAR(200)," +
-                " delivery_status VARCHAR(20) DEFAULT '未投递'," +
-                " failure_type TEXT," +
-                " failure_reason TEXT," +
-                " job_description TEXT," +
-                " scan_run_id TEXT," +
-                " ai_score INTEGER," +
-                " ai_decision TEXT," +
-                " ai_reason TEXT," +
-                " priority_company INTEGER DEFAULT 0," +
-                " create_time DATETIME," +
-                " update_time DATETIME" +
-                ")";
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN search_job_limit INTEGER DEFAULT 20"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_config ADD COLUMN profile_id INTEGER"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN profile_id INTEGER"); } catch (Exception ignored) {}
-            try {
-                Long profileId = profileService.getCurrentProfileIdOrNull();
-                stmt.executeUpdate("UPDATE zhilian_config SET profile_id = " + profileId + " WHERE profile_id IS NULL");
-                stmt.executeUpdate("UPDATE zhilian_data SET profile_id = " + profileId + " WHERE profile_id IS NULL");
-            } catch (Exception ignored) {}
-            stmt.execute(createSql);
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN job_description TEXT"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_score INTEGER"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_decision TEXT"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN ai_reason TEXT"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN priority_company INTEGER DEFAULT 0"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN scan_run_id TEXT"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN failure_type TEXT"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE zhilian_data ADD COLUMN failure_reason TEXT"); } catch (Exception ignored) {}
-            log.info("确保 zhilian_data 表已存在");
-        } catch (Exception e) {
-            log.warn("创建 zhilian_data 表失败: {}", e.getMessage());
-        }
-    }
+    // ==================== 数据操作 ====================
 
     public int normalizeSearchJobLimit(Integer raw) {
         if (raw == null || raw < MIN_SEARCH_JOB_LIMIT) {

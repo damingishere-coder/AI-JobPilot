@@ -12,7 +12,6 @@ import com.getjobs.application.mapper.JobAiAnalysisMapper;
 import com.getjobs.application.mapper.PriorityCompanyMapper;
 import com.getjobs.application.mapper.ResumeProfileMapper;
 import com.getjobs.application.mapper.ZhilianJobDataMapper;
-import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,10 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.context.annotation.DependsOn;
 
-import javax.sql.DataSource;
 import java.io.ByteArrayInputStream;
-import java.sql.Connection;
-import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -42,12 +38,11 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@DependsOn("profileService")
+@DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
     private static final int DEFAULT_APPLY_THRESHOLD = 75;
     private static final int PRIORITY_APPLY_THRESHOLD = 65;
 
-    private final DataSource dataSource;
     private final AiService aiService;
     private final ProfileService profileService;
     private final ResumeProfileMapper resumeProfileMapper;
@@ -55,73 +50,6 @@ public class JobAiAnalysisService {
     private final JobAiAnalysisMapper jobAiAnalysisMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
-
-    @PostConstruct
-    public void ensureTables() {
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("CREATE TABLE IF NOT EXISTS resume_profile (" +
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                    "profile_id INTEGER, " +
-                    "resume_text TEXT, " +
-                    "source_filename TEXT, " +
-                    "parse_status TEXT, " +
-                    "parse_message TEXT, " +
-                    "created_at DATETIME, " +
-                    "updated_at DATETIME)");
-            stmt.execute("CREATE TABLE IF NOT EXISTS priority_company (" +
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                    "profile_id INTEGER, " +
-                    "company_name TEXT NOT NULL UNIQUE, " +
-                    "enabled INTEGER DEFAULT 1, " +
-                    "remark TEXT, " +
-                    "created_at DATETIME, " +
-                    "updated_at DATETIME)");
-            stmt.execute("CREATE TABLE IF NOT EXISTS job_ai_analysis (" +
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                    "profile_id INTEGER, " +
-                    "platform TEXT, " +
-                    "job_key TEXT, " +
-                    "company_name TEXT, " +
-                    "job_name TEXT, " +
-                    "scan_run_id TEXT, " +
-                    "score INTEGER, " +
-                    "decision TEXT, " +
-                    "summary TEXT, " +
-                    "strengths TEXT, " +
-                    "risks TEXT, " +
-                    "greeting TEXT, " +
-                    "priority_company INTEGER DEFAULT 0, " +
-                    "raw_response TEXT, " +
-                    "created_at DATETIME, " +
-                    "updated_at DATETIME)");
-            addColumn(stmt, "job_ai_analysis", "scan_run_id", "TEXT");
-            addColumn(stmt, "job_ai_analysis", "profile_id", "INTEGER");
-            addColumn(stmt, "resume_profile", "profile_id", "INTEGER");
-            addColumn(stmt, "priority_company", "profile_id", "INTEGER");
-            addColumn(stmt, "boss_data", "profile_id", "INTEGER");
-            addColumn(stmt, "boss_data", "ai_score", "INTEGER");
-            addColumn(stmt, "boss_data", "ai_decision", "TEXT");
-            addColumn(stmt, "boss_data", "ai_reason", "TEXT");
-            addColumn(stmt, "boss_data", "priority_company", "INTEGER DEFAULT 0");
-            addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
-            addColumn(stmt, "zhilian_data", "job_description", "TEXT");
-            addColumn(stmt, "zhilian_data", "profile_id", "INTEGER");
-            addColumn(stmt, "zhilian_data", "ai_score", "INTEGER");
-            addColumn(stmt, "zhilian_data", "ai_decision", "TEXT");
-            addColumn(stmt, "zhilian_data", "ai_reason", "TEXT");
-            addColumn(stmt, "zhilian_data", "priority_company", "INTEGER DEFAULT 0");
-            addColumn(stmt, "zhilian_data", "scan_run_id", "TEXT");
-        } catch (Exception e) {
-            log.warn("初始化 AI 匹配表失败: {}", e.getMessage());
-        }
-    }
-
-    private void addColumn(Statement stmt, String table, String column, String type) {
-        try {
-            stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
-        } catch (Exception ignored) {
-        }
-    }
 
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
