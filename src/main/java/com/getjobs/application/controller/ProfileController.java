@@ -56,12 +56,18 @@ public class ProfileController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Map<String, Object>> deleteProfile(@PathVariable Long id) {
-        profileService.deleteProfile(id);
+    public ResponseEntity<Map<String, Object>> deleteProfile(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force
+    ) {
+        ProfileService.DeleteProfileResult result = profileService.deleteProfile(id, force);
         Map<String, Object> response = new HashMap<>();
-        response.put("success", true);
-        response.put("message", "档案已删除");
-        response.put("current", profileService.getCurrentProfile());
+        response.put("success", result.success());
+        response.put("message", result.message());
+        response.put("impactCounts", result.impactCounts());
+        response.put("totalRelatedCount", result.totalRelatedCount());
+        response.put("forceRequired", result.forceRequired());
+        response.put("current", result.current());
         return ResponseEntity.ok(response);
     }
 
