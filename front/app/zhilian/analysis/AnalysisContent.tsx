@@ -3,12 +3,15 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArcElement,
+  BarController,
   BarElement,
   CategoryScale,
   Chart,
   Legend,
   LinearScale,
+  LineController,
   LineElement,
+  PieController,
   PointElement,
   Title,
   Tooltip,
@@ -109,7 +112,20 @@ const CATEGORY_COLORS = [
   "#64748b",
 ]
 
-Chart.register(ArcElement, BarElement, LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Title)
+Chart.register(
+  PieController,
+  BarController,
+  LineController,
+  ArcElement,
+  BarElement,
+  LineElement,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  Tooltip,
+  Legend,
+  Title
+)
 const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",
   PLATFORM_VERIFICATION: "平台验证",
