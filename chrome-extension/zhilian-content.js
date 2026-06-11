@@ -76,6 +76,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
+    if (message?.source !== "GET_JOBS_BACKGROUND") return;
     const messageType = normalizeRuntimeMessageType(message?.type);
     if (messageType === "PING_CONTENT") {
       sendResponse({ success: true, version: EXTENSION_VERSION, instanceId: CONTENT_INSTANCE_ID });

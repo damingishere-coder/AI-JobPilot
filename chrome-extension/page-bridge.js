@@ -2,17 +2,39 @@
   const SOURCE = "GET_JOBS_PAGE";
   const TARGET = "GET_JOBS_EXTENSION";
   const BRIDGE_VERSION = "2026-05-24-boss-location-fix-1";
+  const ALLOWED_PAGE_ORIGINS = new Set([
+    "http://localhost:6866",
+    "http://127.0.0.1:6866"
+  ]);
+  const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
+    "GET_JOBS_EXTENSION_PING",
+    "BOSS_PAGE_STATUS",
+    "BOSS_SCAN_STATUS",
+    "BOSS_SCAN_START",
+    "BOSS_SCAN_STOP",
+    "BOSS_DELIVER_ONE",
+    "BOSS_DELIVER_BATCH",
+    "ZHILIAN_SCAN_STATUS",
+    "ZHILIAN_SCAN_START",
+    "ZHILIAN_SCAN_STOP",
+    "ZHILIAN_DELIVER_ONE",
+    "ZHILIAN_DELIVER_BATCH"
+  ]);
+  const ALLOWED_EXTENSION_MESSAGE_TYPES = new Set([
+    "GET_JOBS_EXTENSION_EVENT"
+  ]);
 
-  window.postMessage({ source: TARGET, type: "GET_JOBS_EXTENSION_READY", version: BRIDGE_VERSION }, "*");
+  postToPage({ source: TARGET, type: "GET_JOBS_EXTENSION_READY", version: BRIDGE_VERSION });
 
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
+    if (!isAllowedPageOrigin(event.origin)) return;
     const message = event.data;
-    if (!message || message.source !== SOURCE || !message.type) return;
+    if (!isValidPageMessage(message)) return;
 
     chrome.runtime.sendMessage(message, (response) => {
       const lastError = chrome.runtime.lastError?.message || "";
-      window.postMessage({
+      postToPage({
         source: TARGET,
         requestId: message.requestId,
         type: `${message.type}_RESPONSE`,
@@ -22,19 +44,39 @@
           message: normalizeLastError(lastError),
           rawMessage: lastError
         }
-      }, "*");
+      });
     });
   });
 
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.source !== "GET_JOBS_BACKGROUND") return;
-    window.postMessage({
+    if (!ALLOWED_EXTENSION_MESSAGE_TYPES.has(message.type)) return;
+    postToPage({
       source: TARGET,
       type: message.type,
       version: BRIDGE_VERSION,
       payload: message.payload
-    }, "*");
+    });
   });
+
+  function postToPage(payload) {
+    const targetOrigin = window.location.origin;
+    if (!isAllowedPageOrigin(targetOrigin)) return;
+    window.postMessage(payload, targetOrigin);
+  }
+
+  function isAllowedPageOrigin(origin) {
+    return ALLOWED_PAGE_ORIGINS.has(origin);
+  }
+
+  function isValidPageMessage(message) {
+    return Boolean(
+      message
+        && message.source === SOURCE
+        && typeof message.type === "string"
+        && ALLOWED_PAGE_MESSAGE_TYPES.has(message.type)
+    );
+  }
 
   function normalizeLastError(message) {
     if (!message) return "扩展无响应，请在 Chrome 扩展管理页重新加载 投递牛马 Chrome Bridge 后刷新本页面。";
