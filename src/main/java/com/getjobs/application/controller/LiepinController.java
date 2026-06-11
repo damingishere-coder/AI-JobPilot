@@ -10,12 +10,14 @@ import com.getjobs.worker.service.LiepinJobService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * 猎聘控制器
@@ -38,6 +40,10 @@ public class LiepinController {
 
     @Autowired
     private LiepinService liepinService;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     /**
      * 检查登录状态
@@ -89,10 +95,15 @@ public class LiepinController {
 
             // 异步启动新任务
             CompletableFuture.runAsync(() -> {
-                liepinJobService.executeDelivery(progressMessage -> {
-                    log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
-                });
-            });
+                try {
+                    liepinJobService.executeDelivery(progressMessage -> {
+                        log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
+                    });
+                } catch (Exception e) {
+                    log.error("猎聘异步任务执行失败", e);
+                    log.warn("猎聘任务执行失败，请查看后端日志");
+                }
+            }, jobTaskExecutor);
 
             response.put("success", true);
             response.put("message", "猎聘任务启动成功");

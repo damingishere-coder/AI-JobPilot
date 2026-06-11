@@ -20,6 +20,8 @@ import com.getjobs.worker.service.JobRunCoordinator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.env.Environment;
@@ -40,6 +42,7 @@ import java.util.Objects;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 
 /**
  * Boss 平台控制器（单平台合并版）：进度 SSE 与任务接口
@@ -63,6 +66,10 @@ public class BossController {
     private final JobAiAnalysisService jobAiAnalysisService;
     private final ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
     private final Environment environment;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     private final List<SseEmitter> bossProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -103,7 +110,22 @@ public class BossController {
             ));
         }
 
-        CompletableFuture.runAsync(() -> bossJobService.executeDelivery(this::sendBossProgress));
+        try {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    bossJobService.executeDelivery(this::sendBossProgress);
+                } catch (Exception e) {
+                    log.error("Boss异步任务执行失败", e);
+                    sendBossProgress(JobProgressMessage.error("boss", "Boss任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
+        } catch (RuntimeException e) {
+            log.error("提交Boss异步任务失败", e);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "failed",
+                    "message", "Boss任务提交失败，请稍后重试"
+            ));
+        }
 
         return ResponseEntity.ok(Map.of(
                 "status", "started",
@@ -336,10 +358,17 @@ public class BossController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
-            CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {
-                sendBossProgress(pm);
-                log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-            }));
+            CompletableFuture.runAsync(() -> {
+                try {
+                    bossJobService.executeDelivery(pm -> {
+                        sendBossProgress(pm);
+                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
+                    });
+                } catch (Exception e) {
+                    log.error("Boss异步扫描任务执行失败", e);
+                    sendBossProgress(JobProgressMessage.error("boss", "Boss扫描任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
             response.put("success", true);
             response.put("message", "Boss扫描任务启动成功，将生成待确认岗位");
             response.put("status", "started");

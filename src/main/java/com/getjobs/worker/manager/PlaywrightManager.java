@@ -11,6 +11,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,6 +23,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 /**
@@ -109,6 +111,10 @@ public class PlaywrightManager {
     @Autowired
     private CookieService cookieService;
 
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
+
     /**
      * 初始化Playwright实例（延迟初始化）
      */
@@ -171,10 +177,10 @@ public class PlaywrightManager {
 
             // 并发执行各平台的初始化逻辑（导航、Cookie加载等）
             log.info("开始并发初始化所有平台...");
-            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(this::setupBossPlatform);
-            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(this::setupLiepinPlatform);
-            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(this::setup51jobPlatform);
-            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(this::setupZhilianPlatform);
+            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("Boss", this::setupBossPlatform), jobTaskExecutor);
+            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("猎聘", this::setupLiepinPlatform), jobTaskExecutor);
+            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(() -> setupPlatformSafely("51job", this::setup51jobPlatform), jobTaskExecutor);
+            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("智联", this::setupZhilianPlatform), jobTaskExecutor);
 
             // 等待所有平台初始化完成
             CompletableFuture.allOf(bossFuture, liepinFuture, job51Future, zhilianFuture).join();
@@ -186,6 +192,18 @@ public class PlaywrightManager {
             throw new RuntimeException("Playwright初始化失败", e);
         } finally {
             playwrightInitializing = false;
+        }
+    }
+
+    private void setupPlatformSafely(String platform, Runnable task) {
+        try {
+            task.run();
+        } catch (Exception e) {
+            log.error("{}平台初始化失败", platform, e);
+            if (e instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(platform + "平台初始化失败", e);
         }
     }
 
