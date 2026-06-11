@@ -23,7 +23,6 @@ import java.util.concurrent.CompletableFuture;
  */
 @RestController
 @RequestMapping("/api/liepin")
-@CrossOrigin(origins = "*")
 public class LiepinController {
 
     private static final Logger log = LoggerFactory.getLogger(LiepinController.class);

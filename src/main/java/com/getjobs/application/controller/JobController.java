@@ -36,7 +36,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class JobController {
     private static final ObjectMapper objectMapper = new ObjectMapper();

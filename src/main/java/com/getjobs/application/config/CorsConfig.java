@@ -6,18 +6,24 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 
+import java.util.List;
+
 /**
  * CORS跨域配置
  */
 @Configuration
 public class CorsConfig {
+    private static final List<String> LOCAL_FRONTEND_ORIGINS = List.of(
+            "http://localhost:6866",
+            "http://127.0.0.1:6866"
+    );
 
     @Bean
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // 允许所有域名跨域
-        config.addAllowedOriginPattern("*");
+        // 仅允许本地前端跨域访问
+        config.setAllowedOrigins(LOCAL_FRONTEND_ORIGINS);
 
         // 允许所有请求头
         config.addAllowedHeader("*");

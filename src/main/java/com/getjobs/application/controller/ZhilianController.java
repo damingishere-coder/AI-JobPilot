@@ -45,7 +45,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestController
 @RequestMapping("/api/zhilian")
-@CrossOrigin(origins = "*")
 public class ZhilianController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
