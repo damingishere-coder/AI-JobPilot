@@ -99,6 +99,26 @@ class BossStatsServiceTest {
         assertThat(query.getFilteredIds()).containsExactly(1L, 3L);
     }
 
+    @Test
+    void salaryStatsPreferStructuredMedianK() {
+        when(bossService.resolveBossScanRunId(null)).thenReturn("run-latest");
+        stubCommonMapperResults(List.of(salaryRow(1L, "10-20K", 40.0)));
+
+        BossService.StatsResponse response = service.getBossStats(
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null
+        );
+
+        assertThat(response.kpi.avgMonthlyK).isEqualTo(40.0);
+    }
+
     private void stubCommonMapperResults(List<BossStatsQuery.SalaryRow> salaryRows) {
         when(bossStatsMapper.selectKpi(any())).thenReturn(kpiRow());
         when(bossStatsMapper.selectOverview(any())).thenReturn(overviewRow());
@@ -155,6 +175,12 @@ class BossStatsServiceTest {
         BossStatsQuery.SalaryRow row = new BossStatsQuery.SalaryRow();
         row.setId(id);
         row.setSalary(salary);
+        return row;
+    }
+
+    private BossStatsQuery.SalaryRow salaryRow(Long id, String salary, Double medianK) {
+        BossStatsQuery.SalaryRow row = salaryRow(id, salary);
+        row.setSalaryMedianK(medianK);
         return row;
     }
 }

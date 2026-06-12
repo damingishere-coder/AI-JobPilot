@@ -134,6 +134,10 @@ public class DatabaseSchemaService {
                         "company_name TEXT, " +
                         "job_name TEXT, " +
                         "salary TEXT, " +
+                        "salary_min_k REAL, " +
+                        "salary_max_k REAL, " +
+                        "salary_median_k REAL, " +
+                        "salary_months INTEGER, " +
                         "location TEXT, " +
                         "experience TEXT, " +
                         "degree TEXT, " +
@@ -302,6 +306,10 @@ public class DatabaseSchemaService {
         addColumn(stmt, "boss_data", "company_name", "TEXT");
         addColumn(stmt, "boss_data", "job_name", "TEXT");
         addColumn(stmt, "boss_data", "salary", "TEXT");
+        addColumn(stmt, "boss_data", "salary_min_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_max_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_median_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_months", "INTEGER");
         addColumn(stmt, "boss_data", "location", "TEXT");
         addColumn(stmt, "boss_data", "experience", "TEXT");
         addColumn(stmt, "boss_data", "degree", "TEXT");

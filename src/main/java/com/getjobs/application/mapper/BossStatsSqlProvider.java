@@ -123,11 +123,18 @@ public class BossStatsSqlProvider {
 
     public String selectSalaryRows(BossStatsQuery query) {
         return """
-                SELECT id, salary
+                SELECT id,
+                       salary,
+                       salary_min_k,
+                       salary_max_k,
+                       salary_median_k,
+                       salary_months
                 FROM boss_data
                 %s
-                  AND salary IS NOT NULL
-                  AND TRIM(salary) <> ''
+                  AND (
+                      salary_median_k IS NOT NULL
+                      OR (salary IS NOT NULL AND TRIM(salary) <> '')
+                  )
                 """.formatted(where(query));
     }
 

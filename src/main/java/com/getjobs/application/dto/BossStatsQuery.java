@@ -56,5 +56,9 @@ public class BossStatsQuery {
     public static class SalaryRow {
         private Long id;
         private String salary;
+        private Double salaryMinK;
+        private Double salaryMaxK;
+        private Double salaryMedianK;
+        private Integer salaryMonths;
     }
 }

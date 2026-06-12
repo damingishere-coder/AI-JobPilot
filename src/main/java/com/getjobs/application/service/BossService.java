@@ -575,6 +575,10 @@ public class BossService {
                         "company_name TEXT, " +
                         "job_name TEXT, " +
                         "salary TEXT, " +
+                        "salary_min_k REAL, " +
+                        "salary_max_k REAL, " +
+                        "salary_median_k REAL, " +
+                        "salary_months INTEGER, " +
                         "location TEXT, " +
                         "experience TEXT, " +
                         "degree TEXT, " +
@@ -603,11 +607,16 @@ public class BossService {
                 stmt.execute(createSql);
 
                 String copySql = "INSERT INTO boss_data_new (" +
-                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
+                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, salary_min_k, salary_max_k, salary_median_k, salary_months, location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
                         ") SELECT " +
-                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
+                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, " +
+                        (cols.contains("salary_min_k") ? "salary_min_k" : "NULL") + ", " +
+                        (cols.contains("salary_max_k") ? "salary_max_k" : "NULL") + ", " +
+                        (cols.contains("salary_median_k") ? "salary_median_k" : "NULL") + ", " +
+                        (cols.contains("salary_months") ? "salary_months" : "NULL") + ", " +
+                        "location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, " +
                         (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
                         (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
@@ -673,6 +682,7 @@ public class BossService {
         LocalDateTime now = LocalDateTime.now();
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
+        applyStructuredSalary(entity);
         bossJobDataMapper.insert(entity);
     }
 
@@ -716,6 +726,7 @@ public class BossService {
             entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? DeliveryStatus.NOT_DELIVERED : entity.getDeliveryStatus());
             entity.setCreatedAt(now);
             entity.setUpdatedAt(now);
+            applyStructuredSalary(entity);
             bossJobDataMapper.insert(entity);
             return entity;
         }
@@ -776,7 +787,24 @@ public class BossService {
         merged.setAiDecision(existing.getAiDecision());
         merged.setAiReason(existing.getAiReason());
         merged.setPriorityCompany(existing.getPriorityCompany());
+        applyStructuredSalary(merged);
         return merged;
+    }
+
+    private void applyStructuredSalary(BossJobDataEntity entity) {
+        if (entity == null) return;
+        SalaryParser.ParsedSalary parsed = SalaryParser.parse(entity.getSalary());
+        if (parsed == null) {
+            entity.setSalaryMinK(null);
+            entity.setSalaryMaxK(null);
+            entity.setSalaryMedianK(null);
+            entity.setSalaryMonths(null);
+            return;
+        }
+        entity.setSalaryMinK(parsed.minK());
+        entity.setSalaryMaxK(parsed.maxK());
+        entity.setSalaryMedianK(parsed.medianK());
+        entity.setSalaryMonths(parsed.months());
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
@@ -1029,8 +1057,8 @@ public class BossService {
      * 薪资解析结果
      */
     public static class SalaryInfo {
-        public Integer minK;      // 最小K（单位：K/月）
-        public Integer maxK;      // 最大K（单位：K/月）
+        public Double minK;       // 最小K（单位：K/月）
+        public Double maxK;       // 最大K（单位：K/月）
         public Integer months;    // 月数（默认12）
         public Double medianK;    // 中位数K
         public Long annualTotal;  // 年包（单位：元）
@@ -1044,52 +1072,14 @@ public class BossService {
      *  - 面议（返回null）
      */
     public static SalaryInfo parseSalary(String salary) {
-        if (salary == null) return null;
-        String s = salary.trim();
-        if (s.isEmpty()) return null;
-        if (s.contains("面议")) return null;
-        s = s.replace(" ", "");
-
-        Integer months = 12;
-        // 提取 months=xx（如 ·16薪）
-        Matcher mMonths = Pattern.compile("[·\\.\\-]?([0-9]+)薪").matcher(s);
-        if (mMonths.find()) {
-            try { months = Integer.parseInt(mMonths.group(1)); } catch (Exception ignore) {}
-            // 去掉薪资后缀以便解析区间
-            s = s.substring(0, mMonths.start());
-        }
-
-        // 提取区间或单值（K/k）
-        Integer minK = null, maxK = null;
-        Matcher mRange = Pattern.compile("^(\\d+)-(\\d+)[Kk]$").matcher(s);
-        Matcher mSingle = Pattern.compile("^(\\d+)[Kk]$").matcher(s);
-        if (mRange.find()) {
-            minK = Integer.parseInt(mRange.group(1));
-            maxK = Integer.parseInt(mRange.group(2));
-        } else if (mSingle.find()) {
-            minK = Integer.parseInt(mSingle.group(1));
-            maxK = minK;
-        } else {
-            // 尝试更宽松解析：去掉非数字和K以外字符
-            String cleaned = s.replaceAll("[^0-9Kk\\-]", "");
-            mRange = Pattern.compile("^(\\d+)-(\\d+)[Kk]$").matcher(cleaned);
-            mSingle = Pattern.compile("^(\\d+)[Kk]$").matcher(cleaned);
-            if (mRange.find()) {
-                minK = Integer.parseInt(mRange.group(1));
-                maxK = Integer.parseInt(mRange.group(2));
-            } else if (mSingle.find()) {
-                minK = Integer.parseInt(mSingle.group(1));
-                maxK = minK;
-            }
-        }
-
-        if (minK == null || maxK == null) return null;
+        SalaryParser.ParsedSalary parsed = SalaryParser.parse(salary);
+        if (parsed == null) return null;
 
         SalaryInfo info = new SalaryInfo();
-        info.minK = minK;
-        info.maxK = maxK;
-        info.months = months != null ? months : 12;
-        info.medianK = (minK + maxK) / 2.0;
+        info.minK = parsed.minK();
+        info.maxK = parsed.maxK();
+        info.months = parsed.months();
+        info.medianK = parsed.medianK();
         info.annualTotal = Math.round(info.medianK * 1000 * info.months);
         return info;
     }

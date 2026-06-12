@@ -106,11 +106,11 @@ public class BossStatsService {
         List<BossStatsQuery.SalaryRow> matchedRows = new ArrayList<>();
         for (BossStatsQuery.SalaryRow row : candidates) {
             if (row == null || row.getId() == null) continue;
-            BossService.SalaryInfo info = BossService.parseSalary(row.getSalary());
-            if (info == null || info.medianK == null) continue;
+            Double medianK = salaryMedianK(row);
+            if (medianK == null) continue;
             boolean ok = true;
-            if (query.getMinK() != null) ok = info.medianK >= query.getMinK();
-            if (query.getMaxK() != null) ok = ok && info.medianK <= query.getMaxK();
+            if (query.getMinK() != null) ok = medianK >= query.getMinK();
+            if (query.getMaxK() != null) ok = ok && medianK <= query.getMaxK();
             if (ok) {
                 matchedIds.add(row.getId());
                 matchedRows.add(row);
@@ -202,11 +202,11 @@ public class BossStatsService {
         double sumMedian = 0.0;
         double maxMedian = 0.0;
         for (BossStatsQuery.SalaryRow row : safeSalaryRows(rows)) {
-            BossService.SalaryInfo info = BossService.parseSalary(row.getSalary());
-            if (info == null || info.medianK == null) continue;
-            medians.add(info.medianK);
-            sumMedian += info.medianK;
-            if (info.medianK > maxMedian) maxMedian = info.medianK;
+            Double medianK = salaryMedianK(row);
+            if (medianK == null) continue;
+            medians.add(medianK);
+            sumMedian += medianK;
+            if (medianK > maxMedian) maxMedian = medianK;
         }
 
         Double avg = medians.isEmpty() ? null : Math.round((sumMedian / medians.size()) * 100.0) / 100.0;
@@ -260,6 +260,16 @@ public class BossStatsService {
 
     private List<BossStatsQuery.SalaryRow> safeSalaryRows(List<BossStatsQuery.SalaryRow> rows) {
         return rows == null ? List.of() : rows;
+    }
+
+    private Double salaryMedianK(BossStatsQuery.SalaryRow row) {
+        if (row == null) return null;
+        if (row.getSalaryMedianK() != null) return row.getSalaryMedianK();
+        if (row.getSalaryMinK() != null && row.getSalaryMaxK() != null) {
+            return Math.round(((row.getSalaryMinK() + row.getSalaryMaxK()) / 2.0) * 100.0) / 100.0;
+        }
+        BossService.SalaryInfo info = BossService.parseSalary(row.getSalary());
+        return info == null ? null : info.medianK;
     }
 
     private long nvl(Long value) {
