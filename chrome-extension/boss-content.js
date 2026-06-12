@@ -4,7 +4,7 @@
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
 
-  const API_BASE = "http://localhost:8888";
+  const API_BASE = "http://localhost:6866";
   const SCAN_TASK_KEY = "__GET_JOBS_BOSS_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_BOSS_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_BOSS_SCAN_STATUS__";

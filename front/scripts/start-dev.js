@@ -19,7 +19,7 @@ APP_VERSION=${serverConfig.app.version}
 `;
 
 // 写入环境变量文件
-fs.writeFileSync(envPath, envContent);
+fs.writeFileSync(envPath, envContent, 'utf-8');
 
 console.log(`🔧 已从 server.config.js 加载配置:`);
 console.log(`   端口: ${port}`);
@@ -32,6 +32,9 @@ const nextProcess = spawn('next', ['dev', '-p', port.toString()], {
   shell: true,
   env: {
     ...process.env,
+    API_BASE_URL: serverConfig.api.baseUrl ?? '',
+    API_PROXY_TARGET: serverConfig.api.proxyTarget || 'http://localhost:8888',
+    NEXT_DEV_PROXY: 'true',
     PORT: port.toString(),
     HOSTNAME: hostname
   }

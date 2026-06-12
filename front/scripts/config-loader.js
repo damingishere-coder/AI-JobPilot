@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const { spawn } = require('child_process');
-const path = require('path');
 
 // 读取服务器配置
 const serverConfig = require('../server.config.js');
@@ -42,7 +41,13 @@ process.env.HOSTNAME = command === 'start' ? serverConfig.production.hostname : 
 // 启动 Next.js
 const child = spawn(nextCommand, args, {
   stdio: 'inherit',
-  shell: process.platform === 'win32'
+  shell: process.platform === 'win32',
+  env: {
+    ...process.env,
+    API_BASE_URL: serverConfig.api.baseUrl ?? '',
+    API_PROXY_TARGET: serverConfig.api.proxyTarget || 'http://localhost:8888',
+    NEXT_DEV_PROXY: command === 'dev' ? 'true' : (process.env.NEXT_DEV_PROXY || 'false'),
+  }
 });
 
 // 处理进程退出

@@ -10,6 +10,7 @@ config.yaml
 *.ipr
 .idea
 *.sh
+!start_docker.sh
 CLAUDE.md
 .claude
 nul
@@ -48,8 +49,12 @@ merge_prs.log
 .DS_Store
 cookie.json
 .env
+.env.local
+front/.env.local
 chromedriver
 *.jpg
+chrome-profile/
+**/chrome-profile/
 
 # Database files
 db/

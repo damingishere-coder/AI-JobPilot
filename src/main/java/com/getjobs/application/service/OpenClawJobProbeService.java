@@ -27,7 +27,7 @@ public class OpenClawJobProbeService {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(45);
 
-    @Value("${app.openclaw.command:openclaw}")
+    @Value("${app.openclaw.command:}")
     private String openClawCommand;
 
     @Value("${app.openclaw.profile:user}")
@@ -49,7 +49,8 @@ public class OpenClawJobProbeService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("success", result.success());
         response.put("profile", browserProfile);
-        response.put("command", "openclaw browser --browser-profile " + browserProfile + " tabs --json");
+        response.put("command", ExternalToolSupport.resolveOpenClawCommand(openClawCommand)
+                + " browser --browser-profile " + browserProfile + " tabs --json");
         response.put("message", result.success()
                 ? "OpenClaw浏览器通路可用"
                 : buildOpenClawFailureMessage(result));
@@ -159,9 +160,10 @@ public class OpenClawJobProbeService {
     }
 
     private CommandResult runOpenClaw(List<String> args, Duration timeout) {
-        List<String> command = new ArrayList<>();
-        command.add(openClawCommand == null || openClawCommand.isBlank() ? "openclaw" : openClawCommand.trim());
-        command.addAll(args);
+        List<String> command = ExternalToolSupport.buildProcessCommand(
+                ExternalToolSupport.resolveOpenClawCommand(openClawCommand),
+                args
+        );
         ProcessBuilder processBuilder = new ProcessBuilder(command);
         processBuilder.redirectErrorStream(false);
         try {
@@ -171,8 +173,8 @@ public class OpenClawJobProbeService {
                 process.destroyForcibly();
                 return new CommandResult(false, -1, "", "OpenClaw命令超时");
             }
-            String stdout = readStream(process.inputReader());
-            String stderr = readStream(process.errorReader());
+            String stdout = readStream(process.inputReader(StandardCharsets.UTF_8));
+            String stderr = readStream(process.errorReader(StandardCharsets.UTF_8));
             return new CommandResult(process.exitValue() == 0, process.exitValue(), stdout, stderr);
         } catch (IOException e) {
             return new CommandResult(false, -1, "", e.getMessage());
@@ -453,17 +455,7 @@ public class OpenClawJobProbeService {
     }
 
     private String buildOpenClawFailureMessage(CommandResult result) {
-        String detail = !isBlank(result.stderr()) ? result.stderr() : result.stdout();
-        if (isBlank(detail)) {
-            detail = "退出码 " + result.exitCode();
-        }
-        if (detail.contains("No such file") || detail.contains("Cannot run program")) {
-            return "未找到 openclaw 命令，请先安装并启用 OpenClaw browser 插件";
-        }
-        if (detail.contains("unknown command")) {
-            return "OpenClaw browser 命令不可用，请确认 browser 插件已加入 plugins.allow";
-        }
-        return truncate(detail, 500);
+        return ExternalToolSupport.buildOpenClawFailureMessage(result.stdout(), result.stderr(), result.exitCode());
     }
 
     private String truncate(String value, int max) {

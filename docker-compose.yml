@@ -10,16 +10,24 @@ services:
     working_dir: /workspace
     command: >
       bash -lc "chmod +x ./gradlew &&
+      (./gradlew --no-daemon classes --continuous >/tmp/get-jobs-gradle-watch.log 2>&1 &) &&
       exec xvfb-run -a -s '-screen 0 1920x1080x24'
       ./gradlew --no-daemon bootRun"
     ports:
-      - "${BACKEND_PORT:-8888}:8888"
+      - "127.0.0.1:${BACKEND_PORT:-8888}:8888"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       SERVER_PORT: ${SERVER_PORT:-8888}
       APP_AUTO_OPEN_BROWSER: ${APP_AUTO_OPEN_BROWSER:-false}
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:sqlite:/workspace/db/getjobs.db}
       LOGGING_FILE_NAME: ${LOGGING_FILE_NAME:-/workspace/logs/get-jobs.log}
+      APP_DATA_DIR: ${APP_DATA_DIR:-/workspace/data}
+      APP_OUTPUT_DIR: ${APP_OUTPUT_DIR:-/workspace/output}
+      APP_CACHE_DIR: ${APP_CACHE_DIR:-/workspace/target/cache}
+      APP_LOG_DIR: ${APP_LOG_DIR:-/workspace/logs}
+      APP_BROWSER_USER_DATA_DIR: ${APP_BROWSER_USER_DATA_DIR:-/workspace/chrome-profile}
+      SPRING_DEVTOOLS_RESTART_ENABLED: "true"
+      SPRING_DEVTOOLS_LIVERELOAD_ENABLED: "true"
       JAVA_OPTS: ${JAVA_OPTS:--Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8}
       GRADLE_USER_HOME: /root/.gradle
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -30,7 +38,8 @@ services:
       MODEL: ${MODEL:-}
     volumes:
       - .:/workspace
-      - ${HOME}/.gradle:/root/.gradle
+      - gradle-cache:/root/.gradle
+      - backend-build:/workspace/build
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -46,12 +55,15 @@ services:
       bash -lc "pnpm install --frozen-lockfile &&
       exec npx next dev -p 6866 -H 0.0.0.0"
     ports:
-      - "${FRONTEND_PORT:-6866}:6866"
+      - "127.0.0.1:${FRONTEND_PORT:-6866}:6866"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       NEXT_TELEMETRY_DISABLED: "1"
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
+      NEXT_DEV_PROXY: "true"
+      API_BASE_URL: ${API_BASE_URL:-}
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://backend:8888}
     volumes:
       - .:/workspace
       - pnpm-store:/root/.local/share/pnpm/store
@@ -61,6 +73,8 @@ services:
       - backend
 
 volumes:
+  gradle-cache:
+  backend-build:
   pnpm-store:
   front-node-modules:
   front-next-cache:

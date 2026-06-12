@@ -440,7 +440,7 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
 async function postBossDeliveryResult(task, success, message) {
   if (!task?.id) return;
   const failure = success ? null : normalizeFailurePayload(message);
-  await fetch(`http://localhost:8888/api/boss/jobs/${task.id}/delivery-result`, {
+  await fetch(`http://localhost:6866/api/boss/jobs/${task.id}/delivery-result`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -455,7 +455,7 @@ async function postBossDeliveryResult(task, success, message) {
 async function postZhilianDeliveryResult(task, success, message) {
   if (!task?.id) return;
   const failure = success ? null : normalizeZhilianFailurePayload(message);
-  await fetch(`http://localhost:8888/api/zhilian/jobs/${task.id}/delivery-result`, {
+  await fetch(`http://localhost:6866/api/zhilian/jobs/${task.id}/delivery-result`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

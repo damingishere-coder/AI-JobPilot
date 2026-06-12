@@ -42,6 +42,7 @@ dependencies {
     implementation("io.github.cdimascio:dotenv-java:2.2.0")
     implementation("jakarta.annotation:jakarta.annotation-api:2.1.1")
     implementation("org.apache.pdfbox:pdfbox:3.0.3")
+    developmentOnly("org.springframework.boot:spring-boot-devtools:3.5.7")
 
     // Lombok（仅 Java 项目需要）
     compileOnly("org.projectlombok:lombok:1.18.42")

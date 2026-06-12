@@ -22,7 +22,13 @@ const hostname = config.development?.hostname || 'localhost';
 // 启动Next.js开发服务器
 const nextDev = spawn('npx', ['next', 'dev', '-p', port.toString(), '-H', hostname], {
   stdio: 'inherit',
-  shell: true
+  shell: true,
+  env: {
+    ...process.env,
+    API_BASE_URL: config.api?.baseUrl ?? '',
+    API_PROXY_TARGET: config.api?.proxyTarget || 'http://localhost:8888',
+    NEXT_DEV_PROXY: 'true',
+  }
 });
 
 nextDev.on('error', (error) => {

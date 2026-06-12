@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import com.getjobs.application.config.RuntimeDirectoryInitializer;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -15,9 +16,11 @@ import java.sql.Statement;
 @RequiredArgsConstructor
 public class DatabaseSchemaService {
     private final DataSource dataSource;
+    private final RuntimeDirectoryInitializer runtimeDirectoryInitializer;
 
     @PostConstruct
     public void initializeSchema() {
+        runtimeDirectoryInitializer.ensureRuntimeDirectories();
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             ensureCoreTables(stmt);
             ensureProfileColumns(stmt);

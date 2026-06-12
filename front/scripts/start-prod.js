@@ -19,7 +19,7 @@ APP_VERSION=${serverConfig.app.version}
 `;
 
 // 写入环境变量文件
-fs.writeFileSync(envPath, envContent);
+fs.writeFileSync(envPath, envContent, 'utf-8');
 
 
 

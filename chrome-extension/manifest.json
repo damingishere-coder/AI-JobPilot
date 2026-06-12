@@ -15,7 +15,6 @@
     "http://localhost:*/*",
     "http://127.0.0.1:*/*",
     "http://[::1]:*/*",
-    "http://localhost:8888/*",
     "https://www.zhipin.com/*",
     "https://*.zhipin.com/*",
     "https://www.zhaopin.com/*",

@@ -696,7 +696,7 @@ public class ZhiLian {
             String html = page.content();
             java.nio.file.Path path = java.nio.file.Paths.get("src/main/java/com/getjobs/worker/zhilian/page.html");
             java.nio.file.Files.createDirectories(path.getParent());
-            java.nio.file.Files.write(path, html.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            java.nio.file.Files.writeString(path, html, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("写入 page.html 失败", e);
         }

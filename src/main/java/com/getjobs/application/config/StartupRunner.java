@@ -11,6 +11,9 @@ import com.getjobs.worker.manager.PlaywrightManager;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.stream.Stream;
 
 /**
  * 应用启动后自动打开管理页面
@@ -115,16 +118,14 @@ public class StartupRunner implements ApplicationRunner {
      * 检查 src/main/resources/dist/ 是否存在且包含文件
      */
     private boolean hasStaticResources() {
-        try {
-            // 检查dist文件夹是否存在
-            java.io.File distDir = new java.io.File("src/main/resources/dist");
-            if (distDir.exists() && distDir.isDirectory()) {
-                // 检查是否有文件（不包括隐藏文件）
-                java.io.File[] files = distDir.listFiles(file -> !file.getName().startsWith("."));
-                if (files != null && files.length > 0) {
-                    log.info("发现静态资源文件夹: {}, 文件数: {}", distDir.getAbsolutePath(), files.length);
-                    return true;
-                }
+        Path distDir = Path.of("src", "main", "resources", "dist");
+        try (Stream<Path> files = Files.list(distDir)) {
+            long count = files
+                    .filter(path -> !path.getFileName().toString().startsWith("."))
+                    .count();
+            if (count > 0) {
+                log.info("发现静态资源文件夹: {}, 文件数: {}", distDir.toAbsolutePath().normalize(), count);
+                return true;
             }
         } catch (Exception e) {
             log.debug("检查静态资源时出错: {}", e.getMessage());
