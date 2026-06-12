@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.StringUtils;
+import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BlacklistEntity;
 import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.entity.BossIndustryEntity;
@@ -27,6 +28,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -853,6 +856,75 @@ public class BossService {
         return findExistingChromeBossJob(encryptId, companyName, jobName, null);
     }
 
+    public Map<Integer, BossJobDataEntity> findExistingChromeBossJobs(Long profileId, List<ChromeJobDto> jobs, String scanRunId) {
+        if (profileId == null || jobs == null || jobs.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Set<String> encryptIds = new LinkedHashSet<>();
+        Set<String> companyNames = new LinkedHashSet<>();
+        Set<String> jobNames = new LinkedHashSet<>();
+        List<ChromeJobLookup> lookups = new ArrayList<>();
+
+        for (int index = 0; index < jobs.size(); index++) {
+            ChromeJobDto dto = jobs.get(index);
+            String encryptId = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
+            String companyName = dto == null ? null : dto.getCompany();
+            String jobName = dto == null ? null : dto.getTitle();
+            lookups.add(new ChromeJobLookup(index, encryptId, companyName, jobName));
+
+            if (!isBlank(encryptId)) {
+                encryptIds.add(encryptId);
+            }
+            if (!isBlank(companyName) && !isBlank(jobName)) {
+                companyNames.add(companyName);
+                jobNames.add(jobName);
+            }
+        }
+
+        if (encryptIds.isEmpty() && (companyNames.isEmpty() || jobNames.isEmpty())) {
+            return Collections.emptyMap();
+        }
+
+        List<BossJobDataEntity> existingRows = bossJobDataMapper.selectExistingChromeBossJobs(
+                profileId,
+                new ArrayList<>(encryptIds),
+                new ArrayList<>(companyNames),
+                new ArrayList<>(jobNames),
+                normalizeScanRunId(scanRunId)
+        );
+        if (existingRows == null) {
+            existingRows = Collections.emptyList();
+        }
+
+        Map<String, BossJobDataEntity> byEncryptId = new HashMap<>();
+        Map<String, BossJobDataEntity> byCompanyAndTitle = new HashMap<>();
+        for (BossJobDataEntity row : existingRows) {
+            if (row == null) continue;
+            if (!isBlank(row.getEncryptId())) {
+                byEncryptId.putIfAbsent(row.getEncryptId(), row);
+            }
+            if (!isBlank(row.getCompanyName()) && !isBlank(row.getJobName())) {
+                byCompanyAndTitle.putIfAbsent(companyTitleKey(row.getCompanyName(), row.getJobName()), row);
+            }
+        }
+
+        Map<Integer, BossJobDataEntity> result = new LinkedHashMap<>();
+        for (ChromeJobLookup lookup : lookups) {
+            BossJobDataEntity existing = null;
+            if (!isBlank(lookup.encryptId())) {
+                existing = byEncryptId.get(lookup.encryptId());
+            }
+            if (existing == null && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
+                existing = byCompanyAndTitle.get(companyTitleKey(lookup.companyName(), lookup.jobName()));
+            }
+            if (existing != null) {
+                result.put(lookup.index(), existing);
+            }
+        }
+        return result;
+    }
+
     public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName, String scanRunId) {
         if (encryptId != null && !encryptId.isBlank()) {
             Long profileId = profileService.getCurrentProfileIdOrNull();
@@ -902,6 +974,23 @@ public class BossService {
         if (scanRunId != null && !scanRunId.isBlank()) {
             wrapper.eq("scan_run_id", scanRunId.trim());
         }
+    }
+
+    private String normalizeScanRunId(String scanRunId) {
+        return scanRunId == null || scanRunId.isBlank() ? null : scanRunId.trim();
+    }
+
+    private String companyTitleKey(String companyName, String jobName) {
+        return companyName + "\u001F" + jobName;
+    }
+
+    private String extractBossId(String url) {
+        if (url == null) return null;
+        Matcher matcher = Pattern.compile("/job_detail/([^/?#]+)").matcher(url);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private record ChromeJobLookup(int index, String encryptId, String companyName, String jobName) {
     }
 
     public BossJobDataEntity updateDeliveryStatusById(Long id, String status) {

@@ -231,13 +231,16 @@ public class BossController {
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
         int duplicateCount = 0;
+        String runId = normalizeRunId(request == null ? null : request.getRunId());
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, runId);
 
-        for (ChromeJobDto dto : jobs) {
+        for (int index = 0; index < jobs.size(); index++) {
+            ChromeJobDto dto = jobs.get(index);
             String id = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
             String company = dto == null ? "" : Objects.toString(dto.getCompany(), "");
             String title = dto == null ? "" : Objects.toString(dto.getTitle(), "");
-            String runId = normalizeRunId(request == null ? null : request.getRunId());
-            BossJobDataEntity existing = bossService.findExistingChromeBossJob(id, company, title, runId);
+            BossJobDataEntity existing = existingJobs.get(index);
             boolean duplicate = existing != null;
             if (duplicate) duplicateCount++;
             String reason = "";
