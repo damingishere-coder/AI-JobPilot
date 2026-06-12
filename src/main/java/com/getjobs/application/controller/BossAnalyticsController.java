@@ -6,6 +6,7 @@ import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.BossService;
+import com.getjobs.application.service.BossStatsService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
@@ -22,9 +23,11 @@ import java.util.stream.Collectors;
 public class BossAnalyticsController {
 
     private final BossService bossService;
+    private final BossStatsService bossStatsService;
 
-    public BossAnalyticsController(BossService bossService) {
+    public BossAnalyticsController(BossService bossService, BossStatsService bossStatsService) {
         this.bossService = bossService;
+        this.bossStatsService = bossStatsService;
     }
 
     /**
@@ -49,7 +52,7 @@ public class BossAnalyticsController {
                     .filter(s -> !s.isEmpty())
                     .collect(Collectors.toList());
         }
-        return bossService.getBossStats(
+        return bossStatsService.getBossStats(
                 statusList,
                 location,
                 experience,
