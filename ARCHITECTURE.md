@@ -4,6 +4,61 @@
 
 更完整的历史说明见 `doc/架构说明.md`。根目录文档用于记录当前演进方向和跨模块约定。
 
+## 本地运行架构
+
+```text
+front/ Next.js 16
+  │  HTTP / SSE / Chrome Bridge message
+  ▼
+Spring Boot 3.5 / Controller / Service / Mapper
+  │
+  ├─ SQLite + Flyway
+  ├─ Playwright worker
+  └─ Chrome Bridge callback API
+```
+
+默认端口：
+
+- 前端：`6866`。
+- 后端：`8888`。
+- 数据库：本地 SQLite，默认路径 `db/getjobs.db`。
+
+## Chrome Bridge 安全边界
+
+- Chrome Bridge 只服务本地前端页面和声明过的招聘平台域名。
+- 扫描阶段只把结构化岗位信息提交到本地后端。
+- 投递阶段必须先在分析页生成待确认任务，再由用户点击确认。
+- 当前平台投递不能绕过用户确认，也不应把 Cookie、账号密码或浏览器缓存提交到 Git。
+
+## 数据库迁移
+
+迁移脚本位于：
+
+```text
+src/main/resources/db/migration/
+```
+
+当前版本：
+
+- `V1__init_schema.sql`：初始化核心表和平台数据表。
+- `V2__add_indexes.sql`：补充常用查询索引。
+- `V3__add_salary_columns.sql`：补充 Boss 薪资结构化字段。
+- `V4__add_job_analysis_task.sql`：预留 AI 分析任务表。
+
+旧数据库兼容策略：
+
+- `spring.flyway.baseline-on-migrate=true`。
+- 旧库无 Flyway 历史表时基线到 V4，避免重复建表或补列。
+- `DatabaseSchemaService` 仍作为旧库兼容层保留，后续再逐步下沉剩余 DDL。
+
+## CI 边界
+
+GitHub Actions 只做构建和测试：
+
+- 后端使用 Java 21，执行 `./gradlew test` 和 `./gradlew build`。
+- 前端使用 Node 20 + pnpm，执行 `pnpm lint` 和 `pnpm build`。
+- CI 使用 runner 临时目录中的 SQLite 文件，不读取本地真实数据库。
+
 ## 平台适配层
 
 本轮新增轻量平台适配层，位置：

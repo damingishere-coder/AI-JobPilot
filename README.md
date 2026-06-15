@@ -36,12 +36,13 @@
 | 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS、shadcn/ui、Chart.js |
 | 后端 | JDK 21、Spring Boot 3.5.7、Gradle、MyBatis-Plus |
 | 自动化 | Microsoft Playwright for Java |
-| 数据库 | SQLite |
+| 数据库 | SQLite、Flyway 迁移 |
 
 ## 目录结构
 
 ```text
 .
+├── .github/workflows/ci.yml  # GitHub Actions 基础 CI
 ├── README.md                 # 项目入口说明
 ├── build.gradle.kts          # 后端 Gradle 构建配置
 ├── chrome-extension/          # 投递牛马 Chrome Bridge 扩展
@@ -49,7 +50,7 @@
 ├── doc/                      # 项目文档
 ├── front/                    # Next.js 前端
 ├── src/main/java/com/getjobs # Spring Boot 后端与 worker 自动化逻辑
-└── src/main/resources        # 后端配置、静态资源、插件资源
+└── src/main/resources        # 后端配置、迁移脚本、静态资源、插件资源
 ```
 
 ## 快速启动
@@ -103,10 +104,35 @@ Boss 和智联建议优先使用 Chrome Bridge 路线：
 
 扩展只面向本地开发地址和招聘平台域名工作；投递前，分析页会先生成待确认任务，用户确认后才会通过 Chrome 页面执行。
 
+## 数据库迁移
+
+- 迁移脚本位于 `src/main/resources/db/migration/`。
+- 新数据库启动时由 Flyway 自动执行 `V1` 到 `V4` 脚本。
+- 旧数据库默认通过 `baseline-on-migrate` 标记为 V4，再由现有 Java 兼容补列逻辑兜底，不会删除用户数据。
+- 本地真实数据库默认在 `db/getjobs.db`，该目录不会进入 Git。
+
+## CI 检查
+
+项目已恢复 GitHub Actions 基础 CI，配置文件为 `.github/workflows/ci.yml`。
+
+触发方式：
+
+- push 到 `main`。
+- 创建或更新 pull request。
+
+CI 执行内容：
+
+- 后端：Java 21，执行 `./gradlew test` 和 `./gradlew build`。
+- 前端：Node 20 + pnpm，执行 `pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm build`。
+- CI 使用临时 SQLite 路径，不依赖个人电脑上的真实数据库。
+
 ## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
+| [架构说明](ARCHITECTURE.md) | 当前本地架构、迁移方式和平台适配层规划 |
+| [路线图](ROADMAP.md) | P0/P1/P2 已完成和后续事项 |
+| [安全说明](SECURITY.md) | Chrome Bridge、安全边界和敏感数据处理 |
 | [文档索引](doc/文档索引.md) | 所有文档的入口和说明 |
 | [1.2 版本说明](doc/1.0自动投简历脚本.md) | MVP 全流程、已完成功能、运行方式和后续计划 |
 | [项目检查报告](doc/项目检查报告.md) | 项目结构检查、整理结果和注意事项 |
@@ -125,8 +151,14 @@ Boss 和智联建议优先使用 Chrome Bridge 路线：
 # 后端测试
 ./gradlew test
 
+# 后端构建
+./gradlew build
+
 # 前端开发运行
 cd front && pnpm dev
+
+# 前端检查
+cd front && pnpm lint
 
 # 前端构建
 cd front && pnpm build
@@ -137,9 +169,9 @@ cd front && pnpm build:prod
 
 ## 重要注意事项
 
-- 本项目以本地运行为主：`.github` 工作流已移除，GitHub 仅作为代码备份和版本管理使用。
+- 本项目以本地运行为主：GitHub Actions 只做代码检查，不保存本地数据库、Cookie 或账号数据。
 - 本项目更适合在个人电脑本地运行，不建议部署到服务器。招聘网站通常会识别服务器 IP，可能无法返回正常数据。
 - 不建议开启境外代理访问国内招聘网站，否则页面加载可能变慢或失败。
 - 数据库、Cookie、API Key、简历图片等都属于敏感数据，请勿提交到公开仓库。
-- `.gitignore` 已忽略 `db/`、`*.db`、`.env`、`cookie.json`、`*.jpg`、`.pnpm-store/`、构建目录和 Playwright 缓存目录。
+- `.gitignore` 已忽略 `db/`、`*.db`、`.env`、`cookie.json`、`*.jpg`、`.pnpm-store/`、构建目录和 Playwright 缓存目录；但会放行 `src/main/resources/db/migration/*.sql` 迁移脚本。
 - 前端构建产物可放到 `src/main/resources/dist` 后由后端静态资源服务承载。
