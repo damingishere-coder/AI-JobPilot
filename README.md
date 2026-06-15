@@ -4,7 +4,7 @@
 
 当前项目阶段：**1.2 MVP 全流程打通**。这一阶段已经把本地 GUI、后端任务编排、AI 岗位分析、Chrome 已登录标签页桥接、待确认投递、结果回写和岗位分析串成可用闭环。
 
-> 使用前请理解招聘平台规则和账号风险。Boss 直聘网页端稳定性不如手机端，不建议完全依赖程序投递；智联招聘当前投递链路在项目文档中也标注为不稳定。
+
 > 项目以本地运行为主，GitHub 仅作为代码备份和版本管理使用；不要提交数据库、Cookie、API Key、简历图片等敏感文件。
 
 ## 当前进度
@@ -91,8 +91,6 @@ http://localhost:6866
 4. 登录平台账号并保存 Cookie。
 5. 点击开始运行，在页面中查看实时日志和统计结果。
 
-更完整的步骤见 [使用指南](doc/使用指南.md)。
-
 ## Chrome Bridge 扩展
 
 Boss 和智联建议优先使用 Chrome Bridge 路线：
@@ -145,7 +143,3 @@ cd front && pnpm build:prod
 - 数据库、Cookie、API Key、简历图片等都属于敏感数据，请勿提交到公开仓库。
 - `.gitignore` 已忽略 `db/`、`*.db`、`.env`、`cookie.json`、`*.jpg`、`.pnpm-store/`、构建目录和 Playwright 缓存目录。
 - 前端构建产物可放到 `src/main/resources/dist` 后由后端静态资源服务承载。
-
-## 开源协议
-
-项目使用自定义限制商业化的开源协议，详见 [LICENSE](LICENSE)。
