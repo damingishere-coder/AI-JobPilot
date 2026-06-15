@@ -58,6 +58,9 @@ chrome-profile/
 
 # Database files
 db/
+!src/main/resources/db/
+!src/main/resources/db/migration/
+!src/main/resources/db/migration/*.sql
 *.db
 
 # Frontend build output

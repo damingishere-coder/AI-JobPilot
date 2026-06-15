@@ -20,6 +20,13 @@ spring:
   sql:
     init:
       mode: never  # 数据库文件已存在，不需要自动初始化
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 4
+    baseline-description: Existing Java schema baseline
+    validate-on-migrate: true
   servlet:
     multipart:
       max-file-size: 30MB
