@@ -19,7 +19,6 @@ import java.util.*;
 @Slf4j
 @RestController
 @RequestMapping("/api/cookie")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class CookieController {
 

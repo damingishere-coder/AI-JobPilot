@@ -1,6 +1,8 @@
 package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.dto.BrowserClickRequest;
+import com.getjobs.application.dto.BrowserDragRequest;
 import com.getjobs.application.dto.ChromeJobBatchRequest;
 import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BossJobDataEntity;
@@ -18,8 +20,12 @@ import com.getjobs.worker.service.JobRunCoordinator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
@@ -36,6 +42,7 @@ import java.util.Objects;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 
 /**
  * Boss 平台控制器（单平台合并版）：进度 SSE 与任务接口
@@ -43,10 +50,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Slf4j
 @RestController
 @RequestMapping("/api/boss")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class BossController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final double MAX_BROWSER_COORDINATE = 10000.0;
 
     private final BossJobService bossJobService;
     private final PlaywrightManager playwrightManager;
@@ -58,6 +65,11 @@ public class BossController {
     private final com.getjobs.application.service.ProfileService profileService;
     private final JobAiAnalysisService jobAiAnalysisService;
     private final ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
+    private final Environment environment;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     private final List<SseEmitter> bossProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -98,7 +110,22 @@ public class BossController {
             ));
         }
 
-        CompletableFuture.runAsync(() -> bossJobService.executeDelivery(this::sendBossProgress));
+        try {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    bossJobService.executeDelivery(this::sendBossProgress);
+                } catch (Exception e) {
+                    log.error("Boss异步任务执行失败", e);
+                    sendBossProgress(JobProgressMessage.error("boss", "Boss任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
+        } catch (RuntimeException e) {
+            log.error("提交Boss异步任务失败", e);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "failed",
+                    "message", "Boss任务提交失败，请稍后重试"
+            ));
+        }
 
         return ResponseEntity.ok(Map.of(
                 "status", "started",
@@ -334,10 +361,17 @@ public class BossController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
-            CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {
-                sendBossProgress(pm);
-                log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-            }));
+            CompletableFuture.runAsync(() -> {
+                try {
+                    bossJobService.executeDelivery(pm -> {
+                        sendBossProgress(pm);
+                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
+                    });
+                } catch (Exception e) {
+                    log.error("Boss异步扫描任务执行失败", e);
+                    sendBossProgress(JobProgressMessage.error("boss", "Boss扫描任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
             response.put("success", true);
             response.put("message", "Boss扫描任务启动成功，将生成待确认岗位");
             response.put("status", "started");
@@ -492,29 +526,87 @@ public class BossController {
 
     @GetMapping("/browser-snapshot")
     public ResponseEntity<Map<String, Object>> getBossBrowserSnapshot() {
-        return ResponseEntity.ok(playwrightManager.getBossPageSnapshot());
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        try {
+            return ResponseEntity.ok(playwrightManager.getBossPageSnapshot());
+        } catch (Exception e) {
+            log.error("获取Boss浏览器截图失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_snapshot_failed", "获取浏览器截图失败，请查看后端日志"));
+        }
     }
 
     @PostMapping("/browser-click")
-    public ResponseEntity<Map<String, Object>> clickBossBrowser(@RequestBody Map<String, Object> payload) {
-        double x = ((Number) payload.getOrDefault("x", 0)).doubleValue();
-        double y = ((Number) payload.getOrDefault("y", 0)).doubleValue();
-        Map<String, Object> result = playwrightManager.clickBossPage(x, y);
-        return Boolean.TRUE.equals(result.get("success"))
-                ? ResponseEntity.ok(result)
-                : ResponseEntity.badRequest().body(result);
+    public ResponseEntity<Map<String, Object>> clickBossBrowser(@RequestBody BrowserClickRequest request) {
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        String validationError = validateCoordinate("x", request == null ? null : request.getX());
+        if (validationError == null) validationError = validateCoordinate("y", request == null ? null : request.getY());
+        if (validationError != null) {
+            return ResponseEntity.badRequest().body(browserDebugError("invalid_coordinate", validationError));
+        }
+        try {
+            Map<String, Object> result = playwrightManager.clickBossPage(request.getX(), request.getY());
+            return Boolean.TRUE.equals(result.get("success"))
+                    ? ResponseEntity.ok(result)
+                    : ResponseEntity.badRequest().body(toFriendlyBrowserResult(result));
+        } catch (Exception e) {
+            log.error("点击Boss浏览器页面失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_click_failed", "点击浏览器页面失败，请查看后端日志"));
+        }
     }
 
     @PostMapping("/browser-drag")
-    public ResponseEntity<Map<String, Object>> dragBossBrowser(@RequestBody Map<String, Object> payload) {
-        double fromX = ((Number) payload.getOrDefault("fromX", 0)).doubleValue();
-        double fromY = ((Number) payload.getOrDefault("fromY", 0)).doubleValue();
-        double toX = ((Number) payload.getOrDefault("toX", 0)).doubleValue();
-        double toY = ((Number) payload.getOrDefault("toY", 0)).doubleValue();
-        Map<String, Object> result = playwrightManager.dragBossPage(fromX, fromY, toX, toY);
-        return Boolean.TRUE.equals(result.get("success"))
-                ? ResponseEntity.ok(result)
-                : ResponseEntity.badRequest().body(result);
+    public ResponseEntity<Map<String, Object>> dragBossBrowser(@RequestBody BrowserDragRequest request) {
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        String validationError = validateCoordinate("fromX", request == null ? null : request.getFromX());
+        if (validationError == null) validationError = validateCoordinate("fromY", request == null ? null : request.getFromY());
+        if (validationError == null) validationError = validateCoordinate("toX", request == null ? null : request.getToX());
+        if (validationError == null) validationError = validateCoordinate("toY", request == null ? null : request.getToY());
+        if (validationError != null) {
+            return ResponseEntity.badRequest().body(browserDebugError("invalid_coordinate", validationError));
+        }
+        try {
+            Map<String, Object> result = playwrightManager.dragBossPage(request.getFromX(), request.getFromY(), request.getToX(), request.getToY());
+            return Boolean.TRUE.equals(result.get("success"))
+                    ? ResponseEntity.ok(result)
+                    : ResponseEntity.badRequest().body(toFriendlyBrowserResult(result));
+        } catch (Exception e) {
+            log.error("拖动Boss浏览器页面失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_drag_failed", "拖动浏览器页面失败，请查看后端日志"));
+        }
+    }
+
+    private boolean isBrowserDebugEnabled() {
+        return environment.acceptsProfiles(Profiles.of("dev", "local"));
+    }
+
+    private String validateCoordinate(String field, Double value) {
+        if (value == null) return field + " 坐标不能为空";
+        if (!Double.isFinite(value)) return field + " 坐标必须是有效数字";
+        if (value < 0 || value > MAX_BROWSER_COORDINATE) {
+            return field + " 坐标必须在 0 到 " + (int) MAX_BROWSER_COORDINATE + " 之间";
+        }
+        return null;
+    }
+
+    private Map<String, Object> browserDebugError(String code, String message) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("code", code);
+        response.put("message", message);
+        return response;
+    }
+
+    private Map<String, Object> toFriendlyBrowserResult(Map<String, Object> result) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("message", Objects.toString(result == null ? null : result.get("message"), "浏览器调试操作失败，请查看后端日志"));
+        return response;
     }
 
     private String buildBossProbeSearchUrl() {

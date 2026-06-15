@@ -21,6 +21,7 @@ import com.getjobs.worker.service.ZhilianJobService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -36,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 /**
@@ -45,7 +47,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestController
 @RequestMapping("/api/zhilian")
-@CrossOrigin(origins = "*")
 public class ZhilianController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -72,6 +73,10 @@ public class ZhilianController {
 
     @Autowired
     private OpenClawJobProbeService openClawJobProbeService;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     private final List<SseEmitter> zhilianProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -598,11 +603,16 @@ public class ZhilianController {
 
             // 异步启动新任务
             CompletableFuture.runAsync(() -> {
-                zhilianJobService.executeDelivery(progressMessage -> {
-                    sendZhilianProgress(progressMessage);
-                    log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
-                });
-            });
+                try {
+                    zhilianJobService.executeDelivery(progressMessage -> {
+                        sendZhilianProgress(progressMessage);
+                        log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
+                    });
+                } catch (Exception e) {
+                    log.error("智联异步任务执行失败", e);
+                    sendZhilianProgress(JobProgressMessage.error("zhilian", "智联任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
 
             response.put("success", true);
             response.put("message", "智联招聘扫描任务启动成功，将生成待确认岗位");

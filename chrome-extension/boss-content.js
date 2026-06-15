@@ -36,6 +36,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ !== EXTENSION_VERSION) return;
+    if (message?.source !== "GET_JOBS_BACKGROUND") return;
 
     if (message?.type === "PING_CONTENT") {
       sendResponse({ success: true, version: EXTENSION_VERSION });

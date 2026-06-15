@@ -13,6 +13,8 @@ import com.getjobs.worker.dto.JobProgressMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 /**
@@ -36,7 +39,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class JobController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
@@ -46,6 +48,10 @@ public class JobController {
     private final Job51JobService job51JobService;
     private final PlaywrightManager playwrightManager;
     private final CookieService cookieService;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     // SSE emitter lists
     private final List<SseEmitter> job51ProgressEmitters = new CopyOnWriteArrayList<>();
@@ -396,11 +402,17 @@ public class JobController {
                 response.put("status", "running");
                 return ResponseEntity.badRequest().body(response);
             }
-            CompletableFuture.runAsync(() -> job51JobService.executeDelivery(pm -> {
-                // 推送到 SSE 并保留日志输出
-                sendJob51Progress(pm);
-                log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-            }));
+            CompletableFuture.runAsync(() -> {
+                try {
+                    job51JobService.executeDelivery(pm -> {
+                        sendJob51Progress(pm);
+                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
+                    });
+                } catch (Exception e) {
+                    log.error("51job异步任务执行失败", e);
+                    sendJob51Progress(JobProgressMessage.error("51job", "51job任务执行失败，请查看后端日志"));
+                }
+            }, jobTaskExecutor);
             response.put("success", true);
             response.put("message", "51job任务启动成功");
             response.put("status", "started");

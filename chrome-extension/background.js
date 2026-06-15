@@ -19,9 +19,31 @@ const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-09-zhilian-reinject-listener-1";
+const ALLOWED_PAGE_ORIGINS = new Set([
+  "http://localhost:6866",
+  "http://127.0.0.1:6866"
+]);
+const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
+  "GET_JOBS_EXTENSION_PING",
+  "BOSS_PAGE_STATUS",
+  "BOSS_SCAN_STATUS",
+  "BOSS_SCAN_START",
+  "BOSS_SCAN_STOP",
+  "BOSS_DELIVER_ONE",
+  "BOSS_DELIVER_BATCH",
+  "ZHILIAN_SCAN_STATUS",
+  "ZHILIAN_SCAN_START",
+  "ZHILIAN_SCAN_STOP",
+  "ZHILIAN_DELIVER_ONE",
+  "ZHILIAN_DELIVER_BATCH"
+]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
+    if (!isBossSender(sender)) {
+      sendResponse({ success: false, message: "拒绝非 Boss 页面发起的导航请求" });
+      return;
+    }
     handleBossContentNavigation(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
@@ -29,6 +51,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.source === "GET_JOBS_ZHILIAN_CONTENT" && message.type === "ZHILIAN_NAVIGATE_TAB") {
+    if (!isZhilianSender(sender)) {
+      sendResponse({ success: false, message: "拒绝非智联页面发起的导航请求" });
+      return;
+    }
     handleZhilianContentNavigation(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
@@ -36,6 +62,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.source === "GET_JOBS_PAGE") {
+    if (!isAllowedPageSender(sender)) {
+      sendResponse({ success: false, message: "当前页面来源不允许连接 Chrome Bridge" });
+      return;
+    }
+    if (!isValidPageMessage(message)) {
+      sendResponse({ success: false, message: "Chrome Bridge 请求类型不被允许" });
+      return;
+    }
     handlePageMessage(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
@@ -43,13 +77,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.source === "GET_JOBS_PLATFORM" && message.pageTabId) {
-    chrome.tabs.sendMessage(message.pageTabId, {
-      source: "GET_JOBS_BACKGROUND",
-      type: "GET_JOBS_EXTENSION_EVENT",
-      payload: message.payload
-    }).catch(() => {});
+    forwardPlatformEvent(message, sender).catch(() => {});
   }
 });
+
+async function forwardPlatformEvent(message, sender) {
+  if (!isSupportedPlatformSender(sender)) return;
+  const pageTab = await chrome.tabs.get(message.pageTabId).catch(() => null);
+  if (!isAllowedPageUrl(pageTab?.url || pageTab?.pendingUrl || "")) return;
+  chrome.tabs.sendMessage(message.pageTabId, {
+    source: "GET_JOBS_BACKGROUND",
+    type: "GET_JOBS_EXTENSION_EVENT",
+    payload: message.payload
+  }).catch(() => {});
+}
+
+function isValidPageMessage(message) {
+  return Boolean(
+    message
+      && message.source === "GET_JOBS_PAGE"
+      && typeof message.type === "string"
+      && ALLOWED_PAGE_MESSAGE_TYPES.has(message.type)
+  );
+}
+
+function isAllowedPageSender(sender) {
+  return isAllowedPageUrl(sender?.tab?.url || sender?.url || "");
+}
+
+function isAllowedPageUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return ALLOWED_PAGE_ORIGINS.has(parsed.origin);
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedPlatformSender(sender) {
+  return isBossSender(sender) || isZhilianSender(sender);
+}
+
+function isBossSender(sender) {
+  return isBossUrl(sender?.tab?.url || sender?.url || "");
+}
+
+function isZhilianSender(sender) {
+  return isZhilianUrl(sender?.tab?.url || sender?.url || "");
+}
 
 async function handleBossContentNavigation(message, sender) {
   const tabId = sender.tab?.id;
@@ -507,8 +582,10 @@ function normalizeZhilianFailurePayload(message) {
   return classifyZhilianDeliveryFailure(message);
 }
 
-function postPlatformProgress(pageTabId, payload) {
+async function postPlatformProgress(pageTabId, payload) {
   if (!pageTabId) return;
+  const pageTab = await chrome.tabs.get(pageTabId).catch(() => null);
+  if (!isAllowedPageUrl(pageTab?.url || pageTab?.pendingUrl || "")) return;
   chrome.tabs.sendMessage(pageTabId, {
     source: "GET_JOBS_BACKGROUND",
     type: "GET_JOBS_EXTENSION_EVENT",
@@ -753,6 +830,15 @@ function isBossSearchUrl(url) {
     return parsed.protocol === "https:"
       && parsed.hostname.endsWith("zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
+  } catch {
+    return false;
+  }
+}
+
+function isBossUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname.endsWith("zhipin.com");
   } catch {
     return false;
   }
