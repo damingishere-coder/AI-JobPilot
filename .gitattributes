@@ -29,6 +29,7 @@
 .gitattributes text eol=lf
 
 # Shell scripts
+gradlew text eol=lf
 *.sh text eol=lf
 
 # Windows scripts

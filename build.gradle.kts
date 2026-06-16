@@ -16,9 +16,8 @@ java {
 }
 
 repositories {
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
     mavenCentral()
-    // 国内镜像可选：
-    // maven { url = uri("https://maven.aliyun.com/repository/public") }
 }
 
 dependencies {
@@ -30,8 +29,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
     implementation("org.apache.httpcomponents.client5:httpclient5-fluent")
-    implementation("org.flywaydb:flyway-core:12.8.1")
-    implementation("org.flywaydb:flyway-database-nc-sqlite:12.8.1")
+    implementation("org.flywaydb:flyway-core")
 
     // 不在 BOM 中的依赖（写版本）
     implementation("com.microsoft.playwright:playwright:1.51.0")
