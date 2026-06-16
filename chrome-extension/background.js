@@ -17,7 +17,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-04-boss-page-status-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-16-boss-refresh-guard-1";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-09-zhilian-reinject-listener-1";
 const ALLOWED_PAGE_ORIGINS = new Set([
   "http://localhost:6866",

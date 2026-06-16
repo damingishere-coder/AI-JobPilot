@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-04-boss-page-status-1";
+  const EXTENSION_VERSION = "2026-06-16-boss-refresh-guard-1";
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -10,7 +10,7 @@
   const SCAN_STATUS_KEY = "__GET_JOBS_BOSS_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_BOSS_KEYWORD_CURSOR__";
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
-  const SEARCH_NAVIGATION_GRACE_MS = 60 * 1000;
+  const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
   const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
   const SEARCH_PARAM_KEYS = ["city", "jobType", "salary", "experience", "degree", "scale", "industry", "stage", "query"];
@@ -339,8 +339,7 @@
             ...searchTaskState,
             navigationAttempts
           };
-          task = skipSearchNavigationKeyword(failedTaskState, url, { resume: false });
-          continue;
+          return stopSearchNavigationFailure(failedTaskState, url);
         }
         postProgress(task, "info", `Boss Chrome准备打开搜索页：${keyword}（第 ${nextNavigationAttempts} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
           ...baseMeta,
@@ -1451,18 +1450,38 @@
       if (!current.hostname.includes("zhipin.com")) return false;
 
       const phase = String(task.phase || "");
+      const diagnostics = buildPageBlockDiagnostics();
+      if (diagnostics.hasBlockingState) return true;
       if (phase === "detail") {
         const jobs = Array.isArray(task.jobs) ? task.jobs : [];
         const job = jobs[Number(task.detailIndex || 0)];
-        if (buildPageBlockDiagnostics().hasBlockingState) return true;
-        return Boolean(job?.url && isSameBossJobUrl(current.href, job.url)) || current.pathname.includes("/job_detail/");
+        return Boolean(job?.url && isSameBossJobUrl(current.href, job.url))
+          || (!job?.url && current.pathname.includes("/job_detail/"));
       }
-      if (phase === "searching" || phase === "collecting" || phase === "nextKeyword") {
-        if (isBossSearchPath(current.pathname)) return true;
-        return phase === "searching" && isSearchNavigationPending(task);
+      if (phase === "searching") {
+        return isCurrentBossSearchTarget(task, current.href) || isPendingBossSearchNavigation(task, current);
+      }
+      if (phase === "collecting" || phase === "nextKeyword") {
+        return isCurrentBossSearchTarget(task, current.href);
       }
 
       return false;
+    } catch {
+      return false;
+    }
+  }
+
+  function isCurrentBossSearchTarget(task, currentHref) {
+    const expected = task?.expectedSearchUrl || task?.searchUrl || "";
+    return Boolean(expected && isSameSearchUrl(currentHref, expected));
+  }
+
+  function isPendingBossSearchNavigation(task, current) {
+    const expected = task?.expectedSearchUrl || "";
+    if (!expected || !isSearchNavigationPending(task)) return false;
+    try {
+      const target = new URL(expected, window.location.origin);
+      return isBossSearchPath(target.pathname) && isBossSearchPath(current.pathname);
     } catch {
       return false;
     }
@@ -1924,7 +1943,7 @@
       if (!isSearchNavigationPending(stored) || isSameSearchUrl(window.location.href, url)) return;
 
       if (attempts >= SEARCH_NAVIGATION_MAX_ATTEMPTS) {
-        skipSearchNavigationKeyword(stored, url);
+        stopSearchNavigationFailure(stored, url);
         return;
       }
 
@@ -1932,25 +1951,9 @@
       const retryTask = {
         ...stored,
         navigationAttempts: nextAttempts,
-        navigationStartedAt: Date.now(),
-        navigationRefreshAttempted: stored.navigationRefreshAttempted || nextAttempts === 3
+        navigationStartedAt: Date.now()
       };
       storeScanTask(retryTask);
-      if (nextAttempts === 3 && !stored.navigationRefreshAttempted) {
-        postProgress(retryTask, "warning", `Boss搜索页跳转仍未完成，正在刷新当前页面后继续恢复：${retryTask.expectedKeyword || ""}。当前URL：${window.location.href}`, {
-          operation: "scan",
-          stage: "searching",
-          keyword: retryTask.expectedKeyword || "",
-          keywordIndex: Number(retryTask.currentIndex || 0) + 1,
-          keywordTotal: scanKeywords(retryTask).length,
-          currentUrl: window.location.href,
-          targetUrl: url,
-          navigationAttempts: nextAttempts,
-          totalSaved: Number(retryTask.totalSaved || 0)
-        });
-        window.location.reload();
-        return;
-      }
       postProgress(retryTask, "warning", `Boss搜索页跳转未完成，正在重试打开搜索页：${retryTask.expectedKeyword || ""}。当前URL：${window.location.href}`, {
         operation: "scan",
         stage: "searching",
@@ -1966,67 +1969,40 @@
     }, SEARCH_NAVIGATION_RETRY_MS);
   }
 
-  function skipSearchNavigationKeyword(task, url, options = {}) {
+  function stopSearchNavigationFailure(task, url) {
     const keyword = task.expectedKeyword || scanKeywords(task)[Number(task.currentIndex || 0)] || "";
     const keywordTotal = scanKeywords(task).length;
-    const nextTask = {
-      ...task,
-      phase: "nextKeyword",
-      jobs: [],
-      detailIndex: 0,
-      currentIndex: Number(task.currentIndex || 0) + 1,
-      navigationAttempts: 0,
-      navigationStartedAt: 0,
-      navigationRefreshAttempted: false,
-      expectedKeyword: "",
-      expectedSearchUrl: "",
-      totalSaved: Number(task.totalSaved || 0)
-    };
-    advanceKeywordCursor(task, Number(task.currentIndex || 0) + 1, keyword);
-    storeScanTask(nextTask);
+    const totalSaved = Number(task.totalSaved || 0);
+    const navigationAttempts = Number(task.navigationAttempts || 0);
+    const message = `Boss搜索页打开失败，已停止本轮扫描。请确认Boss页面可以正常访问后重新开始扫描：${keyword}`;
+    clearStoredScanTask();
     writeScanStatus({
-      isRunning: true,
+      isRunning: false,
       stopRequested: false,
-      stage: "searching",
-      message: `Boss搜索页跳转失败，已跳过关键词：${keyword}，继续下一个关键词。`,
+      stage: "navigationFailed",
+      message,
       runId: task.runId,
       keyword,
       keywordIndex: Number(task.currentIndex || 0) + 1,
       keywordTotal,
-      totalSaved: Number(task.totalSaved || 0),
+      totalSaved,
+      saved: totalSaved,
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task, "warning", `Boss搜索页跳转失败，已跳过关键词：${keyword}，继续下一个关键词。`, {
+    postProgress(task, "error", message, {
       operation: "scan",
-      stage: "searching",
+      stage: "navigationFailed",
       keyword,
       keywordIndex: Number(task.currentIndex || 0) + 1,
       keywordTotal,
       currentUrl: window.location.href,
       targetUrl: url,
-      navigationAttempts: Number(task.navigationAttempts || 0),
-      totalSaved: Number(task.totalSaved || 0)
+      navigationAttempts,
+      totalSaved,
+      saved: totalSaved
     });
-    if (options.resume !== false) {
-      runScan(nextTask).catch((error) => {
-        clearStoredScanTask();
-        writeScanStatus({
-          isRunning: false,
-          stopRequested: false,
-          stage: "error",
-          message: error.message || String(error),
-          runId: task.runId,
-          startedAt: task.startedAt,
-          updatedAt: Date.now()
-        });
-        postProgress(task, "error", error.message || String(error), {
-          operation: "scan",
-          stage: "error"
-        });
-      });
-    }
-    return nextTask;
+    return { success: false, message, navigationFailed: true, saved: totalSaved, totalSaved };
   }
 
   function isSearchNavigationPending(task) {
