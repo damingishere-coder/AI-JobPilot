@@ -14,6 +14,7 @@ import com.getjobs.worker.liepin.LiepinConfig;
 import com.getjobs.worker.zhilian.ZhilianConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +35,7 @@ public class ConfigService {
     private final BossService bossService;
     private final ZhilianService zhilianService;
     private final Job51Service job51Service;
+    private final Environment environment;
 
     /**
      * 获取所有配置（以Map形式返回）
@@ -110,9 +112,9 @@ public class ConfigService {
      */
     public Map<String, String> getAiConfigs() {
         Map<String, String> result = new HashMap<>();
-        String baseUrl = requireConfigValue("BASE_URL");
-        String apiKey = requireConfigValue("API_KEY");
-        String model = requireConfigValue("MODEL");
+        String baseUrl = requireAiConfigValue("BASE_URL");
+        String apiKey = requireAiConfigValue("API_KEY");
+        String model = requireAiConfigValue("MODEL");
         result.put("BASE_URL", baseUrl);
         result.put("API_KEY", apiKey);
         result.put("MODEL", model);
@@ -139,9 +141,17 @@ public class ConfigService {
                 config.setUpdatedAt(LocalDateTime.now());
                 configMapper.updateById(config);
                 updateCount++;
-                log.info("更新配置: {} = {}", key, value);
+                log.info("更新配置: {} = {}", key, displayConfigValue(key, value));
             } else {
-                log.warn("配置键不存在: {}", key);
+                ConfigEntity created = new ConfigEntity();
+                created.setConfigKey(key);
+                created.setConfigValue(value);
+                created.setConfigType("string");
+                created.setCategory(resolveConfigCategory(key));
+                created.setDescription(resolveConfigDescription(key));
+                if (createConfig(created)) {
+                    updateCount++;
+                }
             }
         }
 
@@ -164,11 +174,17 @@ public class ConfigService {
             int result = configMapper.updateById(config);
 
             if (result > 0) {
-                log.info("更新配置成功: {} = {}", configKey, configValue);
+                log.info("更新配置成功: {} = {}", configKey, displayConfigValue(configKey, configValue));
                 return true;
             }
         } else {
-            log.warn("配置键不存在: {}", configKey);
+            ConfigEntity created = new ConfigEntity();
+            created.setConfigKey(configKey);
+            created.setConfigValue(configValue);
+            created.setConfigType("string");
+            created.setCategory(resolveConfigCategory(configKey));
+            created.setDescription(resolveConfigDescription(configKey));
+            return createConfig(created);
         }
 
         return false;
@@ -187,11 +203,67 @@ public class ConfigService {
         int result = configMapper.insert(config);
 
         if (result > 0) {
-            log.info("创建配置成功: {} = {}", config.getConfigKey(), config.getConfigValue());
+            log.info("创建配置成功: {} = {}", config.getConfigKey(), displayConfigValue(config.getConfigKey(), config.getConfigValue()));
             return true;
         }
 
         return false;
+    }
+
+    private String requireAiConfigValue(String configKey) {
+        String value = getConfigValue(configKey);
+        if (value == null || value.isBlank()) {
+            value = environment.getProperty(configKey);
+        }
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("缺少必要AI配置：" + configKey + "。请先在“环境配置”页面填写并保存 BASE_URL、API_KEY、MODEL。");
+        }
+        return value.trim();
+    }
+
+    private String resolveConfigCategory(String configKey) {
+        if (configKey == null) {
+            return "general";
+        }
+        return switch (configKey) {
+            case "BASE_URL", "API_KEY", "MODEL" -> "ai";
+            case "HOOK_URL", "BOT_IS_SEND" -> "notification";
+            default -> "general";
+        };
+    }
+
+    private String resolveConfigDescription(String configKey) {
+        if (configKey == null) {
+            return "运行配置";
+        }
+        return switch (configKey) {
+            case "BASE_URL" -> "AI 服务地址";
+            case "API_KEY" -> "AI 服务密钥";
+            case "MODEL" -> "AI 模型名称";
+            case "HOOK_URL" -> "企业微信 Webhook 地址";
+            case "BOT_IS_SEND" -> "企业微信通知发送开关";
+            default -> "运行配置";
+        };
+    }
+
+    private String displayConfigValue(String configKey, String configValue) {
+        if (isSensitiveConfig(configKey)) {
+            return configValue == null || configValue.isBlank() ? "" : "[已隐藏]";
+        }
+        return configValue;
+    }
+
+    private boolean isSensitiveConfig(String configKey) {
+        if (configKey == null) {
+            return false;
+        }
+        String key = configKey.toUpperCase();
+        return key.contains("KEY")
+                || key.contains("TOKEN")
+                || key.contains("SECRET")
+                || key.contains("PASSWORD")
+                || key.contains("COOKIE")
+                || "HOOK_URL".equals(key);
     }
 
     /**
