@@ -86,15 +86,11 @@ public class BossService {
             bossOptionMapper.insert(unlimited);
         }
 
-        // 排序：city/industry 按 sort_order 优先，其次 id；其他类型维持原有 id 升序
+        // 排序：所有 Boss 筛选项都按 sort_order 优先，其次 id，保证薪资/经验等固定顺序显示
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
-        if ("city".equals(type) || "industry".equals(type)) {
-            // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
-            wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
-        } else {
-            wrapper.orderByAsc("id");
-        }
+        // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
+        wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
         return bossOptionMapper.selectList(wrapper);
     }
 

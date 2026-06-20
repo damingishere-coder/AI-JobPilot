@@ -68,6 +68,15 @@ interface BlacklistItem {
 type DialogKind = 'save' | 'platform'
 type BossStep = 'config' | 'scan' | 'confirm'
 
+const UNLIMITED_OPTION_CODE = '0'
+
+const normalizeUnlimitedSelection = (list: string[]): string[] => {
+  if (!list || list.length <= 1) return list || []
+  return list.includes(UNLIMITED_OPTION_CODE)
+    ? list.filter((code) => code !== UNLIMITED_OPTION_CODE)
+    : list
+}
+
 interface ProgressLog {
   id: number
   type: string
@@ -629,8 +638,9 @@ export default function BossPage() {
 
   // 工具：将数组转为括号列表字符串
   const toBracketList = (list: string[]): string => {
-    if (!list || list.length === 0) return ''
-    return `[${list.join(',')}]`
+    const normalized = normalizeUnlimitedSelection(list)
+    if (!normalized || normalized.length === 0) return ''
+    return `[${normalized.join(',')}]`
   }
 
   const handleSave = async (silent: boolean = false, overrides?: Partial<BossConfig>) => {
@@ -1016,7 +1026,7 @@ export default function BossPage() {
                       </option>
                     ))}
                 </Select>
-                <p className="text-xs text-muted-foreground">目标工作城市（按设定顺序显示）</p>
+                <p className="text-xs text-muted-foreground">按 Boss 直聘城市筛选岗位</p>
               </div>
 
               <div className="space-y-2">
@@ -1033,7 +1043,7 @@ export default function BossPage() {
                     </option>
                   ))}
                 </Select>
-                <p className="text-xs text-muted-foreground">选择职位类型</p>
+                <p className="text-xs text-muted-foreground">职位性质，职位名称请在搜索关键词里填写</p>
               </div>
 
               <div className="space-y-2">
@@ -1147,7 +1157,7 @@ export default function BossPage() {
                   placeholder="选择薪资待遇"
                   disabled={!hasProfile}
                 />
-                <p className="text-xs text-muted-foreground">选项来源：字典表 type=salary（可多选）</p>
+                <p className="text-xs text-muted-foreground">按 Boss 直聘薪资范围筛选，可多选</p>
               </div>
               <div className="space-y-2">
                 <Label>工作经验</Label>
@@ -1733,20 +1743,24 @@ function MultiSelect({
 
   const toggle = (code: string) => {
     if (disabled) return
-    console.log('[MultiSelect] toggle 被调用', { code, currentSelected: selected })
-    if (selected.includes(code)) {
-      const newSelected = selected.filter((c) => c !== code)
+    const currentSelected = normalizeUnlimitedSelection(selected)
+    console.log('[MultiSelect] toggle 被调用', { code, currentSelected })
+    if (currentSelected.includes(code)) {
+      const newSelected = currentSelected.filter((c) => c !== code)
       console.log('[MultiSelect] 取消选择，新值:', newSelected)
       onChange(newSelected)
     } else {
-      const newSelected = [...selected, code]
+      const newSelected = code === UNLIMITED_OPTION_CODE
+        ? [UNLIMITED_OPTION_CODE]
+        : [...currentSelected.filter((c) => c !== UNLIMITED_OPTION_CODE), code]
       console.log('[MultiSelect] 添加选择，新值:', newSelected)
       onChange(newSelected)
     }
   }
 
+  const effectiveSelected = normalizeUnlimitedSelection(selected)
   const selectedNames = options
-    .filter((o) => selected.includes(o.code))
+    .filter((o) => effectiveSelected.includes(o.code))
     .map((o) => o.name)
 
   return (
@@ -1775,7 +1789,7 @@ function MultiSelect({
         >
           <div className="flex flex-col gap-2">
             {options.map((opt) => {
-              const checked = selected.includes(opt.code)
+              const checked = effectiveSelected.includes(opt.code)
               return (
                 <div
                   key={opt.id}
