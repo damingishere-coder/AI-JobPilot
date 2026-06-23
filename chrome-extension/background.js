@@ -12,13 +12,16 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-09-zhilian-reinject-listener-1";
+const BACKGROUND_VERSION = "2026-06-23-platform-scan-fallbacks-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-16-boss-refresh-guard-1";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-09-zhilian-reinject-listener-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-23-boss-click-detail-fallback-1";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-23-zhilian-query-initial-state-1";
+const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
+const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
+const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
 const ALLOWED_PAGE_ORIGINS = new Set([
   "http://localhost:6866",
   "http://127.0.0.1:6866"
@@ -39,6 +42,17 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_LOCAL_API") {
+    if (!isBossSender(sender)) {
+      sendResponse({ success: false, message: "拒绝非 Boss 页面发起的本地接口请求" });
+      return;
+    }
+    handleBossLocalApiRequest(message).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_NAVIGATE_TAB") {
     if (!isBossSender(sender)) {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起的导航请求" });
@@ -146,6 +160,134 @@ async function handleZhilianContentNavigation(message, sender) {
 
   await chrome.tabs.update(tabId, { url: targetUrl });
   return { success: true, url: targetUrl };
+}
+
+async function handleBossLocalApiRequest(message) {
+  const endpoint = resolveBossLocalApiEndpoint(message);
+  if (!endpoint.success) return endpoint;
+
+  return await requestLocalApi(endpoint.path, {
+    operation: String(message.operation || ""),
+    method: endpoint.method,
+    body: message.body,
+    timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
+    pageTabId: message.pageTabId
+  });
+}
+
+function resolveBossLocalApiEndpoint(message) {
+  const operation = String(message?.operation || "");
+  if (operation === "chrome-jobs-dedupe") {
+    return { success: true, method: "POST", path: "/api/boss/chrome/jobs/dedupe" };
+  }
+  if (operation === "chrome-jobs") {
+    return { success: true, method: "POST", path: "/api/boss/chrome/jobs" };
+  }
+  if (operation === "ai-keywords") {
+    return { success: true, method: "POST", path: "/api/boss/ai-keywords" };
+  }
+  if (operation === "delivery-result") {
+    const id = String(message?.params?.id || "").trim();
+    if (!/^\d+$/.test(id)) {
+      return { success: false, message: "Boss投递结果接口缺少有效岗位ID" };
+    }
+    return { success: true, method: "POST", path: `/api/boss/jobs/${encodeURIComponent(id)}/delivery-result` };
+  }
+  return { success: false, message: "Boss本地接口请求类型不被允许" };
+}
+
+async function requestLocalApi(path, options = {}) {
+  let lastError = null;
+  const method = options.method || "POST";
+  const timeoutMs = options.timeoutMs || BOSS_LOCAL_API_TIMEOUT_MS;
+  const requestOptions = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  };
+
+  for (let attempt = 1; attempt <= BOSS_LOCAL_API_MAX_ATTEMPTS; attempt++) {
+    for (const baseUrl of LOCAL_API_BASE_URLS) {
+      try {
+        const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
+        const data = await parseLocalApiResponse(response);
+        if (response.ok) {
+          return { success: true, httpStatus: response.status, data, attempt, baseUrl };
+        }
+        lastError = new Error(data?.message || `本地接口返回 HTTP ${response.status}`);
+        if (!isRetryableLocalApiStatus(response.status)) {
+          return {
+            success: false,
+            httpStatus: response.status,
+            data,
+            message: lastError.message,
+            attempt,
+            baseUrl
+          };
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (attempt < BOSS_LOCAL_API_MAX_ATTEMPTS) {
+      await postBossLocalApiRetryProgress(options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
+      await sleep(350 * attempt);
+    }
+  }
+
+  return {
+    success: false,
+    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`
+  };
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function parseLocalApiResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function normalizeLocalApiTimeout(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1000) return BOSS_LOCAL_API_TIMEOUT_MS;
+  return Math.min(Math.floor(parsed), 120000);
+}
+
+function isRetryableLocalApiStatus(status) {
+  return status === 408 || status >= 500;
+}
+
+function friendlyLocalApiError(error) {
+  const message = error?.message || String(error || "");
+  if (error?.name === "AbortError" || /abort/i.test(message)) return "请求超时，请确认本地服务仍在运行";
+  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地服务，请确认 6866 端口正常";
+  return message || "未知网络错误";
+}
+
+async function postBossLocalApiRetryProgress(pageTabId, operation, nextAttempt, totalAttempts, error) {
+  if (!pageTabId || operation !== "chrome-jobs") return;
+  await postPlatformProgress(pageTabId, {
+    platform: "boss",
+    type: "warning",
+    message: `Boss本地服务请求失败，正在自动重试 ${nextAttempt}/${totalAttempts}：${friendlyLocalApiError(error)}`,
+    operation: "scan",
+    stage: "submitting"
+  });
 }
 
 async function handlePageMessage(message, sender) {

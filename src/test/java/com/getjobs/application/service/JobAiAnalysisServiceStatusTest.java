@@ -15,7 +15,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockMultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -119,6 +121,43 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(updates).extracting(ZhilianJobDataEntity::getDeliveryStatus)
                 .contains(DeliveryStatus.AI_ANALYZING, DeliveryStatus.WAITING_CONFIRM);
         assertThat(updates.get(updates.size() - 1).getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+    }
+
+    @Test
+    void parsesUtf8ResumeTextFile() {
+        when(profileService.getCurrentProfileId()).thenReturn(PROFILE_ID);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(PROFILE_ID);
+        when(resumeProfileMapper.selectOne(any())).thenReturn(null);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "简历.txt",
+                "text/plain",
+                "中文简历：熟悉 Java 和 Spring Boot".getBytes(StandardCharsets.UTF_8)
+        );
+
+        ResumeProfileEntity result = service.parseAndSaveResumeFile(file);
+
+        assertThat(result.getResumeText()).contains("熟悉 Java");
+        assertThat(result.getSourceFilename()).isEqualTo("简历.txt");
+        assertThat(result.getParseStatus()).isEqualTo("parsed");
+    }
+
+    @Test
+    void repairsMarkdownWrappedAiJsonAndKeepsWaitingConfirmFlow() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenReturn("""
+                ```json
+                {score:88, decision:"APPLY", summary:"匹配", strengths:["Java"], risks:[], greeting:"你好",}
+                ```
+                """);
+
+        service.analyzeJob(bossRequest());
+
+        BossJobDataEntity update = lastBossUpdate();
+        assertThat(update.getAiScore()).isEqualTo(88);
+        assertThat(update.getAiDecision()).isEqualTo("APPLY");
+        assertThat(update.getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
     }
 
     @Test

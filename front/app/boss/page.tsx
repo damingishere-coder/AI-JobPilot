@@ -97,6 +97,7 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
   const operation = String(payload.operation || '')
+  if (operation === 'scan' && stage === 'blocked' && (payload.paused || payload.resumable)) return false
   return (operation === 'scan' && ['complete', 'stopped', 'error', 'blocked'].includes(stage))
     || message.includes('扫描完成')
     || message.includes('扫描已停止')
@@ -166,6 +167,7 @@ export default function BossPage() {
   const [chromeBridgeReady, setChromeBridgeReady] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
+  const [isScanPaused, setIsScanPaused] = useState(false)
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
@@ -210,11 +212,27 @@ export default function BossPage() {
         type: 'BOSS_SCAN_STATUS',
         platform: 'boss',
       }, 2000)
+      const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
+      const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+      if (paused) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setIsScanPaused(true)
+        if (runId) setActiveRunId(runId)
+        if (!silent) {
+          appendProgressLog({
+            type: 'warning',
+            message: String(status.message || 'Boss扫描已暂停，处理登录或安全验证后可继续。'),
+            timestamp: typeof status.updatedAt === 'number' ? status.updatedAt : Date.now(),
+          })
+        }
+        return
+      }
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
         setIsDelivering(true)
         setIsStopping(false)
-        const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+        setIsScanPaused(false)
         if (runId) setActiveRunId(runId)
         if (!silent) {
           appendProgressLog({
@@ -228,6 +246,7 @@ export default function BossPage() {
       if (status.success) {
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch {
@@ -363,12 +382,19 @@ export default function BossPage() {
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
+              if (data.stage === 'blocked' && (data.paused || data.resumable)) {
+                setIsDelivering(false)
+                setIsStopping(false)
+                setIsScanPaused(true)
+                if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
+              }
               if (shouldRefreshAnalysisFromProgress(data)) {
                 guideToConfirmStep()
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
                 setIsStopping(false)
+                setIsScanPaused(false)
                 setActiveRunId(null)
               }
             } catch (error) {
@@ -397,9 +423,16 @@ export default function BossPage() {
       if (shouldRefreshAnalysisFromProgress(payload)) {
         guideToConfirmStep()
       }
+      if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setIsScanPaused(true)
+        if (typeof payload.runId === 'string' && payload.runId.trim()) setActiveRunId(payload.runId.trim())
+      }
       if (isTerminalScanPayload(payload)) {
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     })
@@ -776,6 +809,7 @@ export default function BossPage() {
       }
       setIsDelivering(true)
       setIsStopping(false)
+      setIsScanPaused(false)
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
@@ -805,12 +839,14 @@ export default function BossPage() {
 
       if (data.success) {
         setHasScanResult(false)
+        if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
         appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
         console.warn('启动失败：', data.message)
         appendProgressLog({ type: 'error', message: data.message || 'Boss扫描启动失败。' })
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch (error) {
@@ -818,6 +854,7 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: 'Boss扫描启动失败：网络或服务异常。' })
       setIsDelivering(false)
       setIsStopping(false)
+      setIsScanPaused(false)
       setActiveRunId(null)
     }
   }
@@ -838,12 +875,14 @@ export default function BossPage() {
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })
         setIsDelivering(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       } else {
         // 停止失败：也要将状态设置为未投递（因为可能任务已经结束）
         console.warn('停止失败：', data.message)
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描可能已经结束。' })
         setIsDelivering(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch (error) {
@@ -851,6 +890,7 @@ export default function BossPage() {
       // 停止失败：也要将状态设置为未投递
       appendProgressLog({ type: 'error', message: 'Boss扫描停止失败：网络或服务异常。' })
       setIsDelivering(false)
+      setIsScanPaused(false)
       setActiveRunId(null)
     } finally {
       setIsStopping(false)
@@ -936,7 +976,7 @@ export default function BossPage() {
 	              </Button>
 	            ) : (
 	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> 开始扫描
+	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
@@ -957,7 +997,7 @@ export default function BossPage() {
         </div>
       ) : null}
 
-      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering} />
+      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering && !isScanPaused} />
 
       {hasScanResult && activeStep !== 'confirm' ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-900/60 dark:bg-cyan-950/30 dark:text-cyan-100">
@@ -1370,6 +1410,7 @@ export default function BossPage() {
             logs={progressLogs}
             isRunning={isDelivering}
             isStopping={isStopping}
+            isPaused={isScanPaused}
             spotlight={logSpotlight}
             onStop={handleStopDelivery}
             onClear={() => setProgressLogs([])}
@@ -1569,6 +1610,7 @@ function ProgressLogCard({
   logs,
   isRunning,
   isStopping,
+  isPaused,
   spotlight = false,
   onStop,
   onClear,
@@ -1576,6 +1618,7 @@ function ProgressLogCard({
   logs: ProgressLog[]
   isRunning: boolean
   isStopping: boolean
+  isPaused: boolean
   spotlight?: boolean
   onStop: () => void
   onClear: () => void
@@ -1605,8 +1648,8 @@ function ProgressLogCard({
           <CardDescription>后台自动化浏览器的扫描进度和结果</CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
-            {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
+          <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : isPaused ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+            {isStopping ? '停止中' : isPaused ? '已暂停' : isRunning ? '扫描中' : '空闲'}
           </span>
           {isRunning && (
             <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-lg px-3">

@@ -20,8 +20,6 @@ import com.getjobs.worker.service.JobRunCoordinator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.env.Environment;
@@ -40,9 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executor;
 
 /**
  * Boss 平台控制器（单平台合并版）：进度 SSE 与任务接口
@@ -54,6 +50,8 @@ import java.util.concurrent.Executor;
 public class BossController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final double MAX_BROWSER_COORDINATE = 10000.0;
+    private static final String BOSS_BACKEND_SCAN_DISABLED_MESSAGE =
+            "Boss后端托管扫描已禁用。Boss扫描已改用 Chrome Bridge，请刷新前端页面，并在已登录 Boss 的 Chrome 页面点击“开始扫描”。";
 
     private final BossJobService bossJobService;
     private final PlaywrightManager playwrightManager;
@@ -66,10 +64,6 @@ public class BossController {
     private final JobAiAnalysisService jobAiAnalysisService;
     private final ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
     private final Environment environment;
-
-    @Autowired
-    @Qualifier("jobTaskExecutor")
-    private Executor jobTaskExecutor;
 
     private final List<SseEmitter> bossProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -103,34 +97,7 @@ public class BossController {
     /** POST - 启动Boss投递任务 */
     @PostMapping("/execute")
     public ResponseEntity<Map<String, Object>> executeBoss() {
-        if (bossJobService.isRunning()) {
-            return ResponseEntity.ok(Map.of(
-                    "status", "already_running",
-                    "message", "Boss扫描任务已在运行中"
-            ));
-        }
-
-        try {
-            CompletableFuture.runAsync(() -> {
-                try {
-                    bossJobService.executeDelivery(this::sendBossProgress);
-                } catch (Exception e) {
-                    log.error("Boss异步任务执行失败", e);
-                    sendBossProgress(JobProgressMessage.error("boss", "Boss任务执行失败，请查看后端日志"));
-                }
-            }, jobTaskExecutor);
-        } catch (RuntimeException e) {
-            log.error("提交Boss异步任务失败", e);
-            return ResponseEntity.internalServerError().body(Map.of(
-                    "status", "failed",
-                    "message", "Boss任务提交失败，请稍后重试"
-            ));
-        }
-
-        return ResponseEntity.ok(Map.of(
-                "status", "started",
-                "message", "Boss扫描任务已启动"
-        ));
+        return bossBackendScanDisabledResponse();
     }
 
     @PostMapping("/chrome/jobs")
@@ -341,49 +308,7 @@ public class BossController {
     /** POST - 启动Boss投递任务（前端使用的接口）*/
     @PostMapping("/start")
     public ResponseEntity<Map<String, Object>> startBoss() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            PlaywrightManager.BossSearchSessionStatus sessionStatus =
-                    playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
-            if (!sessionStatus.searchReady()) {
-                response.put("success", false);
-                response.put("message", sessionStatus.failureReason());
-                response.put("status", "search_not_ready");
-                response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
-                response.put("searchReady", sessionStatus.searchReady());
-                response.put("currentUrl", sessionStatus.currentUrl());
-                response.put("debugUrl", buildBossDebugUrl());
-                return ResponseEntity.badRequest().body(response);
-            }
-            if (bossJobService.isRunning()) {
-                response.put("success", false);
-                response.put("message", "Boss任务已在运行中，请等待当前任务完成");
-                response.put("status", "running");
-                return ResponseEntity.badRequest().body(response);
-            }
-            CompletableFuture.runAsync(() -> {
-                try {
-                    bossJobService.executeDelivery(pm -> {
-                        sendBossProgress(pm);
-                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-                    });
-                } catch (Exception e) {
-                    log.error("Boss异步扫描任务执行失败", e);
-                    sendBossProgress(JobProgressMessage.error("boss", "Boss扫描任务执行失败，请查看后端日志"));
-                }
-            }, jobTaskExecutor);
-            response.put("success", true);
-            response.put("message", "Boss扫描任务启动成功，将生成待确认岗位");
-            response.put("status", "started");
-            log.info("通过API启动Boss扫描任务成功");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("启动Boss任务失败", e);
-            response.put("success", false);
-            response.put("message", "启动Boss任务失败: " + e.getMessage());
-            response.put("error", e.getClass().getSimpleName());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return bossBackendScanDisabledResponse();
     }
 
     /** POST - 打开或恢复 Boss 平台登录页 */
@@ -492,10 +417,23 @@ public class BossController {
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getBossStatus() {
         Map<String, Object> status = new HashMap<>(bossJobService.getStatus());
-        status.putAll(playwrightManager.getBossLoginDetails());
-        status.put("isLoggedIn", Boolean.TRUE.equals(status.get("searchReady")));
+        status.put("platform", "boss");
+        status.put("backendScanEnabled", false);
+        status.put("chromeBridgeRequired", true);
+        status.put("isLoggedIn", false);
+        status.put("searchReady", false);
+        status.put("message", BOSS_BACKEND_SCAN_DISABLED_MESSAGE);
         status.put("debugUrl", buildBossDebugUrl());
         return ResponseEntity.ok(status);
+    }
+
+    private ResponseEntity<Map<String, Object>> bossBackendScanDisabledResponse() {
+        return ResponseEntity.status(410).body(Map.of(
+                "success", false,
+                "platform", "boss",
+                "status", "backend_scan_disabled",
+                "message", BOSS_BACKEND_SCAN_DISABLED_MESSAGE
+        ));
     }
 
     @PostMapping("/verify-search-session")

@@ -1,97 +1,221 @@
 # 架构说明
 
-投递牛马采用本地单机架构：前端负责配置和结果展示，后端负责 API、SQLite 持久化和任务编排，执行层负责 Playwright 自动化，Chrome Bridge 负责复用用户已登录的 Chrome 标签页完成扫描和用户确认后的投递。
+投递牛马当前是本地单机架构。前端负责配置和结果展示，后端负责 API、SQLite 持久化、AI 分析和任务编排，执行层通过 Playwright 或 Chrome Bridge 操作招聘网站。
 
-更完整的历史说明见 `doc/架构说明.md`。根目录文档用于记录当前演进方向和跨模块约定。
+当前版本不按 SaaS 多用户服务设计，默认所有数据都保存在使用者自己的电脑上。
 
-## 本地运行架构
+## 总体架构
 
 ```text
-front/ Next.js 16
-  │  HTTP / SSE / Chrome Bridge message
+用户浏览器
+  │
+  │ 访问 http://localhost:6866
   ▼
-Spring Boot 3.5 / Controller / Service / Mapper
+front/ Next.js 前端
+  │
+  ├─ HTTP / SSE 调用本地后端
+  │
+  └─ window.postMessage 调用 Chrome Bridge 扩展
+       │
+       ▼
+chrome-extension/
+  │ 复用已登录 Chrome 标签页
+  ▼
+招聘平台页面
+
+front/
+  │
+  ▼
+Spring Boot 后端 8888
   │
   ├─ SQLite + Flyway
+  ├─ AI 服务调用
   ├─ Playwright worker
-  └─ Chrome Bridge callback API
+  └─ Chrome Bridge 回调接口
 ```
 
-默认端口：
+## 模块职责
 
-- 前端：`6866`。
-- 后端：`8888`。
-- 数据库：本地 SQLite，默认路径 `db/getjobs.db`。
+| 模块 | 位置 | 职责 |
+| --- | --- | --- |
+| 前端 | `front` | 配置页面、运行入口、SSE 日志、分析列表、确认投递 |
+| 后端应用层 | `src/main/java/com/getjobs/application` | Controller、Service、Mapper、配置、初始化、AI 分析 |
+| 执行层 | `src/main/java/com/getjobs/worker` | Playwright 浏览器自动化和平台执行逻辑 |
+| Chrome Bridge | `chrome-extension` | 连接本地前端、招聘平台页面和本地后端 |
+| 数据库 | `db/getjobs.db` | 保存配置、Cookie、简历、岗位、AI 分析、投递状态 |
+| 迁移脚本 | `src/main/resources/db/migration` | Flyway 管理新数据库表结构 |
+| 启动脚本 | `start_windows.*`、`start_docker.*` | Windows 和 Docker 本地启动 |
 
-## Chrome Bridge 安全边界
+## 前端
 
-- Chrome Bridge 只服务本地前端页面和声明过的招聘平台域名。
-- 扫描阶段只把结构化岗位信息提交到本地后端。
-- 投递阶段必须先在分析页生成待确认任务，再由用户点击确认。
-- 当前平台投递不能绕过用户确认，也不应把 Cookie、账号密码或浏览器缓存提交到 Git。
+前端使用 Next.js App Router，默认运行在 `6866` 端口。
 
-## 数据库迁移
+主要页面：
 
-迁移脚本位于：
+- `/`：工作台和状态概览。
+- `/env-config`：环境配置。
+- `/ai-config`：AI 配置、简历内容、优先公司。
+- `/boss`、`/boss/analysis`：Boss 配置和分析。
+- `/zhilian`、`/zhilian/analysis`：智联配置和分析。
+- `/liepin`、`/liepin/analysis`：猎聘配置和分析。
+- `/51job`、`/51job/analysis`：前程无忧配置和分析。
+
+前端通过 `front/lib/api.ts` 读取 API 前缀。开发模式下，`front/next.config.ts` 会把 `/api` 和 `/actuator` 代理到后端 `8888`。
+
+## 后端
+
+后端使用 Spring Boot 3.5，默认运行在 `8888` 端口。
+
+核心职责：
+
+- 提供 REST API 和 SSE 进度流。
+- 读写 SQLite 数据库。
+- 保存平台配置、AI 配置、Cookie 和候选人档案。
+- 接收 Chrome Bridge 采集到的岗位。
+- 调用 AI 分析岗位匹配度。
+- 生成 `待确认` 任务。
+- 接收投递成功或失败结果并更新状态。
+
+后端入口是：
 
 ```text
-src/main/resources/db/migration/
+src/main/java/com/getjobs/GetJobsApplication.java
 ```
 
-当前版本：
-
-- `V1__init_schema.sql`：初始化核心表和平台数据表。
-- `V2__add_indexes.sql`：补充常用查询索引。
-- `V3__add_salary_columns.sql`：补充 Boss 薪资结构化字段。
-- `V4__add_job_analysis_task.sql`：预留 AI 分析任务表。
-
-旧数据库兼容策略：
-
-- `spring.flyway.baseline-on-migrate=true`。
-- 旧库无 Flyway 历史表时基线到 V4，避免重复建表或补列。
-- `DatabaseSchemaService` 仍作为旧库兼容层保留，后续再逐步下沉剩余 DDL。
-
-## CI 边界
-
-GitHub Actions 只做构建和测试：
-
-- 后端使用 Java 21，执行 `./gradlew test` 和 `./gradlew build`。
-- 前端使用 Node 20 + pnpm，执行 `pnpm lint` 和 `pnpm build`。
-- CI 使用 runner 临时目录中的 SQLite 文件，不读取本地真实数据库。
-
-## 平台适配层
-
-本轮新增轻量平台适配层，位置：
+主要配置是：
 
 ```text
-src/main/java/com/getjobs/application/platform/
+src/main/resources/application.yaml
 ```
 
-核心接口：
+## Chrome Bridge
 
-```java
-public interface PlatformAdapter {
-    String platform();
-    List<PlatformJobItem> scan(PlatformScanRequest request);
-    PlatformDeliveryResult deliver(PlatformDeliveryRequest request);
-}
+Chrome Bridge 是本地 Chrome 扩展，位置在 `chrome-extension`。
+
+它的边界很重要：
+
+- 只声明本地前端、后端和 Boss/智联相关域名权限。
+- 前端页面只能从 `localhost:6866` 或 `127.0.0.1:6866` 连接扩展。
+- 扫描阶段采集岗位结构化数据并交给本地后端。
+- 投递阶段必须先由用户在分析页确认。
+- 扩展不应该把 Cookie、账号密码、浏览器缓存提交到 Git。
+
+关键文件：
+
+- `manifest.json`：扩展权限和脚本声明。
+- `page-bridge.js`：前端页面和扩展之间的消息桥。
+- `background.js`：标签页调度、扫描和投递任务编排。
+- `boss-content.js`：Boss 页面采集和投递逻辑。
+- `zhilian-content.js`：智联页面采集和投递逻辑。
+
+## Playwright Worker
+
+Worker 位于 `src/main/java/com/getjobs/worker`。它保留了 Boss、猎聘、51job、智联的 Playwright 自动化能力。
+
+当前推荐：
+
+- Boss 和智联优先走 Chrome Bridge 确认式流程。
+- 猎聘和 51job 仍主要依赖既有 Playwright worker。
+- 所有平台都可能受页面改版、登录态、风控、网络环境影响。
+
+## AI 分析
+
+AI 配置由前端页面保存到本地数据库。核心字段包括 `BASE_URL`、`API_KEY`、`MODEL`。
+
+AI 分析流程：
+
+1. 后端读取当前候选人简历和优先公司配置。
+2. 根据岗位标题、公司、薪资、地点、经验、学历、描述生成 prompt。
+3. 调用模型服务。
+4. 尝试解析模型返回 JSON。
+5. 根据分数和决策写入 `待确认`、`AI不匹配` 或 `AI分析失败`。
+
+模型返回不是标准 JSON 时，后端会尽量修复或降级为失败结果，不会直接让任务崩掉。
+
+## 数据存储
+
+默认 SQLite 数据库：
+
+```text
+db/getjobs.db
 ```
 
-当前策略：
+重要表由 Flyway 和兼容初始化逻辑维护。迁移脚本在：
 
-- `PlatformType` 统一声明平台编码：`boss`、`zhilian`、`liepin`、`51job`。
-- `dto/` 只放通用请求和结果对象，不绑定某个平台的页面细节。
-- `boss/BossPlatformAdapter` 先作为 Boss 现有 `BossService` 的轻量包装，不替换现有 Controller、Chrome Bridge 或前端接口。
-- `deliver` 暂不直接操作浏览器，只生成可交给现有 Chrome Bridge 的任务信息，继续保留用户确认边界。
+```text
+src/main/resources/db/migration
+```
 
-后续新增平台时，推荐步骤：
+本地数据包括：
 
-1. 新增平台自己的 `PlatformAdapter` 实现。
-2. 在实现类内部复用现有 Service、Mapper 和 worker，不先改前端流程。
-3. 先对齐 `scan` 返回的 `PlatformJobItem` 字段，再逐步对齐 `deliver` 的任务生成。
-4. 需要真实投递时，仍必须经过用户确认，不允许默认自动绕过确认。
-5. 适配稳定后，再考虑把 Controller 或前端页面切到统一接口。
+- 候选人档案和当前档案。
+- 简历文本。
+- AI 配置和优先公司。
+- 平台配置和平台选项。
+- Cookie。
+- 岗位数据。
+- AI 分析结果。
+- 投递状态、失败类型和失败原因。
 
-## 迁移边界
+`db`、日志、缓存、浏览器资料目录都不应该提交到 Git。
 
-平台适配层本轮只提供入口，不做大规模迁移。Boss、智联、猎聘和 51job 的现有页面、接口、worker 继续保持原行为。
+## 主要数据流
+
+### Chrome Bridge 流程
+
+```text
+用户在 Chrome 登录招聘平台
+  ↓
+前端发起扫描
+  ↓
+Chrome Bridge 打开或复用标签页
+  ↓
+content script 采集岗位列表和详情
+  ↓
+后端入库并调用 AI 分析
+  ↓
+命中岗位进入待确认
+  ↓
+用户在分析页确认
+  ↓
+Chrome Bridge 执行投递
+  ↓
+后端写回已投递或投递失败
+```
+
+### Playwright 流程
+
+```text
+用户在前端点击开始
+  ↓
+后端读取平台配置和 Cookie
+  ↓
+worker 使用 Playwright 打开招聘网站
+  ↓
+执行搜索、筛选、投递或状态采集
+  ↓
+后端通过 SSE 推送进度
+  ↓
+投递结果写入 SQLite
+```
+
+## 当前设计边界
+
+- 单机、本地、单用户优先。
+- 默认不部署公网，不做多人权限隔离。
+- Cookie 和 API Key 暂存在本地数据库或本地配置中。
+- Chrome Bridge 不绕过用户确认。
+- 平台适配层 `application/platform` 是后续统一接口的预留，不替换当前 Controller。
+- OpenClaw 是实验通路，不是主流程依赖。
+
+## SaaS 化演进方向
+
+后续如果要 SaaS 化，建议按下面顺序演进：
+
+1. 账号体系和租户隔离：所有配置、简历、岗位、投递任务都带租户和用户维度。
+2. 敏感信息加密：API Key、Cookie、简历内容需要加密存储和审计访问。
+3. 任务队列化：扫描、AI 分析、投递确认、结果回写拆成可重试任务。
+4. 插件通道收敛：Chrome Bridge 变成明确的客户端代理，服务端只收任务状态。
+5. 平台适配统一：把当前 Boss/智联/猎聘/51job 的差异逐步收敛到 `PlatformAdapter`。
+6. 监控和告警：记录任务失败类型、平台改版信号、AI 调用耗时和成本。
+7. 风控边界：保留人工确认，不做绕过平台限制的能力。
