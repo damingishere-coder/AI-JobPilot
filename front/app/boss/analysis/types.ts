@@ -8,6 +8,7 @@ export type StatsResponse = {
     delivered: number
     pending: number
     waitingConfirm?: number
+    listCollected?: number
     insufficient?: number
     filtered: number
     failed: number
@@ -90,7 +91,7 @@ export type FilterState = {
   filterHeadhunter: boolean
 }
 
-export const DELIVERY_STATUS_OPTIONS = ["待确认", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
+export const DELIVERY_STATUS_OPTIONS = ["待确认", "LIST_COLLECTED", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
 export const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
 export const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
 
@@ -106,6 +107,7 @@ export const EMPTY_FILTERS: FilterState = {
 }
 
 export const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
+export const LIST_COLLECTED_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["LIST_COLLECTED"] }
 
 export const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",

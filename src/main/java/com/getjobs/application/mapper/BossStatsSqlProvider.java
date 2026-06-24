@@ -13,6 +13,7 @@ public class BossStatsSqlProvider {
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS delivered,
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS pending,
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS waiting_confirm,
+                    COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS list_collected,
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS filtered,
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS failed,
                     COALESCE(SUM(CASE WHEN TRIM(COALESCE(delivery_status, '')) = '%s' THEN 1 ELSE 0 END), 0) AS insufficient
@@ -22,6 +23,7 @@ public class BossStatsSqlProvider {
                 DeliveryStatus.DELIVERED,
                 DeliveryStatus.NOT_DELIVERED,
                 DeliveryStatus.WAITING_CONFIRM,
+                DeliveryStatus.LIST_COLLECTED,
                 DeliveryStatus.FILTERED,
                 DeliveryStatus.DELIVERY_FAILED,
                 DeliveryStatus.COLLECTION_INSUFFICIENT,

@@ -23,7 +23,7 @@
       selectorCounts,
       searchResultSelectorCounts,
       firstCardText: compact(firstCard?.innerText || firstCard?.textContent || "").slice(0, 500),
-      bodyText: bodyText.slice(0, 1000),
+      isSearchPage: isBossSearchPage(currentUrl),
       pageState: isSecurityPage
         ? "SECURITY_VERIFICATION"
         : isLoginPage
@@ -32,6 +32,16 @@
             ? "SEARCH_RESULTS_FOUND"
             : "UNKNOWN_OR_EMPTY"
     };
+  }
+
+  function isBossSearchPage(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.hostname.includes("zhipin.com")
+        && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
+    } catch {
+      return false;
+    }
   }
 
   function countSelectors(list) {

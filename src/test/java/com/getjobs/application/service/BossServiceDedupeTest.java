@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,6 +16,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -23,6 +25,8 @@ import static org.mockito.Mockito.when;
 class BossServiceDedupeTest {
     @Mock
     private BossJobDataMapper bossJobDataMapper;
+    @Mock
+    private ProfileService profileService;
 
     private BossService bossService;
 
@@ -35,7 +39,7 @@ class BossServiceDedupeTest {
                 null,
                 bossJobDataMapper,
                 null,
-                null
+                profileService
         );
     }
 
@@ -52,8 +56,7 @@ class BossServiceDedupeTest {
                 eq(1L),
                 org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyList(),
-                org.mockito.ArgumentMatchers.anyList(),
-                eq("run-1")
+                org.mockito.ArgumentMatchers.anyList()
         )).thenReturn(List.of(idMatched, companyTitleMatched));
 
         Map<Integer, BossJobDataEntity> result = bossService.findExistingChromeBossJobs(1L, jobs, " run-1 ");
@@ -65,8 +68,7 @@ class BossServiceDedupeTest {
                 eq(1L),
                 org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyList(),
-                org.mockito.ArgumentMatchers.anyList(),
-                eq("run-1")
+                org.mockito.ArgumentMatchers.anyList()
         );
     }
 
@@ -80,8 +82,7 @@ class BossServiceDedupeTest {
                 eq(2L),
                 org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyList(),
-                org.mockito.ArgumentMatchers.anyList(),
-                eq(null)
+                org.mockito.ArgumentMatchers.anyList()
         )).thenReturn(List.of());
 
         bossService.findExistingChromeBossJobs(2L, jobs, null);
@@ -93,8 +94,7 @@ class BossServiceDedupeTest {
                 eq(2L),
                 encryptIdsCaptor.capture(),
                 companyNamesCaptor.capture(),
-                jobNamesCaptor.capture(),
-                eq(null)
+                jobNamesCaptor.capture()
         );
         assertThat(encryptIdsCaptor.getValue()).containsExactly("url-job-1", "job-2");
         assertThat(companyNamesCaptor.getValue()).containsExactly("A公司", "B公司");
@@ -112,9 +112,34 @@ class BossServiceDedupeTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyList(),
-                org.mockito.ArgumentMatchers.anyList(),
-                org.mockito.ArgumentMatchers.any()
+                org.mockito.ArgumentMatchers.anyList()
         );
+    }
+
+    @Test
+    void upsertUpdatesHistoricalJobAcrossScanRunsInsteadOfCreatingDuplicateRow() {
+        BossJobDataEntity existing = bossJob(21L, "job-history", "历史公司", "Java工程师");
+        existing.setDeliveryStatus(DeliveryStatus.LIST_COLLECTED);
+        existing.setScanRunId("run-old");
+        existing.setJobDescription("");
+
+        BossJobDataEntity incoming = bossJob(null, "job-history", "历史公司", "Java工程师");
+        incoming.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
+        incoming.setJobDescription("这是重新进入详情页后采集到的完整岗位要求，长度足够用于后续AI分析。");
+
+        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(bossJobDataMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
+        when(bossJobDataMapper.selectById(21L)).thenAnswer(invocation -> existing);
+
+        bossService.upsertChromeBossJob(incoming, "run-new");
+
+        ArgumentCaptor<BossJobDataEntity> updateCaptor = ArgumentCaptor.forClass(BossJobDataEntity.class);
+        verify(bossJobDataMapper).updateById(updateCaptor.capture());
+        BossJobDataEntity updated = updateCaptor.getValue();
+        assertThat(updated.getId()).isEqualTo(21L);
+        assertThat(updated.getScanRunId()).isEqualTo("run-new");
+        assertThat(updated.getJobDescription()).contains("完整岗位要求");
+        verify(bossJobDataMapper, never()).insert(any(BossJobDataEntity.class));
     }
 
     private ChromeJobDto chromeJob(String id, String url, String company, String title) {

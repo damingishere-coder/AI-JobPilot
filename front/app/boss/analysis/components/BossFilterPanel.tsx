@@ -12,6 +12,7 @@ import {
   EXPERIENCE_OPTIONS,
   type FilterState,
 } from "../types"
+import { deliveryStatusLabel } from "../utils"
 
 export function BossFilterPanel({
   filtersOpen,
@@ -148,7 +149,7 @@ export function BossFilterPanel({
                       : "border-slate-300 bg-background text-foreground hover:border-primary/60 dark:border-slate-700"
                   }`}
                 >
-                  {status}
+                  {deliveryStatusLabel(status)}
                 </button>
               )
             })}

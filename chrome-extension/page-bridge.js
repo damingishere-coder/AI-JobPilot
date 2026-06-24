@@ -1,7 +1,7 @@
 (function () {
   const SOURCE = "GET_JOBS_PAGE";
   const TARGET = "GET_JOBS_EXTENSION";
-  const BRIDGE_VERSION = "2026-06-24-boss-current-page-collector-1";
+  const BRIDGE_VERSION = "2026-06-24-boss-scan-resume-2";
   const ALLOWED_PAGE_ORIGINS = new Set([
     "http://localhost:6866",
     "http://127.0.0.1:6866"

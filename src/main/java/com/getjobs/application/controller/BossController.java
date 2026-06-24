@@ -270,9 +270,8 @@ public class BossController {
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
         int duplicateCount = 0;
-        String runId = normalizeRunId(request == null ? null : request.getRunId());
         Long profileId = profileService.getCurrentProfileIdOrNull();
-        Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, runId);
+        Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, null);
 
         for (int index = 0; index < jobs.size(); index++) {
             ChromeJobDto dto = jobs.get(index);
@@ -282,26 +281,59 @@ public class BossController {
             BossJobDataEntity existing = existingJobs.get(index);
             boolean duplicate = existing != null;
             if (duplicate) duplicateCount++;
-            String reason = "";
-            if (duplicate) {
-                reason = id != null && !id.isBlank() && id.equals(Objects.toString(existing.getEncryptId(), "")) ? "jobId" : "companyTitle";
-            }
-            items.add(Map.of(
-                    "id", Objects.toString(id, ""),
-                    "url", dto == null ? "" : Objects.toString(dto.getUrl(), ""),
-                    "title", title,
-                    "company", company,
-                    "duplicate", duplicate,
-                    "reason", reason
-            ));
+            String matchReason = duplicate
+                    ? id != null && !id.isBlank() && id.equals(Objects.toString(existing.getEncryptId(), "")) ? "jobId" : "companyTitle"
+                    : "";
+            List<String> missingFields = existing == null ? List.of() : collectMissingAnalysisFields(existing);
+            String existingStatus = existing == null ? "" : Objects.toString(existing.getDeliveryStatus(), "");
+            String action = dedupeAction(existing, missingFields);
+            String reason = dedupeReason(action, matchReason, existingStatus, missingFields);
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", Objects.toString(id, ""));
+            item.put("url", dto == null ? "" : Objects.toString(dto.getUrl(), ""));
+            item.put("title", title);
+            item.put("company", company);
+            item.put("duplicate", duplicate);
+            item.put("action", action);
+            item.put("reason", reason);
+            item.put("matchReason", matchReason);
+            item.put("existingStatus", existingStatus);
+            item.put("existingId", existing == null || existing.getId() == null ? 0L : existing.getId());
+            item.put("missingFields", missingFields);
+            items.add(item);
         }
 
+        long enrichCount = items.stream().filter(item -> "ENRICH".equals(item.get("action"))).count();
+        long skipCount = items.stream().filter(item -> "SKIP".equals(item.get("action"))).count();
         return ResponseEntity.ok(Map.of(
                 "success", true,
                 "items", items,
                 "duplicateCount", duplicateCount,
-                "newCount", Math.max(0, jobs.size() - duplicateCount)
+                "newCount", Math.max(0, jobs.size() - duplicateCount),
+                "enrichCount", enrichCount,
+                "skipCount", skipCount
         ));
+    }
+
+    private String dedupeAction(BossJobDataEntity existing, List<String> missingFields) {
+        if (existing == null) return "NEW";
+        String status = Objects.toString(existing.getDeliveryStatus(), "");
+        if (DeliveryStatus.LIST_COLLECTED.equals(status)
+                || DeliveryStatus.COLLECTION_INSUFFICIENT.equals(status)
+                || (missingFields != null && !missingFields.isEmpty())) {
+            return "ENRICH";
+        }
+        return "SKIP";
+    }
+
+    private String dedupeReason(String action, String matchReason, String existingStatus, List<String> missingFields) {
+        if ("NEW".equals(action)) return "未发现历史岗位";
+        String matchedBy = "jobId".equals(matchReason) ? "Boss岗位ID" : "公司与岗位名称";
+        if ("ENRICH".equals(action)) {
+            String missing = missingFields == null || missingFields.isEmpty() ? "详情信息" : String.join("、", missingFields);
+            return "历史岗位按" + matchedBy + "匹配，但需要补全：" + missing;
+        }
+        return "历史岗位按" + matchedBy + "匹配，状态为" + firstNonBlank(existingStatus, "完整记录") + "，本次跳过";
     }
 
     @PostMapping("/chrome/stop")

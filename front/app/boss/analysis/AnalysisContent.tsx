@@ -22,9 +22,11 @@ import { useCsvExport } from "./hooks/useCsvExport"
 export default function AnalysisContent({
   showHeader = false,
   refreshSignal = 0,
+  focusScanRunId = "",
 }: {
   showHeader?: boolean
   refreshSignal?: number
+  focusScanRunId?: string
 }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
@@ -45,6 +47,7 @@ export default function AnalysisContent({
     applyFilters,
     resetFilters,
     resetToPendingFilters,
+    showListCollectedFilters,
   } = useBossFilters()
 
   const {
@@ -62,7 +65,7 @@ export default function AnalysisContent({
     loadList,
     reloadJobs,
     clearLocalJobs,
-  } = useBossJobs({ filters, buildFilterParams })
+  } = useBossJobs({ filters, buildFilterParams, requestedScanRunId: focusScanRunId })
 
   const {
     stats,
@@ -126,6 +129,11 @@ export default function AnalysisContent({
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!focusScanRunId) return
+    showListCollectedFilters()
+  }, [focusScanRunId, showListCollectedFilters])
 
   useEffect(() => {
     if (!refreshSignal) return

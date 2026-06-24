@@ -147,6 +147,7 @@ public class BossStatsService {
         kpi.delivered = nvl(row.getDelivered());
         kpi.pending = nvl(row.getPending());
         kpi.waitingConfirm = nvl(row.getWaitingConfirm());
+        kpi.listCollected = nvl(row.getListCollected());
         kpi.filtered = nvl(row.getFiltered());
         kpi.failed = nvl(row.getFailed());
         kpi.insufficient = nvl(row.getInsufficient());

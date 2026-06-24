@@ -8,9 +8,11 @@ import type { BossJob, FilterState, PagedResult } from "../types"
 export function useBossJobs({
   filters,
   buildFilterParams,
+  requestedScanRunId = "",
 }: {
   filters: FilterState
   buildFilterParams: (source?: FilterState, scanRunId?: string) => URLSearchParams
+  requestedScanRunId?: string
 }) {
   const [items, setItems] = useState<BossJob[]>([])
   const [total, setTotal] = useState(0)
@@ -21,7 +23,10 @@ export function useBossJobs({
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
 
-  const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
+  const activeScanRunId = useMemo(
+    () => requestedScanRunId || items.find((item) => item.scanRunId)?.scanRunId || "",
+    [items, requestedScanRunId],
+  )
 
   useEffect(() => {
     setInputPage(page)

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
 import type { BossJob } from "../types"
-import { badgeClass, failureReasonText, formatDateOnly } from "../utils"
+import { badgeClass, deliveryStatusLabel, failureReasonText, formatDateOnly } from "../utils"
 
 export function BossJobTable({
   items,
@@ -130,14 +130,14 @@ export function BossJobTable({
                   <TextCell title="学历" value={job.degree} onOpenText={onOpenText} nowrap />
                   <TextCell title="HR" value={job.hrName} onOpenText={onOpenText} />
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
-                    <button className={badgeClass("delivery", job.deliveryStatus)} title={job.deliveryStatus} onClick={() => onOpenText("投递状态", job.deliveryStatus)}>
+                    <button className={badgeClass("delivery", job.deliveryStatus)} title={deliveryStatusLabel(job.deliveryStatus)} onClick={() => onOpenText("投递状态", deliveryStatusLabel(job.deliveryStatus))}>
                       {(job.deliveryStatus || "").includes("已投递") ? (
                         <span className="inline-flex items-center gap-1">
                           <BiCheckCircle className="h-3.5 w-3.5" />
                           已投递
                         </span>
                       ) : (
-                        job.deliveryStatus || "-"
+                        deliveryStatusLabel(job.deliveryStatus)
                       )}
                     </button>
                   </td>

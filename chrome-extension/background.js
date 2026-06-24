@@ -6,6 +6,7 @@ const PLATFORM_CONFIG = {
     contentScripts: [
       "boss-selectors.js",
       "boss-debug.js",
+      "boss-scan-support.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
       "boss-content.js"
@@ -19,12 +20,12 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-24-boss-current-page-collector-1";
+const BACKGROUND_VERSION = "2026-06-24-boss-scan-resume-2";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-24-boss-current-page-collector-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-24-boss-scan-resume-2";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-23-zhilian-query-initial-state-1";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -230,6 +231,7 @@ async function requestLocalApi(path, options = {}) {
             httpStatus: response.status,
             data,
             message: lastError.message,
+            errorType: classifyLocalApiError(response.status, lastError.message),
             attempt,
             baseUrl
           };
@@ -247,7 +249,8 @@ async function requestLocalApi(path, options = {}) {
 
   return {
     success: false,
-    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`
+    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`,
+    errorType: classifyLocalApiError(0, lastError?.message || String(lastError || ""))
   };
 }
 
@@ -286,6 +289,17 @@ function friendlyLocalApiError(error) {
   if (error?.name === "AbortError" || /abort/i.test(message)) return "请求超时，请确认本地服务仍在运行";
   if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地服务，请确认 6866 端口正常";
   return message || "未知网络错误";
+}
+
+function classifyLocalApiError(status, message) {
+  const text = String(message || "");
+  if (status === 403 && /cors/i.test(text)) return "CORS_REJECTED";
+  if (status === 401 || status === 403) return "LOCAL_API_FORBIDDEN";
+  if (status === 404) return "LOCAL_API_NOT_FOUND";
+  if (status === 408 || /abort|timeout|超时/i.test(text)) return "LOCAL_API_TIMEOUT";
+  if (!status || /Failed to fetch|NetworkError|fetch|连接|无法连接/i.test(text)) return "LOCAL_SERVICE_UNAVAILABLE";
+  if (status >= 500) return "LOCAL_API_SERVER_ERROR";
+  return "LOCAL_API_ERROR";
 }
 
 async function postBossLocalApiRetryProgress(pageTabId, operation, nextAttempt, totalAttempts, error) {

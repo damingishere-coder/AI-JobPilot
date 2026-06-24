@@ -686,7 +686,7 @@ public class BossService {
         return upsertChromeBossJob(entity, null);
     }
 
-    public BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
+    public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
         if (entity == null) return null;
         Long profileId = profileService.getCurrentProfileId();
         entity.setProfileId(profileId);
@@ -697,12 +697,11 @@ public class BossService {
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId, scanRunId);
+            existing = getBossJobByKey(encryptId, encryptUserId, null);
             if (existing == null) {
                 QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
                 wrapper.eq("profile_id", profileId)
                         .eq("encrypt_id", encryptId);
-                applyScanRunFilter(wrapper, scanRunId);
                 wrapper.last("LIMIT 1");
                 existing = bossJobDataMapper.selectOne(wrapper);
             }
@@ -712,7 +711,6 @@ public class BossService {
             wrapper.eq("profile_id", profileId)
                     .eq("company_name", entity.getCompanyName())
                     .eq("job_name", entity.getJobName());
-            applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
             existing = bossJobDataMapper.selectOne(wrapper);
         }
@@ -914,8 +912,7 @@ public class BossService {
                 profileId,
                 new ArrayList<>(encryptIds),
                 new ArrayList<>(companyNames),
-                new ArrayList<>(jobNames),
-                normalizeScanRunId(scanRunId)
+                new ArrayList<>(jobNames)
         );
         if (existingRows == null) {
             existingRows = Collections.emptyList();
@@ -1086,6 +1083,7 @@ public class BossService {
         public long delivered;
         public long pending;
         public long waitingConfirm;
+        public long listCollected;
         public long filtered;
         public long failed;
         public long insufficient;
@@ -1187,6 +1185,7 @@ public class BossService {
             resp.kpi.delivered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已投递'");
             resp.kpi.pending = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='未投递'");
             resp.kpi.waitingConfirm = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='待确认'");
+            resp.kpi.listCollected = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='LIST_COLLECTED'");
             resp.kpi.filtered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已过滤'");
             resp.kpi.failed = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='投递失败'");
             resp.kpi.insufficient = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='采集信息不足'");
@@ -1389,6 +1388,7 @@ public class BossService {
             resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.isDelivered(e.getDeliveryStatus())).count();
             resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(e.getDeliveryStatus())).count();
             resp.kpi.waitingConfirm = filtered.stream().filter(e -> DeliveryStatus.isWaitingConfirm(e.getDeliveryStatus())).count();
+            resp.kpi.listCollected = filtered.stream().filter(e -> DeliveryStatus.LIST_COLLECTED.equals(e.getDeliveryStatus())).count();
             resp.kpi.filtered = filtered.stream().filter(e -> DeliveryStatus.FILTERED.equals(e.getDeliveryStatus())).count();
             resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus())).count();
             resp.kpi.insufficient = filtered.stream().filter(e -> DeliveryStatus.COLLECTION_INSUFFICIENT.equals(e.getDeliveryStatus())).count();

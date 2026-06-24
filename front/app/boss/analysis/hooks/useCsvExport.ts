@@ -4,7 +4,7 @@ import { useCallback, useState } from "react"
 
 import { API_BASE } from "@/lib/api"
 import type { BossJob, FilterState, PagedResult } from "../types"
-import { failureTypeLabel } from "../utils"
+import { deliveryStatusLabel, failureTypeLabel } from "../utils"
 
 export function useCsvExport({
   filters,
@@ -71,7 +71,7 @@ export function useCsvExport({
         item.experience || "",
         item.degree || "",
         item.hrName || "",
-        item.deliveryStatus || "",
+        deliveryStatusLabel(item.deliveryStatus),
         item.deliveryStatus === "投递失败" ? failureTypeLabel(item.failureType) : "",
         item.deliveryStatus === "投递失败" ? (item.failureReason || "") : "",
         item.aiScore ?? "",

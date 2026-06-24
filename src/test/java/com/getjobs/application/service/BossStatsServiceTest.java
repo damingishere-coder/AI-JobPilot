@@ -145,6 +145,7 @@ class BossStatsServiceTest {
         row.setDelivered(1L);
         row.setPending(0L);
         row.setWaitingConfirm(2L);
+        row.setListCollected(0L);
         row.setFiltered(0L);
         row.setFailed(0L);
         row.setInsufficient(0L);

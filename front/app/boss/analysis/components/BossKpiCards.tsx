@@ -45,13 +45,15 @@ function OverviewPanel({ stats, loading }: { stats: StatsResponse | null; loadin
   const total = k?.total ?? 0
   const delivered = k?.delivered ?? 0
   const waitingConfirm = k?.waitingConfirm ?? 0
+  const listCollected = k?.listCollected ?? 0
   const filtered = k?.filtered ?? 0
   const failed = k?.failed ?? 0
   const skipped = statusCount("已跳过")
-  const remainder = Math.max(0, total - delivered - waitingConfirm - filtered - failed - skipped)
+  const remainder = Math.max(0, total - delivered - waitingConfirm - listCollected - filtered - failed - skipped)
   const segments = [
     { label: "已投递", value: delivered, className: "bg-emerald-500" },
     { label: "待确认", value: waitingConfirm, className: "bg-cyan-500" },
+    { label: "已采集", value: listCollected, className: "bg-teal-500" },
     { label: "已过滤", value: filtered, className: "bg-pink-500" },
     { label: "失败/跳过", value: failed + skipped, className: "bg-amber-500" },
     { label: "其他", value: remainder, className: "bg-slate-400" },
@@ -75,7 +77,7 @@ function OverviewPanel({ stats, loading }: { stats: StatsResponse | null; loadin
                 <OverviewMetric label="总岗位" value={total} />
                 <OverviewMetric label="待确认" value={waitingConfirm} />
                 <OverviewMetric label="已投递" value={delivered} />
-                <OverviewMetric label="过滤/失败/跳过" value={filtered + failed + skipped} />
+                <OverviewMetric label="已采集" value={listCollected} />
               </div>
               <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
                 {total > 0 ? (
@@ -142,6 +144,7 @@ export function BossKpiCards({
     { title: "总岗位数", value: k?.total ?? 0 },
     { title: "已投递", value: k?.delivered ?? 0 },
     { title: "待确认", value: k?.waitingConfirm ?? 0 },
+    { title: "已采集", value: k?.listCollected ?? 0 },
     { title: "采集不足", value: k?.insufficient ?? 0 },
     { title: "未投递", value: k?.pending ?? 0 },
     { title: "已过滤", value: k?.filtered ?? 0 },
@@ -151,7 +154,7 @@ export function BossKpiCards({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-9">
         {cards.map((card) => (
           <Card key={card.title} className="border">
             <CardHeader>

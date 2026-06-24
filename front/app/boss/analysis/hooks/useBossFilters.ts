@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from "react"
 import {
   DEFAULT_PENDING_FILTERS,
   EMPTY_FILTERS,
+  LIST_COLLECTED_FILTERS,
   type FilterState,
 } from "../types"
 
@@ -63,6 +64,11 @@ export function useBossFilters() {
     setFilters(DEFAULT_PENDING_FILTERS)
   }, [])
 
+  const showListCollectedFilters = useCallback(() => {
+    setDraftFilters(LIST_COLLECTED_FILTERS)
+    setFilters(LIST_COLLECTED_FILTERS)
+  }, [])
+
   return {
     filters,
     draftFilters,
@@ -75,5 +81,6 @@ export function useBossFilters() {
     applyFilters,
     resetFilters,
     resetToPendingFilters,
+    showListCollectedFilters,
   }
 }

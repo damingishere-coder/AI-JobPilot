@@ -92,10 +92,13 @@ interface BossDiagnosticsResponse extends ChromeBridgeResponse {
   detailLinkCount?: number
   selectorCounts?: Record<string, number>
   firstCardText?: string
-  bodyText?: string
+  diagnosticType?: string
+  impact?: string
+  suggestion?: string
 }
 
 interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
+  runId?: string
   candidateCount?: number
   parsedCount?: number
   skippedCount?: number
@@ -201,6 +204,7 @@ export default function BossPage() {
   const [isStopping, setIsStopping] = useState(false)
   const [isScanPaused, setIsScanPaused] = useState(false)
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+  const [analysisFocusRunId, setAnalysisFocusRunId] = useState('')
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
@@ -298,6 +302,7 @@ export default function BossPage() {
   }, [])
 
   const guideToConfirmStep = useCallback(() => {
+    setAnalysisFocusRunId('')
     setHasScanResult(true)
     setAnalysisRefreshSignal((value) => value + 1)
   }, [])
@@ -908,9 +913,6 @@ export default function BossPage() {
         type: data.success ? (data.isLoginPage || data.isSecurityPage ? 'warning' : 'success') : 'error',
         message: `${data.message || 'Boss页面诊断完成。'} currentUrl=${data.currentUrl || ''}；title=${data.title || ''}；isLoginPage=${Boolean(data.isLoginPage)}；isSecurityPage=${Boolean(data.isSecurityPage)}；detailLinkCount=${Number(data.detailLinkCount || 0)}；selectorCounts=${JSON.stringify(data.selectorCounts || {})}；firstCardText=${data.firstCardText || ''}`,
       })
-      if (data.bodyText) {
-        appendProgressLog({ type: 'info', message: `Boss bodyText 前1000字：${data.bodyText}` })
-      }
       if (Number(data.detailLinkCount || 0) === 0) {
         appendProgressLog({
           type: 'warning',
@@ -984,6 +986,12 @@ export default function BossPage() {
           type: 'warning',
           message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
         })
+      }
+      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+        setAnalysisFocusRunId(data.runId)
+        setHasScanResult(true)
+        setAnalysisRefreshSignal((value) => value + 1)
+        setActiveStep('confirm')
       }
     } catch (error) {
       console.error('Failed to collect current Boss page:', error)
@@ -1591,7 +1599,7 @@ export default function BossPage() {
 
       {activeStep === 'confirm' ? (
         <div className="space-y-6">
-          <AnalysisContent refreshSignal={analysisRefreshSignal} />
+          <AnalysisContent refreshSignal={analysisRefreshSignal} focusScanRunId={analysisFocusRunId} />
         </div>
       ) : null}
 

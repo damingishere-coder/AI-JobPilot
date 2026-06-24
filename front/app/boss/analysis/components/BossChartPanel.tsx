@@ -19,7 +19,7 @@ import { BiBarChart, BiChevronDown, BiChevronUp, BiLineChart, BiPieChart } from 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { CATEGORY_COLORS, type StatsResponse } from "../types"
-import { failureTypeLabel } from "../utils"
+import { deliveryStatusLabel, failureTypeLabel } from "../utils"
 
 type ChartRef = { destroy: () => void }
 
@@ -165,7 +165,7 @@ export function BossChartPanel({
                 {stats ? (
                   <ChartCanvas
                     type="pie"
-                    labels={stats.charts.byStatus.map((x) => x.name)}
+                    labels={stats.charts.byStatus.map((x) => deliveryStatusLabel(x.name))}
                     data={stats.charts.byStatus.map((x) => x.value)}
                   />
                 ) : (

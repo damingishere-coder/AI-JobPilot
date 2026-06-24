@@ -15,9 +15,6 @@ public interface BossJobDataMapper extends BaseMapper<BossJobDataEntity> {
             SELECT *
             FROM boss_data
             WHERE profile_id = #{profileId}
-            <if test="scanRunId != null and scanRunId != ''">
-                AND scan_run_id = #{scanRunId}
-            </if>
             AND (
                 <if test="encryptIds != null and encryptIds.size() > 0">
                     encrypt_id IN
@@ -48,7 +45,6 @@ public interface BossJobDataMapper extends BaseMapper<BossJobDataEntity> {
             @Param("profileId") Long profileId,
             @Param("encryptIds") List<String> encryptIds,
             @Param("companyNames") List<String> companyNames,
-            @Param("jobNames") List<String> jobNames,
-            @Param("scanRunId") String scanRunId
+            @Param("jobNames") List<String> jobNames
     );
 }

@@ -29,6 +29,7 @@ public class BossStatsQuery {
         private Long delivered;
         private Long pending;
         private Long waitingConfirm;
+        private Long listCollected;
         private Long filtered;
         private Long failed;
         private Long insufficient;

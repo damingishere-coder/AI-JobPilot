@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-24-boss-current-page-collector-1";
+  const EXTENSION_VERSION = "2026-06-24-boss-scan-resume-2";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -12,7 +12,8 @@
   const SCAN_STATUS_KEY = "__GET_JOBS_BOSS_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_BOSS_KEYWORD_CURSOR__";
   const SUBMIT_BATCH_SIZE = 10;
-  const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
+  const SCAN_SUPPORT = window.GetJobsBossScanSupport || {};
+  const SCAN_TASK_TTL_MS = SCAN_SUPPORT.DEFAULT_TASK_TTL_MS || 24 * 60 * 60 * 1000;
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
   const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
@@ -126,13 +127,22 @@
 
   function handleBossDebugCollect() {
     const diagnostics = collectBossDiagnostics();
+    const diagnosticType = diagnostics.isSecurityPage
+      ? "SECURITY_VERIFICATION"
+      : diagnostics.isLoginPage
+        ? "LOGIN_REQUIRED"
+        : !diagnostics.isSearchPage
+          ? "WRONG_PAGE"
+          : diagnostics.detailLinkCount > 0
+            ? "PAGE_READY"
+            : "SELECTOR_MISMATCH";
+    const diagnostic = buildBossDiagnostic(diagnosticType, "diagnose", diagnostics);
     return {
       success: true,
-      message: diagnostics.isSecurityPage
-        ? "检测到Boss安全验证页，请在Chrome中手动完成验证后再诊断或采集。"
-        : diagnostics.isLoginPage
-          ? "检测到Boss登录页，请先在Chrome中手动登录。"
-          : "Boss当前页面诊断完成。",
+      message: diagnostic.message,
+      diagnosticType: diagnostic.type,
+      impact: diagnostic.impact,
+      suggestion: diagnostic.suggestion,
       ...diagnostics
     };
   }
@@ -166,28 +176,68 @@
     const result = collector.collectVisibleJobs({ keyword: message?.keyword });
     const resultSummary = summarizeBossListCollectResult(result);
     if (!result.jobs.length) {
-      const text = `Boss当前页未采集到岗位。${formatBossDiagnostics(diagnostics)}；missingFieldCounts=${JSON.stringify(result.missingFieldCounts || {})}；failures=${JSON.stringify(result.failures || [])}`;
+      const diagnosticType = !diagnostics.isSearchPage
+        ? "WRONG_PAGE"
+        : diagnostics.detailLinkCount === 0
+          ? "SELECTOR_MISMATCH"
+          : "CARD_PARSE_FAILED";
+      const diagnostic = buildBossDiagnostic(diagnosticType, "listCollect", diagnostics, resultSummary);
+      const text = `${diagnostic.message} ${formatBossDiagnostics(diagnostics)}；missingFieldCounts=${JSON.stringify(result.missingFieldCounts || {})}`;
       postProgress(message, "error", text, {
         operation: "listCollect",
         stage: "empty",
+        diagnosticType: diagnostic.type,
+        impact: diagnostic.impact,
+        suggestion: diagnostic.suggestion,
         ...diagnostics,
         ...resultSummary
       });
       return {
         success: false,
         message: text,
+        diagnosticType: diagnostic.type,
+        impact: diagnostic.impact,
+        suggestion: diagnostic.suggestion,
         ...diagnostics,
         ...resultSummary
       };
     }
 
     const runId = normalizeScanRunId(message?.runId) || `boss-list-${Date.now()}`;
+    const dedupeResult = await filterDuplicateJobs(result.jobs, { ...message, runId }, {
+      operation: "listCollect",
+      keyword: result.keyword
+    });
+    const jobsToSave = dedupeResult.jobs;
+    if (!jobsToSave.length) {
+      const messageText = `Boss当前页采集完成：识别 ${result.parsedCount} 个岗位，全部属于无需补全的历史岗位，本次未新增数据。`;
+      postProgress(message, "info", messageText, {
+        operation: "listCollect",
+        stage: "dedupe",
+        runId,
+        duplicates: dedupeResult.duplicateCount,
+        enrich: dedupeResult.enrichCount,
+        skippedDuplicates: dedupeResult.skipCount
+      });
+      return {
+        success: true,
+        message: messageText,
+        runId,
+        ...diagnostics,
+        ...resultSummary,
+        saved: 0,
+        listCollected: 0,
+        duplicateCount: dedupeResult.duplicateCount,
+        enrichCount: dedupeResult.enrichCount,
+        skipCount: dedupeResult.skipCount
+      };
+    }
     const data = await callBossLocalApi("chrome-jobs", {
       runId,
       keyword: result.keyword,
       collectionMode: "LIST_ONLY",
       autoDeliver: false,
-      jobs: result.jobs
+      jobs: jobsToSave
     }, {
       pageTabId: message?.pageTabId,
       timeoutMs: 60000
@@ -201,13 +251,16 @@
       .filter(([, count]) => Number(count) > 0)
       .map(([field, count]) => `${field}=${count}`)
       .join("，");
-    const successMessage = `Boss当前页采集完成：识别候选 ${result.candidateCount} 个，成功解析 ${result.parsedCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入AI分析。${missingMessage ? ` 缺失字段统计：${missingMessage}。` : ""}`;
+    const successMessage = `Boss当前页采集完成：识别候选 ${result.candidateCount} 个，成功解析 ${result.parsedCount} 个，历史跳过 ${dedupeResult.skipCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入AI分析。${missingMessage ? ` 缺失字段统计：${missingMessage}。` : ""}`;
     postProgress(message, "success", successMessage, {
       operation: "listCollect",
       stage: "listCollected",
       runId,
       saved: numberValue(data.saved),
       listCollected: numberValue(data.listCollected),
+      duplicateCount: dedupeResult.duplicateCount,
+      enrichCount: dedupeResult.enrichCount,
+      skipCount: dedupeResult.skipCount,
       ...diagnostics,
       ...resultSummary
     });
@@ -220,7 +273,10 @@
       ...resultSummary,
       backend: data,
       saved: numberValue(data.saved),
-      listCollected: numberValue(data.listCollected)
+      listCollected: numberValue(data.listCollected),
+      duplicateCount: dedupeResult.duplicateCount,
+      enrichCount: dedupeResult.enrichCount,
+      skipCount: dedupeResult.skipCount
     };
   }
 
@@ -236,15 +292,82 @@
       title: document.title || "",
       isLoginPage: isStrongLoginPrompt(compactText, currentUrl),
       isSecurityPage: isSecurityPrompt(compactText),
+      isSearchPage: isBossSearchPathSafe(currentUrl),
       detailLinkCount: document.querySelectorAll("a[href*='/job_detail/'], a[href*='job_detail']").length,
       selectorCounts: selectorStats(),
-      firstCardText: compact(collectJobNodes()[0]?.innerText || collectJobNodes()[0]?.textContent || "").slice(0, 500),
-      bodyText: bodyText.slice(0, 1000)
+      firstCardText: compact(collectJobNodes()[0]?.innerText || collectJobNodes()[0]?.textContent || "").slice(0, 500)
     };
+  }
+
+  function isBossSearchPathSafe(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.hostname.includes("zhipin.com") && isBossSearchPath(parsed.pathname);
+    } catch {
+      return false;
+    }
   }
 
   function formatBossDiagnostics(diagnostics) {
     return `currentUrl=${diagnostics.currentUrl || ""}；title=${diagnostics.title || ""}；detailLinkCount=${numberValue(diagnostics.detailLinkCount)}；selectorCounts=${JSON.stringify(diagnostics.selectorCounts || {})}；firstCardText=${diagnostics.firstCardText || ""}`;
+  }
+
+  function buildBossDiagnostic(type, stage, diagnostics = {}, details = {}) {
+    const catalog = {
+      PAGE_READY: ["页面可采集", "未发现阻塞问题。", "可以开始采集或完整扫描。"],
+      LOGIN_REQUIRED: ["Boss登录状态已失效", "无法读取岗位列表或详情。", "请在Chrome的Boss页面完成登录，然后刷新页面并继续扫描。"],
+      SECURITY_VERIFICATION: ["Boss要求安全验证", "扫描已暂停，当前岗位不会丢失。", "请手动完成验证码或安全验证，然后刷新页面或再次点击扫描。"],
+      WRONG_PAGE: ["当前不是Boss岗位搜索结果页", "无法定位岗位卡片。", "请打开Boss岗位搜索结果页后重新诊断或采集。"],
+      EMPTY_RESULTS: ["当前搜索条件没有岗位结果", "本关键词没有可入库岗位。", "可以调整关键词或筛选条件后重新扫描。"],
+      SELECTOR_MISMATCH: ["Boss页面结构可能已经变化", "现有选择器没有识别到岗位卡片，扫描已暂停且保留断点。", "请保留当前页面并查看诊断数据，更新扩展选择器后可继续。"],
+      CARD_PARSE_FAILED: ["Boss岗位卡片解析失败", "页面中存在候选节点，但必要字段不足，未写入错误数据。", "请查看缺失字段与选择器命中情况，更新解析规则后重试。"],
+      DETAIL_PARSE_FAILED: ["Boss岗位详情解析失败", "该岗位详情不完整，暂不进入AI分析。", "请确认详情页已正常打开，再重试或更新详情选择器。"]
+    };
+    const [reason, impact, suggestion] = catalog[type] || ["Boss页面状态无法识别", "当前扫描结果不可靠。", "请刷新Boss页面并重新诊断。"];
+    return {
+      type,
+      stage,
+      reason,
+      impact,
+      suggestion,
+      currentUrl: diagnostics.currentUrl || window.location.href,
+      title: diagnostics.title || document.title || "",
+      selectorCounts: diagnostics.selectorCounts || diagnostics.selectorStats || {},
+      detailLinkCount: numberValue(diagnostics.detailLinkCount ?? diagnostics.detailLinks),
+      candidateCount: numberValue(details.candidateCount ?? details.nodeCount),
+      parsedCount: numberValue(details.parsedCount ?? details.parsed),
+      missingFields: details.missingFields || details.missingFieldCounts || {},
+      message: `原因：${reason}。影响：${impact} 下一步：${suggestion}`
+    };
+  }
+
+  function buildLocalApiDiagnostic(error, stage) {
+    const rawType = String(error?.code || "");
+    const text = safeErrorMessage(error);
+    const type = rawType
+      || SCAN_SUPPORT.classifyLocalApiFailure?.(error)
+      || (/Invalid CORS request|cors/i.test(text) ? "CORS_REJECTED"
+        : /超时|timeout|abort/i.test(text) ? "LOCAL_API_TIMEOUT"
+          : /无法连接|Failed to fetch|NetworkError|本地服务请求失败|6866端口/i.test(text) ? "LOCAL_SERVICE_UNAVAILABLE"
+            : "LOCAL_API_ERROR");
+    const catalog = {
+      CORS_REJECTED: ["Chrome扩展请求被后端CORS规则拒绝", "岗位已采集但本批尚未入库，扫描断点已保留。", "重启更新后的本地服务并重新加载Chrome扩展，然后继续扫描。"],
+      LOCAL_SERVICE_UNAVAILABLE: ["无法连接本地服务", "岗位暂时无法入库，扫描断点已保留。", "确认投递牛马本地服务和6866端口正常后，再次点击扫描继续。"],
+      LOCAL_API_TIMEOUT: ["本地服务响应超时", "当前提交批次未确认完成，扫描断点已保留。", "确认本地服务仍在运行后继续扫描，系统会从当前批次恢复。"],
+      LOCAL_API_FORBIDDEN: ["本地接口拒绝访问", "当前提交批次未入库。", "重新加载扩展并确认使用的是本项目本地页面。"],
+      LOCAL_API_NOT_FOUND: ["本地接口不存在或版本不匹配", "扩展无法提交岗位。", "重启最新版本的本地服务并重新加载扩展。"],
+      LOCAL_API_SERVER_ERROR: ["本地服务处理岗位时出错", "当前批次结果未确认，断点已保留。", "查看本地服务日志，修复后再次点击扫描继续。"],
+      LOCAL_API_ERROR: ["本地接口请求失败", "当前批次没有可靠完成，断点已保留。", "检查本地服务日志后再次点击扫描继续。"]
+    };
+    const [reason, impact, suggestion] = catalog[type] || catalog.LOCAL_API_ERROR;
+    return {
+      type,
+      stage,
+      reason,
+      impact,
+      suggestion,
+      message: `原因：${reason}。影响：${impact} 下一步：${suggestion}`
+    };
   }
 
   function summarizeBossListCollectResult(result) {
@@ -287,8 +410,23 @@
   async function handleScanStartMessage(message, sendResponse) {
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
+    const incomingTask = normalizeScanTask(message);
+    const configChanged = Boolean(
+      existingTask?.keywordCursorKey
+        && incomingTask.keywordCursorKey
+        && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
+    );
+    if (configChanged) {
+      clearStoredScanTask();
+      postProgress(message, "warning", "Boss扫描配置已变化，旧断点已放弃，将按新配置重新开始。", {
+        operation: "scan",
+        stage: "checkpointReset",
+        diagnosticType: "CONFIG_CHANGED"
+      });
+    }
     const canResumeExisting = Boolean(
-      existingTask
+      !configChanged
+        && existingTask
         && !existingTask.completed
         && (isResumableScanTask(existingTask) || status.resumable || status.stage === "blocked")
     );
@@ -317,7 +455,7 @@
     stopRequested = false;
     stopRequestedRunId = "";
     clearStopRequested();
-    startScan({ ...message, runId });
+    startScan({ ...incomingTask, runId });
     sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId });
   }
 
@@ -362,22 +500,7 @@
       saved: 0,
       waitingConfirm: 0
     });
-    runScan(task).catch((error) => {
-      clearStoredScanTask();
-      writeScanStatus({
-        isRunning: false,
-        stopRequested: false,
-        stage: "error",
-        message: error.message || String(error),
-        runId: task.runId,
-        startedAt: task.startedAt,
-        updatedAt: Date.now()
-      });
-      postProgress(task, "error", error.message || String(error), {
-        operation: "scan",
-        stage: "error"
-      });
-    });
+    runScan(task).catch((error) => handleScanExecutionFailure(task, error));
   }
 
   async function resumeStoredScanTaskIfActive(force = false) {
@@ -417,24 +540,72 @@
       keywordTotal: scanKeywords(task).length,
       totalSaved: Number(task.totalSaved || 0)
     });
-    runScan(task).catch((error) => {
+    runScan(task).catch((error) => handleScanExecutionFailure(task, error));
+  }
+
+  function handleScanExecutionFailure(task, error) {
+    const errorText = safeErrorMessage(error);
+    const looksLikeLocalApiFailure = /^(CORS_|LOCAL_)/.test(String(error?.code || ""))
+      || /Invalid CORS request|本地服务|本地接口|6866|Failed to fetch|NetworkError|请求超时/i.test(errorText);
+    const diagnostic = looksLikeLocalApiFailure
+      ? buildLocalApiDiagnostic(error, String(readStoredScanTask()?.phase || task?.phase || "error"))
+      : {
+          type: String(error?.code || "SCAN_ERROR"),
+          impact: "本轮扫描已停止。",
+          suggestion: "请根据错误信息修正配置或页面状态后重新开始扫描。",
+          message: `原因：${errorText}。影响：本轮扫描已停止。下一步：请修正后重新开始扫描。`
+        };
+    const recoverable = [
+      "CORS_REJECTED",
+      "LOCAL_SERVICE_UNAVAILABLE",
+      "LOCAL_API_TIMEOUT",
+      "LOCAL_API_FORBIDDEN",
+      "LOCAL_API_NOT_FOUND",
+      "LOCAL_API_SERVER_ERROR",
+      "LOCAL_API_ERROR",
+      "SELECTOR_MISMATCH",
+      "DETAIL_PARSE_FAILED"
+    ].includes(diagnostic.type);
+    const storedTask = readStoredScanTask() || task;
+    if (recoverable && storedTask?.runId) {
+      storeScanTask({
+        ...storedTask,
+        pausedAt: Date.now(),
+        lastError: {
+          type: diagnostic.type,
+          message: safeErrorMessage(error),
+          failedAt: Date.now()
+        }
+      });
+    } else {
       clearStoredScanTask();
-      writeScanStatus({
-        isRunning: false,
-        stopRequested: false,
-        stage: "error",
-        message: error.message || String(error),
-        runId: task.runId,
-        startedAt: task.startedAt,
-        updatedAt: Date.now()
-      });
-      postProgress(task, "error", error.message || String(error), {
-        operation: "scan",
-        stage: "error",
-        keywordIndex: Number(task.currentIndex || 0) + 1,
-        keywordTotal: scanKeywords(task).length,
-        totalSaved: Number(task.totalSaved || 0)
-      });
+    }
+    const message = recoverable
+      ? `${diagnostic.message} 扫描断点将在24小时内保留。`
+      : safeErrorMessage(error);
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: false,
+      stage: recoverable ? "blocked" : "error",
+      paused: recoverable,
+      resumable: recoverable,
+      diagnosticType: diagnostic.type,
+      message,
+      runId: storedTask?.runId || task?.runId,
+      startedAt: storedTask?.startedAt || task?.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(storedTask || task || {}, recoverable ? "warning" : "error", message, {
+      operation: "scan",
+      stage: recoverable ? "blocked" : "error",
+      paused: recoverable,
+      resumable: recoverable,
+      diagnosticType: diagnostic.type,
+      impact: diagnostic.impact,
+      suggestion: diagnostic.suggestion,
+      keywordIndex: Number(storedTask?.currentIndex || 0) + 1,
+      keywordTotal: scanKeywords(storedTask || task || {}).length,
+      totalSaved: Number(storedTask?.totalSaved || task?.totalSaved || 0)
     });
   }
 
@@ -509,7 +680,7 @@
         updatedAt: Date.now()
       });
 
-      if (task.phase === "detail") {
+      if (task.phase === "detail" || task.phase === "submitting") {
         if (isStopRequested(runId)) {
           stopRequested = true;
           break;
@@ -634,9 +805,25 @@
         if (handleBlockingState(task, diagnostics, baseMeta)) {
           return { success: true, saved: totalSaved, blocked: true };
         }
-        postProgress(task, "warning", `Boss Chrome未采集到岗位：${keyword}。currentUrl=${diagnostics.currentUrl}；title=${diagnostics.title}；detailLinkCount=${diagnostics.detailLinkCount}；selectorCounts=${JSON.stringify(diagnostics.selectorCounts || {})}；岗位节点=${diagnostics.jobNodes || 0}；页面脚本数据=${diagnostics.embeddedJobs || 0}；可点击卡片=${diagnostics.clickableCards || 0}；搜索结果容器=${diagnostics.resultContainers}；状态=${diagnostics.pageState}；firstCardText=${diagnostics.firstCardText || ""}。可能未进入搜索结果页、未登录、安全验证、页面结构变化、选择器失效或筛选无结果。`, {
+        if (!diagnostics.hasEmptyPrompt) {
+          return pauseForPageStructureChange(task, diagnostics, {
+            ...baseMeta,
+            stage: "collecting",
+            candidateCount: 0,
+            parsedCount: collectResult.parsed || 0,
+            missingFields: collectResult.missingSamples || []
+          });
+        }
+        const emptyDiagnostic = buildBossDiagnostic("EMPTY_RESULTS", "collecting", diagnostics, {
+          candidateCount: 0,
+          parsedCount: 0
+        });
+        postProgress(task, "warning", emptyDiagnostic.message, {
           ...baseMeta,
           stage: "empty",
+          diagnosticType: emptyDiagnostic.type,
+          impact: emptyDiagnostic.impact,
+          suggestion: emptyDiagnostic.suggestion,
           collected: 0,
           ...diagnostics
         });
@@ -648,11 +835,13 @@
       const dedupeResult = await filterDuplicateJobs(candidates, task, baseMeta);
       const freshCandidates = dedupeResult.jobs;
       const jobs = freshCandidates.slice(0, searchJobLimit);
-      postProgress(task, dedupeResult.duplicateCount > 0 ? "info" : "success", `Boss重复岗位检查完成：候选 ${candidates.length} 个，已接触 ${dedupeResult.duplicateCount} 个，新岗位 ${freshCandidates.length} 个，将进入前 ${jobs.length}/${searchJobLimit} 个详情页。`, {
+      postProgress(task, dedupeResult.duplicateCount > 0 ? "info" : "success", `Boss重复岗位检查完成：候选 ${candidates.length} 个，历史命中 ${dedupeResult.duplicateCount} 个，可补全 ${dedupeResult.enrichCount} 个，跳过 ${dedupeResult.skipCount} 个，将进入前 ${jobs.length}/${searchJobLimit} 个详情页。`, {
         ...baseMeta,
         stage: "dedupe",
         collected: candidates.length,
         duplicates: dedupeResult.duplicateCount,
+        enrich: dedupeResult.enrichCount,
+        skippedDuplicates: dedupeResult.skipCount,
         fresh: freshCandidates.length,
         searchJobLimit
       });
@@ -981,7 +1170,7 @@
 
   async function filterDuplicateJobs(jobs, message, baseMeta) {
     const list = Array.isArray(jobs) ? jobs : [];
-    if (!list.length) return { jobs: [], duplicateCount: 0 };
+    if (!list.length) return { jobs: [], duplicateCount: 0, enrichCount: 0, skipCount: 0 };
 
     try {
       const data = await callBossLocalApi("chrome-jobs-dedupe", {
@@ -993,11 +1182,13 @@
       });
       if (!data.success || !Array.isArray(data.items)) throw new Error(data.message || "查重接口返回异常");
 
-      const duplicateKeys = new Set(data.items.filter((item) => item.duplicate).map(dedupeItemKey));
-      const freshJobs = list.filter((job) => isDeliveredStatus(job.deliveryStatus) || !duplicateKeys.has(dedupeJobKey(job)));
+      const decisions = new Map(data.items.map((item) => [dedupeItemKey(item), String(item.action || (item.duplicate ? "SKIP" : "NEW"))]));
+      const freshJobs = list.filter((job) => decisions.get(dedupeJobKey(job)) !== "SKIP");
       return {
         jobs: freshJobs,
-        duplicateCount: Number(data.duplicateCount ?? (list.length - freshJobs.length) ?? 0)
+        duplicateCount: Number(data.duplicateCount ?? 0),
+        enrichCount: Number(data.enrichCount ?? data.items.filter((item) => item.action === "ENRICH").length),
+        skipCount: Number(data.skipCount ?? data.items.filter((item) => item.action === "SKIP").length)
       };
     } catch (error) {
       postProgress(message, "warning", `Boss重复岗位检查失败，将继续扫描本页岗位：${error.message || String(error)}`, {
@@ -1005,7 +1196,7 @@
         stage: "dedupe",
         collected: list.length
       });
-      return { jobs: list, duplicateCount: 0 };
+      return { jobs: list, duplicateCount: 0, enrichCount: 0, skipCount: 0 };
     }
   }
 
@@ -1327,6 +1518,11 @@
       return { success: true, totalSaved };
     }
 
+    if (message.phase === "submitting") {
+      const submitJobs = jobs.filter(isSubmittableJob).map(normalizeJobForSubmit);
+      return submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved);
+    }
+
     const currentJob = jobs[detailIndex];
     if (currentJob) {
       const pageBlockDiagnostics = buildPageBlockDiagnostics();
@@ -1429,6 +1625,20 @@
       advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
       return { success: true, totalSaved };
     }
+    const submittingTask = {
+      ...message,
+      phase: "submitting",
+      jobs,
+      detailIndex: jobs.length - 1,
+      submitBatchIndex: 0,
+      submitSummary: null,
+      totalSaved
+    };
+    storeScanTask(submittingTask);
+    return submitCollectedBossJobs(submitJobs, submittingTask, keyword, runId, baseMeta, totalSaved);
+  }
+
+  async function submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved) {
     const data = await submitBossJobsInBatches(submitJobs, message, baseMeta, {
       runId,
       keyword,
@@ -1464,6 +1674,8 @@
       phase: "nextKeyword",
       jobs: [],
       detailIndex: 0,
+      submitBatchIndex: 0,
+      submitSummary: null,
       currentIndex: Number(message.currentIndex || 0) + 1,
       totalSaved: nextTotalSaved
     });
@@ -1474,26 +1686,38 @@
   async function submitBossJobsInBatches(jobs, message, baseMeta, options) {
     const runId = normalizeScanRunId(options?.runId || message?.runId || activeScanRunId);
     const batches = chunkList(jobs, SUBMIT_BATCH_SIZE);
+    const previousSummary = message?.submitSummary || {};
     const summary = {
       success: true,
       asyncAnalysis: true,
-      received: 0,
-      saved: 0,
-      queued: 0,
-      skipped: 0,
-      insufficient: 0,
-      restored: 0,
+      received: numberValue(previousSummary.received),
+      saved: numberValue(previousSummary.saved),
+      queued: numberValue(previousSummary.queued),
+      skipped: numberValue(previousSummary.skipped),
+      insufficient: numberValue(previousSummary.insufficient),
+      restored: numberValue(previousSummary.restored),
       autoDeliver: Boolean(options.autoDeliver),
-      queueSize: 0,
+      queueSize: numberValue(previousSummary.queueSize),
       analyses: []
     };
+    const startBatchIndex = SCAN_SUPPORT.normalizeBatchIndex
+      ? SCAN_SUPPORT.normalizeBatchIndex(message?.submitBatchIndex, batches.length)
+      : Math.min(Math.max(numberValue(message?.submitBatchIndex), 0), batches.length);
 
-    for (let index = 0; index < batches.length; index++) {
+    for (let index = startBatchIndex; index < batches.length; index++) {
       if (isStopRequested(runId)) {
         return { ...summary, cancelled: true };
       }
 
       const batch = batches[index];
+      storeScanTask({
+        ...message,
+        phase: "submitting",
+        jobs: message.jobs,
+        submitBatchIndex: index,
+        submitSummary: checkpointSubmitSummary(summary),
+        lastSubmitError: null
+      });
       postProgress(message, "info", `Boss Chrome正在提交后台AI队列：第 ${index + 1}/${batches.length} 批，${batch.length} 个岗位。`, {
         ...baseMeta,
         stage: "submitting",
@@ -1505,7 +1729,7 @@
       let data;
       try {
         data = await callBossLocalApi("chrome-jobs", {
-          runId: options.runId,
+          runId,
           keyword: options.keyword,
           jobs: batch,
           autoDeliver: options.autoDeliver
@@ -1515,25 +1739,63 @@
         });
       } catch (error) {
         const reason = safeErrorMessage(error);
-        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批提交失败：${reason}`;
+        const diagnostic = buildLocalApiDiagnostic(error, "submitting");
+        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批提交失败。${diagnostic.message} 原始信息：${reason}`;
+        storeScanTask({
+          ...message,
+          phase: "submitting",
+          jobs: message.jobs,
+          submitBatchIndex: index,
+          submitSummary: checkpointSubmitSummary(summary),
+          lastSubmitError: {
+            type: diagnostic.type,
+            message: reason,
+            failedAt: Date.now()
+          }
+        });
         postProgress(message, "error", failureMessage, {
           ...baseMeta,
           stage: "submitFailed",
+          diagnosticType: diagnostic.type,
+          impact: diagnostic.impact,
+          suggestion: diagnostic.suggestion,
           batchIndex: index + 1,
           batchTotal: batches.length
         });
-        throw new Error(failureMessage);
+        const submitError = new Error(failureMessage);
+        submitError.code = diagnostic.type;
+        throw submitError;
       }
 
       if (!data.success) {
-        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批返回失败：${data.message || "后台未返回原因"}`;
+        const responseError = new Error(data.message || "后台未返回原因");
+        responseError.code = data.errorType || "LOCAL_API_ERROR";
+        const diagnostic = buildLocalApiDiagnostic(responseError, "submitting");
+        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批返回失败。${diagnostic.message}`;
+        storeScanTask({
+          ...message,
+          phase: "submitting",
+          jobs: message.jobs,
+          submitBatchIndex: index,
+          submitSummary: checkpointSubmitSummary(summary),
+          lastSubmitError: {
+            type: diagnostic.type,
+            message: data.message || "后台未返回原因",
+            failedAt: Date.now()
+          }
+        });
         postProgress(message, "error", failureMessage, {
           ...baseMeta,
           stage: "submitFailed",
+          diagnosticType: diagnostic.type,
+          impact: diagnostic.impact,
+          suggestion: diagnostic.suggestion,
           batchIndex: index + 1,
           batchTotal: batches.length
         });
-        throw new Error(failureMessage);
+        const submitError = new Error(failureMessage);
+        submitError.code = diagnostic.type;
+        throw submitError;
       }
 
       summary.received += numberValue(data.received);
@@ -1544,6 +1806,14 @@
       summary.restored += numberValue(data.restored);
       summary.queueSize = numberValue(data.queueSize);
       if (Array.isArray(data.analyses)) summary.analyses.push(...data.analyses);
+      storeScanTask({
+        ...message,
+        phase: "submitting",
+        jobs: message.jobs,
+        submitBatchIndex: index + 1,
+        submitSummary: checkpointSubmitSummary(summary),
+        lastSubmitError: null
+      });
 
       postProgress(message, "info", `Boss Chrome第 ${index + 1}/${batches.length} 批已提交：入库 ${numberValue(data.saved)} 个，入队 ${numberValue(data.queued)} 个。`, {
         ...baseMeta,
@@ -1562,6 +1832,18 @@
     }
 
     return summary;
+  }
+
+  function checkpointSubmitSummary(summary) {
+    return {
+      received: numberValue(summary?.received),
+      saved: numberValue(summary?.saved),
+      queued: numberValue(summary?.queued),
+      skipped: numberValue(summary?.skipped),
+      insufficient: numberValue(summary?.insufficient),
+      restored: numberValue(summary?.restored),
+      queueSize: numberValue(summary?.queueSize)
+    };
   }
 
   async function continueAutoDeliverScan(message, keyword, baseMeta) {
@@ -1998,7 +2280,10 @@
       pageTabId: options.pageTabId
     });
     if (!response?.success) {
-      throw new Error(response?.message || "Boss本地服务请求失败");
+      const error = new Error(response?.message || "Boss本地服务请求失败");
+      error.code = response?.errorType || "LOCAL_API_ERROR";
+      error.httpStatus = response?.httpStatus;
+      throw error;
     }
     return response.data || {};
   }
@@ -2265,9 +2550,11 @@
   }
 
   function isFreshScanTask(task) {
+    if (SCAN_SUPPORT.isFreshTask) {
+      return SCAN_SUPPORT.isFreshTask(task, Date.now(), SCAN_TASK_TTL_MS);
+    }
     if (!task || task.type !== "BOSS_SCAN_START" || !task.runId) return false;
     if (task.completed || task.phase === "complete" || task.phase === "stopped" || task.phase === "error") return false;
-
     const lastActiveAt = Number(task.updatedAt || task.startedAt || 0);
     return Boolean(lastActiveAt && Date.now() - lastActiveAt <= SCAN_TASK_TTL_MS);
   }
@@ -2293,6 +2580,9 @@
         const job = jobs[Number(task.detailIndex || 0)];
         return Boolean(job?.url && isSameBossJobUrl(current.href, job.url))
           || (!job?.url && current.pathname.includes("/job_detail/"));
+      }
+      if (phase === "submitting") {
+        return true;
       }
       if (phase === "searching") {
         return isCurrentBossSearchTarget(task, current.href) || isPendingBossSearchNavigation(task, current);
@@ -2814,6 +3104,11 @@
   function handleBlockingState(task, diagnostics, meta = {}) {
     if (!diagnostics || !(diagnostics.hasSecurityPrompt || diagnostics.hasLoginPrompt)) return false;
     const state = diagnostics.hasSecurityPrompt ? "安全验证" : "登录提示";
+    const diagnostic = buildBossDiagnostic(
+      diagnostics.hasSecurityPrompt ? "SECURITY_VERIFICATION" : "LOGIN_REQUIRED",
+      "blocked",
+      diagnostics
+    );
     if (task?.runId) {
       activeScanRunId = normalizeScanRunId(task.runId);
       storeScanTask({
@@ -2828,21 +3123,82 @@
       stage: "blocked",
       paused: true,
       resumable: Boolean(task?.runId),
-      message: `Boss页面出现${state}，扫描已暂停，请在Chrome中处理后刷新Boss页面或再次点击扫描继续。`,
+      diagnosticType: diagnostic.type,
+      message: diagnostic.message,
       runId: task?.runId,
       startedAt: task?.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task || {}, "warning", `Boss页面出现${state}，扫描已暂停，请在Chrome中处理验证码/登录/安全验证后刷新Boss页面或再次点击扫描继续。`, {
+    postProgress(task || {}, "warning", diagnostic.message, {
       ...meta,
       operation: "scan",
       stage: "blocked",
       paused: true,
       resumable: Boolean(task?.runId),
+      diagnosticType: diagnostic.type,
+      impact: diagnostic.impact,
+      suggestion: diagnostic.suggestion,
       currentUrl: diagnostics.currentUrl,
       pageState: diagnostics.pageState
     });
     return true;
+  }
+
+  function pauseForPageStructureChange(task, diagnostics, details = {}) {
+    const diagnostic = buildBossDiagnostic("SELECTOR_MISMATCH", details.stage || "collecting", diagnostics, details);
+    const checkpoint = {
+      ...task,
+      phase: task?.phase || "collecting",
+      pausedAt: Date.now(),
+      lastError: {
+        type: diagnostic.type,
+        message: diagnostic.reason,
+        failedAt: Date.now()
+      }
+    };
+    storeScanTask(checkpoint);
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: false,
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: diagnostic.type,
+      message: diagnostic.message,
+      runId: task?.runId,
+      keyword: details.keyword,
+      keywordIndex: details.keywordIndex,
+      keywordTotal: details.keywordTotal,
+      totalSaved: Number(task?.totalSaved || 0),
+      startedAt: task?.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(task || {}, "error", diagnostic.message, {
+      ...details,
+      operation: "scan",
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: diagnostic.type,
+      impact: diagnostic.impact,
+      suggestion: diagnostic.suggestion,
+      currentUrl: diagnostic.currentUrl,
+      title: diagnostic.title,
+      selectorCounts: diagnostic.selectorCounts,
+      detailLinkCount: diagnostic.detailLinkCount,
+      candidateCount: diagnostic.candidateCount,
+      parsedCount: diagnostic.parsedCount,
+      missingFields: diagnostic.missingFields
+    });
+    return {
+      success: false,
+      blocked: true,
+      resumable: true,
+      diagnosticType: diagnostic.type,
+      message: diagnostic.message,
+      saved: Number(task?.totalSaved || 0),
+      totalSaved: Number(task?.totalSaved || 0)
+    };
   }
 
   function isSecurityPrompt(text) {
@@ -2943,12 +3299,29 @@
     const keywordTotal = scanKeywords(task).length;
     const totalSaved = Number(task.totalSaved || 0);
     const navigationAttempts = Number(task.navigationAttempts || 0);
-    const message = `Boss搜索页打开失败，已停止本轮扫描。请确认Boss页面可以正常访问后重新开始扫描：${keyword}`;
-    clearStoredScanTask();
+    const diagnostic = buildBossDiagnostic("WRONG_PAGE", "navigationFailed", {
+      currentUrl: window.location.href,
+      title: document.title || "",
+      selectorCounts: {},
+      detailLinkCount: 0
+    });
+    const message = `Boss搜索页打开失败：${keyword}。${diagnostic.message} 扫描断点将在24小时内保留。`;
+    storeScanTask({
+      ...task,
+      pausedAt: Date.now(),
+      lastError: {
+        type: "NAVIGATION_FAILED",
+        message,
+        failedAt: Date.now()
+      }
+    });
     writeScanStatus({
       isRunning: false,
       stopRequested: false,
-      stage: "navigationFailed",
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: "NAVIGATION_FAILED",
       message,
       runId: task.runId,
       keyword,
@@ -2961,7 +3334,12 @@
     });
     postProgress(task, "error", message, {
       operation: "scan",
-      stage: "navigationFailed",
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: "NAVIGATION_FAILED",
+      impact: "搜索页没有成功打开，本关键词尚未完成。",
+      suggestion: "确认Boss页面可以正常访问后，再次点击扫描继续。",
       keyword,
       keywordIndex: Number(task.currentIndex || 0) + 1,
       keywordTotal,
@@ -2971,7 +3349,7 @@
       totalSaved,
       saved: totalSaved
     });
-    return { success: false, message, navigationFailed: true, saved: totalSaved, totalSaved };
+    return { success: false, message, navigationFailed: true, blocked: true, resumable: true, saved: totalSaved, totalSaved };
   }
 
   function isSearchNavigationPending(task) {

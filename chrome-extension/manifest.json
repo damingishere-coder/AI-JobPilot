@@ -34,6 +34,7 @@
       "js": [
         "boss-selectors.js",
         "boss-debug.js",
+        "boss-scan-support.js",
         "boss-search-collector.js",
         "boss-detail-collector.js",
         "boss-content.js"

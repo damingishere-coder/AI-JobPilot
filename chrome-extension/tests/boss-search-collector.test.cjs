@@ -150,4 +150,6 @@ test("reports selector counts and detail links for diagnostics", () => {
   assert.match(diagnostics.firstCardText, /Java开发工程师1/);
   assert.equal(diagnostics.isLoginPage, false);
   assert.equal(diagnostics.isSecurityPage, false);
+  assert.equal(diagnostics.isSearchPage, true);
+  assert.equal(diagnostics.bodyText, undefined);
 });
