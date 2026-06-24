@@ -2,7 +2,14 @@ const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
     home: "https://www.zhipin.com/",
-    contentScript: "boss-content.js"
+    contentScript: "boss-content.js",
+    contentScripts: [
+      "boss-selectors.js",
+      "boss-debug.js",
+      "boss-search-collector.js",
+      "boss-detail-collector.js",
+      "boss-content.js"
+    ]
   },
   zhilian: {
     hosts: ["zhaopin.com"],
@@ -12,12 +19,12 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-23-platform-scan-fallbacks-1";
+const BACKGROUND_VERSION = "2026-06-24-boss-current-page-collector-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-23-boss-click-detail-fallback-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-24-boss-current-page-collector-1";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-23-zhilian-query-initial-state-1";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -29,6 +36,8 @@ const ALLOWED_PAGE_ORIGINS = new Set([
 const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "GET_JOBS_EXTENSION_PING",
   "BOSS_PAGE_STATUS",
+  "BOSS_DEBUG_COLLECT",
+  "BOSS_COLLECT_CURRENT_PAGE",
   "BOSS_SCAN_STATUS",
   "BOSS_SCAN_START",
   "BOSS_SCAN_STOP",
@@ -308,9 +317,14 @@ async function handlePageMessage(message, sender) {
     ? await findPlatformTab(platform)
     : await findOrCreatePlatformTab(platform, platformStartUrl(message));
   if (!tab?.id) {
+    const noTabIsExpected = isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type);
     return {
-      success: true,
-      message: message.type === "BOSS_SCAN_STOP" ? "没有正在运行的Boss扫描任务" : "未找到已打开的平台页面",
+      success: noTabIsExpected,
+      message: message.type === "BOSS_SCAN_STOP"
+        ? "没有正在运行的Boss扫描任务"
+        : message.type === "BOSS_DEBUG_COLLECT" || message.type === "BOSS_COLLECT_CURRENT_PAGE"
+          ? "未找到已打开的Boss页面。请先在Chrome中手动打开Boss搜索结果页。"
+          : "未找到已打开的平台页面",
       isRunning: false,
       stage: "idle"
     };
@@ -359,7 +373,13 @@ function inferPlatform(type) {
 }
 
 function isNoFocusPlatformMessage(type) {
-  return type === "BOSS_SCAN_STATUS" || type === "BOSS_PAGE_STATUS" || type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STATUS" || type === "ZHILIAN_SCAN_STOP";
+  return type === "BOSS_SCAN_STATUS"
+    || type === "BOSS_PAGE_STATUS"
+    || type === "BOSS_DEBUG_COLLECT"
+    || type === "BOSS_COLLECT_CURRENT_PAGE"
+    || type === "BOSS_SCAN_STOP"
+    || type === "ZHILIAN_SCAN_STATUS"
+    || type === "ZHILIAN_SCAN_STOP";
 }
 
 function isNoCreatePlatformMessage(type) {
@@ -819,7 +839,9 @@ async function findOrCreatePlatformTab(platform, startUrl) {
 async function findPlatformTab(platform) {
   const config = PLATFORM_CONFIG[platform];
   const tabs = await chrome.tabs.query({});
-  return tabs.find((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
+  return tabs
+    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
 async function waitForSupportedTab(tabId, config) {
@@ -867,7 +889,7 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
 async function ensureContentScript(tabId, file) {
   if (await isContentScriptReady(tabId, file)) return;
 
-  await chrome.scripting.executeScript({ target: { tabId }, files: [file] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: contentScriptFiles(file) });
 
   for (let attempt = 0; attempt < CONTENT_READY_RETRIES; attempt++) {
     if (await isContentScriptReady(tabId, file)) return;
@@ -875,6 +897,13 @@ async function ensureContentScript(tabId, file) {
   }
 
   throw new Error("Chrome扩展已加载，但招聘页面脚本未就绪。请刷新招聘页面后重试。");
+}
+
+function contentScriptFiles(file) {
+  if (file === "boss-content.js") {
+    return PLATFORM_CONFIG.boss.contentScripts || [file];
+  }
+  return [file];
 }
 
 async function isContentScriptReady(tabId, file) {

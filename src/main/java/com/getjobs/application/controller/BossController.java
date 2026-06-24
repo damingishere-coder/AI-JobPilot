@@ -109,24 +109,34 @@ public class BossController {
         int skipped = 0;
         int insufficient = 0;
         int restored = 0;
+        int listCollected = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
         boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
+        boolean listOnlyCollection = isListOnlyCollection(request);
         List<Map<String, Object>> analyses = new ArrayList<>();
+        List<Map<String, Object>> collectionWarnings = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
             if (jobRunCoordinator.isCancelRequested(runId)) {
                 jobRunCoordinator.clearCancel(runId);
                 sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续处理本批岗位"));
-                return ResponseEntity.ok(bossChromeJobsResponse(
-                        true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()
+                return ResponseEntity.ok(decorateListCollectionResponse(
+                        bossChromeJobsResponse(true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()),
+                        listOnlyCollection, 0, List.of()
                 ));
             }
-            sendBossProgress(JobProgressMessage.info("boss", "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"));
+            sendBossProgress(JobProgressMessage.info(
+                    "boss",
+                    listOnlyCollection
+                            ? "Chrome已采集到 " + received + " 个Boss列表岗位，正在按LIST_COLLECTED入库"
+                            : "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"
+            ));
             for (ChromeJobDto dto : request.getJobs()) {
                 if (jobRunCoordinator.isCancelRequested(runId)) {
                     jobRunCoordinator.clearCancel(runId);
                     sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
-                    return ResponseEntity.ok(bossChromeJobsResponse(
-                            true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+                    return ResponseEntity.ok(decorateListCollectionResponse(
+                            bossChromeJobsResponse(true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                            listOnlyCollection, listCollected, collectionWarnings
                     ));
                 }
                 BossJobDataEntity entity = toBossEntity(dto);
@@ -139,6 +149,31 @@ public class BossController {
                 }
 
                 String currentStatus = saved.getDeliveryStatus();
+                if (listOnlyCollection) {
+                    if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
+                        skipped++;
+                    } else {
+                        saved = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.LIST_COLLECTED);
+                        listCollected++;
+                    }
+                    List<String> missingListFields = collectMissingListFields(dto, saved, request.getKeyword());
+                    if (!missingListFields.isEmpty()) {
+                        Map<String, Object> warning = Map.of(
+                                "id", saved == null || saved.getId() == null ? 0L : saved.getId(),
+                                "title", dto == null ? "" : Objects.toString(dto.getTitle(), ""),
+                                "company", dto == null ? "" : Objects.toString(dto.getCompany(), ""),
+                                "missingFields", missingListFields,
+                                "reason", "Boss列表页字段不完整，已按LIST_COLLECTED入库，未进入AI分析"
+                        );
+                        collectionWarnings.add(warning);
+                        sendBossProgress(JobProgressMessage.warning(
+                                "boss",
+                                "Boss列表岗位已入库但字段不完整：" + warning.get("company") + " / " + warning.get("title")
+                                        + "，缺少：" + String.join("、", missingListFields)
+                        ));
+                    }
+                    continue;
+                }
                 if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
                     skipped++;
                     Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
@@ -195,8 +230,9 @@ public class BossController {
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
                     bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
-                    Map<String, Object> response = bossChromeJobsResponse(
-                            false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+                    Map<String, Object> response = decorateListCollectionResponse(
+                            bossChromeJobsResponse(false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                            listOnlyCollection, listCollected, collectionWarnings
                     );
                     response.put("message", enqueueResult.getMessage());
                     return ResponseEntity.status(429).body(response);
@@ -214,9 +250,18 @@ public class BossController {
                 }
             }
         }
-        sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
-        return ResponseEntity.ok(bossChromeJobsResponse(
-                true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+        if (listOnlyCollection) {
+            sendBossProgress(JobProgressMessage.success(
+                    "boss",
+                    "Boss当前搜索结果页已入库 " + insertedOrUpdated + " 个岗位，其中LIST_COLLECTED "
+                            + listCollected + " 个，未进入AI分析"
+            ));
+        } else {
+            sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
+        }
+        return ResponseEntity.ok(decorateListCollectionResponse(
+                bossChromeJobsResponse(true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                listOnlyCollection, listCollected, collectionWarnings
         ));
     }
 
@@ -607,6 +652,23 @@ public class BossController {
         return missing;
     }
 
+    private List<String> collectMissingListFields(ChromeJobDto dto, BossJobDataEntity job, String batchKeyword) {
+        List<String> missing = new ArrayList<>();
+        if (job == null || isBlank(job.getJobName())) missing.add("title");
+        if (job == null || isBlank(job.getCompanyName())) missing.add("company");
+        if (job == null || isBlank(job.getSalary())) missing.add("salary");
+        if (job == null || isBlank(job.getLocation())) missing.add("location");
+        if (job == null || isBlank(job.getJobUrl())) missing.add("url");
+        String keyword = dto == null ? null : dto.getKeyword();
+        if (isBlank(firstNonBlank(keyword, batchKeyword))) missing.add("keyword");
+        return missing;
+    }
+
+    private boolean isListOnlyCollection(ChromeJobBatchRequest request) {
+        return request != null
+                && "LIST_ONLY".equalsIgnoreCase(Objects.toString(request.getCollectionMode(), "").trim());
+    }
+
     private boolean isFinalBossStatus(String status) {
         if (status == null || status.isBlank()) return false;
         return DeliveryStatus.isFinalStatus(status);
@@ -636,6 +698,18 @@ public class BossController {
         response.put("queueSize", chromeJobAnalysisQueueService.queueSize());
         response.put("tasks", List.of());
         response.put("analyses", analyses == null ? List.of() : analyses);
+        return response;
+    }
+
+    private Map<String, Object> decorateListCollectionResponse(Map<String, Object> response,
+                                                               boolean listOnlyCollection,
+                                                               int listCollected,
+                                                               List<Map<String, Object>> collectionWarnings) {
+        if (!listOnlyCollection) return response;
+        response.put("asyncAnalysis", false);
+        response.put("collectionMode", "LIST_ONLY");
+        response.put("listCollected", listCollected);
+        response.put("collectionWarnings", collectionWarnings == null ? List.of() : collectionWarnings);
         return response;
     }
 

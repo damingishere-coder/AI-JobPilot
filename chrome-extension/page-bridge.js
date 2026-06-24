@@ -1,7 +1,7 @@
 (function () {
   const SOURCE = "GET_JOBS_PAGE";
   const TARGET = "GET_JOBS_EXTENSION";
-  const BRIDGE_VERSION = "2026-05-24-boss-location-fix-1";
+  const BRIDGE_VERSION = "2026-06-24-boss-current-page-collector-1";
   const ALLOWED_PAGE_ORIGINS = new Set([
     "http://localhost:6866",
     "http://127.0.0.1:6866"
@@ -9,6 +9,8 @@
   const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
     "GET_JOBS_EXTENSION_PING",
     "BOSS_PAGE_STATUS",
+    "BOSS_DEBUG_COLLECT",
+    "BOSS_COLLECT_CURRENT_PAGE",
     "BOSS_SCAN_STATUS",
     "BOSS_SCAN_START",
     "BOSS_SCAN_STOP",

@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-23-boss-click-detail-fallback-1";
+  const EXTENSION_VERSION = "2026-06-24-boss-current-page-collector-1";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -17,34 +17,9 @@
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
   const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
   const SEARCH_PARAM_KEYS = ["city", "jobType", "salary", "experience", "degree", "scale", "industry", "stage", "query"];
-  const JOB_CARD_SELECTORS = [
-    "li.job-card-box",
-    ".job-card-wrapper",
-    ".job-card-body",
-    "li[class*='job-card']",
-    "[class*='job-card-wrapper']",
-    "[class*='job-card-box']",
-    ".job-list-box li",
-    ".search-job-result li",
-    "[ka^='search_list_']",
-    "[data-jobid]",
-    "[data-job-id]",
-    "[data-jid]",
-    "[data-securityid]",
-    "[data-security-id]",
-    "a[href*='/job_detail/']",
-    "a[href*='job_detail']"
-  ];
-  const SEARCH_RESULT_SELECTORS = [
-    ".job-list-box",
-    ".search-job-result",
-    ".job-card-wrapper",
-    ".job-card-body",
-    "li.job-card-box",
-    "[class*='job-card']",
-    "a[href*='/job_detail/']",
-    "a[href*='job_detail']"
-  ];
+  const BOSS_SELECTORS = window.GetJobsBossSelectors || {};
+  const JOB_CARD_SELECTORS = BOSS_SELECTORS.JOB_CARD_SELECTORS || ["a[href*='/job_detail/'], a[href*='job_detail']"];
+  const SEARCH_RESULT_SELECTORS = BOSS_SELECTORS.SEARCH_RESULT_SELECTORS || JOB_CARD_SELECTORS;
   let stopRequested = false;
   let stopRequestedRunId = "";
   let activeScanRunId = "";
@@ -84,6 +59,27 @@
     if (message?.type === "BOSS_PAGE_STATUS") {
       sendResponse(buildBossPageStatus());
       return;
+    }
+    if (message?.type === "BOSS_DEBUG_COLLECT") {
+      sendResponse(handleBossDebugCollect());
+      return;
+    }
+    if (message?.type === "BOSS_COLLECT_CURRENT_PAGE") {
+      handleBossCurrentPageCollect(message).then(sendResponse).catch((error) => {
+        const diagnostics = collectBossDiagnostics();
+        const reason = safeErrorMessage(error);
+        postProgress(message, "error", `Boss当前页采集失败：${reason}。${formatBossDiagnostics(diagnostics)}`, {
+          operation: "listCollect",
+          stage: "error",
+          ...diagnostics
+        });
+        sendResponse({
+          success: false,
+          message: `Boss当前页采集失败：${reason}`,
+          ...diagnostics
+        });
+      });
+      return true;
     }
     if (message?.type === "BOSS_SCAN_START") {
       handleScanStartMessage(message, sendResponse);
@@ -126,6 +122,140 @@
 
   function isCurrentContentInstance() {
     return window.__GET_JOBS_BOSS_CONTENT_INSTANCE_ID__ === CONTENT_INSTANCE_ID;
+  }
+
+  function handleBossDebugCollect() {
+    const diagnostics = collectBossDiagnostics();
+    return {
+      success: true,
+      message: diagnostics.isSecurityPage
+        ? "检测到Boss安全验证页，请在Chrome中手动完成验证后再诊断或采集。"
+        : diagnostics.isLoginPage
+          ? "检测到Boss登录页，请先在Chrome中手动登录。"
+          : "Boss当前页面诊断完成。",
+      ...diagnostics
+    };
+  }
+
+  async function handleBossCurrentPageCollect(message) {
+    const diagnostics = collectBossDiagnostics();
+    if (diagnostics.isSecurityPage) {
+      const text = `检测到Boss安全验证页，本工具不会绕过验证码。请在Chrome中手动完成验证后再采集。${formatBossDiagnostics(diagnostics)}`;
+      postProgress(message, "warning", text, {
+        operation: "listCollect",
+        stage: "blocked",
+        ...diagnostics
+      });
+      return { success: false, blocked: true, message: text, ...diagnostics };
+    }
+    if (diagnostics.isLoginPage) {
+      const text = `检测到Boss登录页，请先在Chrome中手动登录后再采集。${formatBossDiagnostics(diagnostics)}`;
+      postProgress(message, "warning", text, {
+        operation: "listCollect",
+        stage: "blocked",
+        ...diagnostics
+      });
+      return { success: false, blocked: true, message: text, ...diagnostics };
+    }
+
+    const collector = window.GetJobsBossSearchCollector;
+    if (!collector?.collectVisibleJobs) {
+      throw new Error("Boss列表采集模块未加载，请在扩展管理页重新加载扩展并刷新Boss页面");
+    }
+
+    const result = collector.collectVisibleJobs({ keyword: message?.keyword });
+    const resultSummary = summarizeBossListCollectResult(result);
+    if (!result.jobs.length) {
+      const text = `Boss当前页未采集到岗位。${formatBossDiagnostics(diagnostics)}；missingFieldCounts=${JSON.stringify(result.missingFieldCounts || {})}；failures=${JSON.stringify(result.failures || [])}`;
+      postProgress(message, "error", text, {
+        operation: "listCollect",
+        stage: "empty",
+        ...diagnostics,
+        ...resultSummary
+      });
+      return {
+        success: false,
+        message: text,
+        ...diagnostics,
+        ...resultSummary
+      };
+    }
+
+    const runId = normalizeScanRunId(message?.runId) || `boss-list-${Date.now()}`;
+    const data = await callBossLocalApi("chrome-jobs", {
+      runId,
+      keyword: result.keyword,
+      collectionMode: "LIST_ONLY",
+      autoDeliver: false,
+      jobs: result.jobs
+    }, {
+      pageTabId: message?.pageTabId,
+      timeoutMs: 60000
+    });
+
+    if (!data.success) {
+      throw new Error(data.message || "后端未接受Boss当前页岗位数据");
+    }
+
+    const missingMessage = Object.entries(result.missingFieldCounts || {})
+      .filter(([, count]) => Number(count) > 0)
+      .map(([field, count]) => `${field}=${count}`)
+      .join("，");
+    const successMessage = `Boss当前页采集完成：识别候选 ${result.candidateCount} 个，成功解析 ${result.parsedCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入AI分析。${missingMessage ? ` 缺失字段统计：${missingMessage}。` : ""}`;
+    postProgress(message, "success", successMessage, {
+      operation: "listCollect",
+      stage: "listCollected",
+      runId,
+      saved: numberValue(data.saved),
+      listCollected: numberValue(data.listCollected),
+      ...diagnostics,
+      ...resultSummary
+    });
+
+    return {
+      success: true,
+      message: successMessage,
+      runId,
+      ...diagnostics,
+      ...resultSummary,
+      backend: data,
+      saved: numberValue(data.saved),
+      listCollected: numberValue(data.listCollected)
+    };
+  }
+
+  function collectBossDiagnostics() {
+    if (window.GetJobsBossDebug?.collect) {
+      return window.GetJobsBossDebug.collect();
+    }
+    const currentUrl = window.location.href;
+    const bodyText = String(document.body?.innerText || document.body?.textContent || "").trim();
+    const compactText = compact(bodyText);
+    return {
+      currentUrl,
+      title: document.title || "",
+      isLoginPage: isStrongLoginPrompt(compactText, currentUrl),
+      isSecurityPage: isSecurityPrompt(compactText),
+      detailLinkCount: document.querySelectorAll("a[href*='/job_detail/'], a[href*='job_detail']").length,
+      selectorCounts: selectorStats(),
+      firstCardText: compact(collectJobNodes()[0]?.innerText || collectJobNodes()[0]?.textContent || "").slice(0, 500),
+      bodyText: bodyText.slice(0, 1000)
+    };
+  }
+
+  function formatBossDiagnostics(diagnostics) {
+    return `currentUrl=${diagnostics.currentUrl || ""}；title=${diagnostics.title || ""}；detailLinkCount=${numberValue(diagnostics.detailLinkCount)}；selectorCounts=${JSON.stringify(diagnostics.selectorCounts || {})}；firstCardText=${diagnostics.firstCardText || ""}`;
+  }
+
+  function summarizeBossListCollectResult(result) {
+    return {
+      keyword: result?.keyword || "",
+      candidateCount: numberValue(result?.candidateCount),
+      parsedCount: numberValue(result?.parsedCount),
+      skippedCount: numberValue(result?.skippedCount),
+      missingFieldCounts: result?.missingFieldCounts || {},
+      failures: Array.isArray(result?.failures) ? result.failures.slice(0, 20) : []
+    };
   }
 
   async function handleScanStatusMessage(sendResponse) {
@@ -504,7 +634,7 @@
         if (handleBlockingState(task, diagnostics, baseMeta)) {
           return { success: true, saved: totalSaved, blocked: true };
         }
-        postProgress(task, "warning", `Boss Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes || 0}，页面脚本数据=${diagnostics.embeddedJobs || 0}，可点击卡片=${diagnostics.clickableCards || 0}，搜索结果容器=${diagnostics.resultContainers}，状态=${diagnostics.pageState}，首个卡片=${diagnostics.firstCardText}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
+        postProgress(task, "warning", `Boss Chrome未采集到岗位：${keyword}。currentUrl=${diagnostics.currentUrl}；title=${diagnostics.title}；detailLinkCount=${diagnostics.detailLinkCount}；selectorCounts=${JSON.stringify(diagnostics.selectorCounts || {})}；岗位节点=${diagnostics.jobNodes || 0}；页面脚本数据=${diagnostics.embeddedJobs || 0}；可点击卡片=${diagnostics.clickableCards || 0}；搜索结果容器=${diagnostics.resultContainers}；状态=${diagnostics.pageState}；firstCardText=${diagnostics.firstCardText || ""}。可能未进入搜索结果页、未登录、安全验证、页面结构变化、选择器失效或筛选无结果。`, {
           ...baseMeta,
           stage: "empty",
           collected: 0,
@@ -2627,7 +2757,7 @@
     const currentUrl = window.location.href;
     const stats = selectorStats();
     const resultContainers = SEARCH_RESULT_SELECTORS.reduce((sum, selector) => sum + document.querySelectorAll(selector).length, 0);
-    const detailLinks = document.querySelectorAll("a[href*='/job_detail/']").length;
+    const detailLinks = document.querySelectorAll(BOSS_SELECTORS.DETAIL_LINK_SELECTOR || "a[href*='/job_detail/'], a[href*='job_detail']").length;
     const jobNodes = collectJobNodes();
     const embeddedJobs = collectBossEmbeddedListJobs("");
     const clickableCards = jobNodes.filter(findBossCardClickTarget).length;
@@ -2649,11 +2779,13 @@
       currentUrl,
       title: document.title || "",
       detailLinks,
+      detailLinkCount: detailLinks,
       resultContainers,
       jobNodes: jobNodes.length,
       embeddedJobs: embeddedJobs.length,
       clickableCards,
       selectorStats: stats,
+      selectorCounts: stats,
       pageState,
       firstCardText,
       hasLoginPrompt,
@@ -3019,6 +3151,7 @@
   }
 
   function extractBossDetailFields(job) {
+    const modularDetail = window.GetJobsBossDetailCollector?.collectCurrentDetail?.(job) || {};
     const bodyText = compact(document.body?.innerText || "");
     const sections = parseBossTextSections(bodyText);
     const tags = bossDetailTags();
@@ -3032,6 +3165,7 @@
     const hr = extractHrInfo(bodyText);
     const companyFacts = extractCompanyFacts(bodyText);
     const description = firstNonEmpty(
+      modularDetail.description,
       bossDetailDescription(),
       sections.jobRequirement,
       sections.jobDescription,
@@ -3039,6 +3173,7 @@
       bodyText
     );
     const companyInfo = firstNonEmpty(
+      modularDetail.companyInfo,
       textOf(document, [
         ".job-sec.company-info",
         ".company-info",
@@ -3050,18 +3185,18 @@
     );
 
     return {
-      title: firstNonEmpty(textOf(document, [".job-title", ".job-name", ".name", "h1"]), job.title),
-      company: firstNonEmpty(textOf(document, [".company-name", ".sider-company .name", ".company-card .name", "[class*='company-name']"]), job.company),
-      salary: firstNonEmpty(textOf(document, [".salary", ".job-banner .salary", "[class*='salary']"]), guessSalary(bannerText || bodyText), job.salary),
-      location: firstNonEmpty(tags.location, job.location),
-      experience: firstNonEmpty(tags.experience, job.experience),
-      degree: firstNonEmpty(tags.degree, job.degree),
-      hrName: firstNonEmpty(textOf(document, [".boss-name", "[class*='boss-name']", ".boss-info .name", ".recruiter-name"]), hr.name, job.hrName),
-      hrTitle: firstNonEmpty(textOf(document, [".boss-title", "[class*='boss-title']", ".boss-info .gray", ".recruiter-title"]), hr.title, job.hrTitle),
-      hrActive: firstNonEmpty(textOf(document, [".boss-active-time", "[class*='active']"]), hr.active, job.hrActive),
+      title: firstNonEmpty(modularDetail.title, textOf(document, [".job-title", ".job-name", ".name", "h1"]), job.title),
+      company: firstNonEmpty(modularDetail.company, textOf(document, [".company-name", ".sider-company .name", ".company-card .name", "[class*='company-name']"]), job.company),
+      salary: firstNonEmpty(modularDetail.salary, textOf(document, [".salary", ".job-banner .salary", "[class*='salary']"]), guessSalary(bannerText || bodyText), job.salary),
+      location: firstNonEmpty(modularDetail.location, tags.location, job.location),
+      experience: firstNonEmpty(modularDetail.experience, tags.experience, job.experience),
+      degree: firstNonEmpty(modularDetail.degree, tags.degree, job.degree),
+      hrName: firstNonEmpty(modularDetail.hrName, textOf(document, [".boss-name", "[class*='boss-name']", ".boss-info .name", ".recruiter-name"]), hr.name, job.hrName),
+      hrTitle: firstNonEmpty(modularDetail.hrTitle, textOf(document, [".boss-title", "[class*='boss-title']", ".boss-info .gray", ".recruiter-title"]), hr.title, job.hrTitle),
+      hrActive: firstNonEmpty(modularDetail.hrActive, textOf(document, [".boss-active-time", "[class*='active']"]), hr.active, job.hrActive),
       description: description === bodyText ? trimToUsefulLength(bodyText, 6000) : description,
       companyInfo: companyInfo === bodyText ? trimToUsefulLength(companyInfo, 2000) : companyInfo,
-      companyAddress: firstNonEmpty(textOf(document, [".job-address", ".location-address", "[class*='address']"]), sections.address),
+      companyAddress: firstNonEmpty(modularDetail.companyAddress, textOf(document, [".job-address", ".location-address", "[class*='address']"]), sections.address),
       industry: firstNonEmpty(companyFacts.industry, textOf(document, [".company-tags", ".sider-company [class*='industry']"])),
       financingStage: companyFacts.financingStage,
       companyScale: companyFacts.companyScale,

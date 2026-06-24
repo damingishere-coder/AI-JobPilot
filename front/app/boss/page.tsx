@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
+import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents, type ChromeBridgeResponse } from '@/lib/chromeBridge'
 import { API_BASE } from '@/lib/api'
 import { createPortal } from 'react-dom'
 import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
@@ -82,6 +82,38 @@ interface ProgressLog {
   type: string
   message: string
   timestamp?: number
+}
+
+interface BossDiagnosticsResponse extends ChromeBridgeResponse {
+  currentUrl?: string
+  title?: string
+  isLoginPage?: boolean
+  isSecurityPage?: boolean
+  detailLinkCount?: number
+  selectorCounts?: Record<string, number>
+  firstCardText?: string
+  bodyText?: string
+}
+
+interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
+  candidateCount?: number
+  parsedCount?: number
+  skippedCount?: number
+  saved?: number
+  listCollected?: number
+  missingFieldCounts?: Record<string, number>
+  failures?: Array<{
+    index?: number
+    reason?: string
+    missingFields?: string[]
+    title?: string
+    company?: string
+  }>
+  backend?: {
+    saved?: number
+    listCollected?: number
+    collectionWarnings?: Array<Record<string, unknown>>
+  }
 }
 
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
@@ -176,6 +208,8 @@ export default function BossPage() {
   const [activeStep, setActiveStep] = useState<BossStep>('config')
   const [hasScanResult, setHasScanResult] = useState(false)
   const [logSpotlight, setLogSpotlight] = useState(false)
+  const [isDiagnosingBoss, setIsDiagnosingBoss] = useState(false)
+  const [isCollectingCurrentPage, setIsCollectingCurrentPage] = useState(false)
   const logSectionRef = useRef<HTMLDivElement | null>(null)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
@@ -859,6 +893,106 @@ export default function BossPage() {
     }
   }
 
+  const handleDiagnoseCurrentBossPage = async () => {
+    if (isDiagnosingBoss) return
+    focusLogSection()
+    setIsDiagnosingBoss(true)
+    appendProgressLog({ type: 'info', message: '正在诊断当前已打开的 Boss 页面，不会跳转页面，也不会处理验证码。' })
+    try {
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_DEBUG_COLLECT',
+        platform: 'boss',
+      }, 8000) as BossDiagnosticsResponse
+
+      appendProgressLog({
+        type: data.success ? (data.isLoginPage || data.isSecurityPage ? 'warning' : 'success') : 'error',
+        message: `${data.message || 'Boss页面诊断完成。'} currentUrl=${data.currentUrl || ''}；title=${data.title || ''}；isLoginPage=${Boolean(data.isLoginPage)}；isSecurityPage=${Boolean(data.isSecurityPage)}；detailLinkCount=${Number(data.detailLinkCount || 0)}；selectorCounts=${JSON.stringify(data.selectorCounts || {})}；firstCardText=${data.firstCardText || ''}`,
+      })
+      if (data.bodyText) {
+        appendProgressLog({ type: 'info', message: `Boss bodyText 前1000字：${data.bodyText}` })
+      }
+      if (Number(data.detailLinkCount || 0) === 0) {
+        appendProgressLog({
+          type: 'warning',
+          message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
+        })
+      }
+      if (data.isSecurityPage) {
+        appendProgressLog({
+          type: 'warning',
+          message: '检测到Boss安全验证，请在Chrome中手动完成验证。本工具不会绕过验证码或安全验证。',
+        })
+      }
+    } catch (error) {
+      console.error('Failed to diagnose Boss page:', error)
+      appendProgressLog({ type: 'error', message: 'Boss页面诊断失败：Chrome Bridge 通信异常。' })
+    } finally {
+      setIsDiagnosingBoss(false)
+    }
+  }
+
+  const handleCollectCurrentBossPage = async () => {
+    if (isCollectingCurrentPage) return
+    if (isDelivering) {
+      appendProgressLog({ type: 'warning', message: '完整扫描正在运行，请先停止扫描，再使用“采集当前 Boss 页面”。' })
+      return
+    }
+    if (!hasProfile) {
+      appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存岗位。' })
+      return
+    }
+
+    focusLogSection()
+    setIsCollectingCurrentPage(true)
+    appendProgressLog({
+      type: 'info',
+      message: '正在采集当前已打开的 Boss 搜索结果页：只读取页面已有岗位卡片，不自动跳转搜索 URL，不进入 AI 分析。',
+    })
+    try {
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_COLLECT_CURRENT_PAGE',
+        platform: 'boss',
+        keyword: keywordsDisplay,
+        runId: `boss-list-${Date.now()}`,
+      }, 70000) as BossCurrentPageCollectResponse
+
+      appendProgressLog({
+        type: data.success ? 'success' : 'error',
+        message: data.message || (data.success ? 'Boss当前页采集完成。' : 'Boss当前页采集失败。'),
+      })
+
+      if (!data.success || Number(data.parsedCount || 0) === 0) {
+        appendProgressLog({
+          type: 'error',
+          message: `Boss当前页采集诊断：selectorCounts=${JSON.stringify(data.selectorCounts || {})}；currentUrl=${data.currentUrl || ''}；title=${data.title || ''}；detailLinkCount=${Number(data.detailLinkCount || 0)}；firstCardText=${data.firstCardText || ''}`,
+        })
+      }
+
+      const missingCounts = Object.entries(data.missingFieldCounts || {}).filter(([, count]) => Number(count) > 0)
+      const failureReasons = (data.failures || [])
+        .slice(0, 8)
+        .map((item) => `第${item.index || '?'}张：${item.reason || '未知原因'}`)
+      if (missingCounts.length || failureReasons.length) {
+        appendProgressLog({
+          type: 'warning',
+          message: `Boss当前页字段检查：missingFieldCounts=${JSON.stringify(Object.fromEntries(missingCounts))}；失败/缺失原因=${failureReasons.join('；') || '无'}`,
+        })
+      }
+
+      if (Number(data.detailLinkCount || 0) === 0) {
+        appendProgressLog({
+          type: 'warning',
+          message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
+        })
+      }
+    } catch (error) {
+      console.error('Failed to collect current Boss page:', error)
+      appendProgressLog({ type: 'error', message: 'Boss当前页采集失败：Chrome Bridge 或本地后端通信异常。' })
+    } finally {
+      setIsCollectingCurrentPage(false)
+    }
+  }
+
   const handleStopDelivery = async () => {
     if (isStopping) return
     setIsStopping(true)
@@ -958,9 +1092,25 @@ export default function BossPage() {
         iconClass="text-white"
         accentBgClass="bg-teal-500"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查扩展连接
+            </Button>
+            <Button
+              onClick={handleDiagnoseCurrentBossPage}
+              size="sm"
+              disabled={!chromeBridgeReady || isDiagnosingBoss}
+              className="app-button-soft px-4 disabled:opacity-60"
+            >
+              <BiSearch className="mr-1" /> {isDiagnosingBoss ? '诊断中...' : '诊断当前 Boss 页面'}
+            </Button>
+            <Button
+              onClick={handleCollectCurrentBossPage}
+              size="sm"
+              disabled={!chromeBridgeReady || !hasProfile || isDelivering || isCollectingCurrentPage}
+              className="app-button-success px-4 disabled:opacity-60"
+            >
+              <BiBriefcase className="mr-1" /> {isCollectingCurrentPage ? '采集中...' : '采集当前 Boss 页面'}
             </Button>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
@@ -1023,7 +1173,8 @@ export default function BossPage() {
             <CardContent>
               <div className="space-y-4">
 	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
-	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始采集；扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
+	                <p className="text-sm text-muted-foreground">“诊断当前 Boss 页面”和“采集当前 Boss 页面”只读取你已经打开的页面，不会自动跳转；当前页采集结果先按 LIST_COLLECTED 入库，不进入 AI 分析。</p>
+	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始完整采集；完整扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>
@@ -1645,7 +1796,7 @@ function ProgressLogCard({
             <BiBarChart className="text-primary" />
             运行日志
           </CardTitle>
-          <CardDescription>后台自动化浏览器的扫描进度和结果</CardDescription>
+          <CardDescription>Boss页面诊断、当前页采集、后台扫描进度和结果</CardDescription>
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : isPaused ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
@@ -1661,7 +1812,7 @@ function ProgressLogCard({
       </CardHeader>
       <CardContent>
         {logs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、后台AI队列、待确认和错误信息。</p>
+          <p className="text-sm text-muted-foreground">点击“诊断当前 Boss 页面”“采集当前 Boss 页面”或“开始扫描”后，这里会显示选择器命中、采集结果、后台AI队列和错误信息。</p>
         ) : (
           <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (

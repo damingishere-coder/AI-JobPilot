@@ -33,4 +33,32 @@ class ChromeJobDtoStructureTest {
         assertThat(job.getDeliveryStatus()).isEqualTo("待确认");
         assertThat(job.getUrl()).contains("job_detail");
     }
+
+    @Test
+    void parsesBossListOnlyCollectionMode() throws Exception {
+        ChromeJobBatchRequest request = objectMapper.readValue("""
+                {
+                  "runId": "boss-list-1",
+                  "keyword": "Java",
+                  "collectionMode": "LIST_ONLY",
+                  "autoDeliver": false,
+                  "jobs": [
+                    {
+                      "title": "Java工程师",
+                      "company": "测试公司",
+                      "salary": "20-30K",
+                      "location": "深圳",
+                      "url": "https://www.zhipin.com/job_detail/job-1.html",
+                      "keyword": "Java",
+                      "deliveryStatus": "LIST_COLLECTED"
+                    }
+                  ]
+                }
+                """, ChromeJobBatchRequest.class);
+
+        assertThat(request.getCollectionMode()).isEqualTo("LIST_ONLY");
+        assertThat(request.getJobs()).hasSize(1);
+        assertThat(request.getJobs().getFirst().getDeliveryStatus()).isEqualTo("LIST_COLLECTED");
+        assertThat(request.getAutoDeliver()).isFalse();
+    }
 }

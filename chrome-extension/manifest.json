@@ -31,7 +31,13 @@
     },
     {
       "matches": ["https://www.zhipin.com/*", "https://*.zhipin.com/*"],
-      "js": ["boss-content.js"],
+      "js": [
+        "boss-selectors.js",
+        "boss-debug.js",
+        "boss-search-collector.js",
+        "boss-detail-collector.js",
+        "boss-content.js"
+      ],
       "run_at": "document_idle"
     },
     {
