@@ -20,14 +20,17 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
-const BACKGROUND_VERSION = "2026-06-24-boss-scan-resume-2";
+let scanSessionsWriteQueue = Promise.resolve();
+const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
+const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_VERSION = "2026-06-25-scan-resume-redirect-2";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-24-boss-scan-resume-2";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-23-zhilian-query-initial-state-1";
-const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
+const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
 const ALLOWED_PAGE_ORIGINS = new Set([
@@ -52,6 +55,28 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_SCAN_OWNER_STATUS") {
+    if (!isBossSender(sender)) {
+      sendResponse({ success: false, isOwner: false });
+      return;
+    }
+    handleScanOwnerStatus("boss", sender).then(sendResponse).catch(() => {
+      sendResponse({ success: false, isOwner: false });
+    });
+    return true;
+  }
+
+  if (message?.source === "GET_JOBS_ZHILIAN_CONTENT" && message.type === "ZHILIAN_SCAN_OWNER_STATUS") {
+    if (!isZhilianSender(sender)) {
+      sendResponse({ success: false, isOwner: false });
+      return;
+    }
+    handleScanOwnerStatus("zhilian", sender).then(sendResponse).catch(() => {
+      sendResponse({ success: false, isOwner: false });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_LOCAL_API") {
     if (!isBossSender(sender)) {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起的本地接口请求" });
@@ -100,20 +125,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.source === "GET_JOBS_PLATFORM" && message.pageTabId) {
+  if (message?.source === "GET_JOBS_PLATFORM") {
     forwardPlatformEvent(message, sender).catch(() => {});
   }
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  pageTabs.delete(tabId);
+  clearScanSession("boss", tabId).catch(() => {});
+  clearScanSession("zhilian", tabId).catch(() => {});
+});
+
 async function forwardPlatformEvent(message, sender) {
   if (!isSupportedPlatformSender(sender)) return;
-  const pageTab = await chrome.tabs.get(message.pageTabId).catch(() => null);
-  if (!isAllowedPageUrl(pageTab?.url || pageTab?.pendingUrl || "")) return;
-  chrome.tabs.sendMessage(message.pageTabId, {
-    source: "GET_JOBS_BACKGROUND",
-    type: "GET_JOBS_EXTENSION_EVENT",
-    payload: message.payload
-  }).catch(() => {});
+  const platform = isBossSender(sender) ? "boss" : "zhilian";
+  const payload = {
+    timestamp: Date.now(),
+    ...message.payload,
+    platform: message.payload?.platform || platform
+  };
+  await updateScanSessionFromEvent(platform, sender.tab?.id, payload);
+  await broadcastPlatformEvent(payload, message.pageTabId);
 }
 
 function isValidPageMessage(message) {
@@ -176,13 +208,15 @@ async function handleBossLocalApiRequest(message) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
 
-  return await requestLocalApi(endpoint.path, {
+  const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
     method: endpoint.method,
     body: message.body,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
     pageTabId: message.pageTabId
   });
+  console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
+  return result;
 }
 
 function resolveBossLocalApiEndpoint(message) {
@@ -327,9 +361,7 @@ async function handlePageMessage(message, sender) {
   }
 
   const config = PLATFORM_CONFIG[platform];
-  const tab = isNoCreatePlatformMessage(message.type)
-    ? await findPlatformTab(platform)
-    : await findOrCreatePlatformTab(platform, platformStartUrl(message));
+  const tab = await resolvePlatformTab(platform, message);
   if (!tab?.id) {
     const noTabIsExpected = isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type);
     return {
@@ -366,13 +398,24 @@ async function handlePageMessage(message, sender) {
   }
 
   try {
+    let scanSession = null;
+    if (isScanStartMessage(message.type)) {
+      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken);
+    }
     const response = await chrome.tabs.sendMessage(tab.id, {
       ...toPlatformContentMessage(message, platform),
       source: "GET_JOBS_BACKGROUND",
-      pageTabId
+      pageTabId,
+      scanOwnerToken: scanSession?.ownerToken
     });
+    if (scanSession && response?.success === false) {
+      await clearScanSession(platform, tab.id);
+    }
     return response || { success: true };
   } catch (error) {
+    if (isScanStartMessage(message.type)) {
+      await clearScanSession(platform, tab.id);
+    }
     return {
       success: false,
       message: buildContentScriptError(platform, error)
@@ -406,6 +449,10 @@ function isPassiveStatusMessage(type) {
 
 function isPassiveStopMessage(type) {
   return type === "BOSS_SCAN_STOP" || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isScanStartMessage(type) {
+  return type === "BOSS_SCAN_START" || type === "ZHILIAN_SCAN_START";
 }
 
 function isBossDeliverMessage(type) {
@@ -759,17 +806,10 @@ function normalizeZhilianFailurePayload(message) {
 }
 
 async function postPlatformProgress(pageTabId, payload) {
-  if (!pageTabId) return;
-  const pageTab = await chrome.tabs.get(pageTabId).catch(() => null);
-  if (!isAllowedPageUrl(pageTab?.url || pageTab?.pendingUrl || "")) return;
-  chrome.tabs.sendMessage(pageTabId, {
-    source: "GET_JOBS_BACKGROUND",
-    type: "GET_JOBS_EXTENSION_EVENT",
-    payload: {
-      timestamp: Date.now(),
-      ...payload
-    }
-  }).catch(() => {});
+  await broadcastPlatformEvent({
+    timestamp: Date.now(),
+    ...payload
+  }, pageTabId);
 }
 
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
@@ -777,6 +817,8 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
     try {
       await ensureContentScript(tabId, PLATFORM_CONFIG[platform].contentScript);
     } catch (error) {
+      const navigationStatus = await buildRegisteredNavigationStatus(platform, tabId);
+      if (navigationStatus) return navigationStatus;
       return {
         success: true,
         message: buildContentScriptError(platform, error),
@@ -788,6 +830,8 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
   }
 
   if (!await pingContentScript(tabId)) {
+    const navigationStatus = await buildRegisteredNavigationStatus(platform, tabId);
+    if (navigationStatus) return navigationStatus;
     return {
       success: true,
       message: "平台页面脚本未就绪，状态按空闲处理。",
@@ -803,8 +847,13 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
       source: "GET_JOBS_BACKGROUND",
       pageTabId
     });
+    if (response && isTerminalScanStatus(response)) {
+      await clearScanSession(platform, tabId);
+    }
     return response || { success: true, isRunning: false, stage: "idle" };
   } catch (error) {
+    const navigationStatus = await buildRegisteredNavigationStatus(platform, tabId);
+    if (navigationStatus) return navigationStatus;
     return {
       success: true,
       message: buildContentScriptError(platform, error),
@@ -813,6 +862,20 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
       stage: "idle"
     };
   }
+}
+
+async function buildRegisteredNavigationStatus(platform, tabId) {
+  const session = await readScanSession(platform);
+  if (!session || session.tabId !== tabId) return null;
+  return {
+    success: true,
+    isRunning: true,
+    hasStoredTask: true,
+    temporaryUnavailable: true,
+    stage: "navigating",
+    runId: session.runId || "",
+    message: `${platform === "boss" ? "Boss" : "智联"}扫描页面正在跳转，任务仍在后台继续。`
+  };
 }
 
 async function sendPassiveStop(tabId, platform, message, pageTabId) {
@@ -831,6 +894,9 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
       source: "GET_JOBS_BACKGROUND",
       pageTabId
     });
+    if (response?.success !== false) {
+      await clearScanSession(platform, tabId);
+    }
     return response || { success: true, isRunning: false, stage: "stopped" };
   } catch (error) {
     return {
@@ -842,12 +908,64 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
   }
 }
 
-async function findOrCreatePlatformTab(platform, startUrl) {
+async function resolvePlatformTab(platform, message) {
+  if (isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type)) {
+    return await findRegisteredOrRunningScanTab(platform);
+  }
+  if (isDeliverMessage(platform, message.type)) {
+    return await findDeliveryPlatformTab(platform, platformStartUrl(message));
+  }
+  if (isScanStartMessage(message.type)) {
+    return await findScanPlatformTab(platform, platformStartUrl(message));
+  }
+  if (isNoCreatePlatformMessage(message.type)) {
+    return await findPlatformTab(platform);
+  }
+  return await findOrCreatePlatformTab(platform, platformStartUrl(message));
+}
+
+async function findScanPlatformTab(platform, startUrl) {
+  const registered = await getRegisteredScanTab(platform);
+  if (registered) return registered;
+
+  const running = await findRunningPlatformTab(platform);
+  if (running) return running;
+
+  return await findOrCreatePlatformTab(platform, startUrl);
+}
+
+async function findRegisteredOrRunningScanTab(platform) {
+  const registered = await getRegisteredScanTab(platform);
+  if (registered) return registered;
+  return await findRunningPlatformTab(platform);
+}
+
+async function findDeliveryPlatformTab(platform, startUrl) {
+  const scanTab = await findRegisteredOrRunningScanTab(platform);
+  const scanStatus = scanTab?.id ? await probePlatformScanStatus(scanTab.id, platform) : null;
+  const scanIsActive = isActiveScanStatus(scanStatus);
+  const excludedTabIds = scanIsActive && scanTab?.id ? [scanTab.id] : [];
+
+  if (!scanIsActive && scanTab?.id) {
+    await clearScanSession(platform, scanTab.id);
+  }
+
+  return await findOrCreatePlatformTab(platform, startUrl, {
+    excludedTabIds,
+    active: true
+  });
+}
+
+async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
   const config = PLATFORM_CONFIG[platform];
+  const excludedTabIds = new Set(options.excludedTabIds || []);
   const tabs = await chrome.tabs.query({});
-  const found = tabs.find((tab) => config.hosts.some((host) => (tab.url || "").includes(host)));
+  const found = tabs
+    .filter((tab) => !excludedTabIds.has(tab.id))
+    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (found) return found;
-  return await chrome.tabs.create({ url: startUrl || config.home, active: true });
+  return await chrome.tabs.create({ url: startUrl || config.home, active: options.active !== false });
 }
 
 async function findPlatformTab(platform) {
@@ -856,6 +974,164 @@ async function findPlatformTab(platform) {
   return tabs
     .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
+}
+
+async function findRunningPlatformTab(platform) {
+  const config = PLATFORM_CONFIG[platform];
+  const tabs = (await chrome.tabs.query({}))
+    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
+
+  for (const tab of tabs) {
+    if (!tab.id) continue;
+    const status = await probePlatformScanStatus(tab.id, platform);
+    if (isActiveScanStatus(status)) {
+      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken);
+      return tab;
+    }
+  }
+  return null;
+}
+
+async function probePlatformScanStatus(tabId, platform) {
+  if (!await pingContentScript(tabId)) return null;
+  try {
+    const type = platform === "boss" ? "BOSS_SCAN_STATUS" : "ZHILIAN_SCAN_STATUS_V2";
+    return await chrome.tabs.sendMessage(tabId, {
+      source: "GET_JOBS_BACKGROUND",
+      type
+    });
+  } catch {
+    return null;
+  }
+}
+
+function isActiveScanStatus(status) {
+  return Boolean(
+    status
+      && (
+        status.isRunning
+        || status.hasStoredTask
+        || status.paused
+        || status.resumable
+      )
+  );
+}
+
+function isTerminalScanStatus(status) {
+  return Boolean(
+    status
+      && !isActiveScanStatus(status)
+      && ["complete", "stopped", "error", "idle"].includes(String(status.stage || ""))
+  );
+}
+
+async function handleScanOwnerStatus(platform, sender) {
+  const session = await readScanSession(platform);
+  const tabId = sender.tab?.id;
+  return {
+    success: true,
+    isOwner: Boolean(session && tabId && session.tabId === tabId),
+    ownerToken: session?.ownerToken || "",
+    runId: session?.runId || "",
+    tabId: session?.tabId || null
+  };
+}
+
+async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "") {
+  if (!platform || !tabId) return null;
+  return await mutateScanSessions((sessions) => {
+    const existing = sessions[platform];
+    const session = {
+      platform,
+      tabId,
+      runId: String(runId || existing?.runId || ""),
+      pageTabId: pageTabId || existing?.pageTabId || null,
+      ownerToken: String(
+        ownerToken
+          || (existing?.tabId === tabId ? existing?.ownerToken : "")
+          || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      ),
+      updatedAt: Date.now()
+    };
+    sessions[platform] = session;
+    return session;
+  });
+}
+
+async function readScanSession(platform) {
+  const sessions = await readScanSessions();
+  const session = sessions[platform];
+  if (!session) return null;
+  if (Date.now() - Number(session.updatedAt || 0) > SCAN_SESSION_TTL_MS) {
+    await clearScanSession(platform, session.tabId);
+    return null;
+  }
+  return session;
+}
+
+async function readScanSessions() {
+  try {
+    const result = await chrome.storage.local.get(SCAN_SESSIONS_STORAGE_KEY);
+    const sessions = result?.[SCAN_SESSIONS_STORAGE_KEY];
+    return sessions && typeof sessions === "object" ? { ...sessions } : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getRegisteredScanTab(platform) {
+  const session = await readScanSession(platform);
+  if (!session?.tabId) return null;
+  const tab = await chrome.tabs.get(session.tabId).catch(() => null);
+  if (!tab || !isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG[platform])) {
+    await clearScanSession(platform, session.tabId);
+    return null;
+  }
+  return tab;
+}
+
+async function clearScanSession(platform, expectedTabId = null) {
+  await mutateScanSessions((sessions) => {
+    const existing = sessions[platform];
+    if (!existing) return;
+    if (expectedTabId && existing.tabId !== expectedTabId) return;
+    delete sessions[platform];
+  });
+}
+
+async function mutateScanSessions(mutator) {
+  const operation = scanSessionsWriteQueue.then(async () => {
+    const sessions = await readScanSessions();
+    const result = mutator(sessions);
+    await chrome.storage.local.set({ [SCAN_SESSIONS_STORAGE_KEY]: sessions });
+    return result;
+  });
+  scanSessionsWriteQueue = operation.catch(() => {});
+  return await operation;
+}
+
+async function updateScanSessionFromEvent(platform, tabId, payload) {
+  if (!tabId || payload?.operation !== "scan") return;
+  if (["complete", "stopped", "error"].includes(String(payload.stage || ""))) {
+    await clearScanSession(platform, tabId);
+    return;
+  }
+  const session = await readScanSession(platform);
+  if (!session || session.tabId !== tabId) return;
+  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken);
+}
+
+async function broadcastPlatformEvent(payload, preferredPageTabId = null) {
+  const tabs = await chrome.tabs.query({});
+  const targets = tabs
+    .filter((tab) => tab.id && isAllowedPageUrl(tab.url || tab.pendingUrl || ""))
+    .sort((left, right) => Number(right.id === preferredPageTabId) - Number(left.id === preferredPageTabId));
+
+  await Promise.all(targets.map((tab) => chrome.tabs.sendMessage(tab.id, {
+    source: "GET_JOBS_BACKGROUND",
+    type: "GET_JOBS_EXTENSION_EVENT",
+    payload
+  }).catch(() => {})));
 }
 
 async function waitForSupportedTab(tabId, config) {

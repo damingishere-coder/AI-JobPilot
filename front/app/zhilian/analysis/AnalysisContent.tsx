@@ -526,7 +526,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
-  const activeScanRunId = useMemo(() => items.find((item) => item.scanRunId)?.scanRunId || "", [items])
+  const activeScanRunId = ""
 
 	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 

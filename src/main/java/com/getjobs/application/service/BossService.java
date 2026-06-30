@@ -1177,8 +1177,7 @@ public class BossService {
                 resp.charts = charts;
                 return resp;
             }
-            String effectiveScanRunId = resolveBossScanRunId(null);
-            String runWhere = bossSqlWhere(profileId, effectiveScanRunId);
+            String runWhere = bossSqlWhere(profileId, null);
             String runAnd = runWhere + " AND ";
             // KPI 基本计数
             resp.kpi.total = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runWhere);
@@ -1276,7 +1275,7 @@ public class BossService {
             charts.salaryBuckets.add(new BucketValue("20-" + topEdge + "K", b20_top));
             charts.salaryBuckets.add(new BucketValue(">=" + topEdge + "K", b_ge_top));
 
-            resp.overview = buildOverviewFromDatabase(conn, profileId, effectiveScanRunId);
+            resp.overview = buildOverviewFromDatabase(conn, profileId, null);
             resp.charts = charts;
             return resp;
         } catch (Exception e) {
@@ -1339,7 +1338,7 @@ public class BossService {
                 return resp;
             }
             wrapper.eq("profile_id", profileId);
-            String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+            String effectiveScanRunId = normalizeExplicitBossScanRunId(scanRunId);
             if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
             if (statuses != null && !statuses.isEmpty()) {
                 wrapper.in("delivery_status", statuses);
@@ -1656,7 +1655,7 @@ public class BossService {
             return empty;
         }
         wrapper.eq("profile_id", profileId);
-        String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+        String effectiveScanRunId = normalizeExplicitBossScanRunId(scanRunId);
         if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses);
@@ -1708,19 +1707,8 @@ public class BossService {
         return result;
     }
 
-    public String resolveBossScanRunId(String scanRunId) {
-        if (StringUtils.isNotBlank(scanRunId)) return scanRunId.trim();
-        Long profileId = profileService.getCurrentProfileIdOrNull();
-        if (profileId == null) return null;
-        QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-        wrapper.select("scan_run_id")
-                .eq("profile_id", profileId)
-                .isNotNull("scan_run_id")
-                .ne("scan_run_id", "")
-                .orderByDesc("created_at")
-                .last("LIMIT 1");
-        BossJobDataEntity latest = bossJobDataMapper.selectOne(wrapper);
-        return latest == null ? null : latest.getScanRunId();
+    public String normalizeExplicitBossScanRunId(String scanRunId) {
+        return StringUtils.isNotBlank(scanRunId) ? scanRunId.trim() : null;
     }
 
     /**

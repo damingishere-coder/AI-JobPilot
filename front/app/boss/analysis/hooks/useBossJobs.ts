@@ -24,8 +24,8 @@ export function useBossJobs({
   const [reloading, setReloading] = useState(false)
 
   const activeScanRunId = useMemo(
-    () => requestedScanRunId || items.find((item) => item.scanRunId)?.scanRunId || "",
-    [items, requestedScanRunId],
+    () => requestedScanRunId.trim(),
+    [requestedScanRunId],
   )
 
   useEffect(() => {

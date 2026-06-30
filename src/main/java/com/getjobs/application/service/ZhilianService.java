@@ -534,7 +534,7 @@ public class ZhilianService {
             String scanRunId
     ) {
         QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-        String effectiveScanRunId = resolveZhilianScanRunId(scanRunId);
+        String effectiveScanRunId = normalizeExplicitZhilianScanRunId(scanRunId);
         if (effectiveScanRunId != null && !effectiveScanRunId.isBlank()) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses.stream().filter(Objects::nonNull).map(String::trim).collect(Collectors.toSet()));
@@ -704,7 +704,7 @@ public class ZhilianService {
             return empty;
         }
         wrapper.eq("profile_id", profileId);
-        String effectiveScanRunId = resolveZhilianScanRunId(scanRunId);
+        String effectiveScanRunId = normalizeExplicitZhilianScanRunId(scanRunId);
         if (effectiveScanRunId != null && !effectiveScanRunId.isBlank()) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses.stream().filter(Objects::nonNull).map(String::trim).collect(Collectors.toSet()));
@@ -748,19 +748,8 @@ public class ZhilianService {
         return pr;
     }
 
-    public String resolveZhilianScanRunId(String scanRunId) {
-        if (scanRunId != null && !scanRunId.isBlank()) return scanRunId.trim();
-        Long profileId = profileService.getCurrentProfileIdOrNull();
-        if (profileId == null) return null;
-        QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-        wrapper.select("scan_run_id")
-                .eq("profile_id", profileId)
-                .isNotNull("scan_run_id")
-                .ne("scan_run_id", "")
-                .orderByDesc("create_time")
-                .last("LIMIT 1");
-        ZhilianJobDataEntity latest = zhilianJobDataMapper.selectOne(wrapper);
-        return latest == null ? null : latest.getScanRunId();
+    public String normalizeExplicitZhilianScanRunId(String scanRunId) {
+        return scanRunId != null && !scanRunId.isBlank() ? scanRunId.trim() : null;
     }
 
     public static class PagedResult {

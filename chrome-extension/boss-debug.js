@@ -7,12 +7,28 @@
     const compactBodyText = compact(bodyText);
     const currentUrl = window.location.href;
     const selectorCounts = countSelectors(selectors.JOB_CARD_SELECTORS || []);
-    const searchResultSelectorCounts = countSelectors(selectors.SEARCH_RESULT_SELECTORS || []);
+    const fieldSelectorCounts = countSelectorsByGroup(selectors.FIELD_SELECTORS || {});
     const detailLinkSelector = selectors.DETAIL_LINK_SELECTOR || "a[href*='/job_detail/'], a[href*='job_detail']";
     const detailLinkCount = document.querySelectorAll(detailLinkSelector).length;
     const firstCard = findFirstCard(selectors, detailLinkSelector);
     const isLoginPage = detectLoginPage(currentUrl, compactBodyText);
     const isSecurityPage = detectSecurityPage(compactBodyText);
+
+    // 新增：扫描页面的script标签内容摘要
+    const scriptSummaries = [];
+    Array.from(document.querySelectorAll("script[type='application/json'], script#__NEXT_DATA__, script")).forEach((script) => {
+      const raw = String(script.textContent || "").trim();
+      if (!raw) return;
+      const snippet = raw.slice(0, 200).replace(/\s+/g, " ");
+      if (/encryptJobId|encryptId|jobId|securityId|brandName|companyName|jobList|jobInfo|zpData|salaryDesc/i.test(snippet)) {
+        scriptSummaries.push({
+          id: script.id || "(no-id)",
+          type: script.type || "text/javascript",
+          length: raw.length,
+          snippet
+        });
+      }
+    });
 
     return {
       currentUrl,
@@ -21,7 +37,8 @@
       isSecurityPage,
       detailLinkCount,
       selectorCounts,
-      searchResultSelectorCounts,
+      fieldSelectorCounts,
+      searchResultSelectorCounts: countSelectors(selectors.SEARCH_RESULT_SELECTORS || []),
       firstCardText: compact(firstCard?.innerText || firstCard?.textContent || "").slice(0, 500),
       isSearchPage: isBossSearchPage(currentUrl),
       pageState: isSecurityPage
@@ -30,8 +47,19 @@
           ? "LOGIN_REQUIRED"
           : detailLinkCount > 0 || Object.values(selectorCounts).some((count) => count > 0)
             ? "SEARCH_RESULTS_FOUND"
-            : "UNKNOWN_OR_EMPTY"
+            : "UNKNOWN_OR_EMPTY",
+      scriptSummaries,
+      scriptCount: scriptSummaries.length,
+      bodyTextLength: compactBodyText.length
     };
+  }
+
+  function countSelectorsByGroup(fieldSelectors) {
+    const result = {};
+    Object.entries(fieldSelectors || {}).forEach(([group, list]) => {
+      result[group] = countSelectors(list);
+    });
+    return result;
   }
 
   function isBossSearchPage(url) {

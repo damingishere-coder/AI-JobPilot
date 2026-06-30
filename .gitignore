@@ -35,6 +35,7 @@ playwright-*
 /nbdist/
 /.nb-gradle/
 build/
+bin/
 !**/src/main/**/build/
 !**/src/test/**/build/
 ### VS Code ###

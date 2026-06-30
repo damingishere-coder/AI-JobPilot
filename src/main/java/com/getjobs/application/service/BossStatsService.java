@@ -46,7 +46,7 @@ public class BossStatsService {
                     maxK,
                     keyword,
                     filterHeadhunter,
-                    bossService.resolveBossScanRunId(scanRunId)
+                    bossService.normalizeExplicitBossScanRunId(scanRunId)
             );
             PreparedQuery prepared = prepareSalaryFilter(baseQuery);
             BossStatsQuery query = prepared.query();

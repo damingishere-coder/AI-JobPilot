@@ -29,6 +29,20 @@ test("keeps an unfinished Boss checkpoint for 24 hours", () => {
   );
 });
 
+test("keeps a fresh detail checkpoint even when the page was redirected", () => {
+  const support = loadSupport();
+  const now = Date.now();
+  const task = {
+    type: "BOSS_SCAN_START",
+    runId: "boss-run-redirect",
+    phase: "detail",
+    detailIndex: 3,
+    updatedAt: now - 2000
+  };
+
+  assert.equal(support.isFreshTask(task, now), true);
+});
+
 test("resumes from the stored failed batch without exceeding batch count", () => {
   const support = loadSupport();
 

@@ -10,8 +10,8 @@ import {
 } from "../types"
 
 export function useBossFilters() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_PENDING_FILTERS)
-  const [draftFilters, setDraftFilters] = useState<FilterState>(DEFAULT_PENDING_FILTERS)
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS)
+  const [draftFilters, setDraftFilters] = useState<FilterState>(EMPTY_FILTERS)
   const [filtersOpen, setFiltersOpen] = useState(true)
 
   const activeFilterCount = useMemo(() => {

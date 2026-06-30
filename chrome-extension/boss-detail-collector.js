@@ -4,8 +4,14 @@
   function collectCurrentDetail(baseJob = {}) {
     const selectors = window.GetJobsBossSelectors?.DETAIL_FIELD_SELECTORS || {};
     const bodyText = compact(document.body?.innerText || document.body?.textContent || "");
-    const description = uniqueText(selectors.description);
-    const companyInfo = uniqueText(selectors.companyInfo);
+    const description = firstNonEmpty(
+      uniqueText(selectors.description),
+      extractBodySection(bodyText, /(?:岗位职责|职位描述|工作内容|任职要求|岗位要求|任职资格|职位要求|工作职责|岗位描述|工作描述)/)
+    );
+    const companyInfo = firstNonEmpty(
+      uniqueText(selectors.companyInfo),
+      extractBodySection(bodyText, /(?:公司介绍|公司简介|企业介绍|关于我们|公司信息)/)
+    );
     const tagsText = compact([
       textOf([".job-banner", ".job-primary", ".job-detail-header", "[class*='job-banner']"]),
       bodyText
@@ -21,7 +27,7 @@
       hrName: firstNonEmpty(textOf(selectors.hrName), baseJob.hrName),
       hrTitle: firstNonEmpty(textOf(selectors.hrTitle), baseJob.hrTitle),
       hrActive: firstNonEmpty(textOf(selectors.hrActive), baseJob.hrActive),
-      description: firstNonEmpty(description, baseJob.description),
+      description: firstNonEmpty(description, baseJob.description, bodyText.slice(0, 2000)),
       companyInfo: firstNonEmpty(companyInfo, baseJob.companyInfo),
       companyAddress: firstNonEmpty(textOf(selectors.address), baseJob.companyAddress),
       currentUrl: window.location.href
@@ -31,6 +37,22 @@
       ...fields,
       missingFields: ["title", "company", "description"].filter((field) => !compact(fields[field]))
     };
+  }
+
+  /**
+   * 从页面文本中按关键词定位提取段落内容
+   * 搜索关键词标志（如"岗位职责"），提取其后的文本直到下一个分节标题
+   */
+  function extractBodySection(bodyText, sectionPattern) {
+    if (!bodyText) return "";
+    const match = bodyText.match(sectionPattern);
+    if (!match) return "";
+    const startIndex = match.index;
+    const afterSection = bodyText.slice(startIndex);
+    // 截取到下一个分节标题（如"公司信息"、"HR"等）或最多2000字符
+    const endMatch = afterSection.slice(match[0].length).match(/\n(?:公司|岗位|HR|工作|联系|地址|福利|薪资|[A-Z])[^\n]{0,20}\n/);
+    const endIndex = endMatch ? endMatch.index + match[0].length : Math.min(afterSection.length, 2000);
+    return compact(afterSection.slice(0, endIndex));
   }
 
   function textOf(selectorList) {

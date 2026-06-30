@@ -47,9 +47,10 @@ export function BossJobTable({
   return (
     <>
       <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
-        <table className={`${showDetailColumns ? "min-w-[1920px]" : "min-w-[1320px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
+        <table className={`${showDetailColumns ? "min-w-[2000px]" : "min-w-[1400px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
           <thead>
             <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
+              <th className="w-[72px] px-3 py-3 text-center text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">序号</th>
               <th className={`${showDetailColumns ? "w-[80px]" : "w-[86px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>操作</th>
               <th className={`${showDetailColumns ? "w-[140px]" : "w-[180px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>公司名称</th>
               <th className={`${showDetailColumns ? "w-[170px]" : "w-[220px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>岗位名称</th>
@@ -82,7 +83,7 @@ export function BossJobTable({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={showDetailColumns ? 23 : 17} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
+                <td colSpan={showDetailColumns ? 24 : 18} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
                   <div className="flex flex-col items-center gap-3">
                     <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
                     <p className="text-sm">当前还没有入库岗位；请查看 Boss 页进度日志里的采集数量、详情缺失和提交结果。</p>
@@ -103,6 +104,9 @@ export function BossJobTable({
                         }`
                   }`}
                 >
+                  <td className="px-3 py-3 text-center text-xs font-medium leading-6 text-muted-foreground align-top border-r border-gray-200 dark:border-gray-700">
+                    {(page - 1) * size + idx + 1}
+                  </td>
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
                     {job.deliveryStatus === "待确认" ? (
                       <div className="flex flex-col gap-2">

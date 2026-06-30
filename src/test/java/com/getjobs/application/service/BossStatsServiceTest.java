@@ -35,7 +35,6 @@ class BossStatsServiceTest {
 
     @Test
     void statsUseSqlAggregatesAndKeepResponseShape() {
-        when(bossService.resolveBossScanRunId(null)).thenReturn("run-latest");
         stubCommonMapperResults(List.of(salaryRow(1L, "10-20K"), salaryRow(2L, "面议")));
 
         BossService.StatsResponse response = service.getBossStats(
@@ -62,7 +61,7 @@ class BossStatsServiceTest {
         verify(bossStatsMapper).selectKpi(queryCaptor.capture());
         BossStatsQuery query = queryCaptor.getValue();
         assertThat(query.getProfileId()).isEqualTo(1L);
-        assertThat(query.getScanRunId()).isEqualTo("run-latest");
+        assertThat(query.getScanRunId()).isNull();
         assertThat(query.getStatuses()).containsExactly(DeliveryStatus.WAITING_CONFIRM);
         assertThat(query.getLocation()).isEqualTo("深圳");
         assertThat(query.getKeyword()).isEqualTo("Java");
@@ -72,7 +71,7 @@ class BossStatsServiceTest {
 
     @Test
     void salaryFilterBuildsIdScopeBeforeSqlAggregates() {
-        when(bossService.resolveBossScanRunId("run-1")).thenReturn("run-1");
+        when(bossService.normalizeExplicitBossScanRunId("run-1")).thenReturn("run-1");
         stubCommonMapperResults(List.of(
                 salaryRow(1L, "10-20K"),
                 salaryRow(2L, "30-40K"),
@@ -95,13 +94,13 @@ class BossStatsServiceTest {
         ArgumentCaptor<BossStatsQuery> queryCaptor = ArgumentCaptor.forClass(BossStatsQuery.class);
         verify(bossStatsMapper).selectKpi(queryCaptor.capture());
         BossStatsQuery query = queryCaptor.getValue();
+        assertThat(query.getScanRunId()).isEqualTo("run-1");
         assertThat(query.isIdFilterApplied()).isTrue();
         assertThat(query.getFilteredIds()).containsExactly(1L, 3L);
     }
 
     @Test
     void salaryStatsPreferStructuredMedianK() {
-        when(bossService.resolveBossScanRunId(null)).thenReturn("run-latest");
         stubCommonMapperResults(List.of(salaryRow(1L, "10-20K", 40.0)));
 
         BossService.StatsResponse response = service.getBossStats(

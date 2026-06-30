@@ -676,11 +676,21 @@ public class BossController {
             missing.add("岗位");
             return missing;
         }
-        if (isBlank(job.getJobName())) missing.add("岗位名称");
-        if (isBlank(job.getCompanyName())) missing.add("公司名称");
+        // 只标记绝对必要字段缺失：岗位名称和公司名称都没有才跳过
+        boolean hasTitle = !isBlank(job.getJobName());
+        boolean hasCompany = !isBlank(job.getCompanyName());
+        if (!hasTitle) missing.add("岗位名称");
+        if (!hasCompany) missing.add("公司名称");
+        // 链接缺失时记录但不阻断（后续可补全）
         if (isBlank(job.getJobUrl())) missing.add("岗位链接");
+        // 描述/公司介绍：最低要求从30字符降到10字符
         String detailText = firstNonBlank(job.getJobDescription(), job.getIntroduce());
-        if (isBlank(detailText) || detailText.trim().length() < 30) missing.add("岗位要求");
+        if (isBlank(detailText) || detailText.trim().length() < 10) {
+            // 只有当 title + company 都存在时，描述不是硬性阻断
+            if (!hasTitle || !hasCompany) {
+                missing.add("岗位要求");
+            }
+        }
         return missing;
     }
 

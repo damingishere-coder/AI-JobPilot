@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-23-zhilian-query-initial-state-1";
+  const EXTENSION_VERSION = "2026-06-25-scan-resume-redirect-2";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -167,8 +167,8 @@
       });
     }
     const task = await readStoredScanTaskFromAnyStorage();
-    const hasResumableTask = Boolean(task && isResumableScanTask(task));
-    if (task && !hasResumableTask) {
+    const hasFreshTask = Boolean(task && isFreshScanTask(task));
+    if (task && !hasFreshTask) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -181,8 +181,10 @@
     sendResponse({
       success: true,
       ...status,
+      isRunning: Boolean(status.isRunning || hasFreshTask),
       runId: status.runId || task?.runId || "",
-      hasStoredTask: hasResumableTask
+      scanOwnerToken: task?.scanOwnerToken || "",
+      hasStoredTask: hasFreshTask
     });
   }
 
@@ -261,7 +263,7 @@
       return;
     }
     if (!task || task.completed || stopRequested) return;
-    if (!isResumableScanTask(task)) {
+    if (!isFreshScanTask(task) || !isZhilianUrl(window.location.href)) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -1329,11 +1331,17 @@
   }
 
   function postProgress(message, type, text, meta = {}) {
-    if (!message.pageTabId) return;
     chrome.runtime.sendMessage({
       source: "GET_JOBS_PLATFORM",
       pageTabId: message.pageTabId,
-      payload: { platform: "zhilian", type, message: text, timestamp: Date.now(), ...meta }
+      payload: {
+        platform: "zhilian",
+        type,
+        message: text,
+        timestamp: Date.now(),
+        runId: message?.runId || "",
+        ...meta
+      }
     });
   }
 
@@ -1463,8 +1471,10 @@
 
   async function scrollForCards(searchJobLimit = 20) {
     const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
+    const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
+    const scrollStep = Math.max(480, Math.min(900, Math.floor(viewportHeight * 0.9) || 640));
     for (let i = 0; i < scrollRounds && !await hasStopRequested(); i++) {
-      window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
+      window.scrollBy(0, scrollStep);
       await humanPause(550, 950);
     }
     window.scrollTo(0, 0);
@@ -1501,12 +1511,32 @@
     const localTask = readStoredScanTask();
     if (localTask) return localTask;
 
+    const ownership = await readScanTabOwnership();
+    if (!ownership?.isOwner) return null;
+
     const sharedTask = await readSharedScanTask();
     if (sharedTask) {
+      if (ownership.ownerToken && sharedTask.scanOwnerToken && ownership.ownerToken !== sharedTask.scanOwnerToken) {
+        return null;
+      }
       sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(sharedTask));
       return sharedTask;
     }
     return null;
+  }
+
+  async function readScanTabOwnership() {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return { success: false, isOwner: false };
+    }
+    try {
+      return await chrome.runtime.sendMessage({
+        source: "GET_JOBS_ZHILIAN_CONTENT",
+        type: "ZHILIAN_SCAN_OWNER_STATUS"
+      });
+    } catch {
+      return { success: false, isOwner: false };
+    }
   }
 
   async function writeSharedScanTask(task) {
@@ -1719,13 +1749,15 @@
   }
 
   function isResumableScanTask(task) {
+    return Boolean(isFreshScanTask(task) && isZhilianUrl(window.location.href));
+  }
+
+  function isFreshScanTask(task) {
     if (!task || task.type !== "ZHILIAN_SCAN_START" || !task.runId) return false;
     if (task.completed || task.phase === "complete" || task.phase === "stopped" || task.phase === "error") return false;
 
     const lastActiveAt = Number(task.updatedAt || task.startedAt || 0);
-    if (!lastActiveAt || Date.now() - lastActiveAt > SCAN_TASK_TTL_MS) return false;
-
-    return isZhilianTaskPage(task);
+    return Boolean(lastActiveAt && Date.now() - lastActiveAt <= SCAN_TASK_TTL_MS);
   }
 
   function isZhilianTaskPage(task) {
@@ -1922,20 +1954,30 @@
   function handleBlockingState(task, diagnostics, meta = {}) {
     if (!diagnostics || !(diagnostics.hasSecurityPrompt || diagnostics.hasLoginPrompt)) return false;
     const state = diagnostics.hasSecurityPrompt ? "安全验证" : "登录提示";
-    clearStoredScanTask();
+    storeScanTask({
+      ...task,
+      blockedAt: Date.now(),
+      blockState: state
+    }).catch((error) => {
+      console.warn("[GetJobs] 智联暂停断点保存失败", error);
+    });
     writeScanStatus({
       isRunning: false,
-      stopRequested: true,
+      stopRequested: false,
       stage: "blocked",
-      message: `智联页面出现${state}，扫描已暂停，请处理后重新开始。`,
+      paused: true,
+      resumable: true,
+      message: `智联页面出现${state}，扫描已暂停且断点已保留。处理完成后可继续。`,
       runId: task?.runId,
       startedAt: task?.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task || {}, "warning", `智联页面出现${state}，扫描已暂停，请在Chrome中处理验证码/登录/安全验证后重新开始。`, {
+    postProgress(task || {}, "warning", `智联页面出现${state}，扫描已暂停且断点已保留。请在Chrome中处理后再次点击扫描继续。`, {
       ...meta,
       operation: "scan",
       stage: "blocked",
+      paused: true,
+      resumable: true,
       currentUrl: diagnostics.currentUrl,
       pageState: diagnostics.pageState
     });

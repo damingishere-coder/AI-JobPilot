@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-24-boss-scan-resume-2";
+  const EXTENSION_VERSION = "2026-06-25-scan-resume-redirect-2";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -168,6 +168,18 @@
       return { success: false, blocked: true, message: text, ...diagnostics };
     }
 
+    // 关键检查：必须在Boss搜索结果页才能采集
+    if (!diagnostics.isSearchPage) {
+      const text = `当前不是Boss岗位搜索结果页，无法采集。请在Chrome中打开Boss搜索页（如 https://www.zhipin.com/web/geek/job?city=101280600&query=Java），再重新采集。当前页面：${diagnostics.currentUrl || window.location.href}`;
+      postProgress(message, "warning", text, {
+        operation: "listCollect",
+        stage: "blocked",
+        diagnosticType: "WRONG_PAGE",
+        ...diagnostics
+      });
+      return { success: false, blocked: true, message: text, diagnosticType: "WRONG_PAGE", ...diagnostics };
+    }
+
     const collector = window.GetJobsBossSearchCollector;
     if (!collector?.collectVisibleJobs) {
       throw new Error("Boss列表采集模块未加载，请在扩展管理页重新加载扩展并刷新Boss页面");
@@ -182,7 +194,13 @@
           ? "SELECTOR_MISMATCH"
           : "CARD_PARSE_FAILED";
       const diagnostic = buildBossDiagnostic(diagnosticType, "listCollect", diagnostics, resultSummary);
-      const text = `${diagnostic.message} ${formatBossDiagnostics(diagnostics)}；missingFieldCounts=${JSON.stringify(result.missingFieldCounts || {})}`;
+      const selectorDetails = diagnostics.selectorCounts
+        ? Object.entries(diagnostics.selectorCounts).filter(([, c]) => c > 0).map(([s, c]) => `${s}=${c}`).join("，")
+        : "所有选择器匹配为0";
+      const fieldSelectorDetails = diagnostics.fieldSelectorCounts
+        ? Object.entries(diagnostics.fieldSelectorCounts).filter(([, c]) => Object.values(c).some(v => v > 0)).map(([g, c]) => `${g}:${JSON.stringify(c)}`).join("，")
+        : "";
+      const text = `${diagnostic.message} ${formatBossDiagnostics(diagnostics)}；选择器匹配：${selectorDetails}；${fieldSelectorDetails ? `字段匹配：${fieldSelectorDetails}；` : ""}missingFieldCounts=${JSON.stringify(result.missingFieldCounts || {})}；bodyText=${(diagnostics.bodyTextLength || 0)}字符；scriptNodes=${diagnostics.scriptCount || 0}`;
       postProgress(message, "error", text, {
         operation: "listCollect",
         stage: "empty",
@@ -385,8 +403,9 @@
     const task = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable));
-    const hasResumableTask = Boolean(task && (isResumableScanTask(task) || paused));
-    if (task && !hasResumableTask && !paused) {
+    const hasFreshTask = Boolean(task && isFreshScanTask(task));
+    const hasResumableTask = Boolean(hasFreshTask || paused);
+    if (task && !hasFreshTask && !paused) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -399,10 +418,11 @@
     sendResponse({
       success: true,
       ...nextStatus,
-      isRunning: Boolean(nextStatus.isRunning) && !paused,
+      isRunning: Boolean(nextStatus.isRunning || hasFreshTask) && !paused,
       paused,
       resumable: Boolean(nextStatus.resumable || hasResumableTask),
       runId: nextStatus.runId || task?.runId || "",
+      scanOwnerToken: task?.scanOwnerToken || "",
       hasStoredTask: hasResumableTask
     });
   }
@@ -513,7 +533,7 @@
       writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "Boss扫描已取消", runId: task.runId });
       return;
     }
-    if (!isResumableScanTask(task) && !(force && isFreshScanTask(task) && isBossUrl(window.location.href))) {
+    if (!isFreshScanTask(task) || !isBossUrl(window.location.href)) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -1030,7 +1050,12 @@
     const states = [];
     Array.from(document.querySelectorAll("script[type='application/json'], script#__NEXT_DATA__, script")).forEach((script) => {
       const raw = String(script.textContent || "").trim();
-      if (!raw || (!raw.includes("jobList") && !raw.includes("jobInfo") && !raw.includes("zpData"))) return;
+      if (!raw || raw.length < 50) return;
+      // 放宽匹配：除了 jobList/jobInfo/zpData，也匹配 encryptJobId/brandName/salaryDesc 等岗位特征字段
+      const hasJobSignal = /jobList|jobInfo|zpData/i.test(raw);
+      const hasJobFieldSignal = /\bencryptJobId\b|\bencryptId\b|\bjobId\b|\bsecurityId\b/i.test(raw)
+        && /\bbrandName\b|\bcompanyName\b/i.test(raw);
+      if (!hasJobSignal && !hasJobFieldSignal) return;
       const jsonTexts = [];
       if (raw.startsWith("{") || raw.startsWith("[")) jsonTexts.push(raw);
       const nextJson = extractJsonObjectAfter(raw, "__NEXT_DATA__");
@@ -1727,75 +1752,80 @@
       });
 
       let data;
-      try {
-        data = await callBossLocalApi("chrome-jobs", {
-          runId,
-          keyword: options.keyword,
-          jobs: batch,
-          autoDeliver: options.autoDeliver
-        }, {
-          pageTabId: message?.pageTabId,
-          timeoutMs: 60000
-        });
-      } catch (error) {
-        const reason = safeErrorMessage(error);
-        const diagnostic = buildLocalApiDiagnostic(error, "submitting");
-        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批提交失败。${diagnostic.message} 原始信息：${reason}`;
-        storeScanTask({
-          ...message,
-          phase: "submitting",
-          jobs: message.jobs,
-          submitBatchIndex: index,
-          submitSummary: checkpointSubmitSummary(summary),
-          lastSubmitError: {
-            type: diagnostic.type,
-            message: reason,
-            failedAt: Date.now()
+      let batchAttempt = 0;
+      const maxBatchAttempts = 2;
+      while (batchAttempt < maxBatchAttempts) {
+        batchAttempt++;
+        try {
+          data = await callBossLocalApi("chrome-jobs", {
+            runId,
+            keyword: options.keyword,
+            jobs: batch,
+            autoDeliver: options.autoDeliver
+          }, {
+            pageTabId: message?.pageTabId,
+            timeoutMs: 60000
+          });
+          break; // 成功，跳出重试循环
+        } catch (error) {
+          if (batchAttempt < maxBatchAttempts) {
+            postProgress(message, "warning", `Boss岗位提交第 ${index + 1}/${batches.length} 批失败，正在重试（${batchAttempt}/${maxBatchAttempts}）：${safeErrorMessage(error)}`, {
+              ...baseMeta,
+              stage: "submitting",
+              batchIndex: index + 1,
+              batchTotal: batches.length,
+              retry: batchAttempt
+            });
+            await humanPause(800, 1500);
+            continue;
           }
-        });
-        postProgress(message, "error", failureMessage, {
-          ...baseMeta,
-          stage: "submitFailed",
-          diagnosticType: diagnostic.type,
-          impact: diagnostic.impact,
-          suggestion: diagnostic.suggestion,
-          batchIndex: index + 1,
-          batchTotal: batches.length
-        });
-        const submitError = new Error(failureMessage);
-        submitError.code = diagnostic.type;
-        throw submitError;
+          // 最终失败：记录错误但跳过本批，继续提交其他批次
+          const reason = safeErrorMessage(error);
+          const diagnostic = buildLocalApiDiagnostic(error, "submitting");
+          postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批提交失败（已重试），跳过本批继续：${diagnostic.message}`, {
+            ...baseMeta,
+            stage: "submitBatchSkipped",
+            diagnosticType: diagnostic.type,
+            batchIndex: index + 1,
+            batchTotal: batches.length
+          });
+          storeScanTask({
+            ...message,
+            phase: "submitting",
+            jobs: message.jobs,
+            submitBatchIndex: index + 1,
+            submitSummary: checkpointSubmitSummary(summary),
+            lastSubmitError: { type: diagnostic.type, message: reason, failedAt: Date.now() }
+          });
+          // 跳过本批，继续下一个批次
+          data = null;
+          break;
+        }
+      }
+
+      if (!data) {
+        // 本批已跳过，继续下一批
+        continue;
       }
 
       if (!data.success) {
-        const responseError = new Error(data.message || "后台未返回原因");
-        responseError.code = data.errorType || "LOCAL_API_ERROR";
-        const diagnostic = buildLocalApiDiagnostic(responseError, "submitting");
-        const failureMessage = `Boss岗位提交失败：第 ${index + 1}/${batches.length} 批返回失败。${diagnostic.message}`;
+        const diagnostic = buildLocalApiDiagnostic(new Error(data.message || "后台未返回原因"), "submitting");
+        postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批后台处理失败，跳过本批继续：${diagnostic.message}`, {
+          ...baseMeta,
+          stage: "submitBatchSkipped",
+          diagnosticType: diagnostic.type,
+          batchIndex: index + 1,
+          batchTotal: batches.length
+        });
         storeScanTask({
           ...message,
           phase: "submitting",
           jobs: message.jobs,
-          submitBatchIndex: index,
+          submitBatchIndex: index + 1,
           submitSummary: checkpointSubmitSummary(summary),
-          lastSubmitError: {
-            type: diagnostic.type,
-            message: data.message || "后台未返回原因",
-            failedAt: Date.now()
-          }
+          lastSubmitError: { type: diagnostic.type, message: data.message || "后台未返回原因", failedAt: Date.now() }
         });
-        postProgress(message, "error", failureMessage, {
-          ...baseMeta,
-          stage: "submitFailed",
-          diagnosticType: diagnostic.type,
-          impact: diagnostic.impact,
-          suggestion: diagnostic.suggestion,
-          batchIndex: index + 1,
-          batchTotal: batches.length
-        });
-        const submitError = new Error(failureMessage);
-        submitError.code = diagnostic.type;
-        throw submitError;
+        continue;
       }
 
       summary.received += numberValue(data.received);
@@ -2308,11 +2338,17 @@
   }
 
   function postProgress(message, type, text, meta = {}) {
-    if (!message.pageTabId) return;
     chrome.runtime.sendMessage({
       source: "GET_JOBS_PLATFORM",
       pageTabId: message.pageTabId,
-      payload: { platform: "boss", type, message: text, timestamp: Date.now(), ...meta }
+      payload: {
+        platform: "boss",
+        type,
+        message: text,
+        timestamp: Date.now(),
+        runId: message?.runId || activeScanRunId || "",
+        ...meta
+      }
     });
   }
 
@@ -2377,11 +2413,31 @@
     const sessionTask = readStoredScanTask();
     if (sessionTask) return sessionTask;
 
+    const ownership = await readScanTabOwnership();
+    if (!ownership?.isOwner) return null;
+
     const sharedTask = await readSharedScanTask();
     if (!sharedTask) return null;
+    if (ownership.ownerToken && sharedTask.scanOwnerToken && ownership.ownerToken !== sharedTask.scanOwnerToken) {
+      return null;
+    }
     const normalized = normalizeScanTask(sharedTask);
     sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(normalized));
     return normalized;
+  }
+
+  async function readScanTabOwnership() {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return { success: false, isOwner: false };
+    }
+    try {
+      return await chrome.runtime.sendMessage({
+        source: "GET_JOBS_BOSS_CONTENT",
+        type: "BOSS_SCAN_OWNER_STATUS"
+      });
+    } catch {
+      return { success: false, isOwner: false };
+    }
   }
 
   function writeSharedScanTask(task) {
@@ -2544,9 +2600,7 @@
   }
 
   function isResumableScanTask(task) {
-    if (!isFreshScanTask(task)) return false;
-
-    return isBossTaskPage(task);
+    return Boolean(isFreshScanTask(task) && isBossUrl(window.location.href));
   }
 
   function isFreshScanTask(task) {
@@ -2929,8 +2983,10 @@
 
   async function scrollForCards(searchJobLimit = 20) {
     const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
+    const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
+    const scrollStep = Math.max(480, Math.min(900, Math.floor(viewportHeight * 0.9) || 640));
     for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
-      window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
+      window.scrollBy(0, scrollStep);
       await humanPause(550, 950);
     }
     window.scrollTo(0, 0);
@@ -3429,7 +3485,12 @@
     const scripts = Array.from(document.querySelectorAll("script[type='application/json'], script#__NEXT_DATA__, script"));
     for (const script of scripts) {
       const raw = String(script.textContent || "").trim();
-      if (!raw || (!raw.includes("jobInfo") && !raw.includes("zpData") && !raw.includes("brandComInfo"))) continue;
+      if (!raw || raw.length < 50) continue;
+      // 放宽匹配：除了 jobInfo/zpData/brandComInfo，也匹配岗位详情特征字段
+      const hasDetailSignal = /jobInfo|zpData|brandComInfo/i.test(raw);
+      const hasDetailFieldSignal = /\bencryptJobId\b|\bencryptId\b/i.test(raw)
+        && /(?:postDescription|jobDescription|description|salaryDesc|jobName|brandName)/i.test(raw);
+      if (!hasDetailSignal && !hasDetailFieldSignal) continue;
       try {
         const data = JSON.parse(raw);
         const fields = parseBossDetailJson(data, job);
