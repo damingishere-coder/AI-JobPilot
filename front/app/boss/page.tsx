@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
+import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents, type ChromeBridgeResponse } from '@/lib/chromeBridge'
 import { API_BASE } from '@/lib/api'
 import { createPortal } from 'react-dom'
 import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
@@ -68,11 +68,55 @@ interface BlacklistItem {
 type DialogKind = 'save' | 'platform'
 type BossStep = 'config' | 'scan' | 'confirm'
 
+const UNLIMITED_OPTION_CODE = '0'
+
+const normalizeUnlimitedSelection = (list: string[]): string[] => {
+  if (!list || list.length <= 1) return list || []
+  return list.includes(UNLIMITED_OPTION_CODE)
+    ? list.filter((code) => code !== UNLIMITED_OPTION_CODE)
+    : list
+}
+
 interface ProgressLog {
   id: number
   type: string
   message: string
   timestamp?: number
+}
+
+interface BossDiagnosticsResponse extends ChromeBridgeResponse {
+  currentUrl?: string
+  title?: string
+  isLoginPage?: boolean
+  isSecurityPage?: boolean
+  detailLinkCount?: number
+  selectorCounts?: Record<string, number>
+  firstCardText?: string
+  diagnosticType?: string
+  impact?: string
+  suggestion?: string
+}
+
+interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
+  runId?: string
+  candidateCount?: number
+  parsedCount?: number
+  skippedCount?: number
+  saved?: number
+  listCollected?: number
+  missingFieldCounts?: Record<string, number>
+  failures?: Array<{
+    index?: number
+    reason?: string
+    missingFields?: string[]
+    title?: string
+    company?: string
+  }>
+  backend?: {
+    saved?: number
+    listCollected?: number
+    collectionWarnings?: Array<Record<string, unknown>>
+  }
 }
 
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
@@ -88,6 +132,7 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
   const operation = String(payload.operation || '')
+  if (operation === 'scan' && stage === 'blocked' && (payload.paused || payload.resumable)) return false
   return (operation === 'scan' && ['complete', 'stopped', 'error', 'blocked'].includes(stage))
     || message.includes('扫描完成')
     || message.includes('扫描已停止')
@@ -157,7 +202,9 @@ export default function BossPage() {
   const [chromeBridgeReady, setChromeBridgeReady] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
+  const [isScanPaused, setIsScanPaused] = useState(false)
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+  const [analysisFocusRunId, setAnalysisFocusRunId] = useState('')
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
@@ -165,6 +212,8 @@ export default function BossPage() {
   const [activeStep, setActiveStep] = useState<BossStep>('config')
   const [hasScanResult, setHasScanResult] = useState(false)
   const [logSpotlight, setLogSpotlight] = useState(false)
+  const [isDiagnosingBoss, setIsDiagnosingBoss] = useState(false)
+  const [isCollectingCurrentPage, setIsCollectingCurrentPage] = useState(false)
   const logSectionRef = useRef<HTMLDivElement | null>(null)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
@@ -201,11 +250,27 @@ export default function BossPage() {
         type: 'BOSS_SCAN_STATUS',
         platform: 'boss',
       }, 2000)
+      const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
+      const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+      if (paused) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setIsScanPaused(true)
+        if (runId) setActiveRunId(runId)
+        if (!silent) {
+          appendProgressLog({
+            type: 'warning',
+            message: String(status.message || 'Boss扫描已暂停，处理登录或安全验证后可继续。'),
+            timestamp: typeof status.updatedAt === 'number' ? status.updatedAt : Date.now(),
+          })
+        }
+        return
+      }
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
         setIsDelivering(true)
         setIsStopping(false)
-        const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+        setIsScanPaused(false)
         if (runId) setActiveRunId(runId)
         if (!silent) {
           appendProgressLog({
@@ -219,6 +284,7 @@ export default function BossPage() {
       if (status.success) {
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch {
@@ -236,6 +302,7 @@ export default function BossPage() {
   }, [])
 
   const guideToConfirmStep = useCallback(() => {
+    setAnalysisFocusRunId('')
     setHasScanResult(true)
     setAnalysisRefreshSignal((value) => value + 1)
   }, [])
@@ -354,12 +421,19 @@ export default function BossPage() {
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
+              if (data.stage === 'blocked' && (data.paused || data.resumable)) {
+                setIsDelivering(false)
+                setIsStopping(false)
+                setIsScanPaused(true)
+                if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
+              }
               if (shouldRefreshAnalysisFromProgress(data)) {
                 guideToConfirmStep()
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
                 setIsStopping(false)
+                setIsScanPaused(false)
                 setActiveRunId(null)
               }
             } catch (error) {
@@ -388,9 +462,16 @@ export default function BossPage() {
       if (shouldRefreshAnalysisFromProgress(payload)) {
         guideToConfirmStep()
       }
+      if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
+        setIsDelivering(false)
+        setIsStopping(false)
+        setIsScanPaused(true)
+        if (typeof payload.runId === 'string' && payload.runId.trim()) setActiveRunId(payload.runId.trim())
+      }
       if (isTerminalScanPayload(payload)) {
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     })
@@ -629,8 +710,9 @@ export default function BossPage() {
 
   // 工具：将数组转为括号列表字符串
   const toBracketList = (list: string[]): string => {
-    if (!list || list.length === 0) return ''
-    return `[${list.join(',')}]`
+    const normalized = normalizeUnlimitedSelection(list)
+    if (!normalized || normalized.length === 0) return ''
+    return `[${normalized.join(',')}]`
   }
 
   const handleSave = async (silent: boolean = false, overrides?: Partial<BossConfig>) => {
@@ -766,6 +848,7 @@ export default function BossPage() {
       }
       setIsDelivering(true)
       setIsStopping(false)
+      setIsScanPaused(false)
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
@@ -795,12 +878,14 @@ export default function BossPage() {
 
       if (data.success) {
         setHasScanResult(false)
+        if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
         appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
         console.warn('启动失败：', data.message)
         appendProgressLog({ type: 'error', message: data.message || 'Boss扫描启动失败。' })
         setIsDelivering(false)
         setIsStopping(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch (error) {
@@ -808,7 +893,111 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: 'Boss扫描启动失败：网络或服务异常。' })
       setIsDelivering(false)
       setIsStopping(false)
+      setIsScanPaused(false)
       setActiveRunId(null)
+    }
+  }
+
+  const handleDiagnoseCurrentBossPage = async () => {
+    if (isDiagnosingBoss) return
+    focusLogSection()
+    setIsDiagnosingBoss(true)
+    appendProgressLog({ type: 'info', message: '正在诊断当前已打开的 Boss 页面，不会跳转页面，也不会处理验证码。' })
+    try {
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_DEBUG_COLLECT',
+        platform: 'boss',
+      }, 8000) as BossDiagnosticsResponse
+
+      appendProgressLog({
+        type: data.success ? (data.isLoginPage || data.isSecurityPage ? 'warning' : 'success') : 'error',
+        message: `${data.message || 'Boss页面诊断完成。'} currentUrl=${data.currentUrl || ''}；title=${data.title || ''}；isLoginPage=${Boolean(data.isLoginPage)}；isSecurityPage=${Boolean(data.isSecurityPage)}；detailLinkCount=${Number(data.detailLinkCount || 0)}；selectorCounts=${JSON.stringify(data.selectorCounts || {})}；firstCardText=${data.firstCardText || ''}`,
+      })
+      if (Number(data.detailLinkCount || 0) === 0) {
+        appendProgressLog({
+          type: 'warning',
+          message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
+        })
+      }
+      if (data.isSecurityPage) {
+        appendProgressLog({
+          type: 'warning',
+          message: '检测到Boss安全验证，请在Chrome中手动完成验证。本工具不会绕过验证码或安全验证。',
+        })
+      }
+    } catch (error) {
+      console.error('Failed to diagnose Boss page:', error)
+      appendProgressLog({ type: 'error', message: 'Boss页面诊断失败：Chrome Bridge 通信异常。' })
+    } finally {
+      setIsDiagnosingBoss(false)
+    }
+  }
+
+  const handleCollectCurrentBossPage = async () => {
+    if (isCollectingCurrentPage) return
+    if (isDelivering) {
+      appendProgressLog({ type: 'warning', message: '完整扫描正在运行，请先停止扫描，再使用“采集当前 Boss 页面”。' })
+      return
+    }
+    if (!hasProfile) {
+      appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存岗位。' })
+      return
+    }
+
+    focusLogSection()
+    setIsCollectingCurrentPage(true)
+    appendProgressLog({
+      type: 'info',
+      message: '正在采集当前已打开的 Boss 搜索结果页：只读取页面已有岗位卡片，不自动跳转搜索 URL，不进入 AI 分析。',
+    })
+    try {
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_COLLECT_CURRENT_PAGE',
+        platform: 'boss',
+        keyword: keywordsDisplay,
+        runId: `boss-list-${Date.now()}`,
+      }, 70000) as BossCurrentPageCollectResponse
+
+      appendProgressLog({
+        type: data.success ? 'success' : 'error',
+        message: data.message || (data.success ? 'Boss当前页采集完成。' : 'Boss当前页采集失败。'),
+      })
+
+      if (!data.success || Number(data.parsedCount || 0) === 0) {
+        appendProgressLog({
+          type: 'error',
+          message: `Boss当前页采集诊断：selectorCounts=${JSON.stringify(data.selectorCounts || {})}；currentUrl=${data.currentUrl || ''}；title=${data.title || ''}；detailLinkCount=${Number(data.detailLinkCount || 0)}；firstCardText=${data.firstCardText || ''}`,
+        })
+      }
+
+      const missingCounts = Object.entries(data.missingFieldCounts || {}).filter(([, count]) => Number(count) > 0)
+      const failureReasons = (data.failures || [])
+        .slice(0, 8)
+        .map((item) => `第${item.index || '?'}张：${item.reason || '未知原因'}`)
+      if (missingCounts.length || failureReasons.length) {
+        appendProgressLog({
+          type: 'warning',
+          message: `Boss当前页字段检查：missingFieldCounts=${JSON.stringify(Object.fromEntries(missingCounts))}；失败/缺失原因=${failureReasons.join('；') || '无'}`,
+        })
+      }
+
+      if (Number(data.detailLinkCount || 0) === 0) {
+        appendProgressLog({
+          type: 'warning',
+          message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
+        })
+      }
+      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+        setAnalysisFocusRunId(data.runId)
+        setHasScanResult(true)
+        setAnalysisRefreshSignal((value) => value + 1)
+        setActiveStep('confirm')
+      }
+    } catch (error) {
+      console.error('Failed to collect current Boss page:', error)
+      appendProgressLog({ type: 'error', message: 'Boss当前页采集失败：Chrome Bridge 或本地后端通信异常。' })
+    } finally {
+      setIsCollectingCurrentPage(false)
     }
   }
 
@@ -828,12 +1017,14 @@ export default function BossPage() {
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })
         setIsDelivering(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       } else {
         // 停止失败：也要将状态设置为未投递（因为可能任务已经结束）
         console.warn('停止失败：', data.message)
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描可能已经结束。' })
         setIsDelivering(false)
+        setIsScanPaused(false)
         setActiveRunId(null)
       }
     } catch (error) {
@@ -841,6 +1032,7 @@ export default function BossPage() {
       // 停止失败：也要将状态设置为未投递
       appendProgressLog({ type: 'error', message: 'Boss扫描停止失败：网络或服务异常。' })
       setIsDelivering(false)
+      setIsScanPaused(false)
       setActiveRunId(null)
     } finally {
       setIsStopping(false)
@@ -908,9 +1100,25 @@ export default function BossPage() {
         iconClass="text-white"
         accentBgClass="bg-teal-500"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查扩展连接
+            </Button>
+            <Button
+              onClick={handleDiagnoseCurrentBossPage}
+              size="sm"
+              disabled={!chromeBridgeReady || isDiagnosingBoss}
+              className="app-button-soft px-4 disabled:opacity-60"
+            >
+              <BiSearch className="mr-1" /> {isDiagnosingBoss ? '诊断中...' : '诊断当前 Boss 页面'}
+            </Button>
+            <Button
+              onClick={handleCollectCurrentBossPage}
+              size="sm"
+              disabled={!chromeBridgeReady || !hasProfile || isDelivering || isCollectingCurrentPage}
+              className="app-button-success px-4 disabled:opacity-60"
+            >
+              <BiBriefcase className="mr-1" /> {isCollectingCurrentPage ? '采集中...' : '采集当前 Boss 页面'}
             </Button>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
@@ -926,7 +1134,7 @@ export default function BossPage() {
 	              </Button>
 	            ) : (
 	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> 开始扫描
+	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
@@ -947,7 +1155,7 @@ export default function BossPage() {
         </div>
       ) : null}
 
-      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering} />
+      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering && !isScanPaused} />
 
       {hasScanResult && activeStep !== 'confirm' ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-900/60 dark:bg-cyan-950/30 dark:text-cyan-100">
@@ -973,7 +1181,8 @@ export default function BossPage() {
             <CardContent>
               <div className="space-y-4">
 	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
-	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始采集；扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
+	                <p className="text-sm text-muted-foreground">“诊断当前 Boss 页面”和“采集当前 Boss 页面”只读取你已经打开的页面，不会自动跳转；当前页采集结果先按 LIST_COLLECTED 入库，不进入 AI 分析。</p>
+	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始完整采集；完整扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>
@@ -1016,7 +1225,7 @@ export default function BossPage() {
                       </option>
                     ))}
                 </Select>
-                <p className="text-xs text-muted-foreground">目标工作城市（按设定顺序显示）</p>
+                <p className="text-xs text-muted-foreground">按 Boss 直聘城市筛选岗位</p>
               </div>
 
               <div className="space-y-2">
@@ -1033,7 +1242,7 @@ export default function BossPage() {
                     </option>
                   ))}
                 </Select>
-                <p className="text-xs text-muted-foreground">选择职位类型</p>
+                <p className="text-xs text-muted-foreground">职位性质，职位名称请在搜索关键词里填写</p>
               </div>
 
               <div className="space-y-2">
@@ -1147,7 +1356,7 @@ export default function BossPage() {
                   placeholder="选择薪资待遇"
                   disabled={!hasProfile}
                 />
-                <p className="text-xs text-muted-foreground">选项来源：字典表 type=salary（可多选）</p>
+                <p className="text-xs text-muted-foreground">按 Boss 直聘薪资范围筛选，可多选</p>
               </div>
               <div className="space-y-2">
                 <Label>工作经验</Label>
@@ -1360,6 +1569,7 @@ export default function BossPage() {
             logs={progressLogs}
             isRunning={isDelivering}
             isStopping={isStopping}
+            isPaused={isScanPaused}
             spotlight={logSpotlight}
             onStop={handleStopDelivery}
             onClear={() => setProgressLogs([])}
@@ -1389,7 +1599,7 @@ export default function BossPage() {
 
       {activeStep === 'confirm' ? (
         <div className="space-y-6">
-          <AnalysisContent refreshSignal={analysisRefreshSignal} />
+          <AnalysisContent refreshSignal={analysisRefreshSignal} focusScanRunId={analysisFocusRunId} />
         </div>
       ) : null}
 
@@ -1559,6 +1769,7 @@ function ProgressLogCard({
   logs,
   isRunning,
   isStopping,
+  isPaused,
   spotlight = false,
   onStop,
   onClear,
@@ -1566,6 +1777,7 @@ function ProgressLogCard({
   logs: ProgressLog[]
   isRunning: boolean
   isStopping: boolean
+  isPaused: boolean
   spotlight?: boolean
   onStop: () => void
   onClear: () => void
@@ -1592,11 +1804,11 @@ function ProgressLogCard({
             <BiBarChart className="text-primary" />
             运行日志
           </CardTitle>
-          <CardDescription>后台自动化浏览器的扫描进度和结果</CardDescription>
+          <CardDescription>Boss页面诊断、当前页采集、后台扫描进度和结果</CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
-            {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
+          <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : isPaused ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+            {isStopping ? '停止中' : isPaused ? '已暂停' : isRunning ? '扫描中' : '空闲'}
           </span>
           {isRunning && (
             <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-lg px-3">
@@ -1608,7 +1820,7 @@ function ProgressLogCard({
       </CardHeader>
       <CardContent>
         {logs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、后台AI队列、待确认和错误信息。</p>
+          <p className="text-sm text-muted-foreground">点击“诊断当前 Boss 页面”“采集当前 Boss 页面”或“开始扫描”后，这里会显示选择器命中、采集结果、后台AI队列和错误信息。</p>
         ) : (
           <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (
@@ -1733,20 +1945,24 @@ function MultiSelect({
 
   const toggle = (code: string) => {
     if (disabled) return
-    console.log('[MultiSelect] toggle 被调用', { code, currentSelected: selected })
-    if (selected.includes(code)) {
-      const newSelected = selected.filter((c) => c !== code)
+    const currentSelected = normalizeUnlimitedSelection(selected)
+    console.log('[MultiSelect] toggle 被调用', { code, currentSelected })
+    if (currentSelected.includes(code)) {
+      const newSelected = currentSelected.filter((c) => c !== code)
       console.log('[MultiSelect] 取消选择，新值:', newSelected)
       onChange(newSelected)
     } else {
-      const newSelected = [...selected, code]
+      const newSelected = code === UNLIMITED_OPTION_CODE
+        ? [UNLIMITED_OPTION_CODE]
+        : [...currentSelected.filter((c) => c !== UNLIMITED_OPTION_CODE), code]
       console.log('[MultiSelect] 添加选择，新值:', newSelected)
       onChange(newSelected)
     }
   }
 
+  const effectiveSelected = normalizeUnlimitedSelection(selected)
   const selectedNames = options
-    .filter((o) => selected.includes(o.code))
+    .filter((o) => effectiveSelected.includes(o.code))
     .map((o) => o.name)
 
   return (
@@ -1775,7 +1991,7 @@ function MultiSelect({
         >
           <div className="flex flex-col gap-2">
             {options.map((opt) => {
-              const checked = selected.includes(opt.code)
+              const checked = effectiveSelected.includes(opt.code)
               return (
                 <div
                   key={opt.id}

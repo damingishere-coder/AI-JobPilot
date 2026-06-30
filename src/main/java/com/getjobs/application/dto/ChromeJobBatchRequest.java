@@ -8,6 +8,7 @@ import java.util.List;
 public class ChromeJobBatchRequest {
     private String runId;
     private String keyword;
+    private String collectionMode;
     private Boolean autoDeliver;
     private List<ChromeJobDto> jobs;
 }

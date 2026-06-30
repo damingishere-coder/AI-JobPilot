@@ -3,6 +3,7 @@ package com.getjobs.worker.manager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.worker.utils.BrowserLaunchSettings;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.WaitUntilState;
@@ -11,10 +12,14 @@ import jakarta.annotation.PreDestroy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -22,6 +27,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 /**
@@ -86,6 +92,8 @@ public class PlaywrightManager {
 
     // Playwright调试端口
     private static final int CDP_PORT = 7866;
+    private static final String DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
     // 平台URL常量
     private static final String BOSS_URL = "https://www.zhipin.com";
@@ -108,6 +116,25 @@ public class PlaywrightManager {
 
     @Autowired
     private CookieService cookieService;
+
+    @Value("${app.browser.user-data-dir:}")
+    private String browserUserDataDir;
+
+    @Value("${app.browser.executable-path:}")
+    private String browserExecutablePath;
+
+    @Value("${app.browser.channel:}")
+    private String browserChannel;
+
+    @Value("${app.browser.headless:false}")
+    private boolean browserHeadless;
+
+    @Value("${app.browser.slow-mo-ms:50}")
+    private double browserSlowMoMs;
+
+    @Autowired
+    @Qualifier("jobTaskExecutor")
+    private Executor jobTaskExecutor;
 
     /**
      * 初始化Playwright实例（延迟初始化）
@@ -134,21 +161,48 @@ public class PlaywrightManager {
             playwright = Playwright.create();
             log.info("✓ Playwright引擎已启动");
 
-            // 创建浏览器实例，使用固定CDP端口7866，最大化启动
-            browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
-                    .setHeadless(false) // 非无头模式，可视化调试
-                    .setSlowMo(50) // 放慢操作速度，便于调试
-                    .setArgs(List.of(
-                            "--remote-debugging-port=" + CDP_PORT, // 使用固定CDP端口
-                            "--start-maximized" // 最大化启动窗口
-                    )));
-            log.info("✓ Chrome浏览器已启动 (调试端口: {})", CDP_PORT);
+            BrowserLaunchSettings launchSettings = BrowserLaunchSettings.from(
+                    browserUserDataDir,
+                    browserExecutablePath,
+                    browserChannel,
+                    browserHeadless,
+                    browserSlowMoMs
+            );
+            List<String> launchArgs = List.of(
+                    "--remote-debugging-port=" + CDP_PORT,
+                    "--start-maximized"
+            );
 
-            // 创建共享的BrowserContext（所有平台在同一个窗口的不同标签页中）
-            context = browser.newContext(new Browser.NewContextOptions()
-                    .setViewportSize(null) // 不设置固定视口，使用浏览器窗口实际大小
-                    .setUserAgent(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"));
+            if (launchSettings.usesPersistentContext()) {
+                Path userDataDir = launchSettings.userDataDir().orElseThrow();
+                Files.createDirectories(userDataDir);
+                BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
+                        .setHeadless(launchSettings.headless())
+                        .setSlowMo(launchSettings.slowMoMs())
+                        .setArgs(launchArgs)
+                        .setViewportSize(null)
+                        .setUserAgent(DESKTOP_USER_AGENT);
+                launchSettings.executablePath().ifPresent(options::setExecutablePath);
+                launchSettings.channel().ifPresent(options::setChannel);
+                context = playwright.chromium().launchPersistentContext(userDataDir, options);
+                browser = context.browser();
+                log.info("✓ Chrome浏览器已启动 (调试端口: {}, userDataDir: {})", CDP_PORT, userDataDir);
+            } else {
+                // 创建浏览器实例，使用固定CDP端口7866，最大化启动
+                BrowserType.LaunchOptions options = new BrowserType.LaunchOptions()
+                        .setHeadless(launchSettings.headless())
+                        .setSlowMo(launchSettings.slowMoMs())
+                        .setArgs(launchArgs);
+                launchSettings.executablePath().ifPresent(options::setExecutablePath);
+                launchSettings.channel().ifPresent(options::setChannel);
+                browser = playwright.chromium().launch(options);
+                log.info("✓ Chrome浏览器已启动 (调试端口: {})", CDP_PORT);
+
+                // 创建共享的BrowserContext（所有平台在同一个窗口的不同标签页中）
+                context = browser.newContext(new Browser.NewContextOptions()
+                        .setViewportSize(null) // 不设置固定视口，使用浏览器窗口实际大小
+                        .setUserAgent(DESKTOP_USER_AGENT));
+            }
             log.info("✓ BrowserContext已创建（所有平台共享）");
 
             // 顺序创建所有Page（避免并发创建Page导致的竞态条件）
@@ -171,10 +225,10 @@ public class PlaywrightManager {
 
             // 并发执行各平台的初始化逻辑（导航、Cookie加载等）
             log.info("开始并发初始化所有平台...");
-            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(this::setupBossPlatform);
-            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(this::setupLiepinPlatform);
-            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(this::setup51jobPlatform);
-            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(this::setupZhilianPlatform);
+            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("Boss", this::setupBossPlatform), jobTaskExecutor);
+            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("猎聘", this::setupLiepinPlatform), jobTaskExecutor);
+            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(() -> setupPlatformSafely("51job", this::setup51jobPlatform), jobTaskExecutor);
+            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("智联", this::setupZhilianPlatform), jobTaskExecutor);
 
             // 等待所有平台初始化完成
             CompletableFuture.allOf(bossFuture, liepinFuture, job51Future, zhilianFuture).join();
@@ -183,9 +237,28 @@ public class PlaywrightManager {
             log.info("========================================");
         } catch (Exception e) {
             log.error("✗ 浏览器自动化引擎初始化失败", e);
-            throw new RuntimeException("Playwright初始化失败", e);
+            throw new RuntimeException(buildPlaywrightStartupError(e), e);
         } finally {
             playwrightInitializing = false;
+        }
+    }
+
+    private String buildPlaywrightStartupError(Exception e) {
+        String detail = e.getMessage() == null ? "" : e.getMessage();
+        return "Playwright初始化失败。请确认已安装浏览器依赖：可在项目根目录执行 gradlew.bat playwright install chromium；"
+                + "如需使用本机 Chrome，请在 application.yaml 或环境变量中配置 app.browser.executable-path / APP_BROWSER_EXECUTABLE_PATH。"
+                + (detail.isBlank() ? "" : " 原始错误：" + detail);
+    }
+
+    private void setupPlatformSafely(String platform, Runnable task) {
+        try {
+            task.run();
+        } catch (Exception e) {
+            log.error("{}平台初始化失败", platform, e);
+            if (e instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(platform + "平台初始化失败", e);
         }
     }
 

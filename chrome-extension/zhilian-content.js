@@ -1,11 +1,11 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-09-zhilian-reinject-listener-1";
+  const EXTENSION_VERSION = "2026-06-25-scan-resume-redirect-2";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
   window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ = CONTENT_INSTANCE_ID;
 
-  const API_BASE = "http://localhost:8888";
+  const API_BASE = "http://localhost:6866";
   const SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SCAN_TASK__";
   const SHARED_SCAN_TASK_KEY = "__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SCAN_CANCEL__";
@@ -76,6 +76,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
+    if (message?.source !== "GET_JOBS_BACKGROUND") return;
     const messageType = normalizeRuntimeMessageType(message?.type);
     if (messageType === "PING_CONTENT") {
       sendResponse({ success: true, version: EXTENSION_VERSION, instanceId: CONTENT_INSTANCE_ID });
@@ -166,8 +167,8 @@
       });
     }
     const task = await readStoredScanTaskFromAnyStorage();
-    const hasResumableTask = Boolean(task && isResumableScanTask(task));
-    if (task && !hasResumableTask) {
+    const hasFreshTask = Boolean(task && isFreshScanTask(task));
+    if (task && !hasFreshTask) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -180,8 +181,10 @@
     sendResponse({
       success: true,
       ...status,
+      isRunning: Boolean(status.isRunning || hasFreshTask),
       runId: status.runId || task?.runId || "",
-      hasStoredTask: hasResumableTask
+      scanOwnerToken: task?.scanOwnerToken || "",
+      hasStoredTask: hasFreshTask
     });
   }
 
@@ -260,7 +263,7 @@
       return;
     }
     if (!task || task.completed || stopRequested) return;
-    if (!isResumableScanTask(task)) {
+    if (!isFreshScanTask(task) || !isZhilianUrl(window.location.href)) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -527,11 +530,19 @@
 
   function collectJobs(keyword, message, baseMeta) {
     const entries = collectJobEntries();
+    const initialStateJobs = collectZhilianInitialStateJobs(keyword);
     const jobs = [];
     const seenJobUrls = new Set();
     let skipped = 0;
     let errorCount = 0;
     let duplicated = 0;
+    initialStateJobs.forEach((job) => {
+      const urlKey = normalizeJobUrlKey(job);
+      if (job.title && job.url && urlKey && !seenJobUrls.has(urlKey)) {
+        seenJobUrls.add(urlKey);
+        jobs.push(job);
+      }
+    });
     entries.slice(0, Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))).forEach((entry, index) => {
       try {
         const job = parseJobEntry(entry, keyword);
@@ -561,7 +572,8 @@
       parsed: jobs.length,
       skipped,
       errorCount,
-      duplicated
+      duplicated,
+      initialStateParsed: initialStateJobs.length
     };
   }
 
@@ -634,7 +646,7 @@
       }
       pagesScanned += 1;
 
-      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，成功 ${collectResult.parsed} 个，本页新增 ${added} 个，累计 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个，重复 ${collectResult.duplicated} 个。`, {
+      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，首屏数据 ${collectResult.initialStateParsed || 0} 个，成功 ${collectResult.parsed} 个，本页新增 ${added} 个，累计 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个，重复 ${collectResult.duplicated} 个。`, {
         ...baseMeta,
         stage: "collecting",
         pageNumber,
@@ -645,6 +657,7 @@
         added,
         skipped: collectResult.skipped,
         duplicated: collectResult.duplicated,
+        initialStateParsed: collectResult.initialStateParsed || 0,
         errorCount: collectResult.errorCount,
         pagesScanned
       });
@@ -681,7 +694,7 @@
       if (handleBlockingState(task, diagnostics, baseMeta)) {
         return { stopped: true, empty: true, jobs: [], candidateCount: 0, pagesScanned };
       }
-      postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
+      postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，首屏数据=${diagnostics.initialStateJobs || 0}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
         ...baseMeta,
         stage: "empty",
         collected: 0,
@@ -711,6 +724,8 @@
   function currentSearchPageNumber() {
     try {
       const parsed = new URL(window.location.href);
+      const queryPage = Number(parsed.searchParams.get("p") || parsed.searchParams.get("page") || parsed.searchParams.get("pageIndex") || "");
+      if (Number.isFinite(queryPage) && queryPage > 0) return Math.floor(queryPage);
       const match = parsed.pathname.match(/\/p(\d+)(?:\/|$)/i);
       const page = match ? Number(match[1]) : 1;
       return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
@@ -789,6 +804,97 @@
       description: stripCompanyOnlyText(text),
       url,
       keyword
+    };
+  }
+
+  function collectZhilianInitialStateJobs(keyword) {
+    const states = extractZhilianInitialStates();
+    const jobs = [];
+    const seen = new Set();
+    states.forEach((state) => {
+      findZhilianJobItems(state).forEach((item) => {
+        const job = mapZhilianStateJob(item, keyword);
+        const key = normalizeJobUrlKey(job);
+        if (!job.title || !isZhilianJobDetailUrl(job.url) || !key || seen.has(key)) return;
+        seen.add(key);
+        jobs.push(job);
+      });
+    });
+    return jobs;
+  }
+
+  function extractZhilianInitialStates() {
+    const states = [];
+    Array.from(document.querySelectorAll("script[type='application/json'], script#__NEXT_DATA__, script")).forEach((script) => {
+      const raw = String(script.textContent || "").trim();
+      if (!raw || (!raw.includes("__INITIAL_STATE__") && !raw.includes("positionList") && !raw.includes("jobList"))) return;
+      const jsonTexts = [];
+      if (raw.startsWith("{") || raw.startsWith("[")) jsonTexts.push(raw);
+      const initialStateJson = extractJsonObjectAfter(raw, "__INITIAL_STATE__");
+      if (initialStateJson) jsonTexts.push(initialStateJson);
+      const preloadedStateJson = extractJsonObjectAfter(raw, "__PRELOADED_STATE__");
+      if (preloadedStateJson) jsonTexts.push(preloadedStateJson);
+      jsonTexts.forEach((jsonText) => {
+        try {
+          states.push(JSON.parse(jsonText));
+        } catch {
+          // Executable scripts are ignored; DOM parsing remains available.
+        }
+      });
+    });
+    return states;
+  }
+
+  function findZhilianJobItems(value, depth = 0) {
+    if (!value || typeof value !== "object" || depth > 7) return [];
+    if (Array.isArray(value)) {
+      if (value.some(isZhilianStateJobItem)) return value.filter(isZhilianStateJobItem);
+      return value.flatMap((item) => findZhilianJobItems(item, depth + 1));
+    }
+    const out = [];
+    Object.entries(value).forEach(([key, child]) => {
+      if (Array.isArray(child) && /position|job|list|data/i.test(key) && child.some(isZhilianStateJobItem)) {
+        out.push(...child.filter(isZhilianStateJobItem));
+      } else if (child && typeof child === "object") {
+        out.push(...findZhilianJobItems(child, depth + 1));
+      }
+    });
+    return out;
+  }
+
+  function isZhilianStateJobItem(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const title = stateText(item, ["jobName", "positionName", "name", "title"]);
+    const url = stateText(item, ["positionUrl", "positionURL", "jobUrl", "url", "redirectUrl"]);
+    const company = stateText(item, ["companyName", "company.name", "company"]);
+    return Boolean(title && (url || company));
+  }
+
+  function mapZhilianStateJob(item, keyword) {
+    const title = cleanJobTitle(stateText(item, ["jobName", "positionName", "name", "title"]));
+    const rawUrl = stateText(item, ["positionUrl", "positionURL", "jobUrl", "url", "redirectUrl", "applyUrl"]);
+    const url = resolveZhilianJobUrl(rawUrl);
+    const description = trimToUsefulLength(stripHtml(stateText(item, [
+      "description",
+      "jobDesc",
+      "jobDescription",
+      "positionDesc",
+      "jobDetailData.position.desc.description",
+      "position.desc.description"
+    ])), 8000);
+    return {
+      id: stateText(item, ["number", "positionNumber", "jobNumber", "jobId", "positionId"]) || extractUrlId(url),
+      title,
+      company: stateText(item, ["companyName", "company.name", "company"]),
+      salary: stateText(item, ["salary60", "salary", "salaryDesc", "salaryName"]),
+      location: stateText(item, ["workCity", "cityName", "city", "cityDistrict", "district"]) || guessZhilianLocation(compact(JSON.stringify(item).slice(0, 600))),
+      experience: stateText(item, ["workingExp", "workExperience", "experience", "experienceName"]),
+      degree: stateText(item, ["education", "educationName", "degree", "degreeName"]),
+      deliveryStatus: "",
+      description,
+      url,
+      keyword,
+      source: "zhilian-initial-state"
     };
   }
 
@@ -1225,11 +1331,17 @@
   }
 
   function postProgress(message, type, text, meta = {}) {
-    if (!message.pageTabId) return;
     chrome.runtime.sendMessage({
       source: "GET_JOBS_PLATFORM",
       pageTabId: message.pageTabId,
-      payload: { platform: "zhilian", type, message: text, timestamp: Date.now(), ...meta }
+      payload: {
+        platform: "zhilian",
+        type,
+        message: text,
+        timestamp: Date.now(),
+        runId: message?.runId || "",
+        ...meta
+      }
     });
   }
 
@@ -1359,8 +1471,10 @@
 
   async function scrollForCards(searchJobLimit = 20) {
     const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
+    const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
+    const scrollStep = Math.max(480, Math.min(900, Math.floor(viewportHeight * 0.9) || 640));
     for (let i = 0; i < scrollRounds && !await hasStopRequested(); i++) {
-      window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
+      window.scrollBy(0, scrollStep);
       await humanPause(550, 950);
     }
     window.scrollTo(0, 0);
@@ -1397,12 +1511,32 @@
     const localTask = readStoredScanTask();
     if (localTask) return localTask;
 
+    const ownership = await readScanTabOwnership();
+    if (!ownership?.isOwner) return null;
+
     const sharedTask = await readSharedScanTask();
     if (sharedTask) {
+      if (ownership.ownerToken && sharedTask.scanOwnerToken && ownership.ownerToken !== sharedTask.scanOwnerToken) {
+        return null;
+      }
       sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(sharedTask));
       return sharedTask;
     }
     return null;
+  }
+
+  async function readScanTabOwnership() {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return { success: false, isOwner: false };
+    }
+    try {
+      return await chrome.runtime.sendMessage({
+        source: "GET_JOBS_ZHILIAN_CONTENT",
+        type: "ZHILIAN_SCAN_OWNER_STATUS"
+      });
+    } catch {
+      return { success: false, isOwner: false };
+    }
   }
 
   async function writeSharedScanTask(task) {
@@ -1615,13 +1749,15 @@
   }
 
   function isResumableScanTask(task) {
+    return Boolean(isFreshScanTask(task) && isZhilianUrl(window.location.href));
+  }
+
+  function isFreshScanTask(task) {
     if (!task || task.type !== "ZHILIAN_SCAN_START" || !task.runId) return false;
     if (task.completed || task.phase === "complete" || task.phase === "stopped" || task.phase === "error") return false;
 
     const lastActiveAt = Number(task.updatedAt || task.startedAt || 0);
-    if (!lastActiveAt || Date.now() - lastActiveAt > SCAN_TASK_TTL_MS) return false;
-
-    return isZhilianTaskPage(task);
+    return Boolean(lastActiveAt && Date.now() - lastActiveAt <= SCAN_TASK_TTL_MS);
   }
 
   function isZhilianTaskPage(task) {
@@ -1714,26 +1850,32 @@
   }
 
   function buildSearchUrl(keyword, config, pageNumber = 1) {
-    const city = first(config.cityCode, "0");
-    const pathCity = city && city !== "0" ? city : "0";
+    const city = first(config.cityCode || config.cityId || config.city, "0");
     const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
-    return `https://www.zhaopin.com/sou/jl${pathCity}/kw${encodeURIComponent(keyword)}/p${page}`;
+    const params = new URLSearchParams();
+    params.set("kw", keyword);
+    params.set("cityId", city || "0");
+    if (page > 1) params.set("p", String(page));
+    return `https://www.zhaopin.com/sou/?${params.toString()}`;
   }
 
   function isCurrentSearchPage(keyword, config, pageNumber = 1) {
     try {
       const current = new URL(window.location.href);
       if (!current.hostname.includes("zhaopin.com")) return false;
-      if (!current.pathname.startsWith("/sou/")) return false;
+      if (!current.pathname.startsWith("/sou")) return false;
+
+      const expectedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+      const currentPage = currentSearchPageNumber();
+      if (currentPage !== expectedPage) return false;
 
       const target = new URL(buildSearchUrl(keyword, config, pageNumber));
-      if (current.pathname === target.pathname) return true;
+      const currentKeyword = current.searchParams.get("kw") || current.searchParams.get("keyword") || current.searchParams.get("query") || "";
+      const targetKeyword = target.searchParams.get("kw") || keyword;
+      if (compact(currentKeyword) === compact(targetKeyword) || decodeURIComponentSafe(currentKeyword) === keyword) return true;
 
       const keywordInPath = current.pathname.match(/\/kw([^/]+)/);
       if (!keywordInPath) return false;
-      const currentPage = currentSearchPageNumber();
-      const expectedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
-      if (currentPage !== expectedPage) return false;
       const encodedKeyword = encodeURIComponent(keyword);
       const rawKeyword = keywordInPath[1] || "";
       if (rawKeyword === encodedKeyword || decodeURIComponentSafe(rawKeyword) === keyword) return true;
@@ -1761,8 +1903,9 @@
     const currentUrl = window.location.href;
     const detailLinks = unique(JOB_LINK_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
       .filter((link) => isZhilianJobDetailUrl(resolveZhilianJobUrl(link))).length;
+    const initialStateJobs = collectZhilianInitialStateJobs("");
     const entries = collectJobEntries();
-    const jobNodes = entries.length || document.querySelectorAll("[class*='joblist'], [class*='jobList'], [class*='job-card'], [class*='jobCard'], [class*='position']").length;
+    const jobNodes = entries.length || initialStateJobs.length || document.querySelectorAll("[class*='joblist'], [class*='jobList'], [class*='job-card'], [class*='jobCard'], [class*='position']").length;
     const firstCard = entries[0]?.root;
     const firstCardText = compact(firstCard?.innerText || firstCard?.textContent || "").slice(0, 160);
     const hasLoginPrompt = isStrongLoginPrompt(bodyText, currentUrl);
@@ -1782,6 +1925,7 @@
       title: document.title || "",
       detailLinks,
       jobNodes,
+      initialStateJobs: initialStateJobs.length,
       pageState,
       firstCardText,
       hasLoginPrompt,
@@ -1810,20 +1954,30 @@
   function handleBlockingState(task, diagnostics, meta = {}) {
     if (!diagnostics || !(diagnostics.hasSecurityPrompt || diagnostics.hasLoginPrompt)) return false;
     const state = diagnostics.hasSecurityPrompt ? "安全验证" : "登录提示";
-    clearStoredScanTask();
+    storeScanTask({
+      ...task,
+      blockedAt: Date.now(),
+      blockState: state
+    }).catch((error) => {
+      console.warn("[GetJobs] 智联暂停断点保存失败", error);
+    });
     writeScanStatus({
       isRunning: false,
-      stopRequested: true,
+      stopRequested: false,
       stage: "blocked",
-      message: `智联页面出现${state}，扫描已暂停，请处理后重新开始。`,
+      paused: true,
+      resumable: true,
+      message: `智联页面出现${state}，扫描已暂停且断点已保留。处理完成后可继续。`,
       runId: task?.runId,
       startedAt: task?.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task || {}, "warning", `智联页面出现${state}，扫描已暂停，请在Chrome中处理验证码/登录/安全验证后重新开始。`, {
+    postProgress(task || {}, "warning", `智联页面出现${state}，扫描已暂停且断点已保留。请在Chrome中处理后再次点击扫描继续。`, {
       ...meta,
       operation: "scan",
       stage: "blocked",
+      paused: true,
+      resumable: true,
       currentUrl: diagnostics.currentUrl,
       pageState: diagnostics.pageState
     });
@@ -1863,6 +2017,64 @@
     } catch {
       return String(value || "");
     }
+  }
+
+  function stateText(source, paths) {
+    for (const path of paths) {
+      const value = readStatePath(source, path);
+      if (value === null || value === undefined) continue;
+      if (typeof value === "object") continue;
+      const text = compact(String(value));
+      if (text && text !== "null" && text !== "undefined") return text;
+    }
+    return "";
+  }
+
+  function readStatePath(source, path) {
+    return String(path || "").split(".").reduce((current, key) => {
+      if (current === null || current === undefined) return undefined;
+      return current[key];
+    }, source);
+  }
+
+  function extractJsonObjectAfter(text, marker) {
+    const source = String(text || "");
+    const markerIndex = source.indexOf(marker);
+    if (markerIndex < 0) return "";
+    const start = source.indexOf("{", markerIndex);
+    if (start < 0) return "";
+    return balancedJsonSlice(source, start);
+  }
+
+  function balancedJsonSlice(text, start) {
+    let depth = 0;
+    let inString = false;
+    let quote = "";
+    let escaped = false;
+    for (let index = start; index < text.length; index++) {
+      const ch = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === quote) {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"" || ch === "'") {
+        inString = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return text.slice(start, index + 1);
+      }
+    }
+    return "";
   }
 
   function textOf(root, selectors) {
@@ -1967,6 +2179,16 @@
 
   function compact(text) {
     return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function trimToUsefulLength(text, limit) {
+    const value = compact(text || "");
+    if (!value) return "";
+    return value.length > limit ? value.slice(0, limit) : value;
+  }
+
+  function stripHtml(text) {
+    return compact(String(text || "").replace(/<[^>]+>/g, " "));
   }
 
   function firstMatch(text, pattern) {

@@ -1,151 +1,199 @@
-# 投递牛马 工作无忧
+# 投递牛马
 
-投递牛马是一个基于 Spring Boot、Next.js 和 Playwright 的本地求职辅助工具，用于在招聘平台上完成配置管理、登录状态维护、扫描岗位、AI 分析、待确认、用户确认后投递、进度推送和岗位数据分析。
+投递牛马是一个本地运行的求职辅助工具。它用网页界面管理求职配置，用 Spring Boot 后端保存数据和编排任务，用 Playwright 或 Chrome Bridge 辅助采集岗位、调用 AI 做匹配分析，并在用户确认后执行投递。
 
-当前项目阶段：**1.2 MVP 全流程打通**。这一阶段已经把本地 GUI、后端任务编排、AI 岗位分析、Chrome 已登录标签页桥接、待确认投递、结果回写和岗位分析串成可用闭环。
+当前版本以 Windows 本机使用为主，阶段为 `1.2 MVP 全流程打通`。后端、前端和 Chrome 扩展版本均为 `1.2.0`。
 
-> 使用前请理解招聘平台规则和账号风险。Boss 直聘网页端稳定性不如手机端，不建议完全依赖程序投递；智联招聘当前投递链路在项目文档中也标注为不稳定。
-> 项目以本地运行为主，GitHub 仅作为代码备份和版本管理使用；不要提交数据库、Cookie、API Key、简历图片等敏感文件。
+## 当前能做什么
 
-## 当前进度
+- 管理多个候选人档案、简历文本、AI 配置、平台配置和黑名单。
+- 支持 Boss 直聘、智联招聘、猎聘、前程无忧 51job 四个平台的本地流程。
+- Boss 和智联支持 Chrome Bridge：复用你已登录的 Chrome 页面，扫描岗位，提交本地后端做 AI 分析。
+- AI 命中的岗位会进入 `待确认`，用户在分析页确认后才会投递。
+- 保存投递状态，展示统计卡片、图表、岗位列表和失败原因。
+- 使用 SQLite 保存在本机，默认数据库在 `db/getjobs.db`。
 
-- 阶段名称：`1.2 MVP 全流程打通`
-- 版本号：后端 `1.2.0`，前端 `1.2.0`，Chrome 扩展 `1.2.0`。
-- 已完成 MVP 主流程：配置检查、岗位扫描、AI 分析、待确认、用户确认后投递、状态回写、分析统计。
-- 已完成本地 GUI：工作台、环境配置、AI 配置、平台配置、运行日志、投递分析页面。
-- 已完成后端主链路：Spring Boot API、SSE 进度推送、SQLite 持久化、Cookie/配置管理。
-- 已完成自动化主链路：Boss、猎聘、51job、智联的 Playwright worker 保留；Boss 和智联打通 Chrome Bridge 扫描/确认投递路线。
-- 已完成 AI 分析：采集岗位后进入 AI 匹配，命中岗位写入“待确认”，再由用户确认后投递。
-- 已完成文件整理：本地数据库、日志、构建产物、依赖缓存、`.pnpm-store`、`node_modules`、`.env` 等均不进入 Git。
+## 当前不能做什么
 
-## 功能概览
-
-- 图形化管理界面：在网页端配置平台参数、AI 参数和运行任务。
-- 多平台支持：Boss 直聘、猎聘、前程无忧 51job、智联招聘。
-- 自动化执行：使用 Playwright 或 Chrome Bridge 辅助登录、搜索、扫描和筛选；Boss/智联推荐按“扫描岗位 → AI 分析 → 待确认 → 用户确认后投递”的流程执行。
-- Chrome 扩展桥接：Boss 和智联支持复用用户已登录的 Chrome 标签页扫描岗位、提交 AI 分析，并在确认后执行投递。
-- AI 辅助：支持配置模型接口，用于 Boss 直聘岗位匹配和打招呼语生成。
-- 实时进度：后端通过 SSE 向前端推送投递进度。
-- 数据持久化：使用 SQLite 保存配置、Cookie、投递数据和统计数据。
-- 岗位分析：前端提供各平台投递结果列表与统计视图。
-
-## 技术栈
-
-| 层级 | 技术 |
-| --- | --- |
-| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS、shadcn/ui、Chart.js |
-| 后端 | JDK 21、Spring Boot 3.5.7、Gradle、MyBatis-Plus |
-| 自动化 | Microsoft Playwright for Java |
-| 数据库 | SQLite |
+- 不能保证招聘网站改版后仍然稳定，页面结构变化可能需要维护选择器。
+- 不能绕过平台风控、登录验证、验证码或投递限制。
+- 不能自动合并 PR、删除分支或 force push。
+- 不是 SaaS 服务，不建议部署到公网服务器给多人共用。
+- OpenClaw 通路仍是实验能力，不是 Windows 主流程必需项。
 
 ## 目录结构
 
 ```text
 .
-├── README.md                 # 项目入口说明
-├── build.gradle.kts          # 后端 Gradle 构建配置
-├── chrome-extension/          # 投递牛马 Chrome Bridge 扩展
-├── db/getjobs.db             # 本地 SQLite 数据库
-├── doc/                      # 项目文档
-├── front/                    # Next.js 前端
-├── src/main/java/com/getjobs # Spring Boot 后端与 worker 自动化逻辑
-└── src/main/resources        # 后端配置、静态资源、插件资源
+├── src/main/java/com/getjobs        # Spring Boot 后端、业务服务、worker
+├── src/main/resources               # 后端配置、Flyway 迁移、可选静态资源
+├── front                            # Next.js 前端
+├── chrome-extension                 # 投递牛马 Chrome Bridge 扩展
+├── bin                              # Windows 辅助脚本
+├── doc                              # 历史文档、使用指南和说明
+├── .github/workflows/ci.yml         # GitHub Actions 检查
+├── start_windows.bat / .ps1         # Windows 本机启动入口
+├── start_docker.bat / .ps1 / .sh    # Docker 启动入口
+├── build.gradle.kts                 # 后端 Gradle 配置
+├── README.md                        # 项目入口说明
+├── ARCHITECTURE.md                  # 架构说明
+├── TASK_FLOW.md                     # 任务流程说明
+└── WINDOWS_SETUP.md                 # Windows 新手部署说明
 ```
 
-## 快速启动
+## 环境准备
 
-### 1. 准备环境
+Windows 本机运行需要：
 
-- JDK 21
+- Windows 10 或 Windows 11
+- Java 21
 - Node.js 20.19 或更高版本
 - pnpm
-- 可正常访问招聘网站的本机网络环境
+- Chrome 浏览器
+- Git
 
-### 2. 启动后端
+如果使用 Docker 方式，则需要 Docker Desktop，且不需要手动安装 Java、Node.js、pnpm。
 
-```bash
-./gradlew bootRun
+## Windows 本机快速启动
+
+在项目根目录双击：
+
+```text
+start_windows.bat
 ```
 
-后端默认端口为 `8888`，配置文件位于 `src/main/resources/application.yaml`。
+它会检查 Java、Node.js、pnpm、前端依赖，准备 `db`、`data`、`logs`、`output` 等运行目录，然后分别启动后端和前端。
 
-### 3. 启动前端
-
-```bash
-cd front
-pnpm install
-pnpm dev
-```
-
-前端默认端口为 `6866`，配置文件位于 `front/server.config.js`。启动后访问：
+启动成功后打开：
 
 ```text
 http://localhost:6866
 ```
 
-### 4. 配置并运行
+后端健康检查地址：
 
-1. 打开网页端。
-2. 在环境配置和 AI 配置页面填写企业微信机器人、模型接口等参数。
-3. 到对应平台页面配置城市、岗位、薪资、投递页数等筛选条件。
-4. 登录平台账号并保存 Cookie。
-5. 点击开始运行，在页面中查看实时日志和统计结果。
+```text
+http://localhost:8888/api/health
+```
 
-更完整的步骤见 [使用指南](doc/使用指南.md)。
+如果你手动运行，请在项目根目录执行：
+
+```powershell
+.\start_windows.ps1
+```
+
+更完整的新手步骤见 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)。
+
+## 手动开发启动
+
+后端：
+
+```powershell
+.\gradlew.bat bootRun
+```
+
+前端：
+
+```powershell
+cd front
+pnpm install
+pnpm dev
+```
+
+前端默认端口为 `6866`，后端默认端口为 `8888`。前端开发代理配置在 `front/server.config.js`。
+
+## Docker 启动
+
+在项目根目录双击：
+
+```text
+start_docker.bat
+```
+
+或执行：
+
+```powershell
+.\start_docker.ps1
+```
+
+Docker 方式会读取 `.env`，如果没有 `.env`，会使用 `docker-compose.yml` 和 `.env.example` 中说明的默认值。
+
+## 配置 `.env`
+
+普通 Windows 本机使用通常不需要先写 `.env`。建议先用网页端填写环境配置和 AI 配置。
+
+需要自定义目录或 Docker 参数时，可以复制：
+
+```text
+.env.example -> .env
+```
+
+然后只填写你需要的值。不要把真实 `.env`、API Key、Cookie、账号密码、简历或浏览器缓存提交到 Git。
 
 ## Chrome Bridge 扩展
 
-Boss 和智联建议优先使用 Chrome Bridge 路线：
+Boss 和智联推荐使用 Chrome Bridge 路线：
 
-1. 打开 Chrome 扩展管理页 `chrome://extensions/`。
-2. 开启开发者模式。
-3. 点击“加载已解压的扩展程序”，选择项目内 `chrome-extension/`。
-4. 确认前端页面能显示扩展连接状态。
-5. 在 Chrome 中登录 Boss 或智联，再回到前端启动 Chrome 扫描。
+1. 打开 Chrome 地址 `chrome://extensions/`。
+2. 打开右上角“开发者模式”。
+3. 点击“加载已解压的扩展程序”。
+4. 选择项目里的 `chrome-extension` 文件夹。
+5. 打开 `http://localhost:6866`，确认扩展连接正常。
+6. 在 Chrome 中登录 Boss 或智联，再回到前端开始扫描。
 
-扩展只面向本地开发地址和招聘平台域名工作；投递前，分析页会先生成待确认任务，用户确认后才会通过 Chrome 页面执行。
+投递前仍需要你在分析页确认，不会默认绕过人工确认。
+
+## 常用命令
+
+```powershell
+# 后端测试
+.\gradlew.bat test
+
+# 后端构建
+.\gradlew.bat build
+
+# 前端检查
+cd front
+pnpm lint
+
+# 前端静态构建并复制到后端资源目录
+cd front
+pnpm build:prod
+
+# 停止本机端口上的前后端服务
+.\bin\kill-services.bat
+```
+
+## 新手使用流程
+
+1. 按 [WINDOWS_SETUP.md](WINDOWS_SETUP.md) 启动项目。
+2. 打开首页，看左侧检查项是否正常。
+3. 到“环境配置”页面保存基础配置。
+4. 到“AI 配置”页面保存模型配置和简历内容。
+5. 到 Boss 或智联页面配置求职目标。
+6. 加载 Chrome 扩展，并在 Chrome 里登录招聘平台。
+7. 点击 Chrome 扫描，让系统采集岗位并做 AI 分析。
+8. 到对应平台分析页查看 `待确认` 岗位。
+9. 人工确认后执行单个或批量投递。
+10. 查看统计结果和失败原因。
+
+## 常见问题
+
+- 前端打不开：确认 `http://localhost:6866` 端口是否启动，可查看 `logs/windows-frontend.log`。
+- 后端连接失败：确认 `http://localhost:8888/api/health` 是否返回 `UP`，可查看 `logs/windows-backend.log`。
+- 端口被占用：执行 `.\bin\kill-services.bat` 后重新启动。
+- Java 版本低：安装 Java 21，并重新打开 PowerShell。
+- pnpm 不存在：执行 `corepack enable`，再执行 `corepack prepare pnpm@10.20.0 --activate`。
+- Chrome 扩展无响应：确认扩展已加载、前端地址是 `localhost:6866` 或 `127.0.0.1:6866`，并刷新页面。
+- AI 分析失败：确认 AI 配置里的 `BASE_URL`、`API_KEY`、`MODEL` 正确，且简历内容已保存。
 
 ## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
-| [文档索引](doc/文档索引.md) | 所有文档的入口和说明 |
-| [1.2 版本说明](doc/1.0自动投简历脚本.md) | MVP 全流程、已完成功能、运行方式和后续计划 |
-| [项目检查报告](doc/项目检查报告.md) | 项目结构检查、整理结果和注意事项 |
-| [使用指南](doc/使用指南.md) | 环境准备、启动、配置、平台使用说明 |
-| [开发指南](doc/开发指南.md) | 本地开发、构建、目录说明、常用命令 |
-| [架构说明](doc/架构说明.md) | 前端、后端、worker、数据库和运行流程 |
-| [API 接口](doc/API接口.md) | 主要后端接口按模块整理 |
-| [更新日志](doc/更新日志.md) | 历史版本变化 |
-
-## 常用命令
-
-```bash
-# 后端开发运行
-./gradlew bootRun
-
-# 后端测试
-./gradlew test
-
-# 前端开发运行
-cd front && pnpm dev
-
-# 前端构建
-cd front && pnpm build
-
-# 前端生产静态构建并复制 dist
-cd front && pnpm build:prod
-```
-
-## 重要注意事项
-
-- 本项目以本地运行为主：`.github` 工作流已移除，GitHub 仅作为代码备份和版本管理使用。
-- 本项目更适合在个人电脑本地运行，不建议部署到服务器。招聘网站通常会识别服务器 IP，可能无法返回正常数据。
-- 不建议开启境外代理访问国内招聘网站，否则页面加载可能变慢或失败。
-- 数据库、Cookie、API Key、简历图片等都属于敏感数据，请勿提交到公开仓库。
-- `.gitignore` 已忽略 `db/`、`*.db`、`.env`、`cookie.json`、`*.jpg`、`.pnpm-store/`、构建目录和 Playwright 缓存目录。
-- 前端构建产物可放到 `src/main/resources/dist` 后由后端静态资源服务承载。
-
-## 开源协议
-
-项目使用自定义限制商业化的开源协议，详见 [LICENSE](LICENSE)。
+| [WINDOWS_SETUP.md](WINDOWS_SETUP.md) | Windows 新手安装、启动、验证和排错 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 当前架构、模块职责、数据流和 SaaS 演进 |
+| [TASK_FLOW.md](TASK_FLOW.md) | 从上传简历到确认投递的完整流程 |
+| [SECURITY.md](SECURITY.md) | 本地数据、Cookie、API Key 的安全边界 |
+| [ROADMAP.md](ROADMAP.md) | 阶段计划和后续方向 |
+| [doc/文档索引.md](doc/文档索引.md) | 历史文档和补充资料索引 |

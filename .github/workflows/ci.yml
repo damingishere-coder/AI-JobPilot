@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    env:
+      APP_AUTO_OPEN_BROWSER: "false"
+      APP_BROWSER_HEADLESS: "true"
+      APP_CACHE_DIR: ${{ runner.temp }}/cache
+      APP_DATA_DIR: ${{ runner.temp }}/data
+      APP_OUTPUT_DIR: ${{ runner.temp }}/output
+      LOGGING_FILE_NAME: ${{ runner.temp }}/logs/get-jobs.log
+      SPRING_DATASOURCE_URL: jdbc:sqlite:${{ runner.temp }}/getjobs-ci.db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Prepare Gradle wrapper
+        run: chmod +x ./gradlew
+
+      - name: Run backend tests
+        run: ./gradlew test --no-daemon
+
+      - name: Build backend
+        run: ./gradlew build --no-daemon
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: front/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: front
+        run: pnpm install --frozen-lockfile
+
+      - name: Run frontend lint
+        working-directory: front
+        run: pnpm lint
+
+      - name: Build frontend
+        working-directory: front
+        run: pnpm build

@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.StringUtils;
+import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BlacklistEntity;
 import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.entity.BossIndustryEntity;
@@ -27,6 +28,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -83,15 +86,11 @@ public class BossService {
             bossOptionMapper.insert(unlimited);
         }
 
-        // 排序：city/industry 按 sort_order 优先，其次 id；其他类型维持原有 id 升序
+        // 排序：所有 Boss 筛选项都按 sort_order 优先，其次 id，保证薪资/经验等固定顺序显示
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
-        if ("city".equals(type) || "industry".equals(type)) {
-            // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
-            wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
-        } else {
-            wrapper.orderByAsc("id");
-        }
+        // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
+        wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
         return bossOptionMapper.selectList(wrapper);
     }
 
@@ -572,6 +571,10 @@ public class BossService {
                         "company_name TEXT, " +
                         "job_name TEXT, " +
                         "salary TEXT, " +
+                        "salary_min_k REAL, " +
+                        "salary_max_k REAL, " +
+                        "salary_median_k REAL, " +
+                        "salary_months INTEGER, " +
                         "location TEXT, " +
                         "experience TEXT, " +
                         "degree TEXT, " +
@@ -600,11 +603,16 @@ public class BossService {
                 stmt.execute(createSql);
 
                 String copySql = "INSERT INTO boss_data_new (" +
-                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
+                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, salary_min_k, salary_max_k, salary_median_k, salary_months, location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
                         ") SELECT " +
-                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, location, experience, degree, " +
+                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, " +
+                        (cols.contains("salary_min_k") ? "salary_min_k" : "NULL") + ", " +
+                        (cols.contains("salary_max_k") ? "salary_max_k" : "NULL") + ", " +
+                        (cols.contains("salary_median_k") ? "salary_median_k" : "NULL") + ", " +
+                        (cols.contains("salary_months") ? "salary_months" : "NULL") + ", " +
+                        "location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, " +
                         (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
                         (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
@@ -670,6 +678,7 @@ public class BossService {
         LocalDateTime now = LocalDateTime.now();
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
+        applyStructuredSalary(entity);
         bossJobDataMapper.insert(entity);
     }
 
@@ -677,7 +686,7 @@ public class BossService {
         return upsertChromeBossJob(entity, null);
     }
 
-    public BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
+    public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
         if (entity == null) return null;
         Long profileId = profileService.getCurrentProfileId();
         entity.setProfileId(profileId);
@@ -688,12 +697,11 @@ public class BossService {
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId, scanRunId);
+            existing = getBossJobByKey(encryptId, encryptUserId, null);
             if (existing == null) {
                 QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
                 wrapper.eq("profile_id", profileId)
                         .eq("encrypt_id", encryptId);
-                applyScanRunFilter(wrapper, scanRunId);
                 wrapper.last("LIMIT 1");
                 existing = bossJobDataMapper.selectOne(wrapper);
             }
@@ -703,7 +711,6 @@ public class BossService {
             wrapper.eq("profile_id", profileId)
                     .eq("company_name", entity.getCompanyName())
                     .eq("job_name", entity.getJobName());
-            applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
             existing = bossJobDataMapper.selectOne(wrapper);
         }
@@ -713,6 +720,7 @@ public class BossService {
             entity.setDeliveryStatus(entity.getDeliveryStatus() == null ? DeliveryStatus.NOT_DELIVERED : entity.getDeliveryStatus());
             entity.setCreatedAt(now);
             entity.setUpdatedAt(now);
+            applyStructuredSalary(entity);
             bossJobDataMapper.insert(entity);
             return entity;
         }
@@ -773,7 +781,24 @@ public class BossService {
         merged.setAiDecision(existing.getAiDecision());
         merged.setAiReason(existing.getAiReason());
         merged.setPriorityCompany(existing.getPriorityCompany());
+        applyStructuredSalary(merged);
         return merged;
+    }
+
+    private void applyStructuredSalary(BossJobDataEntity entity) {
+        if (entity == null) return;
+        SalaryParser.ParsedSalary parsed = SalaryParser.parse(entity.getSalary());
+        if (parsed == null) {
+            entity.setSalaryMinK(null);
+            entity.setSalaryMaxK(null);
+            entity.setSalaryMedianK(null);
+            entity.setSalaryMonths(null);
+            return;
+        }
+        entity.setSalaryMinK(parsed.minK());
+        entity.setSalaryMaxK(parsed.maxK());
+        entity.setSalaryMedianK(parsed.medianK());
+        entity.setSalaryMonths(parsed.months());
     }
 
     private String nextChromeDeliveryStatus(String existingStatus, String incomingStatus) {
@@ -853,6 +878,74 @@ public class BossService {
         return findExistingChromeBossJob(encryptId, companyName, jobName, null);
     }
 
+    public Map<Integer, BossJobDataEntity> findExistingChromeBossJobs(Long profileId, List<ChromeJobDto> jobs, String scanRunId) {
+        if (profileId == null || jobs == null || jobs.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Set<String> encryptIds = new LinkedHashSet<>();
+        Set<String> companyNames = new LinkedHashSet<>();
+        Set<String> jobNames = new LinkedHashSet<>();
+        List<ChromeJobLookup> lookups = new ArrayList<>();
+
+        for (int index = 0; index < jobs.size(); index++) {
+            ChromeJobDto dto = jobs.get(index);
+            String encryptId = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
+            String companyName = dto == null ? null : dto.getCompany();
+            String jobName = dto == null ? null : dto.getTitle();
+            lookups.add(new ChromeJobLookup(index, encryptId, companyName, jobName));
+
+            if (!isBlank(encryptId)) {
+                encryptIds.add(encryptId);
+            }
+            if (!isBlank(companyName) && !isBlank(jobName)) {
+                companyNames.add(companyName);
+                jobNames.add(jobName);
+            }
+        }
+
+        if (encryptIds.isEmpty() && (companyNames.isEmpty() || jobNames.isEmpty())) {
+            return Collections.emptyMap();
+        }
+
+        List<BossJobDataEntity> existingRows = bossJobDataMapper.selectExistingChromeBossJobs(
+                profileId,
+                new ArrayList<>(encryptIds),
+                new ArrayList<>(companyNames),
+                new ArrayList<>(jobNames)
+        );
+        if (existingRows == null) {
+            existingRows = Collections.emptyList();
+        }
+
+        Map<String, BossJobDataEntity> byEncryptId = new HashMap<>();
+        Map<String, BossJobDataEntity> byCompanyAndTitle = new HashMap<>();
+        for (BossJobDataEntity row : existingRows) {
+            if (row == null) continue;
+            if (!isBlank(row.getEncryptId())) {
+                byEncryptId.putIfAbsent(row.getEncryptId(), row);
+            }
+            if (!isBlank(row.getCompanyName()) && !isBlank(row.getJobName())) {
+                byCompanyAndTitle.putIfAbsent(companyTitleKey(row.getCompanyName(), row.getJobName()), row);
+            }
+        }
+
+        Map<Integer, BossJobDataEntity> result = new LinkedHashMap<>();
+        for (ChromeJobLookup lookup : lookups) {
+            BossJobDataEntity existing = null;
+            if (!isBlank(lookup.encryptId())) {
+                existing = byEncryptId.get(lookup.encryptId());
+            }
+            if (existing == null && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
+                existing = byCompanyAndTitle.get(companyTitleKey(lookup.companyName(), lookup.jobName()));
+            }
+            if (existing != null) {
+                result.put(lookup.index(), existing);
+            }
+        }
+        return result;
+    }
+
     public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName, String scanRunId) {
         if (encryptId != null && !encryptId.isBlank()) {
             Long profileId = profileService.getCurrentProfileIdOrNull();
@@ -904,6 +997,23 @@ public class BossService {
         }
     }
 
+    private String normalizeScanRunId(String scanRunId) {
+        return scanRunId == null || scanRunId.isBlank() ? null : scanRunId.trim();
+    }
+
+    private String companyTitleKey(String companyName, String jobName) {
+        return companyName + "\u001F" + jobName;
+    }
+
+    private String extractBossId(String url) {
+        if (url == null) return null;
+        Matcher matcher = Pattern.compile("/job_detail/([^/?#]+)").matcher(url);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private record ChromeJobLookup(int index, String encryptId, String companyName, String jobName) {
+    }
+
     public BossJobDataEntity updateDeliveryStatusById(Long id, String status) {
         return updateDeliveryStatusById(id, status, null, null);
     }
@@ -940,8 +1050,8 @@ public class BossService {
      * 薪资解析结果
      */
     public static class SalaryInfo {
-        public Integer minK;      // 最小K（单位：K/月）
-        public Integer maxK;      // 最大K（单位：K/月）
+        public Double minK;       // 最小K（单位：K/月）
+        public Double maxK;       // 最大K（单位：K/月）
         public Integer months;    // 月数（默认12）
         public Double medianK;    // 中位数K
         public Long annualTotal;  // 年包（单位：元）
@@ -955,52 +1065,14 @@ public class BossService {
      *  - 面议（返回null）
      */
     public static SalaryInfo parseSalary(String salary) {
-        if (salary == null) return null;
-        String s = salary.trim();
-        if (s.isEmpty()) return null;
-        if (s.contains("面议")) return null;
-        s = s.replace(" ", "");
-
-        Integer months = 12;
-        // 提取 months=xx（如 ·16薪）
-        Matcher mMonths = Pattern.compile("[·\\.\\-]?([0-9]+)薪").matcher(s);
-        if (mMonths.find()) {
-            try { months = Integer.parseInt(mMonths.group(1)); } catch (Exception ignore) {}
-            // 去掉薪资后缀以便解析区间
-            s = s.substring(0, mMonths.start());
-        }
-
-        // 提取区间或单值（K/k）
-        Integer minK = null, maxK = null;
-        Matcher mRange = Pattern.compile("^(\\d+)-(\\d+)[Kk]$").matcher(s);
-        Matcher mSingle = Pattern.compile("^(\\d+)[Kk]$").matcher(s);
-        if (mRange.find()) {
-            minK = Integer.parseInt(mRange.group(1));
-            maxK = Integer.parseInt(mRange.group(2));
-        } else if (mSingle.find()) {
-            minK = Integer.parseInt(mSingle.group(1));
-            maxK = minK;
-        } else {
-            // 尝试更宽松解析：去掉非数字和K以外字符
-            String cleaned = s.replaceAll("[^0-9Kk\\-]", "");
-            mRange = Pattern.compile("^(\\d+)-(\\d+)[Kk]$").matcher(cleaned);
-            mSingle = Pattern.compile("^(\\d+)[Kk]$").matcher(cleaned);
-            if (mRange.find()) {
-                minK = Integer.parseInt(mRange.group(1));
-                maxK = Integer.parseInt(mRange.group(2));
-            } else if (mSingle.find()) {
-                minK = Integer.parseInt(mSingle.group(1));
-                maxK = minK;
-            }
-        }
-
-        if (minK == null || maxK == null) return null;
+        SalaryParser.ParsedSalary parsed = SalaryParser.parse(salary);
+        if (parsed == null) return null;
 
         SalaryInfo info = new SalaryInfo();
-        info.minK = minK;
-        info.maxK = maxK;
-        info.months = months != null ? months : 12;
-        info.medianK = (minK + maxK) / 2.0;
+        info.minK = parsed.minK();
+        info.maxK = parsed.maxK();
+        info.months = parsed.months();
+        info.medianK = parsed.medianK();
         info.annualTotal = Math.round(info.medianK * 1000 * info.months);
         return info;
     }
@@ -1011,6 +1083,7 @@ public class BossService {
         public long delivered;
         public long pending;
         public long waitingConfirm;
+        public long listCollected;
         public long filtered;
         public long failed;
         public long insufficient;
@@ -1104,14 +1177,14 @@ public class BossService {
                 resp.charts = charts;
                 return resp;
             }
-            String effectiveScanRunId = resolveBossScanRunId(null);
-            String runWhere = bossSqlWhere(profileId, effectiveScanRunId);
+            String runWhere = bossSqlWhere(profileId, null);
             String runAnd = runWhere + " AND ";
             // KPI 基本计数
             resp.kpi.total = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runWhere);
             resp.kpi.delivered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已投递'");
             resp.kpi.pending = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='未投递'");
             resp.kpi.waitingConfirm = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='待确认'");
+            resp.kpi.listCollected = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='LIST_COLLECTED'");
             resp.kpi.filtered = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='已过滤'");
             resp.kpi.failed = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='投递失败'");
             resp.kpi.insufficient = scalarCount(conn, "SELECT COUNT(*) FROM boss_data" + runAnd + "delivery_status='采集信息不足'");
@@ -1202,7 +1275,7 @@ public class BossService {
             charts.salaryBuckets.add(new BucketValue("20-" + topEdge + "K", b20_top));
             charts.salaryBuckets.add(new BucketValue(">=" + topEdge + "K", b_ge_top));
 
-            resp.overview = buildOverviewFromDatabase(conn, profileId, effectiveScanRunId);
+            resp.overview = buildOverviewFromDatabase(conn, profileId, null);
             resp.charts = charts;
             return resp;
         } catch (Exception e) {
@@ -1265,7 +1338,7 @@ public class BossService {
                 return resp;
             }
             wrapper.eq("profile_id", profileId);
-            String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+            String effectiveScanRunId = normalizeExplicitBossScanRunId(scanRunId);
             if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
             if (statuses != null && !statuses.isEmpty()) {
                 wrapper.in("delivery_status", statuses);
@@ -1314,6 +1387,7 @@ public class BossService {
             resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.isDelivered(e.getDeliveryStatus())).count();
             resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(e.getDeliveryStatus())).count();
             resp.kpi.waitingConfirm = filtered.stream().filter(e -> DeliveryStatus.isWaitingConfirm(e.getDeliveryStatus())).count();
+            resp.kpi.listCollected = filtered.stream().filter(e -> DeliveryStatus.LIST_COLLECTED.equals(e.getDeliveryStatus())).count();
             resp.kpi.filtered = filtered.stream().filter(e -> DeliveryStatus.FILTERED.equals(e.getDeliveryStatus())).count();
             resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.isDeliveryFailed(e.getDeliveryStatus())).count();
             resp.kpi.insufficient = filtered.stream().filter(e -> DeliveryStatus.COLLECTION_INSUFFICIENT.equals(e.getDeliveryStatus())).count();
@@ -1581,7 +1655,7 @@ public class BossService {
             return empty;
         }
         wrapper.eq("profile_id", profileId);
-        String effectiveScanRunId = resolveBossScanRunId(scanRunId);
+        String effectiveScanRunId = normalizeExplicitBossScanRunId(scanRunId);
         if (StringUtils.isNotBlank(effectiveScanRunId)) wrapper.eq("scan_run_id", effectiveScanRunId);
         if (statuses != null && !statuses.isEmpty()) {
             wrapper.in("delivery_status", statuses);
@@ -1633,19 +1707,8 @@ public class BossService {
         return result;
     }
 
-    public String resolveBossScanRunId(String scanRunId) {
-        if (StringUtils.isNotBlank(scanRunId)) return scanRunId.trim();
-        Long profileId = profileService.getCurrentProfileIdOrNull();
-        if (profileId == null) return null;
-        QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-        wrapper.select("scan_run_id")
-                .eq("profile_id", profileId)
-                .isNotNull("scan_run_id")
-                .ne("scan_run_id", "")
-                .orderByDesc("created_at")
-                .last("LIMIT 1");
-        BossJobDataEntity latest = bossJobDataMapper.selectOne(wrapper);
-        return latest == null ? null : latest.getScanRunId();
+    public String normalizeExplicitBossScanRunId(String scanRunId) {
+        return StringUtils.isNotBlank(scanRunId) ? scanRunId.trim() : null;
     }
 
     /**

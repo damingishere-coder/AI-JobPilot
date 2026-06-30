@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "投递牛马 Chrome Bridge",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for 投递牛马.",
   "icons": {
     "16": "icons/icon16.png",
@@ -12,10 +12,9 @@
   "permissions": ["tabs", "scripting", "storage"],
   "host_permissions": [
     "http://localhost:6866/*",
-    "http://localhost:*/*",
-    "http://127.0.0.1:*/*",
-    "http://[::1]:*/*",
+    "http://127.0.0.1:6866/*",
     "http://localhost:8888/*",
+    "http://127.0.0.1:8888/*",
     "https://www.zhipin.com/*",
     "https://*.zhipin.com/*",
     "https://www.zhaopin.com/*",
@@ -26,13 +25,20 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://localhost:*/*", "http://127.0.0.1:*/*", "http://[::1]:*/*"],
+      "matches": ["http://localhost:6866/*", "http://127.0.0.1:6866/*"],
       "js": ["page-bridge.js"],
       "run_at": "document_start"
     },
     {
       "matches": ["https://www.zhipin.com/*", "https://*.zhipin.com/*"],
-      "js": ["boss-content.js"],
+      "js": [
+        "boss-selectors.js",
+        "boss-debug.js",
+        "boss-scan-support.js",
+        "boss-search-collector.js",
+        "boss-detail-collector.js",
+        "boss-content.js"
+      ],
       "run_at": "document_idle"
     },
     {

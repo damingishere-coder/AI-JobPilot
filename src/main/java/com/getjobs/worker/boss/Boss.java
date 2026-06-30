@@ -929,14 +929,16 @@ public class Boss {
      */
     private void appendRawJson(String body) {
         try {
-            java.io.File dir = new java.io.File("target");
-            if (!dir.exists()) dir.mkdirs();
-            java.io.File file = new java.io.File(dir, "job.txt");
-            try (java.io.FileWriter fw = new java.io.FileWriter(file, true)) {
-                fw.write(body);
-                fw.write(System.lineSeparator());
-                fw.write("\n");
-            }
+            java.nio.file.Path dir = java.nio.file.Paths.get("target");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path file = dir.resolve("job.txt");
+            java.nio.file.Files.writeString(
+                    file,
+                    body + System.lineSeparator() + System.lineSeparator(),
+                    java.nio.charset.StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND
+            );
         } catch (Exception e) {
             log.debug("写入 target/job.txt 失败：{}", e.getMessage());
         }

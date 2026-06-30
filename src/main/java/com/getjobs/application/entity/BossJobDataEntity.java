@@ -35,6 +35,18 @@ public class BossJobDataEntity {
     @TableField("salary")
     private String salary;
 
+    @TableField("salary_min_k")
+    private Double salaryMinK;
+
+    @TableField("salary_max_k")
+    private Double salaryMaxK;
+
+    @TableField("salary_median_k")
+    private Double salaryMedianK;
+
+    @TableField("salary_months")
+    private Integer salaryMonths;
+
     @TableField("location")
     private String location;
 

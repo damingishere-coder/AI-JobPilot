@@ -13,7 +13,6 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/profiles")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class ProfileController {
     private final ProfileService profileService;

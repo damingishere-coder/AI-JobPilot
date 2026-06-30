@@ -9,6 +9,7 @@
 
 # Frontend files
 *.js text eol=lf
+*.mjs text eol=lf
 *.jsx text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
@@ -27,8 +28,10 @@
 *.config text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+.env.example text eol=lf
 
 # Shell scripts
+gradlew text eol=lf
 *.sh text eol=lf
 
 # Windows scripts

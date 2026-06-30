@@ -33,6 +33,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -50,6 +52,7 @@ public class JobAiAnalysisService {
     private final JobAiAnalysisMapper jobAiAnalysisMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
+    private final ConcurrentMap<Long, List<PriorityCompanyEntity>> enabledPriorityCompanyCache = new ConcurrentHashMap<>();
 
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
@@ -144,7 +147,8 @@ public class JobAiAnalysisService {
                 priorityCompanyMapper.insert(entity);
             }
         }
-        return listPriorityCompanies();
+        evictPriorityCompanyCache(profileId);
+        return listPriorityCompanies(profileId);
     }
 
     public List<PriorityCompanyEntity> listPriorityCompanies() {
@@ -168,11 +172,35 @@ public class JobAiAnalysisService {
     public boolean isPriorityCompany(String companyName, Long profileId) {
         if (companyName == null || companyName.trim().isEmpty()) return false;
         String normalized = companyName.trim();
-        return listPriorityCompanies(profileId).stream()
-                .filter(e -> e.getEnabled() == null || e.getEnabled() == 1)
+        return listEnabledPriorityCompanies(profileId).stream()
                 .map(PriorityCompanyEntity::getCompanyName)
                 .filter(s -> s != null && !s.trim().isEmpty())
                 .anyMatch(s -> normalized.contains(s.trim()) || s.trim().contains(normalized));
+    }
+
+    public List<PriorityCompanyEntity> listEnabledPriorityCompanies(Long profileId) {
+        if (profileId == null) return List.of();
+        return enabledPriorityCompanyCache.computeIfAbsent(profileId, this::loadEnabledPriorityCompanies);
+    }
+
+    private List<PriorityCompanyEntity> loadEnabledPriorityCompanies(Long profileId) {
+        QueryWrapper<PriorityCompanyEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileId)
+                .and(w -> w.eq("enabled", 1).or().isNull("enabled"))
+                .orderByAsc("id");
+        List<PriorityCompanyEntity> rows = priorityCompanyMapper.selectList(wrapper);
+        if (rows == null || rows.isEmpty()) return List.of();
+        return List.copyOf(rows.stream()
+                .filter(e -> e != null && (e.getEnabled() == null || e.getEnabled() == 1))
+                .collect(Collectors.toList()));
+    }
+
+    private void evictPriorityCompanyCache(Long profileId) {
+        if (profileId == null) {
+            enabledPriorityCompanyCache.clear();
+        } else {
+            enabledPriorityCompanyCache.remove(profileId);
+        }
     }
 
     public AnalysisResult analyzeJob(JobAnalysisRequest request) {

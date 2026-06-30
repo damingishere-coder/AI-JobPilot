@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import com.getjobs.application.config.RuntimeDirectoryInitializer;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -15,9 +16,11 @@ import java.sql.Statement;
 @RequiredArgsConstructor
 public class DatabaseSchemaService {
     private final DataSource dataSource;
+    private final RuntimeDirectoryInitializer runtimeDirectoryInitializer;
 
     @PostConstruct
     public void initializeSchema() {
+        runtimeDirectoryInitializer.ensureRuntimeDirectories();
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             ensureCoreTables(stmt);
             ensureProfileColumns(stmt);
@@ -28,6 +31,7 @@ public class DatabaseSchemaService {
             ensurePriorityCompanySchema(stmt);
             backfillProfileIds(stmt);
             normalizeActiveProfile(stmt);
+            ensureIndexes(stmt);
             log.info("数据库 schema 初始化完成");
         } catch (Exception e) {
             log.warn("数据库 schema 初始化失败: {}", e.getMessage());
@@ -131,6 +135,10 @@ public class DatabaseSchemaService {
                         "company_name TEXT, " +
                         "job_name TEXT, " +
                         "salary TEXT, " +
+                        "salary_min_k REAL, " +
+                        "salary_max_k REAL, " +
+                        "salary_median_k REAL, " +
+                        "salary_months INTEGER, " +
                         "location TEXT, " +
                         "experience TEXT, " +
                         "degree TEXT, " +
@@ -299,6 +307,10 @@ public class DatabaseSchemaService {
         addColumn(stmt, "boss_data", "company_name", "TEXT");
         addColumn(stmt, "boss_data", "job_name", "TEXT");
         addColumn(stmt, "boss_data", "salary", "TEXT");
+        addColumn(stmt, "boss_data", "salary_min_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_max_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_median_k", "REAL");
+        addColumn(stmt, "boss_data", "salary_months", "INTEGER");
         addColumn(stmt, "boss_data", "location", "TEXT");
         addColumn(stmt, "boss_data", "experience", "TEXT");
         addColumn(stmt, "boss_data", "degree", "TEXT");
@@ -424,6 +436,39 @@ public class DatabaseSchemaService {
                     "ON priority_company(profile_id, company_name)");
         } catch (Exception e) {
             log.debug("创建重点公司唯一索引失败: {}", e.getMessage());
+        }
+    }
+
+    private void ensureIndexes(Statement stmt) {
+        createIndexIfNotExists(stmt,
+                "idx_boss_data_profile_run_encrypt",
+                "boss_data",
+                "profile_id, scan_run_id, encrypt_id");
+        createIndexIfNotExists(stmt,
+                "idx_boss_data_profile_delivery_status",
+                "boss_data",
+                "profile_id, delivery_status");
+        createIndexIfNotExists(stmt,
+                "idx_boss_data_profile_created_at",
+                "boss_data",
+                "profile_id, created_at");
+        createIndexIfNotExists(stmt,
+                "idx_boss_data_profile_company_job",
+                "boss_data",
+                "profile_id, company_name, job_name");
+        createIndexIfNotExists(stmt,
+                "idx_job_ai_analysis_profile_platform_job_run",
+                "job_ai_analysis",
+                "profile_id, platform, job_key, scan_run_id");
+    }
+
+    private void createIndexIfNotExists(Statement stmt, String indexName, String table, String columnsSql) {
+        try {
+            if (tableExists(stmt, table)) {
+                stmt.execute("CREATE INDEX IF NOT EXISTS " + indexName + " ON " + table + "(" + columnsSql + ")");
+            }
+        } catch (Exception e) {
+            log.debug("创建索引失败 {}.{}: {}", table, indexName, e.getMessage());
         }
     }
 

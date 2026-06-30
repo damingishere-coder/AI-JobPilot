@@ -1,6 +1,8 @@
 package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.dto.BrowserClickRequest;
+import com.getjobs.application.dto.BrowserDragRequest;
 import com.getjobs.application.dto.ChromeJobBatchRequest;
 import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BossJobDataEntity;
@@ -20,6 +22,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
@@ -34,7 +38,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -43,10 +46,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Slf4j
 @RestController
 @RequestMapping("/api/boss")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class BossController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final double MAX_BROWSER_COORDINATE = 10000.0;
+    private static final String BOSS_BACKEND_SCAN_DISABLED_MESSAGE =
+            "Boss后端托管扫描已禁用。Boss扫描已改用 Chrome Bridge，请刷新前端页面，并在已登录 Boss 的 Chrome 页面点击“开始扫描”。";
 
     private final BossJobService bossJobService;
     private final PlaywrightManager playwrightManager;
@@ -58,6 +63,7 @@ public class BossController {
     private final com.getjobs.application.service.ProfileService profileService;
     private final JobAiAnalysisService jobAiAnalysisService;
     private final ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
+    private final Environment environment;
 
     private final List<SseEmitter> bossProgressEmitters = new CopyOnWriteArrayList<>();
 
@@ -91,19 +97,7 @@ public class BossController {
     /** POST - 启动Boss投递任务 */
     @PostMapping("/execute")
     public ResponseEntity<Map<String, Object>> executeBoss() {
-        if (bossJobService.isRunning()) {
-            return ResponseEntity.ok(Map.of(
-                    "status", "already_running",
-                    "message", "Boss扫描任务已在运行中"
-            ));
-        }
-
-        CompletableFuture.runAsync(() -> bossJobService.executeDelivery(this::sendBossProgress));
-
-        return ResponseEntity.ok(Map.of(
-                "status", "started",
-                "message", "Boss扫描任务已启动"
-        ));
+        return bossBackendScanDisabledResponse();
     }
 
     @PostMapping("/chrome/jobs")
@@ -115,24 +109,34 @@ public class BossController {
         int skipped = 0;
         int insufficient = 0;
         int restored = 0;
+        int listCollected = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
         boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
+        boolean listOnlyCollection = isListOnlyCollection(request);
         List<Map<String, Object>> analyses = new ArrayList<>();
+        List<Map<String, Object>> collectionWarnings = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
             if (jobRunCoordinator.isCancelRequested(runId)) {
                 jobRunCoordinator.clearCancel(runId);
                 sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续处理本批岗位"));
-                return ResponseEntity.ok(bossChromeJobsResponse(
-                        true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()
+                return ResponseEntity.ok(decorateListCollectionResponse(
+                        bossChromeJobsResponse(true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()),
+                        listOnlyCollection, 0, List.of()
                 ));
             }
-            sendBossProgress(JobProgressMessage.info("boss", "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"));
+            sendBossProgress(JobProgressMessage.info(
+                    "boss",
+                    listOnlyCollection
+                            ? "Chrome已采集到 " + received + " 个Boss列表岗位，正在按LIST_COLLECTED入库"
+                            : "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"
+            ));
             for (ChromeJobDto dto : request.getJobs()) {
                 if (jobRunCoordinator.isCancelRequested(runId)) {
                     jobRunCoordinator.clearCancel(runId);
                     sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
-                    return ResponseEntity.ok(bossChromeJobsResponse(
-                            true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+                    return ResponseEntity.ok(decorateListCollectionResponse(
+                            bossChromeJobsResponse(true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                            listOnlyCollection, listCollected, collectionWarnings
                     ));
                 }
                 BossJobDataEntity entity = toBossEntity(dto);
@@ -145,6 +149,31 @@ public class BossController {
                 }
 
                 String currentStatus = saved.getDeliveryStatus();
+                if (listOnlyCollection) {
+                    if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
+                        skipped++;
+                    } else {
+                        saved = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.LIST_COLLECTED);
+                        listCollected++;
+                    }
+                    List<String> missingListFields = collectMissingListFields(dto, saved, request.getKeyword());
+                    if (!missingListFields.isEmpty()) {
+                        Map<String, Object> warning = Map.of(
+                                "id", saved == null || saved.getId() == null ? 0L : saved.getId(),
+                                "title", dto == null ? "" : Objects.toString(dto.getTitle(), ""),
+                                "company", dto == null ? "" : Objects.toString(dto.getCompany(), ""),
+                                "missingFields", missingListFields,
+                                "reason", "Boss列表页字段不完整，已按LIST_COLLECTED入库，未进入AI分析"
+                        );
+                        collectionWarnings.add(warning);
+                        sendBossProgress(JobProgressMessage.warning(
+                                "boss",
+                                "Boss列表岗位已入库但字段不完整：" + warning.get("company") + " / " + warning.get("title")
+                                        + "，缺少：" + String.join("、", missingListFields)
+                        ));
+                    }
+                    continue;
+                }
                 if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
                     skipped++;
                     Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
@@ -201,8 +230,9 @@ public class BossController {
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
                     bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
-                    Map<String, Object> response = bossChromeJobsResponse(
-                            false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+                    Map<String, Object> response = decorateListCollectionResponse(
+                            bossChromeJobsResponse(false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                            listOnlyCollection, listCollected, collectionWarnings
                     );
                     response.put("message", enqueueResult.getMessage());
                     return ResponseEntity.status(429).body(response);
@@ -220,9 +250,18 @@ public class BossController {
                 }
             }
         }
-        sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
-        return ResponseEntity.ok(bossChromeJobsResponse(
-                true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses
+        if (listOnlyCollection) {
+            sendBossProgress(JobProgressMessage.success(
+                    "boss",
+                    "Boss当前搜索结果页已入库 " + insertedOrUpdated + " 个岗位，其中LIST_COLLECTED "
+                            + listCollected + " 个，未进入AI分析"
+            ));
+        } else {
+            sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
+        }
+        return ResponseEntity.ok(decorateListCollectionResponse(
+                bossChromeJobsResponse(true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                listOnlyCollection, listCollected, collectionWarnings
         ));
     }
 
@@ -231,35 +270,70 @@ public class BossController {
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
         int duplicateCount = 0;
+        Long profileId = profileService.getCurrentProfileIdOrNull();
+        Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, null);
 
-        for (ChromeJobDto dto : jobs) {
+        for (int index = 0; index < jobs.size(); index++) {
+            ChromeJobDto dto = jobs.get(index);
             String id = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
             String company = dto == null ? "" : Objects.toString(dto.getCompany(), "");
             String title = dto == null ? "" : Objects.toString(dto.getTitle(), "");
-            String runId = normalizeRunId(request == null ? null : request.getRunId());
-            BossJobDataEntity existing = bossService.findExistingChromeBossJob(id, company, title, runId);
+            BossJobDataEntity existing = existingJobs.get(index);
             boolean duplicate = existing != null;
             if (duplicate) duplicateCount++;
-            String reason = "";
-            if (duplicate) {
-                reason = id != null && !id.isBlank() && id.equals(Objects.toString(existing.getEncryptId(), "")) ? "jobId" : "companyTitle";
-            }
-            items.add(Map.of(
-                    "id", Objects.toString(id, ""),
-                    "url", dto == null ? "" : Objects.toString(dto.getUrl(), ""),
-                    "title", title,
-                    "company", company,
-                    "duplicate", duplicate,
-                    "reason", reason
-            ));
+            String matchReason = duplicate
+                    ? id != null && !id.isBlank() && id.equals(Objects.toString(existing.getEncryptId(), "")) ? "jobId" : "companyTitle"
+                    : "";
+            List<String> missingFields = existing == null ? List.of() : collectMissingAnalysisFields(existing);
+            String existingStatus = existing == null ? "" : Objects.toString(existing.getDeliveryStatus(), "");
+            String action = dedupeAction(existing, missingFields);
+            String reason = dedupeReason(action, matchReason, existingStatus, missingFields);
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", Objects.toString(id, ""));
+            item.put("url", dto == null ? "" : Objects.toString(dto.getUrl(), ""));
+            item.put("title", title);
+            item.put("company", company);
+            item.put("duplicate", duplicate);
+            item.put("action", action);
+            item.put("reason", reason);
+            item.put("matchReason", matchReason);
+            item.put("existingStatus", existingStatus);
+            item.put("existingId", existing == null || existing.getId() == null ? 0L : existing.getId());
+            item.put("missingFields", missingFields);
+            items.add(item);
         }
 
+        long enrichCount = items.stream().filter(item -> "ENRICH".equals(item.get("action"))).count();
+        long skipCount = items.stream().filter(item -> "SKIP".equals(item.get("action"))).count();
         return ResponseEntity.ok(Map.of(
                 "success", true,
                 "items", items,
                 "duplicateCount", duplicateCount,
-                "newCount", Math.max(0, jobs.size() - duplicateCount)
+                "newCount", Math.max(0, jobs.size() - duplicateCount),
+                "enrichCount", enrichCount,
+                "skipCount", skipCount
         ));
+    }
+
+    private String dedupeAction(BossJobDataEntity existing, List<String> missingFields) {
+        if (existing == null) return "NEW";
+        String status = Objects.toString(existing.getDeliveryStatus(), "");
+        if (DeliveryStatus.LIST_COLLECTED.equals(status)
+                || DeliveryStatus.COLLECTION_INSUFFICIENT.equals(status)
+                || (missingFields != null && !missingFields.isEmpty())) {
+            return "ENRICH";
+        }
+        return "SKIP";
+    }
+
+    private String dedupeReason(String action, String matchReason, String existingStatus, List<String> missingFields) {
+        if ("NEW".equals(action)) return "未发现历史岗位";
+        String matchedBy = "jobId".equals(matchReason) ? "Boss岗位ID" : "公司与岗位名称";
+        if ("ENRICH".equals(action)) {
+            String missing = missingFields == null || missingFields.isEmpty() ? "详情信息" : String.join("、", missingFields);
+            return "历史岗位按" + matchedBy + "匹配，但需要补全：" + missing;
+        }
+        return "历史岗位按" + matchedBy + "匹配，状态为" + firstNonBlank(existingStatus, "完整记录") + "，本次跳过";
     }
 
     @PostMapping("/chrome/stop")
@@ -311,42 +385,7 @@ public class BossController {
     /** POST - 启动Boss投递任务（前端使用的接口）*/
     @PostMapping("/start")
     public ResponseEntity<Map<String, Object>> startBoss() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            PlaywrightManager.BossSearchSessionStatus sessionStatus =
-                    playwrightManager.verifyBossSearchSession(buildBossProbeSearchUrl());
-            if (!sessionStatus.searchReady()) {
-                response.put("success", false);
-                response.put("message", sessionStatus.failureReason());
-                response.put("status", "search_not_ready");
-                response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
-                response.put("searchReady", sessionStatus.searchReady());
-                response.put("currentUrl", sessionStatus.currentUrl());
-                response.put("debugUrl", buildBossDebugUrl());
-                return ResponseEntity.badRequest().body(response);
-            }
-            if (bossJobService.isRunning()) {
-                response.put("success", false);
-                response.put("message", "Boss任务已在运行中，请等待当前任务完成");
-                response.put("status", "running");
-                return ResponseEntity.badRequest().body(response);
-            }
-            CompletableFuture.runAsync(() -> bossJobService.executeDelivery(pm -> {
-                sendBossProgress(pm);
-                log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-            }));
-            response.put("success", true);
-            response.put("message", "Boss扫描任务启动成功，将生成待确认岗位");
-            response.put("status", "started");
-            log.info("通过API启动Boss扫描任务成功");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("启动Boss任务失败", e);
-            response.put("success", false);
-            response.put("message", "启动Boss任务失败: " + e.getMessage());
-            response.put("error", e.getClass().getSimpleName());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return bossBackendScanDisabledResponse();
     }
 
     /** POST - 打开或恢复 Boss 平台登录页 */
@@ -455,10 +494,23 @@ public class BossController {
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getBossStatus() {
         Map<String, Object> status = new HashMap<>(bossJobService.getStatus());
-        status.putAll(playwrightManager.getBossLoginDetails());
-        status.put("isLoggedIn", Boolean.TRUE.equals(status.get("searchReady")));
+        status.put("platform", "boss");
+        status.put("backendScanEnabled", false);
+        status.put("chromeBridgeRequired", true);
+        status.put("isLoggedIn", false);
+        status.put("searchReady", false);
+        status.put("message", BOSS_BACKEND_SCAN_DISABLED_MESSAGE);
         status.put("debugUrl", buildBossDebugUrl());
         return ResponseEntity.ok(status);
+    }
+
+    private ResponseEntity<Map<String, Object>> bossBackendScanDisabledResponse() {
+        return ResponseEntity.status(410).body(Map.of(
+                "success", false,
+                "platform", "boss",
+                "status", "backend_scan_disabled",
+                "message", BOSS_BACKEND_SCAN_DISABLED_MESSAGE
+        ));
     }
 
     @PostMapping("/verify-search-session")
@@ -489,29 +541,87 @@ public class BossController {
 
     @GetMapping("/browser-snapshot")
     public ResponseEntity<Map<String, Object>> getBossBrowserSnapshot() {
-        return ResponseEntity.ok(playwrightManager.getBossPageSnapshot());
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        try {
+            return ResponseEntity.ok(playwrightManager.getBossPageSnapshot());
+        } catch (Exception e) {
+            log.error("获取Boss浏览器截图失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_snapshot_failed", "获取浏览器截图失败，请查看后端日志"));
+        }
     }
 
     @PostMapping("/browser-click")
-    public ResponseEntity<Map<String, Object>> clickBossBrowser(@RequestBody Map<String, Object> payload) {
-        double x = ((Number) payload.getOrDefault("x", 0)).doubleValue();
-        double y = ((Number) payload.getOrDefault("y", 0)).doubleValue();
-        Map<String, Object> result = playwrightManager.clickBossPage(x, y);
-        return Boolean.TRUE.equals(result.get("success"))
-                ? ResponseEntity.ok(result)
-                : ResponseEntity.badRequest().body(result);
+    public ResponseEntity<Map<String, Object>> clickBossBrowser(@RequestBody BrowserClickRequest request) {
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        String validationError = validateCoordinate("x", request == null ? null : request.getX());
+        if (validationError == null) validationError = validateCoordinate("y", request == null ? null : request.getY());
+        if (validationError != null) {
+            return ResponseEntity.badRequest().body(browserDebugError("invalid_coordinate", validationError));
+        }
+        try {
+            Map<String, Object> result = playwrightManager.clickBossPage(request.getX(), request.getY());
+            return Boolean.TRUE.equals(result.get("success"))
+                    ? ResponseEntity.ok(result)
+                    : ResponseEntity.badRequest().body(toFriendlyBrowserResult(result));
+        } catch (Exception e) {
+            log.error("点击Boss浏览器页面失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_click_failed", "点击浏览器页面失败，请查看后端日志"));
+        }
     }
 
     @PostMapping("/browser-drag")
-    public ResponseEntity<Map<String, Object>> dragBossBrowser(@RequestBody Map<String, Object> payload) {
-        double fromX = ((Number) payload.getOrDefault("fromX", 0)).doubleValue();
-        double fromY = ((Number) payload.getOrDefault("fromY", 0)).doubleValue();
-        double toX = ((Number) payload.getOrDefault("toX", 0)).doubleValue();
-        double toY = ((Number) payload.getOrDefault("toY", 0)).doubleValue();
-        Map<String, Object> result = playwrightManager.dragBossPage(fromX, fromY, toX, toY);
-        return Boolean.TRUE.equals(result.get("success"))
-                ? ResponseEntity.ok(result)
-                : ResponseEntity.badRequest().body(result);
+    public ResponseEntity<Map<String, Object>> dragBossBrowser(@RequestBody BrowserDragRequest request) {
+        if (!isBrowserDebugEnabled()) {
+            return ResponseEntity.status(403).body(browserDebugError("browser_debug_disabled", "浏览器调试接口仅允许在本地开发模式使用"));
+        }
+        String validationError = validateCoordinate("fromX", request == null ? null : request.getFromX());
+        if (validationError == null) validationError = validateCoordinate("fromY", request == null ? null : request.getFromY());
+        if (validationError == null) validationError = validateCoordinate("toX", request == null ? null : request.getToX());
+        if (validationError == null) validationError = validateCoordinate("toY", request == null ? null : request.getToY());
+        if (validationError != null) {
+            return ResponseEntity.badRequest().body(browserDebugError("invalid_coordinate", validationError));
+        }
+        try {
+            Map<String, Object> result = playwrightManager.dragBossPage(request.getFromX(), request.getFromY(), request.getToX(), request.getToY());
+            return Boolean.TRUE.equals(result.get("success"))
+                    ? ResponseEntity.ok(result)
+                    : ResponseEntity.badRequest().body(toFriendlyBrowserResult(result));
+        } catch (Exception e) {
+            log.error("拖动Boss浏览器页面失败", e);
+            return ResponseEntity.internalServerError().body(browserDebugError("browser_drag_failed", "拖动浏览器页面失败，请查看后端日志"));
+        }
+    }
+
+    private boolean isBrowserDebugEnabled() {
+        return environment.acceptsProfiles(Profiles.of("dev", "local"));
+    }
+
+    private String validateCoordinate(String field, Double value) {
+        if (value == null) return field + " 坐标不能为空";
+        if (!Double.isFinite(value)) return field + " 坐标必须是有效数字";
+        if (value < 0 || value > MAX_BROWSER_COORDINATE) {
+            return field + " 坐标必须在 0 到 " + (int) MAX_BROWSER_COORDINATE + " 之间";
+        }
+        return null;
+    }
+
+    private Map<String, Object> browserDebugError(String code, String message) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("code", code);
+        response.put("message", message);
+        return response;
+    }
+
+    private Map<String, Object> toFriendlyBrowserResult(Map<String, Object> result) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("message", Objects.toString(result == null ? null : result.get("message"), "浏览器调试操作失败，请查看后端日志"));
+        return response;
     }
 
     private String buildBossProbeSearchUrl() {
@@ -566,12 +676,39 @@ public class BossController {
             missing.add("岗位");
             return missing;
         }
-        if (isBlank(job.getJobName())) missing.add("岗位名称");
-        if (isBlank(job.getCompanyName())) missing.add("公司名称");
+        // 只标记绝对必要字段缺失：岗位名称和公司名称都没有才跳过
+        boolean hasTitle = !isBlank(job.getJobName());
+        boolean hasCompany = !isBlank(job.getCompanyName());
+        if (!hasTitle) missing.add("岗位名称");
+        if (!hasCompany) missing.add("公司名称");
+        // 链接缺失时记录但不阻断（后续可补全）
         if (isBlank(job.getJobUrl())) missing.add("岗位链接");
+        // 描述/公司介绍：最低要求从30字符降到10字符
         String detailText = firstNonBlank(job.getJobDescription(), job.getIntroduce());
-        if (isBlank(detailText) || detailText.trim().length() < 30) missing.add("岗位要求");
+        if (isBlank(detailText) || detailText.trim().length() < 10) {
+            // 只有当 title + company 都存在时，描述不是硬性阻断
+            if (!hasTitle || !hasCompany) {
+                missing.add("岗位要求");
+            }
+        }
         return missing;
+    }
+
+    private List<String> collectMissingListFields(ChromeJobDto dto, BossJobDataEntity job, String batchKeyword) {
+        List<String> missing = new ArrayList<>();
+        if (job == null || isBlank(job.getJobName())) missing.add("title");
+        if (job == null || isBlank(job.getCompanyName())) missing.add("company");
+        if (job == null || isBlank(job.getSalary())) missing.add("salary");
+        if (job == null || isBlank(job.getLocation())) missing.add("location");
+        if (job == null || isBlank(job.getJobUrl())) missing.add("url");
+        String keyword = dto == null ? null : dto.getKeyword();
+        if (isBlank(firstNonBlank(keyword, batchKeyword))) missing.add("keyword");
+        return missing;
+    }
+
+    private boolean isListOnlyCollection(ChromeJobBatchRequest request) {
+        return request != null
+                && "LIST_ONLY".equalsIgnoreCase(Objects.toString(request.getCollectionMode(), "").trim());
     }
 
     private boolean isFinalBossStatus(String status) {
@@ -603,6 +740,18 @@ public class BossController {
         response.put("queueSize", chromeJobAnalysisQueueService.queueSize());
         response.put("tasks", List.of());
         response.put("analyses", analyses == null ? List.of() : analyses);
+        return response;
+    }
+
+    private Map<String, Object> decorateListCollectionResponse(Map<String, Object> response,
+                                                               boolean listOnlyCollection,
+                                                               int listCollected,
+                                                               List<Map<String, Object>> collectionWarnings) {
+        if (!listOnlyCollection) return response;
+        response.put("asyncAnalysis", false);
+        response.put("collectionMode", "LIST_ONLY");
+        response.put("listCollected", listCollected);
+        response.put("collectionWarnings", collectionWarnings == null ? List.of() : collectionWarnings);
         return response;
     }
 

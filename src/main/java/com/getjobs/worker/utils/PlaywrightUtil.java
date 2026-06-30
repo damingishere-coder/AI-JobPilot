@@ -6,9 +6,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -308,9 +309,10 @@ public class PlaywrightUtil {
      */
     public static void screenshot(String path, DeviceType deviceType) {
         try {
-            getPage(deviceType).screenshot(new Page.ScreenshotOptions().setPath(Paths.get(path)));
+            Path targetPath = ensureParentDirectory(path);
+            getPage(deviceType).screenshot(new Page.ScreenshotOptions().setPath(targetPath));
             log.info("已保存截图到: {} (设备类型: {})", path, deviceType);
-        } catch (PlaywrightException e) {
+        } catch (PlaywrightException | IOException e) {
             log.error("截图失败 (设备类型: {})", deviceType, e);
         }
     }
@@ -324,9 +326,10 @@ public class PlaywrightUtil {
      */
     public static void screenshotElement(String selector, String path, DeviceType deviceType) {
         try {
-            getPage(deviceType).locator(selector).screenshot(new Locator.ScreenshotOptions().setPath(Paths.get(path)));
+            Path targetPath = ensureParentDirectory(path);
+            getPage(deviceType).locator(selector).screenshot(new Locator.ScreenshotOptions().setPath(targetPath));
             log.info("已保存元素截图到: {} (设备类型: {})", path, deviceType);
-        } catch (PlaywrightException e) {
+        } catch (PlaywrightException | IOException e) {
             log.error("元素截图失败: {} (设备类型: {})", selector, deviceType, e);
         }
     }
@@ -356,10 +359,9 @@ public class PlaywrightUtil {
                 jsonArray.put(jsonObject);
             }
 
-            try (FileWriter file = new FileWriter(path)) {
-                file.write(jsonArray.toString(4));
-                log.info("Cookie已保存到文件: {} (设备类型: {})", path, deviceType);
-            }
+            Path targetPath = ensureParentDirectory(path);
+            Files.writeString(targetPath, jsonArray.toString(4), StandardCharsets.UTF_8);
+            log.info("Cookie已保存到文件: {} (设备类型: {})", path, deviceType);
         } catch (IOException e) {
             log.error("保存Cookie失败 (设备类型: {})", deviceType, e);
         }
@@ -382,7 +384,7 @@ public class PlaywrightUtil {
      */
     public static void loadCookies(String path, DeviceType deviceType) {
         try {
-            String jsonText = new String(Files.readAllBytes(Paths.get(path)));
+            String jsonText = Files.readString(Paths.get(path), StandardCharsets.UTF_8);
             JSONArray jsonArray = new JSONArray(jsonText);
 
             List<Cookie> cookies = new ArrayList<>();
@@ -486,8 +488,7 @@ public class PlaywrightUtil {
 
         // 如果有stealth.min.js文件，也尝试加载
         try {
-            String stealthJs = new String(
-                    Files.readAllBytes(Paths.get("src/main/resources/stealth.min.js")));
+            String stealthJs = Files.readString(Paths.get("src/main/resources/stealth.min.js"), StandardCharsets.UTF_8);
             page.addInitScript(stealthJs);
             log.info("已加载stealth.min.js文件");
         } catch (IOException e) {
@@ -590,6 +591,15 @@ public class PlaywrightUtil {
      */
     public static boolean isCookieValid(String cookiePath) {
         return Files.exists(Paths.get(cookiePath));
+    }
+
+    private static Path ensureParentDirectory(String filePath) throws IOException {
+        Path path = Paths.get(filePath).toAbsolutePath().normalize();
+        Path parent = path.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        return path;
     }
 
     /**

@@ -26,8 +26,10 @@ module.exports = {
 
   // API 配置（如果需要在构建时使用）
   api: {
-    // 后端 API 地址固定在 8888 端口
-    baseUrl: 'http://localhost:8888',
+    // 浏览器侧默认使用同源 /api，这样本地开发只需要记住 http://localhost:6866
+    baseUrl: process.env.API_BASE_URL ?? '',
+    // Docker 开发容器内使用 http://backend:8888，本机开发使用 http://localhost:8888
+    proxyTarget: process.env.API_PROXY_TARGET || 'http://localhost:8888',
   },
 
   // 其他自定义配置

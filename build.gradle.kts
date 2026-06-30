@@ -16,9 +16,8 @@ java {
 }
 
 repositories {
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
     mavenCentral()
-    // 国内镜像可选：
-    // maven { url = uri("https://maven.aliyun.com/repository/public") }
 }
 
 dependencies {
@@ -30,6 +29,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
     implementation("org.apache.httpcomponents.client5:httpclient5-fluent")
+    implementation("org.flywaydb:flyway-core")
 
     // 不在 BOM 中的依赖（写版本）
     implementation("com.microsoft.playwright:playwright:1.51.0")
@@ -42,6 +42,7 @@ dependencies {
     implementation("io.github.cdimascio:dotenv-java:2.2.0")
     implementation("jakarta.annotation:jakarta.annotation-api:2.1.1")
     implementation("org.apache.pdfbox:pdfbox:3.0.3")
+    developmentOnly("org.springframework.boot:spring-boot-devtools:3.5.7")
 
     // Lombok（仅 Java 项目需要）
     compileOnly("org.projectlombok:lombok:1.18.42")

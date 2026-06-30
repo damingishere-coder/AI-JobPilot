@@ -10,6 +10,7 @@ config.yaml
 *.ipr
 .idea
 *.sh
+!start_docker.sh
 CLAUDE.md
 .claude
 nul
@@ -34,6 +35,7 @@ playwright-*
 /nbdist/
 /.nb-gradle/
 build/
+bin/
 !**/src/main/**/build/
 !**/src/test/**/build/
 ### VS Code ###
@@ -48,19 +50,53 @@ merge_prs.log
 .DS_Store
 cookie.json
 .env
+.env.*
+!.env.example
+.env.local
+front/.env.local
 chromedriver
 *.jpg
+chrome-profile/
+**/chrome-profile/
 
 # Database files
 db/
+!src/main/resources/db/
+!src/main/resources/db/migration/
+!src/main/resources/db/migration/*.sql
 *.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Frontend build output
+node_modules/
 dist/
 front/out/
 front/.next/
 front/node_modules/
+front/.turbo/
+front/.vercel/
+front/coverage/
 .pnpm-store/
 
 # Gradle cache
 .gradle/
+
+# Python / local tools
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs, temporary outputs, and user uploads
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+uploads/
+user_uploads/
+local_uploads/

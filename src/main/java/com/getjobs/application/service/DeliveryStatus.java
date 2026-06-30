@@ -9,6 +9,7 @@ public final class DeliveryStatus {
     public static final String AI_NOT_MATCH = "AI不匹配";
     public static final String AI_ANALYSIS_FAILED = "AI分析失败";
     public static final String COLLECTION_INSUFFICIENT = "采集信息不足";
+    public static final String LIST_COLLECTED = "LIST_COLLECTED";
     public static final String SKIPPED = "已跳过";
     public static final String DELIVERED = "已投递";
     public static final String DELIVERY_FAILED = "投递失败";
@@ -23,6 +24,7 @@ public final class DeliveryStatus {
             AI_NOT_MATCH,
             AI_ANALYSIS_FAILED,
             COLLECTION_INSUFFICIENT,
+            LIST_COLLECTED,
             DELIVERY_FAILED
     );
 
