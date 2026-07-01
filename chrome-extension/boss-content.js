@@ -436,23 +436,27 @@
         && incomingTask.keywordCursorKey
         && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
     );
-    if (configChanged) {
+    const sameRun = isSameScanRun(existingTask, incomingTask);
+    const shouldDiscardExisting = Boolean(existingTask && (!sameRun || configChanged));
+    if (shouldDiscardExisting) {
       clearStoredScanTask();
-      postProgress(message, "warning", "Boss扫描配置已变化，旧断点已放弃，将按新配置重新开始。", {
+      postProgress(message, "warning", configChanged
+        ? "Boss扫描配置已变化，旧断点已放弃，将按新配置重新开始。"
+        : "Boss检测到新的扫描任务，旧断点已清理，将按新关键词重新开始。", {
         operation: "scan",
         stage: "checkpointReset",
-        diagnosticType: "CONFIG_CHANGED"
+        diagnosticType: configChanged ? "CONFIG_CHANGED" : "NEW_RUN_DISCARDED_CHECKPOINT",
+        previousRunId: existingTask?.runId || "",
+        runId: incomingTask.runId || ""
       });
     }
+    const resumableTask = shouldDiscardExisting ? null : existingTask;
     const canResumeExisting = Boolean(
-      !configChanged
-        && existingTask
-        && !existingTask.completed
-        && (isResumableScanTask(existingTask) || status.resumable || status.stage === "blocked")
+      canResumeExistingScanTask(resumableTask, incomingTask, status, configChanged)
     );
 
     if (canResumeExisting) {
-      activeScanRunId = normalizeScanRunId(existingTask.runId);
+      activeScanRunId = normalizeScanRunId(resumableTask.runId);
       stopRequested = false;
       stopRequestedRunId = "";
       clearStopRequested();
@@ -2597,6 +2601,33 @@
 
   function hasOwn(value, key) {
     return Object.prototype.hasOwnProperty.call(value || {}, key);
+  }
+
+  function canResumeExistingScanTask(existingTask, incomingTask, status, configChanged) {
+    const pageResumable = existingTask ? isResumableScanTask(existingTask) : false;
+    if (SCAN_SUPPORT.canResumeScanTask) {
+      return SCAN_SUPPORT.canResumeScanTask(existingTask, incomingTask, status, {
+        configChanged,
+        resumable: pageResumable,
+        now: Date.now(),
+        ttlMs: SCAN_TASK_TTL_MS
+      });
+    }
+    return Boolean(
+      !configChanged
+        && isSameScanRun(existingTask, incomingTask)
+        && existingTask
+        && !existingTask.completed
+        && isFreshScanTask(existingTask)
+        && (pageResumable || status?.resumable || status?.stage === "blocked")
+    );
+  }
+
+  function isSameScanRun(left, right) {
+    if (SCAN_SUPPORT.sameScanRun) return SCAN_SUPPORT.sameScanRun(left, right);
+    const leftRunId = normalizeScanRunId(left?.runId);
+    const rightRunId = normalizeScanRunId(right?.runId);
+    return Boolean(leftRunId && rightRunId && leftRunId === rightRunId);
   }
 
   function isResumableScanTask(task) {

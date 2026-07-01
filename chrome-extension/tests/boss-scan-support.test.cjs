@@ -43,6 +43,51 @@ test("keeps a fresh detail checkpoint even when the page was redirected", () => 
   assert.equal(support.isFreshTask(task, now), true);
 });
 
+test("does not resume a Boss detail checkpoint for a new scan run", () => {
+  const support = loadSupport();
+  const now = Date.now();
+  const existingTask = {
+    type: "BOSS_SCAN_START",
+    runId: "boss-old-run",
+    phase: "detail",
+    jobs: [{ title: "医学总监", url: "https://www.zhipin.com/job_detail/old.html" }],
+    updatedAt: now - 1000
+  };
+  const incomingTask = {
+    type: "BOSS_SCAN_START",
+    runId: "boss-new-run",
+    keywords: ["Java"]
+  };
+
+  assert.equal(support.sameScanRun(existingTask, incomingTask), false);
+  assert.equal(
+    support.canResumeScanTask(existingTask, incomingTask, { resumable: true }, { now, resumable: true }),
+    false
+  );
+});
+
+test("allows a fresh Boss checkpoint to resume for the same scan run", () => {
+  const support = loadSupport();
+  const now = Date.now();
+  const existingTask = {
+    type: "BOSS_SCAN_START",
+    runId: "boss-same-run",
+    phase: "detail",
+    updatedAt: now - 1000
+  };
+  const incomingTask = {
+    type: "BOSS_SCAN_START",
+    runId: "boss-same-run",
+    keywords: ["Java"]
+  };
+
+  assert.equal(support.sameScanRun(existingTask, incomingTask), true);
+  assert.equal(
+    support.canResumeScanTask(existingTask, incomingTask, { resumable: true }, { now, resumable: true }),
+    true
+  );
+});
+
 test("resumes from the stored failed batch without exceeding batch count", () => {
   const support = loadSupport();
 

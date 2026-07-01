@@ -10,6 +10,24 @@
     return Boolean(lastActiveAt && Number(now) - lastActiveAt <= Number(ttlMs));
   }
 
+  function sameScanRun(left, right) {
+    const leftRunId = normalizeRunId(left?.runId);
+    const rightRunId = normalizeRunId(right?.runId);
+    return Boolean(leftRunId && rightRunId && leftRunId === rightRunId);
+  }
+
+  function canResumeScanTask(existingTask, incomingTask, status = {}, options = {}) {
+    if (options.configChanged) return false;
+    if (!sameScanRun(existingTask, incomingTask)) return false;
+    if (!isFreshTask(existingTask, options.now || Date.now(), options.ttlMs || DEFAULT_TASK_TTL_MS)) return false;
+    if (options.resumable === false && !status?.resumable && status?.stage !== "blocked") return false;
+    return true;
+  }
+
+  function normalizeRunId(value) {
+    return String(value || "").trim();
+  }
+
   function normalizeBatchIndex(value, batchTotal) {
     const total = Math.max(0, Math.floor(Number(batchTotal) || 0));
     const parsed = Math.max(0, Math.floor(Number(value) || 0));
@@ -31,6 +49,8 @@
   root.GetJobsBossScanSupport = Object.freeze({
     DEFAULT_TASK_TTL_MS,
     isFreshTask,
+    sameScanRun,
+    canResumeScanTask,
     normalizeBatchIndex,
     classifyLocalApiFailure
   });
