@@ -90,7 +90,7 @@ function loadBackground({ tabs, statuses = {} }) {
   });
   const source = fs.readFileSync(path.resolve(__dirname, "..", "background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
-  return { context, storage, sentMessages };
+  return { context, storage, sentMessages, tabList };
 }
 
 test("keeps Boss and Zhilian scan ownership when both start together", async () => {
@@ -163,6 +163,25 @@ test("new Boss scan run does not keep using a registered stale scan tab", async 
   assert.equal(scanTab.id, 2);
   assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss, undefined);
   assert.equal(storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__, undefined);
+});
+
+test("Boss content navigation allows job detail pages and rejects external pages", async () => {
+  const { context, tabList } = loadBackground({
+    tabs: [
+      { id: 1, windowId: 1, url: "https://www.zhipin.com/web/geek/job", status: "complete" }
+    ]
+  });
+
+  const detailResponse = await context.handleBossContentNavigation({
+    url: "https://www.zhipin.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/web/geek/job" } });
+  const externalResponse = await context.handleBossContentNavigation({
+    url: "https://example.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
+
+  assert.equal(detailResponse.success, true);
+  assert.equal(tabList[0].url, "https://www.zhipin.com/job_detail/demo.html");
+  assert.equal(externalResponse.success, false);
 });
 
 test("Boss stop clears registered scan session and shared checkpoint", async () => {

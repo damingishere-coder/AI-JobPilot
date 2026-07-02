@@ -188,12 +188,15 @@ function isZhilianSender(sender) {
 
 async function handleBossContentNavigation(message, sender) {
   const tabId = sender.tab?.id;
-  const targetUrl = String(message?.url || "");
+  const targetUrl = normalizeBossUrl(message?.url);
   if (!tabId) return { success: false, message: "缺少Boss标签页ID" };
-  if (!isBossSearchUrl(targetUrl)) return { success: false, message: "拒绝打开非Boss搜索页" };
+  if (!targetUrl) return { success: false, message: "Boss页面链接为空或格式错误" };
+  if (!isBossSearchUrl(targetUrl) && !isBossJobDetailUrl(targetUrl)) {
+    return { success: false, message: `拒绝打开非Boss搜索页或岗位详情页：${targetUrl}` };
+  }
 
   await chrome.tabs.update(tabId, { url: targetUrl });
-  return { success: true };
+  return { success: true, url: targetUrl };
 }
 
 async function handleZhilianContentNavigation(message, sender) {
@@ -1316,6 +1319,32 @@ function isBossSearchUrl(url) {
     return parsed.protocol === "https:"
       && parsed.hostname.endsWith("zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeBossUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""), "https://www.zhipin.com");
+    if (parsed.hostname.endsWith("zhipin.com") && parsed.protocol === "http:") {
+      parsed.protocol = "https:";
+    }
+    parsed.hash = "";
+    if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function isBossJobDetailUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:"
+      && parsed.hostname.endsWith("zhipin.com")
+      && parsed.pathname.includes("/job_detail/")
+      && Boolean(extractBossJobId(parsed.href));
   } catch {
     return false;
   }

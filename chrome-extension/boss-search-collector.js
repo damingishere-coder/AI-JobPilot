@@ -30,7 +30,7 @@
           missingFieldCounts[field] = (missingFieldCounts[field] || 0) + 1;
         });
 
-        if (!job.title || !job.company || !job.url) {
+        if (!isCollectableBossJob(job)) {
           failures.push({
             index: index + 1,
             reason: `缺少必要字段：${missingFields.join("、") || "岗位信息"}`,
@@ -181,7 +181,10 @@
   }
 
   function requiredMissingFields(job) {
-    return ["title", "company", "salary", "location", "url", "keyword"].filter((field) => !compact(job?.[field]));
+    return ["title", "company", "salary", "location", "url", "keyword"].filter((field) => {
+      if (field === "url") return !isBossJobDetailUrl(job?.url);
+      return !compact(job?.[field]);
+    });
   }
 
   function resolveKeyword(fallback) {
@@ -215,6 +218,7 @@
   function isLikelyTitle(line, salary) {
     const value = cleanField(line, salary);
     if (!value || value.length > 80 || isNoisy(value)) return false;
+    if (isNonJobNavigationTitle(value)) return false;
     if (isLikelyCompany(value, "", salary)) return false;
     return /工程师|开发|运营|产品|经理|设计|测试|销售|顾问|算法|前端|后端|全栈|Java|Python|Go|C\+\+|Android|iOS|数据|实习|专员|主管|总监/i.test(value)
       || value.length <= 30;
@@ -238,6 +242,10 @@
   }
 
   function normalizeBossJobUrl(value) {
+    const support = window.GetJobsBossScanSupport || {};
+    if (support.normalizeBossJobUrl) {
+      return support.normalizeBossJobUrl(value, window.location.origin);
+    }
     const raw = String(value || "").trim();
     if (!raw) return "";
     const match = raw.match(/https?:\/\/[^\s"'<>]*job_detail[^\s"'<>]*/i)
@@ -245,7 +253,11 @@
     const candidate = match ? match[0] : raw;
     if (!/job_detail/i.test(candidate)) return "";
     try {
-      return new URL(candidate, window.location.origin).href;
+      const parsed = new URL(candidate, window.location.origin);
+      parsed.hash = "";
+      if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+      if (!parsed.pathname.includes("/job_detail/")) return "";
+      return parsed.href;
     } catch {
       return "";
     }
@@ -261,6 +273,24 @@
   function extractBossId(url) {
     const match = String(url || "").match(/\/job_detail\/([^/?#]+?)(?:\.html)?(?:[?#]|$)/i);
     return compact(match?.[1] || "");
+  }
+
+  function isCollectableBossJob(job) {
+    return Boolean(job?.title && job?.company && isBossJobDetailUrl(job?.url) && !isNonJobNavigationTitle(job?.title));
+  }
+
+  function isBossJobDetailUrl(url) {
+    const support = window.GetJobsBossScanSupport || {};
+    if (support.isBossJobDetailUrl) {
+      return support.isBossJobDetailUrl(url, window.location.origin);
+    }
+    return Boolean(extractBossId(normalizeBossJobUrl(url)));
+  }
+
+  function isNonJobNavigationTitle(value) {
+    const support = window.GetJobsBossScanSupport || {};
+    if (support.isNonJobNavigationTitle) return support.isNonJobNavigationTitle(value);
+    return /^(职位搜索|搜索职位|岗位搜索|搜索岗位|职位|岗位|工作搜索|公司搜索|搜索公司|全部职位|全部岗位|返回列表)$/.test(compact(value));
   }
 
   function attr(node, names) {

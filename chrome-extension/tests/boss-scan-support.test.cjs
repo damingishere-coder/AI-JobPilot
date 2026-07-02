@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 function loadSupport() {
   const window = {};
-  const context = vm.createContext({ window, globalThis: window });
+  const context = vm.createContext({ window, globalThis: window, URL });
   const source = fs.readFileSync(path.resolve(__dirname, "..", "boss-scan-support.js"), "utf8");
   vm.runInContext(source, context, { filename: "boss-scan-support.js" });
   return window.GetJobsBossScanSupport;
@@ -85,6 +85,45 @@ test("allows a fresh Boss checkpoint to resume for the same scan run", () => {
   assert.equal(
     support.canResumeScanTask(existingTask, incomingTask, { resumable: true }, { now, resumable: true }),
     true
+  );
+});
+
+test("rejects Boss navigation titles and non-job detail URLs", () => {
+  const support = loadSupport();
+
+  assert.equal(support.isNonJobNavigationTitle("职位搜索"), true);
+  assert.equal(support.isNonJobNavigationTitle("销售赋能运营"), false);
+  assert.equal(support.isBossJobDetailUrl("https://www.zhipin.com/job_detail/demo.html"), true);
+  assert.equal(support.isBossJobDetailUrl("https://www.zhipin.com/web/geek/job?query=Java"), false);
+  assert.equal(support.isBossJobDetailUrl("https://example.com/job_detail/demo.html"), false);
+});
+
+test("classifies unchanged Boss detail navigation as blocked", () => {
+  const support = loadSupport();
+  const currentUrl = "https://www.zhipin.com/web/geek/job?city=101280600&query=Java";
+  const targetUrl = "https://www.zhipin.com/job_detail/demo.html";
+  const blocked = support.classifyBossDetailNavigation({ currentUrl, targetUrl, afterUrl: currentUrl, backgroundSuccess: true });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.targetUrl, targetUrl);
+  assert.equal(blocked.message, "已请求后台跳转，但页面URL未变化");
+  assert.equal(
+    support.classifyBossDetailNavigation({
+      currentUrl,
+      targetUrl,
+      afterUrl: "https://www.zhipin.com/job_detail/demo.html",
+      backgroundSuccess: true
+    }).status,
+    "pending"
+  );
+  assert.equal(
+    support.classifyBossDetailNavigation({
+      currentUrl: targetUrl,
+      targetUrl,
+      afterUrl: targetUrl,
+      backgroundSuccess: true
+    }).status,
+    "same"
   );
 });
 

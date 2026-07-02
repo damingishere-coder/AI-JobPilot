@@ -14,6 +14,7 @@
   const SUBMIT_BATCH_SIZE = 10;
   const SCAN_SUPPORT = window.GetJobsBossScanSupport || {};
   const SCAN_TASK_TTL_MS = SCAN_SUPPORT.DEFAULT_TASK_TTL_MS || 24 * 60 * 60 * 1000;
+  const DETAIL_NAVIGATION_GUARD_MS = 800;
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
   const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
@@ -1305,12 +1306,17 @@
   }
 
   function isListCandidateJob(job) {
-    return Boolean(compact(job?.url) && (compact(job?.title) || compact(job?.company) || compact(job?.description)));
+    const title = compact(job?.title);
+    const company = compact(job?.company);
+    const url = normalizeBossJobUrl(job?.url);
+    if (!isBossJobDetailUrl(url)) return false;
+    if (isBossNonJobNavigationTitle(title)) return false;
+    return Boolean(title || company);
   }
 
   function missingCardFields(job) {
     const missing = [];
-    if (!compact(job?.url)) missing.push("详情链接");
+    if (!compact(job?.url) || !isBossJobDetailUrl(job.url)) missing.push("详情链接");
     if (!compact(job?.title)) missing.push("岗位名");
     if (!compact(job?.company)) missing.push("公司名");
     return missing;
@@ -1420,6 +1426,9 @@
   }
 
   function normalizeBossJobUrl(value) {
+    if (SCAN_SUPPORT.normalizeBossJobUrl) {
+      return SCAN_SUPPORT.normalizeBossJobUrl(value, window.location.origin);
+    }
     const raw = String(value || "").trim();
     if (!raw) return "";
     const match = raw.match(/https?:\/\/[^\s"'<>]*job_detail[^\s"'<>]*/i)
@@ -1427,7 +1436,11 @@
     const candidate = match ? match[0] : raw;
     if (!/job_detail/i.test(candidate)) return "";
     try {
-      return new URL(candidate, window.location.origin).href;
+      const parsed = new URL(candidate, window.location.origin);
+      parsed.hash = "";
+      if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+      if (!parsed.pathname.includes("/job_detail/")) return "";
+      return parsed.href;
     } catch {
       return "";
     }
@@ -1439,12 +1452,27 @@
   }
 
   function isBossDetailPageUrl(url) {
+    return isBossJobDetailUrl(url || window.location.href);
+  }
+
+  function isBossJobDetailUrl(url) {
+    if (SCAN_SUPPORT.isBossJobDetailUrl) {
+      return SCAN_SUPPORT.isBossJobDetailUrl(url, window.location.origin);
+    }
     try {
       const parsed = new URL(url || window.location.href, window.location.origin);
-      return parsed.hostname.includes("zhipin.com") && parsed.pathname.includes("/job_detail/");
+      return parsed.protocol === "https:"
+        && parsed.hostname.endsWith("zhipin.com")
+        && parsed.pathname.includes("/job_detail/")
+        && Boolean(extractBossId(parsed.href));
     } catch {
-      return /\/job_detail\//.test(String(url || ""));
+      return Boolean(extractBossId(url || ""));
     }
+  }
+
+  function isBossNonJobNavigationTitle(title) {
+    if (SCAN_SUPPORT.isNonJobNavigationTitle) return SCAN_SUPPORT.isNonJobNavigationTitle(title);
+    return /^(职位搜索|搜索职位|岗位搜索|搜索岗位|职位|岗位|工作搜索|公司搜索|搜索公司|全部职位|全部岗位|返回列表)$/.test(compact(title));
   }
 
   function extractJobUrlFromText(text) {
@@ -1553,14 +1581,27 @@
     }
 
     const currentJob = jobs[detailIndex];
-    if (currentJob) {
+    let currentNavigationBlocked = false;
+    if (currentJob && !isBossJobDetailUrl(currentJob.url)) {
+      jobs[detailIndex] = markBossDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, `岗位详情链接无效或不是Boss岗位页：${currentJob.url || "空"}`);
+      postProgress(message, "warning", `Boss Chrome跳过无效详情链接 ${detailIndex + 1}/${jobs.length}：${currentJob.title || "未知岗位"}`, {
+        ...baseMeta,
+        stage: "details",
+        detailIndex: detailIndex + 1,
+        detailTotal: jobs.length,
+        targetUrl: currentJob.url
+      });
+      currentNavigationBlocked = true;
+    }
+
+    if (currentJob && !currentNavigationBlocked) {
       const pageBlockDiagnostics = buildPageBlockDiagnostics();
       if (handleBlockingState(message, pageBlockDiagnostics, { ...baseMeta, stage: "details" })) {
         return { success: true, totalSaved, blocked: true };
       }
     }
 
-    if (currentJob && !isSameUrl(window.location.href, currentJob.url)) {
+    if (currentJob && !currentNavigationBlocked && !isSameBossJobUrl(window.location.href, currentJob.url)) {
       postProgress(message, "info", `Boss Chrome正在查看详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
         ...baseMeta,
         stage: "details",
@@ -1568,39 +1609,67 @@
         detailIndex: detailIndex + 1,
         detailTotal: jobs.length
       });
-      window.location.href = currentJob.url;
-      return { success: true, totalSaved, pendingNavigation: true };
+      storeScanTask({ ...message, phase: "detail", jobs, detailIndex, totalSaved });
+      const currentNavigation = await navigateToBossDetail(message, currentJob.url);
+      if (currentNavigation.status === "pending") {
+        return { success: true, totalSaved, pendingNavigation: true };
+      }
+      if (currentNavigation.status === "blocked") {
+        jobs[detailIndex] = markBossDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, currentNavigation.message);
+        postProgress(message, "warning", `Boss Chrome详情页跳转无响应，已跳过 ${detailIndex + 1}/${jobs.length}：${currentJob.title || "未知岗位"}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: currentJob.url,
+          reason: currentNavigation.message
+        });
+        currentNavigationBlocked = true;
+      }
     }
 
-    if (currentJob) {
+    if (currentJob && !currentNavigationBlocked) {
       if (isStopRequested(runId)) {
         stopRequested = true;
         clearStoredScanTask();
         return { success: true, totalSaved };
       }
-      await humanPause(900, 1800);
-      writeScanStatus({
-        isRunning: true,
-        stopRequested: false,
-        stage: "details",
-        message: `Boss Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`,
-        keyword,
-        keywordIndex: baseMeta.keywordIndex,
-        keywordTotal: baseMeta.keywordTotal,
-        detailIndex: detailIndex + 1,
-        detailTotal: jobs.length,
-        totalSaved,
-        startedAt: message.startedAt,
-        updatedAt: Date.now()
-      });
-      postProgress(message, "info", `Boss Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
-        ...baseMeta,
-        stage: "details",
-        collected: jobs.length,
-        detailIndex: detailIndex + 1,
-        detailTotal: jobs.length
-      });
-      jobs[detailIndex] = await enrichBossJobFromCurrentDetail(currentJob, message, baseMeta, detailIndex + 1, jobs.length);
+      if (!isCurrentBossJobDetailPage(currentJob.url)) {
+        jobs[detailIndex] = markBossDetailNavigationFailed(currentJob, detailIndex + 1, jobs.length, `当前页面不是目标Boss岗位详情页：${window.location.href}`);
+        postProgress(message, "warning", `Boss Chrome跳过疑似非岗位详情页 ${detailIndex + 1}/${jobs.length}：${currentJob.title || "未知岗位"}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: currentJob.url
+        });
+      } else {
+        await humanPause(900, 1800);
+        writeScanStatus({
+          isRunning: true,
+          stopRequested: false,
+          stage: "details",
+          message: `Boss Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`,
+          keyword,
+          keywordIndex: baseMeta.keywordIndex,
+          keywordTotal: baseMeta.keywordTotal,
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          totalSaved,
+          startedAt: message.startedAt,
+          updatedAt: Date.now()
+        });
+        postProgress(message, "info", `Boss Chrome正在解析详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          collected: jobs.length,
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length
+        });
+        jobs[detailIndex] = await enrichBossJobFromCurrentDetail(currentJob, message, baseMeta, detailIndex + 1, jobs.length);
+      }
     }
 
     const nextIndex = detailIndex + 1;
@@ -1615,8 +1684,35 @@
         detailIndex: nextIndex + 1,
         detailTotal: jobs.length
       });
-      window.location.href = nextJob.url;
-      return { success: true, totalSaved, pendingNavigation: true };
+      if (!isBossJobDetailUrl(nextJob.url)) {
+        jobs[nextIndex] = markBossDetailNavigationFailed(nextJob, nextIndex + 1, jobs.length, `岗位详情链接无效或不是Boss岗位页：${nextJob.url || "空"}`);
+        postProgress(message, "warning", `Boss Chrome跳过无效详情链接 ${nextIndex + 1}/${jobs.length}：${nextJob.title || "未知岗位"}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: nextIndex + 1,
+          detailTotal: jobs.length,
+          targetUrl: nextJob.url
+        });
+        return await continueBossDetailScan({ ...message, jobs, detailIndex: nextIndex + 1, totalSaved }, keyword, runId, baseMeta);
+      }
+      const nextNavigation = await navigateToBossDetail(message, nextJob.url);
+      if (nextNavigation.status === "pending") {
+        return { success: true, totalSaved, pendingNavigation: true };
+      }
+      if (nextNavigation.status === "blocked") {
+        jobs[nextIndex] = markBossDetailNavigationFailed(nextJob, nextIndex + 1, jobs.length, nextNavigation.message);
+        postProgress(message, "warning", `Boss Chrome详情页跳转无响应，已跳过 ${nextIndex + 1}/${jobs.length}：${nextJob.title || "未知岗位"}`, {
+          ...baseMeta,
+          stage: "details",
+          detailIndex: nextIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: nextJob.url,
+          reason: nextNavigation.message
+        });
+        return await continueBossDetailScan({ ...message, jobs, detailIndex: nextIndex + 1, totalSaved }, keyword, runId, baseMeta);
+      }
+      return await continueBossDetailScan({ ...message, jobs, detailIndex: nextIndex, totalSaved }, keyword, runId, baseMeta);
     }
 
     const detailSummary = summarizeJobCollection(jobs);
@@ -1665,6 +1761,76 @@
     };
     storeScanTask(submittingTask);
     return submitCollectedBossJobs(submitJobs, submittingTask, keyword, runId, baseMeta, totalSaved);
+  }
+
+  function markBossDetailNavigationFailed(job, detailIndex, detailTotal, reason) {
+    return {
+      ...job,
+      description: job?.description || "",
+      detailIndex,
+      detailTotal,
+      detailNavigationFailed: true,
+      detailNavigationFailureReason: reason || "详情页跳转失败"
+    };
+  }
+
+  function isCurrentBossJobDetailPage(targetUrl) {
+    return Boolean(isBossJobDetailUrl(window.location.href) && isSameBossJobUrl(window.location.href, targetUrl));
+  }
+
+  async function navigateToBossDetail(message, targetUrl) {
+    const normalizedTargetUrl = normalizeBossJobUrl(targetUrl);
+    const beforeUrl = window.location.href;
+    if (!normalizedTargetUrl || !isBossJobDetailUrl(normalizedTargetUrl)) {
+      return { status: "blocked", targetUrl: normalizedTargetUrl, message: `岗位详情链接无效或不是Boss岗位页：${targetUrl || "空"}` };
+    }
+    if (isSameBossJobUrl(beforeUrl, normalizedTargetUrl)) {
+      postProgress(message, "info", "Boss Chrome详情链接与当前页面相同，直接继续解析当前详情页。", {
+        operation: "scan",
+        stage: "details",
+        currentUrl: beforeUrl,
+        targetUrl: normalizedTargetUrl
+      });
+      return { status: "same", targetUrl: normalizedTargetUrl };
+    }
+    if (isStopRequested(message?.runId)) {
+      stopRequested = true;
+      return { status: "blocked", message: "Boss扫描已停止", targetUrl: normalizedTargetUrl };
+    }
+
+    const backgroundNavigation = await requestBackgroundNavigation(normalizedTargetUrl);
+    if (!backgroundNavigation.success) {
+      return { status: "blocked", message: backgroundNavigation.message || "后台未返回成功状态", targetUrl: normalizedTargetUrl };
+    }
+    await sleep(DETAIL_NAVIGATION_GUARD_MS);
+    if (isStopRequested(message?.runId)) {
+      stopRequested = true;
+      return { status: "blocked", message: "Boss扫描已停止", targetUrl: normalizedTargetUrl };
+    }
+    return classifyBossDetailNavigation({
+      currentUrl: beforeUrl,
+      targetUrl: normalizedTargetUrl,
+      afterUrl: window.location.href,
+      backgroundSuccess: true
+    });
+  }
+
+  function classifyBossDetailNavigation(input) {
+    if (SCAN_SUPPORT.classifyBossDetailNavigation) {
+      return SCAN_SUPPORT.classifyBossDetailNavigation(input, window.location.origin);
+    }
+    const targetUrl = normalizeBossJobUrl(input?.targetUrl);
+    const currentUrl = String(input?.currentUrl || "");
+    const afterUrl = String(input?.afterUrl || currentUrl || "");
+    if (!targetUrl || !isBossJobDetailUrl(targetUrl)) {
+      return { status: "blocked", targetUrl, message: `岗位详情链接无效或不是Boss岗位页：${input?.targetUrl || "空"}` };
+    }
+    if (currentUrl && isSameBossJobUrl(currentUrl, targetUrl)) return { status: "same", targetUrl };
+    if (input?.backgroundSuccess === false) {
+      return { status: "blocked", targetUrl, message: input?.message || "后台未返回成功状态" };
+    }
+    if (afterUrl && afterUrl !== currentUrl) return { status: "pending", targetUrl };
+    return { status: "blocked", targetUrl, message: "已请求后台跳转，但页面URL未变化" };
   }
 
   async function submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved) {
@@ -3746,7 +3912,7 @@
   }
 
   function isSubmittableJob(job) {
-    return Boolean(compact(job?.title) && compact(job?.company) && compact(job?.url));
+    return Boolean(!job?.detailNavigationFailed && compact(job?.title) && compact(job?.company) && isBossJobDetailUrl(job?.url));
   }
 
   function normalizeJobForSubmit(job) {
