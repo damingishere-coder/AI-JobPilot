@@ -4,7 +4,6 @@ import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.ZhilianService;
 import com.getjobs.worker.utils.Job;
-import com.getjobs.worker.utils.JobUtils;
 import com.getjobs.worker.utils.PlaywrightUtil;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
@@ -14,8 +13,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -45,6 +47,17 @@ public class ZhiLian {
     private int maxPage = 500;
 
     private static final String HOME_URL = "https://www.zhaopin.com/sou/";
+    private static final Set<String> OFFICIAL_ZHILIAN_SALARY_CODES = Set.of(
+            "0000,4000",
+            "4001,6000",
+            "6001,8000",
+            "8001,10000",
+            "10001,15000",
+            "15001,25000",
+            "25001,35000",
+            "35001,50000",
+            "50001,9999999"
+    );
 
     private final ZhilianService zhilianService;
     private final JobAiAnalysisService jobAiAnalysisService;
@@ -108,7 +121,7 @@ public class ZhiLian {
                     break;
                 }
 
-                String baseUrl = buildBaseUrl(1);
+                String baseUrl = buildSearchUrl(keyword, 1);
                 deliverByKeyword(keyword, baseUrl);
             }
 
@@ -560,14 +573,46 @@ public class ZhiLian {
     }
 
     /**
-     * 构建基础搜索URL（不含关键词，由搜索框触发）
+     * 构建智联官方搜索 URL：/sou/jl{城市码}/?kw=...&sl=...
      */
-    private String buildBaseUrl(int pageNum) {
+    private String buildSearchUrl(String keyword, int pageNum) {
+        int page = Math.max(1, pageNum);
+        String cityCode = normalizeZhilianCityCode(config == null ? null : config.getCityCode());
+        String salaryCode = normalizeZhilianSalaryCode(config == null ? null : config.getSalary());
         StringBuilder url = new StringBuilder(HOME_URL);
-        url.append("jl").append(config.getCityCode()).append("/");
-        url.append("p").append(pageNum).append("?");
-        url.append(JobUtils.appendParam("sl", config.getSalary()));
+        url.append("jl").append(cityCode).append("/");
+        List<String> params = new ArrayList<>();
+        params.add("kw=" + URLEncoder.encode(keyword == null ? "" : keyword, StandardCharsets.UTF_8));
+        if (!salaryCode.isBlank()) {
+            params.add("sl=" + URLEncoder.encode(salaryCode, StandardCharsets.UTF_8));
+        }
+        if (page > 1) {
+            params.add("p=" + page);
+        }
+        url.append("?").append(String.join("&", params));
         return url.toString();
+    }
+
+    private String normalizeZhilianCityCode(String raw) {
+        String city = raw == null ? "" : raw.trim();
+        if (city.isEmpty() || "0".equals(city) || "不限".equals(city)) {
+            return ZhilianService.DEFAULT_CITY_CODE;
+        }
+        if (city.startsWith("jl") || city.startsWith("JL")) {
+            city = city.substring(2);
+        }
+        return city.chars().allMatch(Character::isDigit) ? city : ZhilianService.DEFAULT_CITY_CODE;
+    }
+
+    private String normalizeZhilianSalaryCode(String raw) {
+        String salary = raw == null ? "" : raw.trim();
+        if (salary.isEmpty()
+                || "0".equals(salary)
+                || "不限".equals(salary)
+                || ZhilianService.DEFAULT_SALARY_CODE.equals(salary)) {
+            return "";
+        }
+        return OFFICIAL_ZHILIAN_SALARY_CODES.contains(salary) ? salary : "";
     }
 
     /**

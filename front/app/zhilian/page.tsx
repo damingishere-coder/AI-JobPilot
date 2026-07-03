@@ -25,13 +25,28 @@ interface ZhilianConfig {
 }
 
 interface Option { name: string; code: string }
-interface ZhilianOptions { city: Option[] }
+interface ZhilianOptions { city: Option[]; salary: Option[] }
 interface ProgressLog {
   id: number
   type: string
   message: string
   timestamp?: number
 }
+
+const DEFAULT_ZHILIAN_CITY_CODE = '489'
+const DEFAULT_ZHILIAN_SALARY_CODE = '0000,9999999'
+const OFFICIAL_ZHILIAN_SALARY_CODES = new Set([
+  DEFAULT_ZHILIAN_SALARY_CODE,
+  '0000,4000',
+  '4001,6000',
+  '6001,8000',
+  '8001,10000',
+  '10001,15000',
+  '15001,25000',
+  '25001,35000',
+  '35001,50000',
+  '50001,9999999',
+])
 
 const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
@@ -75,9 +90,10 @@ export default function ZhilianPage() {
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
 
-  const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: '', salary: '', searchJobLimit: 20 })
+  const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: DEFAULT_ZHILIAN_CITY_CODE, salary: DEFAULT_ZHILIAN_SALARY_CODE, searchJobLimit: 20 })
   const [searchJobLimitInput, setSearchJobLimitInput] = useState('20')
-  const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
+  const [options, setOptions] = useState<ZhilianOptions>({ city: [], salary: [] })
+  const [configWarnings, setConfigWarnings] = useState<Record<string, string>>({})
   const [loadingConfig, setLoadingConfig] = useState(true)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
@@ -91,6 +107,31 @@ export default function ZhilianPage() {
     setSearchJobLimitInput(String(limit))
     setConfig((prev) => ({ ...prev, searchJobLimit: limit }))
     return limit
+  }
+
+  const normalizeCityCodeForSelect = (raw: unknown, cityOptions: Option[]): string => {
+    const value = String(raw || '').trim()
+    if (!value || value === '0' || value === '不限') return DEFAULT_ZHILIAN_CITY_CODE
+    if (cityOptions.some((option) => option.code === value)) return value
+    const byName = cityOptions.find((option) => option.name === value)
+    if (byName) return byName.code
+    if (!cityOptions.length && /^\d+$/.test(value)) return value
+    return DEFAULT_ZHILIAN_CITY_CODE
+  }
+
+  const normalizeSalaryCodeForSelect = (raw: unknown, salaryOptions: Option[]): string => {
+    const value = String(raw || '').trim()
+    if (!value || value === '0' || value === '不限') return DEFAULT_ZHILIAN_SALARY_CODE
+    if (salaryOptions.some((option) => option.code === value)) return value
+    const byName = salaryOptions.find((option) => option.name === value)
+    if (byName) return byName.code
+    if (!salaryOptions.length && OFFICIAL_ZHILIAN_SALARY_CODES.has(value)) return value
+    return DEFAULT_ZHILIAN_SALARY_CODE
+  }
+
+  const isLegacyZhilianValue = (raw: unknown): boolean => {
+    const value = String(raw || '').trim()
+    return Boolean(value && value !== '0' && value !== '不限')
   }
 
   const appendProgressLog = useCallback((entry: Omit<ProgressLog, 'id'>) => {
@@ -319,16 +360,30 @@ export default function ZhilianPage() {
     try {
       const res = await fetch(`${API_BASE}/api/zhilian/config`)
       const data = await res.json()
+      const nextOptions: ZhilianOptions = {
+        city: Array.isArray(data.options?.city) ? data.options.city : [],
+        salary: Array.isArray(data.options?.salary) ? data.options.salary : [],
+      }
+      const nextWarnings: Record<string, string> = { ...(data.warnings || {}) }
       setCurrentProfile(data.currentProfile || null)
       setHasProfile(Boolean(data.hasProfile || data.currentProfile))
+      setOptions(nextOptions)
       if (data.config) {
         const normalized = { ...data.config }
         normalized.keywords = parseKeywordsFromDb(data.config.keywords)
         normalized.searchJobLimit = normalizeSearchJobLimit(data.config.searchJobLimit)
+        normalized.cityCode = normalizeCityCodeForSelect(data.config.cityCode, nextOptions.city)
+        normalized.salary = normalizeSalaryCodeForSelect(data.config.salary, nextOptions.salary)
+        if (isLegacyZhilianValue(data.config.cityCode) && normalized.cityCode !== String(data.config.cityCode || '').trim()) {
+          nextWarnings.city ||= '已将旧版城市值改为智联官方城市参数，请确认后保存。'
+        }
+        if (isLegacyZhilianValue(data.config.salary) && normalized.salary !== String(data.config.salary || '').trim()) {
+          nextWarnings.salary ||= '已将旧版自定义薪资改为智联官方薪资区间，请重新选择后保存。'
+        }
         setSearchJobLimitInput(String(normalized.searchJobLimit))
         setConfig(normalized)
       }
-      if (data.options) setOptions(data.options)
+      setConfigWarnings(nextWarnings)
     } catch (e) {
       console.error('[智联] 获取配置失败:', e)
     } finally {
@@ -580,11 +635,26 @@ export default function ZhilianPage() {
     }
     try {
       const searchJobLimit = commitSearchJobLimit()
+      const cityCode = normalizeCityCodeForSelect(config.cityCode, options.city)
+      const salary = normalizeSalaryCodeForSelect(config.salary, options.salary)
+      if (!options.city.some((option) => option.code === cityCode)) {
+        setSaveResult({ success: false, message: '城市选项还没有加载完成，请刷新页面后再保存。' })
+        setShowSaveDialog(true)
+        return
+      }
+      if (!options.salary.some((option) => option.code === salary)) {
+        setSaveResult({ success: false, message: '薪资选项还没有加载完成，请刷新页面后再保存。' })
+        setShowSaveDialog(true)
+        return
+      }
       const payload = {
         ...config,
+        cityCode,
+        salary,
         keywords: serializeKeywordsForDb(config.keywords),
         searchJobLimit,
       }
+      setConfig((current) => ({ ...current, cityCode, salary, searchJobLimit }))
       const response = await fetch(`${API_BASE}/api/zhilian/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -739,7 +809,7 @@ export default function ZhilianPage() {
                   <div className="space-y-2">
                     <Label>城市</Label>
                     <Select
-                      value={config.cityCode || ''}
+                      value={config.cityCode || DEFAULT_ZHILIAN_CITY_CODE}
                       onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value }))}
                       placeholder="请选择城市"
                       disabled={!hasProfile}
@@ -748,6 +818,9 @@ export default function ZhilianPage() {
                         <option key={o.code} value={o.code}>{o.name}</option>
                       ))}
                     </Select>
+                    {configWarnings.city && (
+                      <p className="text-xs text-amber-600 dark:text-amber-300">{configWarnings.city}</p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label>每关键词后台 AI 分析岗位数</Label>
@@ -771,13 +844,20 @@ export default function ZhilianPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>薪资范围（最低和最高工资，用逗号分割）</Label>
-                    <Input
-                      placeholder="如：12000, 20000 或 不限"
-                      value={config.salary || ''}
+                    <Label>薪资范围</Label>
+                    <Select
+                      value={config.salary || DEFAULT_ZHILIAN_SALARY_CODE}
                       onChange={(e) => setConfig((c) => ({ ...c, salary: e.target.value }))}
+                      placeholder="请选择薪资范围"
                       disabled={!hasProfile}
-                    />
+                    >
+                      {options.salary.map((o) => (
+                        <option key={o.code} value={o.code}>{o.name}</option>
+                      ))}
+                    </Select>
+                    {configWarnings.salary && (
+                      <p className="text-xs text-amber-600 dark:text-amber-300">{configWarnings.salary}</p>
+                    )}
                   </div>
                 </div>
               )}

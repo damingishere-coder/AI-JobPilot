@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-25-scan-resume-redirect-2";
+  const EXTENSION_VERSION = "2026-07-03-official-search-params";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -12,6 +12,7 @@
   const SHARED_SCAN_CANCEL_KEY = "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__";
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
+  const SCAN_SUPPORT = window.GetJobsZhilianScanSupport || {};
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
   const JOB_LINK_SELECTORS = [
@@ -1710,17 +1711,14 @@
   function buildKeywordCursorKey(message, keywords) {
     const config = message?.config || {};
     const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
+    const searchParams = normalizedZhilianSearchParams(config);
     return stableKey({
       platform: "zhilian",
       keywords: uniqueStrings(keywords),
-      cityCode: normalizedList(config.cityCode),
-      salary: normalizedList(config.salary),
+      cityCode: searchParams.cityCode,
+      salary: searchParams.salary,
       searchJobLimit
     });
-  }
-
-  function normalizedList(value) {
-    return toList(value).map((item) => compact(item)).filter(Boolean);
   }
 
   function stableKey(value) {
@@ -1850,13 +1848,64 @@
   }
 
   function buildSearchUrl(keyword, config, pageNumber = 1) {
-    const city = first(config.cityCode || config.cityId || config.city, "0");
+    if (typeof SCAN_SUPPORT.buildSearchUrl === "function") {
+      return SCAN_SUPPORT.buildSearchUrl(keyword, config, pageNumber);
+    }
+    const searchParams = normalizedZhilianSearchParams(config);
     const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
     const params = new URLSearchParams();
     params.set("kw", keyword);
-    params.set("cityId", city || "0");
+    if (!isUnlimitedZhilianSalary(searchParams.salary)) params.set("sl", searchParams.salary);
     if (page > 1) params.set("p", String(page));
-    return `https://www.zhaopin.com/sou/?${params.toString()}`;
+    return `https://www.zhaopin.com/sou/jl${searchParams.cityCode}/?${params.toString()}`;
+  }
+
+  function normalizedZhilianSearchParams(config = {}) {
+    if (typeof SCAN_SUPPORT.normalizedSearchParamsForCursor === "function") {
+      return SCAN_SUPPORT.normalizedSearchParamsForCursor(config);
+    }
+    return {
+      cityCode: normalizeZhilianCityCode(config.cityCode || config.cityId || config.city),
+      salary: normalizeZhilianSalaryCode(config.salary || config.salaryTypeCode || config.sl)
+    };
+  }
+
+  function normalizeZhilianCityCode(value) {
+    if (typeof SCAN_SUPPORT.normalizeZhilianCityCode === "function") {
+      return SCAN_SUPPORT.normalizeZhilianCityCode(value);
+    }
+    const city = first(value, "489");
+    if (!city || city === "0" || city === "不限") return "489";
+    const withoutPrefix = city.replace(/^jl/i, "");
+    return /^\d+$/.test(withoutPrefix) ? withoutPrefix : "489";
+  }
+
+  function normalizeZhilianSalaryCode(value) {
+    if (typeof SCAN_SUPPORT.normalizeZhilianSalaryCode === "function") {
+      return SCAN_SUPPORT.normalizeZhilianSalaryCode(value);
+    }
+    const salary = first(value, "0000,9999999");
+    if (!salary || salary === "0" || salary === "不限") return "0000,9999999";
+    if ([
+      "0000,9999999",
+      "0000,4000",
+      "4001,6000",
+      "6001,8000",
+      "8001,10000",
+      "10001,15000",
+      "15001,25000",
+      "25001,35000",
+      "35001,50000",
+      "50001,9999999"
+    ].includes(salary)) return salary;
+    return "0000,9999999";
+  }
+
+  function isUnlimitedZhilianSalary(value) {
+    if (typeof SCAN_SUPPORT.isUnlimitedZhilianSalary === "function") {
+      return SCAN_SUPPORT.isUnlimitedZhilianSalary(value);
+    }
+    return normalizeZhilianSalaryCode(value) === "0000,9999999";
   }
 
   function isCurrentSearchPage(keyword, config, pageNumber = 1) {

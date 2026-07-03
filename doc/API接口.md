@@ -141,6 +141,7 @@ Profile 用于区分不同候选人或简历上下文。当前档案会影响 AI
 | `GET` | `/api/zhilian/config` | 获取智联配置 |
 | `PUT` | `/api/zhilian/config` | 更新智联配置 |
 | `GET` | `/api/zhilian/config/options/city` | 获取智联城市选项 |
+| `GET` | `/api/zhilian/config/options/salary` | 获取智联官方薪资区间选项 |
 | `GET` | `/api/zhilian/login-status` | 智联登录状态 |
 | `POST` | `/api/zhilian/login` | 智联登录 |
 | `POST` | `/api/zhilian/logout` | 智联退出登录 |

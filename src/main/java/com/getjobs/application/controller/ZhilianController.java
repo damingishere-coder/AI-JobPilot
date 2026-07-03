@@ -93,23 +93,31 @@ public class ZhilianController {
         if (config == null) {
             config = new ZhilianConfigEntity();
         }
+        String rawCityCode = config.getCityCode();
+        String rawSalary = config.getSalary();
         if (config.getSearchJobLimit() == null) {
             config.setSearchJobLimit(ZhilianService.DEFAULT_SEARCH_JOB_LIMIT);
         } else {
             config.setSearchJobLimit(zhilianService.normalizeSearchJobLimit(config.getSearchJobLimit()));
         }
+        config.setCityCode(zhilianService.normalizeCityCode(config.getCityCode()));
+        config.setSalary(zhilianService.normalizeSalaryCode(config.getSalary()));
+
+        Map<String, String> warnings = new HashMap<>();
+        if (isLegacyZhilianValue(rawCityCode) && !Objects.equals(rawCityCode.trim(), config.getCityCode())) {
+            warnings.put("city", "已将旧版城市值改为智联官方城市参数，请确认后保存。");
+        }
+        if (isLegacyZhilianValue(rawSalary) && !Objects.equals(rawSalary.trim(), config.getSalary())) {
+            warnings.put("salary", "已将旧版自定义薪资改为智联官方薪资区间，请重新选择后保存。");
+        }
 
         Map<String, List<Map<String, String>>> options = new HashMap<>();
-        options.put("city", zhilianService.getOptionsByType("city").stream().map(e -> {
-            Map<String, String> m = new HashMap<>();
-            m.put("name", e.getName());
-            m.put("code", e.getCode());
-            return m;
-        }).collect(Collectors.toList()));
-        // 智联薪资目前不枚举，前端可用文本输入或简单选择"不限"
+        options.put("city", toOptionMaps("city"));
+        options.put("salary", toOptionMaps("salary"));
 
         result.put("config", config);
         result.put("options", options);
+        result.put("warnings", warnings);
         result.put("currentProfile", profileService.getCurrentProfile());
         result.put("hasProfile", profileService.hasProfiles());
         return result;
@@ -128,12 +136,30 @@ public class ZhilianController {
      */
     @GetMapping("/config/options/city")
     public List<Map<String, String>> getCityOptions() {
-        return zhilianService.getOptionsByType("city").stream().map(e -> {
+        return toOptionMaps("city");
+    }
+
+    /**
+     * 返回薪资选项列表
+     */
+    @GetMapping("/config/options/salary")
+    public List<Map<String, String>> getSalaryOptions() {
+        return toOptionMaps("salary");
+    }
+
+    private List<Map<String, String>> toOptionMaps(String type) {
+        return zhilianService.getOptionsByType(type).stream().map(e -> {
             Map<String, String> m = new HashMap<>();
             m.put("name", e.getName());
             m.put("code", e.getCode());
             return m;
         }).collect(Collectors.toList());
+    }
+
+    private boolean isLegacyZhilianValue(String value) {
+        if (value == null || value.isBlank()) return false;
+        String trimmed = value.trim();
+        return !"0".equals(trimmed) && !"不限".equals(trimmed);
     }
 
     // ==================== 登录和认证相关接口 ====================

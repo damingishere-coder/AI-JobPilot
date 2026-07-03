@@ -43,7 +43,7 @@
     },
     {
       "matches": ["https://www.zhaopin.com/*", "https://*.zhaopin.com/*"],
-      "js": ["zhilian-content.js"],
+      "js": ["zhilian-scan-support.js", "zhilian-content.js"],
       "run_at": "document_idle"
     }
   ]
