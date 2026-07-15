@@ -138,6 +138,8 @@ test("collects at least five visible Boss cards with required list fields", () =
       assert.ok(job[fieldName], `${fieldName} should not be empty`);
     }
     assert.equal(job.deliveryStatus, "LIST_COLLECTED");
+    assert.equal(job.source, "boss-dom-card");
+    assert.equal(job.salarySource, "dom_untrusted");
   }
 });
 

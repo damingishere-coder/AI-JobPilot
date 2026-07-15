@@ -7,6 +7,7 @@ const PLATFORM_CONFIG = {
       "boss-selectors.js",
       "boss-debug.js",
       "boss-scan-support.js",
+      "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
       "boss-content.js"
@@ -23,12 +24,12 @@ const pageTabs = new Map();
 let scanSessionsWriteQueue = Promise.resolve();
 const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
 const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-const BACKGROUND_VERSION = "2026-06-25-scan-resume-redirect-2";
+const BACKGROUND_VERSION = "2026-07-15-boss-api-poc-1";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-07-15-boss-api-poc-1";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -42,6 +43,7 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "BOSS_PAGE_STATUS",
   "BOSS_DEBUG_COLLECT",
   "BOSS_COLLECT_CURRENT_PAGE",
+  "BOSS_API_POC_COLLECT",
   "BOSS_SCAN_STATUS",
   "BOSS_SCAN_START",
   "BOSS_SCAN_STOP",
@@ -55,6 +57,17 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_API_PAGE_REQUEST") {
+    if (!isBossSender(sender)) {
+      sendResponse({ success: false, message: "拒绝非 Boss 页面发起搜索 API 请求" });
+      return;
+    }
+    handleBossApiPageRequest(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_SCAN_OWNER_STATUS") {
     if (!isBossSender(sender)) {
       sendResponse({ success: false, isOwner: false });
@@ -172,6 +185,125 @@ function isAllowedPageUrl(url) {
 
 function isSupportedPlatformSender(sender) {
   return isBossSender(sender) || isZhilianSender(sender);
+}
+
+async function handleBossApiPageRequest(message, sender) {
+  const tabId = sender.tab?.id;
+  if (!tabId) return { success: false, message: "Boss API POC 缺少标签页 ID" };
+
+  const resolved = resolveBossApiPageRequest(message?.request);
+  if (!resolved.success) return resolved;
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: requestBossSearchApiInMainWorld,
+    args: [resolved.relativeUrl]
+  });
+  const result = Array.isArray(results) ? results[0]?.result : null;
+  return result && typeof result === "object"
+    ? result
+    : { success: false, message: "Boss 页面主环境未返回 API 结果" };
+}
+
+function resolveBossApiPageRequest(request) {
+  if (!request || request.path !== "/wapi/zpgeek/search/joblist.json") {
+    return { success: false, message: "Boss API POC 仅允许岗位搜索接口" };
+  }
+  const input = request.params && typeof request.params === "object" ? request.params : {};
+  const allowedKeys = new Set(["scene", "query", "city", "page", "pageSize", "jobType", "salary", "experience", "degree", "scale", "industry", "stage"]);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
+    return { success: false, message: "Boss API POC 包含未允许的搜索参数" };
+  }
+
+  const scene = String(input.scene || "").trim();
+  const query = String(input.query || "").replace(/\s+/g, " ").trim();
+  const city = String(input.city || "").trim();
+  const page = Number(input.page);
+  const pageSize = Number(input.pageSize);
+  if (scene !== "1") return { success: false, message: "Boss API POC scene 参数无效" };
+  if (!query || query.length > 100) return { success: false, message: "Boss API POC 关键词无效" };
+  if (!/^\d+$/.test(city) || city === "0") return { success: false, message: "Boss API POC 城市码无效" };
+  if (page !== 1) return { success: false, message: "Boss API POC 仅支持第一页" };
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 10) {
+    return { success: false, message: "Boss API POC pageSize 必须在 1 到 10 之间" };
+  }
+
+  const params = new URLSearchParams({ scene: "1", query, city, page: "1", pageSize: String(pageSize) });
+  for (const key of ["jobType", "salary", "experience", "degree", "scale", "industry", "stage"]) {
+    const value = String(input[key] || "").trim();
+    if (!value) continue;
+    if (!/^\d+(,\d+)*$/.test(value) || value.length > 200) {
+      return { success: false, message: `Boss API POC ${key} 筛选参数无效` };
+    }
+    params.set(key, value);
+  }
+  return {
+    success: true,
+    relativeUrl: `/wapi/zpgeek/search/joblist.json?${params.toString()}`
+  };
+}
+
+async function requestBossSearchApiInMainWorld(relativeUrl) {
+  try {
+    if (!/(^|\.)zhipin\.com$/i.test(window.location.hostname)) {
+      return { success: false, message: "当前标签页不是 Boss 页面" };
+    }
+    const requestUrl = new URL(relativeUrl, window.location.origin);
+    if (requestUrl.origin !== window.location.origin || requestUrl.pathname !== "/wapi/zpgeek/search/joblist.json") {
+      return { success: false, message: "Boss 搜索 API 地址校验失败" };
+    }
+
+    const pageText = String(document.body?.innerText || document.body?.textContent || "").slice(0, 5000);
+    const pageState = {
+      isLoginPage: /\/web\/user\/?(?:login)?/i.test(window.location.pathname)
+        || /登录后查看|请先登录|手机号登录|扫码登录/.test(pageText),
+      isSecurityPage: /安全验证|验证码|滑块验证|访问过于频繁|异常访问/.test(pageText)
+    };
+    if (pageState.isLoginPage || pageState.isSecurityPage) {
+      return { success: true, responseOk: false, httpStatus: 0, pageState };
+    }
+
+    const response = await fetch(requestUrl.href, {
+      method: "GET",
+      credentials: "include",
+      headers: { Accept: "application/json, text/plain, */*" }
+    });
+    const text = await response.text();
+    const responsePreview = text.slice(0, 5000);
+    let responsePath = "";
+    try {
+      responsePath = new URL(response.url).pathname;
+    } catch {
+      responsePath = "";
+    }
+    const responsePageState = {
+      isLoginPage: pageState.isLoginPage
+        || /\/web\/user|\/login/i.test(responsePath)
+        || /登录后查看|请先登录|手机号登录|扫码登录/.test(responsePreview),
+      isSecurityPage: pageState.isSecurityPage
+        || /安全验证|验证码|滑块验证|访问过于频繁|异常访问/.test(responsePreview)
+    };
+    let data = null;
+    let parseError = "";
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      parseError = "Boss 搜索接口返回了非 JSON 内容";
+    }
+    return {
+      success: true,
+      responseOk: response.ok,
+      httpStatus: response.status,
+      finalUrl: response.url,
+      contentType: response.headers.get("content-type") || "",
+      data,
+      parseError,
+      pageState: responsePageState
+    };
+  } catch (error) {
+    return { success: false, message: error?.message || String(error) };
+  }
 }
 
 function isBossSender(sender) {
@@ -368,7 +500,7 @@ async function handlePageMessage(message, sender) {
       success: noTabIsExpected,
       message: message.type === "BOSS_SCAN_STOP"
         ? "没有正在运行的Boss扫描任务"
-        : message.type === "BOSS_DEBUG_COLLECT" || message.type === "BOSS_COLLECT_CURRENT_PAGE"
+        : message.type === "BOSS_DEBUG_COLLECT" || message.type === "BOSS_COLLECT_CURRENT_PAGE" || message.type === "BOSS_API_POC_COLLECT"
           ? "未找到已打开的Boss页面。请先在Chrome中手动打开Boss搜索结果页。"
           : "未找到已打开的平台页面",
       isRunning: false,
@@ -434,6 +566,7 @@ function isNoFocusPlatformMessage(type) {
     || type === "BOSS_PAGE_STATUS"
     || type === "BOSS_DEBUG_COLLECT"
     || type === "BOSS_COLLECT_CURRENT_PAGE"
+    || type === "BOSS_API_POC_COLLECT"
     || type === "BOSS_SCAN_STOP"
     || type === "ZHILIAN_SCAN_STATUS"
     || type === "ZHILIAN_SCAN_STOP";

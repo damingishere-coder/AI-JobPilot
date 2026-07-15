@@ -1,7 +1,7 @@
 (function () {
   const SOURCE = "GET_JOBS_PAGE";
   const TARGET = "GET_JOBS_EXTENSION";
-  const BRIDGE_VERSION = "2026-06-25-scan-resume-redirect-2";
+  const BRIDGE_VERSION = "2026-07-15-boss-api-poc-1";
   const ALLOWED_PAGE_ORIGINS = new Set([
     "http://localhost:6866",
     "http://127.0.0.1:6866"
@@ -11,6 +11,7 @@
     "BOSS_PAGE_STATUS",
     "BOSS_DEBUG_COLLECT",
     "BOSS_COLLECT_CURRENT_PAGE",
+    "BOSS_API_POC_COLLECT",
     "BOSS_SCAN_STATUS",
     "BOSS_SCAN_START",
     "BOSS_SCAN_STOP",
