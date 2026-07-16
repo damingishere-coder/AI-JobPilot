@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "投递牛马 Chrome Bridge",
-  "version": "1.2.2",
+  "version": "1.2.4",
   "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for 投递牛马.",
   "icons": {
     "16": "icons/icon16.png",

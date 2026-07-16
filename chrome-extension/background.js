@@ -15,7 +15,11 @@ const PLATFORM_CONFIG = {
   zhilian: {
     hosts: ["zhaopin.com"],
     home: "https://www.zhaopin.com/",
-    contentScript: "zhilian-content.js"
+    contentScript: "zhilian-content.js",
+    contentScripts: [
+      "zhilian-scan-support.js",
+      "zhilian-content.js"
+    ]
   }
 };
 
@@ -29,7 +33,7 @@ const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-16-search-resume-navigation-1";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -195,13 +199,19 @@ async function handleBossContentNavigation(message, sender) {
 async function handleZhilianContentNavigation(message, sender) {
   const tabId = sender.tab?.id;
   const targetUrl = normalizeZhilianUrl(message?.url);
+  const navigationType = message?.navigationType === "search" ? "search" : "detail";
   if (!tabId) return { success: false, message: "缺少智联标签页ID" };
   if (!targetUrl) return { success: false, message: "智联详情链接为空或格式错误" };
   if (!isZhilianUrl(targetUrl)) return { success: false, message: `拒绝打开非智联页面：${targetUrl}` };
-  if (!isZhilianJobDetailUrl(targetUrl)) return { success: false, message: `拒绝打开非智联岗位详情页：${targetUrl}` };
+  if (navigationType === "search" && !isZhilianSearchUrl(targetUrl)) {
+    return { success: false, message: `拒绝打开非智联搜索页：${targetUrl}` };
+  }
+  if (navigationType === "detail" && !isZhilianJobDetailUrl(targetUrl)) {
+    return { success: false, message: `拒绝打开非智联岗位详情页：${targetUrl}` };
+  }
 
   await chrome.tabs.update(tabId, { url: targetUrl });
-  return { success: true, url: targetUrl };
+  return { success: true, url: targetUrl, navigationType };
 }
 
 async function handleBossLocalApiRequest(message) {
@@ -1193,6 +1203,9 @@ function contentScriptFiles(file) {
   if (file === "boss-content.js") {
     return PLATFORM_CONFIG.boss.contentScripts || [file];
   }
+  if (file === "zhilian-content.js") {
+    return PLATFORM_CONFIG.zhilian.contentScripts || [file];
+  }
   return [file];
 }
 
@@ -1308,16 +1321,32 @@ function isBossUrl(url) {
 function isZhilianUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && parsed.hostname.endsWith("zhaopin.com");
+    return parsed.protocol === "https:" && isZhilianHost(parsed.hostname);
   } catch {
     return false;
   }
 }
 
+function isZhilianSearchUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:"
+      && isZhilianHost(parsed.hostname)
+      && /^\/sou(?:\/|$)/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isZhilianHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "zhaopin.com" || host.endsWith(".zhaopin.com");
+}
+
 function normalizeZhilianUrl(url) {
   try {
     const parsed = new URL(String(url || ""));
-    if (parsed.hostname.endsWith("zhaopin.com") && parsed.protocol === "http:") {
+    if (isZhilianHost(parsed.hostname) && parsed.protocol === "http:") {
       parsed.protocol = "https:";
     }
     parsed.hash = "";
@@ -1333,7 +1362,7 @@ function isZhilianJobDetailUrl(url) {
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
     const text = `${host}${path}${parsed.search.toLowerCase()}`;
-    if (parsed.protocol !== "https:" || !host.endsWith("zhaopin.com")) return false;
+    if (parsed.protocol !== "https:" || !isZhilianHost(host)) return false;
     if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(`${host}${path}`)) return false;
     if (/^\/sou(\/|$)|\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
     return host.startsWith("jobs.")

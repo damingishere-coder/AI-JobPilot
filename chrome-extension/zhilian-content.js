@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-07-03-official-search-params";
+  const EXTENSION_VERSION = "2026-07-16-search-resume-navigation-1";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -15,6 +15,9 @@
   const SCAN_SUPPORT = window.GetJobsZhilianScanSupport || {};
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
+  const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
+  const SEARCH_NAVIGATION_RETRY_MS = 2500;
+  const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
   const JOB_LINK_SELECTORS = [
     "a[href*='jobs.zhaopin.com']",
     "a[href*='jobdetail']",
@@ -348,6 +351,9 @@
       markKeywordCursorCurrent(task, keywordIndex, keyword);
       const searchPage = Math.max(1, Number(task.searchPage || 1));
       const searchUrl = buildSearchUrl(keyword, config, searchPage);
+      const navigationKey = buildSearchNavigationKey(keyword, config, searchPage);
+      const navigationAttempts = task.navigationKey === navigationKey ? Number(task.navigationAttempts || 0) : 0;
+      const nextNavigationAttempts = navigationAttempts + 1;
       const baseTask = {
         ...task,
         source: "GET_JOBS_BACKGROUND",
@@ -356,7 +362,11 @@
         currentIndex: keywordIndex,
         totalSaved,
         searchUrl,
-        expectedKeyword: keyword
+        expectedKeyword: keyword,
+        expectedSearchUrl: searchUrl,
+        navigationKey,
+        navigationAttempts: nextNavigationAttempts,
+        navigationStartedAt: Date.now()
       };
       const baseMeta = {
         operation: "scan",
@@ -397,18 +407,30 @@
       }
 
       if (!isCurrentSearchPage(keyword, config, searchPage)) {
-        postProgress(task, "info", `智联 Chrome准备打开搜索页：${keyword}，目标URL：${searchUrl}，当前URL：${window.location.href}`, {
+        if (nextNavigationAttempts > SEARCH_NAVIGATION_MAX_ATTEMPTS) {
+          return await stopSearchNavigationFailure({
+            ...baseTask,
+            navigationAttempts
+          }, searchUrl);
+        }
+        postProgress(task, "info", `智联 Chrome准备打开搜索页：${keyword}（第 ${nextNavigationAttempts} 次导航），目标URL：${searchUrl}，当前URL：${window.location.href}`, {
           ...baseMeta,
           stage: "searching",
           currentUrl: window.location.href,
-          targetUrl: searchUrl
+          targetUrl: searchUrl,
+          navigationAttempts: nextNavigationAttempts
         });
         await storeScanTask(baseTask);
-        window.location.assign(searchUrl);
+        openSearchPage(searchUrl, baseTask);
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
 
-      await storeScanTask({ ...baseTask, phase: "collecting" });
+      await storeScanTask({
+        ...baseTask,
+        phase: "collecting",
+        navigationAttempts: 0,
+        navigationStartedAt: 0
+      });
       postProgress(task, "info", `智联 Chrome开始搜索：${keyword}，当前URL：${window.location.href}`, {
         ...baseMeta,
         stage: "searching",
@@ -1860,6 +1882,12 @@
     return `https://www.zhaopin.com/sou/jl${searchParams.cityCode}/?${params.toString()}`;
   }
 
+  function buildSearchNavigationKey(keyword, config, pageNumber = 1) {
+    const searchParams = normalizedZhilianSearchParams(config);
+    const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
+    return `${compact(keyword)}::${searchParams.cityCode}::${searchParams.salary}::${page}`;
+  }
+
   function normalizedZhilianSearchParams(config = {}) {
     if (typeof SCAN_SUPPORT.normalizedSearchParamsForCursor === "function") {
       return SCAN_SUPPORT.normalizedSearchParamsForCursor(config);
@@ -2329,6 +2357,20 @@
     }
   }
 
+  function isZhilianUrl(rawUrl) {
+    if (typeof SCAN_SUPPORT.isZhilianUrl === "function") {
+      return SCAN_SUPPORT.isZhilianUrl(rawUrl);
+    }
+    try {
+      const parsed = new URL(String(rawUrl || ""));
+      const host = parsed.hostname.toLowerCase();
+      return parsed.protocol === "https:"
+        && (host === "zhaopin.com" || host.endsWith(".zhaopin.com"));
+    } catch {
+      return false;
+    }
+  }
+
   function isZhilianSearchPath(pathname) {
     return /^\/sou(\/|$)/.test(String(pathname || "").toLowerCase());
   }
@@ -2392,6 +2434,124 @@
     };
   }
 
+  function openSearchPage(url, task) {
+    const attempts = Number(task.navigationAttempts || 1);
+    scheduleSearchNavigationRetry(url, task, attempts);
+    requestBackgroundNavigation(url, "search").then((response) => {
+      if (response?.success) return;
+      navigateSearchPageInCurrentFrame(url, attempts);
+    }).catch(() => {
+      navigateSearchPageInCurrentFrame(url, attempts);
+    });
+
+    window.setTimeout(() => {
+      const stored = readStoredScanTask();
+      if (!stored || stored.runId !== task.runId || stored.navigationKey !== task.navigationKey) return;
+      if (!isSearchNavigationPending(stored) || isStoredSearchTargetCurrent(stored)) return;
+      navigateSearchPageInCurrentFrame(url, attempts);
+    }, 350);
+  }
+
+  function navigateSearchPageInCurrentFrame(url, attempts) {
+    if (attempts > 1) {
+      window.location.replace(url);
+    } else {
+      window.location.assign(url);
+    }
+  }
+
+  function scheduleSearchNavigationRetry(url, task, attempts) {
+    window.setTimeout(async () => {
+      const stored = readStoredScanTask();
+      if (!stored || stored.runId !== task.runId || stored.navigationKey !== task.navigationKey) return;
+      if (!isSearchNavigationPending(stored) || isStoredSearchTargetCurrent(stored)) return;
+
+      if (attempts >= SEARCH_NAVIGATION_MAX_ATTEMPTS) {
+        await stopSearchNavigationFailure(stored, url);
+        return;
+      }
+
+      const nextAttempts = Number(stored.navigationAttempts || attempts || 0) + 1;
+      const retryTask = {
+        ...stored,
+        navigationAttempts: nextAttempts,
+        navigationStartedAt: Date.now()
+      };
+      await storeScanTask(retryTask);
+      postProgress(retryTask, "warning", `智联搜索页跳转未完成，正在重试打开搜索页：${retryTask.expectedKeyword || ""}。当前URL：${window.location.href}`, {
+        operation: "scan",
+        stage: "searching",
+        keyword: retryTask.expectedKeyword || "",
+        keywordIndex: Number(retryTask.currentIndex || 0) + 1,
+        keywordTotal: scanKeywords(retryTask).length,
+        currentUrl: window.location.href,
+        targetUrl: url,
+        navigationAttempts: nextAttempts,
+        totalSaved: Number(retryTask.totalSaved || 0)
+      });
+      openSearchPage(url, retryTask);
+    }, SEARCH_NAVIGATION_RETRY_MS);
+  }
+
+  async function stopSearchNavigationFailure(task, url) {
+    const keyword = task.expectedKeyword || scanKeywords(task)[Number(task.currentIndex || 0)] || "";
+    const totalSaved = Number(task.totalSaved || 0);
+    const navigationAttempts = Number(task.navigationAttempts || 0);
+    const message = `智联搜索页打开失败：${keyword}。已尝试 ${navigationAttempts} 次，扫描断点已保留。请确认智联页面可以正常访问后再次点击扫描继续。`;
+    await storeScanTask({
+      ...task,
+      pausedAt: Date.now(),
+      lastError: {
+        type: "NAVIGATION_FAILED",
+        message,
+        failedAt: Date.now()
+      }
+    });
+    writeScanStatus({
+      isRunning: false,
+      stopRequested: false,
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: "NAVIGATION_FAILED",
+      message,
+      runId: task.runId,
+      keyword,
+      keywordIndex: Number(task.currentIndex || 0) + 1,
+      keywordTotal: scanKeywords(task).length,
+      totalSaved,
+      saved: totalSaved,
+      startedAt: task.startedAt,
+      updatedAt: Date.now()
+    });
+    postProgress(task, "error", message, {
+      operation: "scan",
+      stage: "blocked",
+      paused: true,
+      resumable: true,
+      diagnosticType: "NAVIGATION_FAILED",
+      keyword,
+      currentUrl: window.location.href,
+      targetUrl: url,
+      navigationAttempts,
+      totalSaved,
+      saved: totalSaved
+    });
+    return { success: false, message, navigationFailed: true, blocked: true, resumable: true, saved: totalSaved, totalSaved };
+  }
+
+  function isSearchNavigationPending(task) {
+    if (String(task?.phase || "") !== "searching" || !task?.expectedSearchUrl) return false;
+    const startedAt = Number(task.navigationStartedAt || task.updatedAt || 0);
+    return Boolean(startedAt && Date.now() - startedAt < SEARCH_NAVIGATION_GRACE_MS);
+  }
+
+  function isStoredSearchTargetCurrent(task) {
+    const keyword = task?.expectedKeyword || scanKeywords(task)[Number(task?.currentIndex || 0)] || "";
+    const page = Math.max(1, Number(task?.searchPage || 1));
+    return Boolean(keyword && isCurrentSearchPage(keyword, task?.config || {}, page));
+  }
+
   async function navigateToDetail(message, targetUrl) {
     const normalizedTargetUrl = normalizeZhilianJobUrl(targetUrl);
     if (!normalizedTargetUrl) return { status: "blocked", message: "岗位缺少详情链接" };
@@ -2439,12 +2599,13 @@
     };
   }
 
-  async function requestBackgroundNavigation(targetUrl) {
+  async function requestBackgroundNavigation(targetUrl, navigationType = "detail") {
     try {
       const response = await chrome.runtime.sendMessage({
         source: "GET_JOBS_ZHILIAN_CONTENT",
         type: "ZHILIAN_NAVIGATE_TAB",
-        url: targetUrl
+        url: targetUrl,
+        navigationType
       });
       return response?.success
         ? { success: true, url: response.url || targetUrl }

@@ -4,13 +4,41 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadSupport() {
-  const window = {};
-  const context = vm.createContext({ window, globalThis: window, URLSearchParams });
+function loadSupport(existingSupport) {
+  const window = existingSupport ? { GetJobsZhilianScanSupport: existingSupport } : {};
+  const context = vm.createContext({ window, globalThis: window, URL, URLSearchParams });
   const source = fs.readFileSync(path.resolve(__dirname, "..", "zhilian-scan-support.js"), "utf8");
   vm.runInContext(source, context, { filename: "zhilian-scan-support.js" });
   return window.GetJobsZhilianScanSupport;
 }
+
+test("replaces a stale Zhilian support module after extension reload", () => {
+  const staleSupport = Object.freeze({ version: "2026-07-03-official-search-params" });
+  const support = loadSupport(staleSupport);
+
+  assert.notEqual(support, staleSupport);
+  assert.equal(support.version, "2026-07-16-search-resume-navigation-1");
+  assert.equal(typeof support.isZhilianUrl, "function");
+});
+
+test("recognizes supported Zhilian pages without trusting lookalike hosts", () => {
+  const support = loadSupport();
+
+  assert.equal(support.isZhilianUrl("https://www.zhaopin.com/"), true);
+  assert.equal(support.isZhilianUrl("https://sou.zhaopin.com/"), true);
+  assert.equal(support.isZhilianSearchUrl("https://www.zhaopin.com/sou/jl489/kwtoken/p1"), true);
+  assert.equal(support.isZhilianSearchUrl("https://www.zhaopin.com/jobdetail/demo.htm"), false);
+  assert.equal(support.isZhilianUrl("https://zhaopin.com.example.com/sou/"), false);
+  assert.equal(support.isZhilianUrl("http://www.zhaopin.com/sou/"), false);
+});
+
+test("keeps the Zhilian resume URL guard and background search navigation wired", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", "zhilian-content.js"), "utf8");
+
+  assert.match(source, /function isZhilianUrl\(rawUrl\)/);
+  assert.match(source, /!isFreshScanTask\(task\) \|\| !isZhilianUrl\(window\.location\.href\)/);
+  assert.match(source, /requestBackgroundNavigation\(url, "search"\)/);
+});
 
 test("builds a Zhilian search URL with official city and salary params", () => {
   const support = loadSupport();

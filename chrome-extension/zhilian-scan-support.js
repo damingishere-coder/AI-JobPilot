@@ -1,5 +1,6 @@
 (function (root) {
-  if (root.GetJobsZhilianScanSupport) return;
+  const SUPPORT_VERSION = "2026-07-16-search-resume-navigation-1";
+  if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
   const DEFAULT_SALARY_CODE = "0000,9999999";
@@ -62,6 +63,26 @@
     };
   }
 
+  function isZhilianUrl(value) {
+    try {
+      const parsed = new URL(String(value || ""));
+      const host = parsed.hostname.toLowerCase();
+      return parsed.protocol === "https:"
+        && (host === "zhaopin.com" || host.endsWith(".zhaopin.com"));
+    } catch {
+      return false;
+    }
+  }
+
+  function isZhilianSearchUrl(value) {
+    if (!isZhilianUrl(value)) return false;
+    try {
+      return /^\/sou(?:\/|$)/i.test(new URL(String(value)).pathname);
+    } catch {
+      return false;
+    }
+  }
+
   function buildSearchUrl(keyword, config = {}, pageNumber = 1) {
     const search = normalizedSearchParamsForCursor(config);
     const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
@@ -73,12 +94,15 @@
   }
 
   root.GetJobsZhilianScanSupport = Object.freeze({
+    version: SUPPORT_VERSION,
     DEFAULT_CITY_CODE,
     DEFAULT_SALARY_CODE,
     normalizeZhilianCityCode,
     normalizeZhilianSalaryCode,
     isUnlimitedZhilianSalary,
     normalizedSearchParamsForCursor,
+    isZhilianUrl,
+    isZhilianSearchUrl,
     buildSearchUrl
   });
 })(typeof window !== "undefined" ? window : globalThis);

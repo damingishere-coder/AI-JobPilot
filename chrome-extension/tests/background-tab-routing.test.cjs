@@ -4,10 +4,32 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadBackground({ tabs, statuses = {} }) {
+const EXTENSION_DIR = path.resolve(__dirname, "..");
+
+function readContentVersion(file) {
+  const source = fs.readFileSync(path.join(EXTENSION_DIR, file), "utf8");
+  const match = source.match(/const EXTENSION_VERSION = "([^"]+)"/);
+  assert.ok(match, `missing EXTENSION_VERSION in ${file}`);
+  return match[1];
+}
+
+const BOSS_CONTENT_VERSION = readContentVersion("boss-content.js");
+const ZHILIAN_CONTENT_VERSION = readContentVersion("zhilian-content.js");
+
+function loadBackground({
+  tabs,
+  statuses = {},
+  contentReady = true,
+  bossContentVersion = BOSS_CONTENT_VERSION,
+  zhilianContentVersion = ZHILIAN_CONTENT_VERSION
+}) {
   const storage = {};
   const sentMessages = [];
+  const executedScripts = [];
   const tabList = tabs.map((tab) => ({ ...tab }));
+  let currentContentReady = contentReady;
+  let currentBossContentVersion = bossContentVersion;
+  let currentZhilianContentVersion = zhilianContentVersion;
   const chrome = {
     runtime: {
       onMessage: { addListener() {} },
@@ -41,12 +63,15 @@ function loadBackground({ tabs, statuses = {} }) {
       },
       async sendMessage(tabId, message) {
         sentMessages.push({ tabId, message });
-        if (message.type === "PING_CONTENT") return { success: true };
+        if (message.type === "PING_CONTENT") {
+          if (!currentContentReady) throw new Error("Receiving end does not exist");
+          return { success: true };
+        }
         if (message.type === "GET_BOSS_CONTENT_VERSION") {
-          return { success: true, version: "2026-06-25-scan-resume-redirect-2" };
+          return { success: true, version: currentBossContentVersion };
         }
         if (message.type === "GET_ZHILIAN_CONTENT_VERSION") {
-          return { success: true, version: "2026-06-25-scan-resume-redirect-2" };
+          return { success: true, version: currentZhilianContentVersion };
         }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
@@ -58,7 +83,16 @@ function loadBackground({ tabs, statuses = {} }) {
       async update() {}
     },
     scripting: {
-      async executeScript() {}
+      async executeScript(options) {
+        executedScripts.push(options);
+        currentContentReady = true;
+        if (options.files.includes("boss-content.js")) {
+          currentBossContentVersion = BOSS_CONTENT_VERSION;
+        }
+        if (options.files.includes("zhilian-content.js")) {
+          currentZhilianContentVersion = ZHILIAN_CONTENT_VERSION;
+        }
+      }
     },
     storage: {
       local: {
@@ -86,10 +120,89 @@ function loadBackground({ tabs, statuses = {} }) {
     setTimeout,
     clearTimeout
   });
-  const source = fs.readFileSync(path.resolve(__dirname, "..", "background.js"), "utf8");
+  const source = fs.readFileSync(path.join(EXTENSION_DIR, "background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
-  return { context, storage, sentMessages };
+  return { context, storage, sentMessages, executedScripts };
 }
+
+test("accepts the actual Zhilian content script version", async () => {
+  const { context } = loadBackground({
+    tabs: [{ id: 1, windowId: 1, url: "https://www.zhaopin.com/", status: "complete" }]
+  });
+
+  assert.equal(await context.isContentScriptReady(1, "zhilian-content.js"), true);
+});
+
+test("injects all Zhilian dependencies when the content script is missing", async () => {
+  const { context, executedScripts } = loadBackground({
+    tabs: [{ id: 1, windowId: 1, url: "https://www.zhaopin.com/", status: "complete" }],
+    contentReady: false
+  });
+
+  await context.ensureContentScript(1, "zhilian-content.js");
+
+  assert.equal(executedScripts.length, 1);
+  assert.deepEqual(Array.from(executedScripts[0].files), [
+    "zhilian-scan-support.js",
+    "zhilian-content.js"
+  ]);
+});
+
+test("reinjects all Zhilian dependencies when the content script is stale", async () => {
+  const { context, executedScripts } = loadBackground({
+    tabs: [{ id: 1, windowId: 1, url: "https://www.zhaopin.com/", status: "complete" }],
+    zhilianContentVersion: "2026-06-25-scan-resume-redirect-2"
+  });
+
+  await context.ensureContentScript(1, "zhilian-content.js");
+
+  assert.equal(executedScripts.length, 1);
+  assert.deepEqual(Array.from(executedScripts[0].files), [
+    "zhilian-scan-support.js",
+    "zhilian-content.js"
+  ]);
+  assert.equal(await context.isContentScriptReady(1, "zhilian-content.js"), true);
+});
+
+test("allows Zhilian content scripts to navigate to supported search pages", async () => {
+  const { context } = loadBackground({
+    tabs: [{ id: 1, windowId: 1, url: "https://www.zhaopin.com/", status: "complete" }]
+  });
+
+  const result = await context.handleZhilianContentNavigation({
+    url: "https://www.zhaopin.com/sou/jl489/?kw=AI%E4%BA%A7%E5%93%81%E8%BF%90%E8%90%A5",
+    navigationType: "search"
+  }, {
+    tab: { id: 1, url: "https://www.zhaopin.com/" }
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.navigationType, "search");
+});
+
+test("rejects non-Zhilian search navigation", async () => {
+  const { context } = loadBackground({
+    tabs: [{ id: 1, windowId: 1, url: "https://www.zhaopin.com/", status: "complete" }]
+  });
+
+  const result = await context.handleZhilianContentNavigation({
+    url: "https://example.com/sou/",
+    navigationType: "search"
+  }, {
+    tab: { id: 1, url: "https://www.zhaopin.com/" }
+  });
+
+  assert.equal(result.success, false);
+
+  const lookalikeResult = await context.handleZhilianContentNavigation({
+    url: "https://evilzhaopin.com/sou/",
+    navigationType: "search"
+  }, {
+    tab: { id: 1, url: "https://www.zhaopin.com/" }
+  });
+
+  assert.equal(lookalikeResult.success, false);
+});
 
 test("keeps Boss and Zhilian scan ownership when both start together", async () => {
   const { context, storage } = loadBackground({ tabs: [] });
