@@ -12,6 +12,7 @@ import { BossFilterPanel } from "./components/BossFilterPanel"
 import { BossJobTable } from "./components/BossJobTable"
 import { BossKpiCards } from "./components/BossKpiCards"
 import { BossPendingCards } from "./components/BossPendingCards"
+import { BossThresholdSettings } from "./components/BossThresholdSettings"
 import { ConfirmDeliveryDialog } from "./components/ConfirmDeliveryDialog"
 import { useBossDeliveryActions } from "./hooks/useBossDeliveryActions"
 import { useBossFilters } from "./hooks/useBossFilters"
@@ -187,6 +188,7 @@ export default function AnalysisContent({
               onConfirmBatch={handleConfirmBatch}
             />
           </div>
+          <BossThresholdSettings />
         </CardHeader>
         <CardContent>
           <BossFilterPanel

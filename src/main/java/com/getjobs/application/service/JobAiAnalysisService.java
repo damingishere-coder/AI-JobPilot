@@ -2,6 +2,7 @@ package com.getjobs.application.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.entity.JobAiAnalysisEntity;
 import com.getjobs.application.entity.PriorityCompanyEntity;
@@ -42,8 +43,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
-    private static final int DEFAULT_APPLY_THRESHOLD = 75;
-    private static final int PRIORITY_APPLY_THRESHOLD = 65;
+    public static final int DEFAULT_APPLY_THRESHOLD = 75;
+    public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
     private final AiService aiService;
     private final ProfileService profileService;
@@ -209,7 +210,7 @@ public class JobAiAnalysisService {
         request.setProfileId(profileId);
         markPlatformAnalysisStarted(request);
         boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
-        int threshold = priority ? PRIORITY_APPLY_THRESHOLD : DEFAULT_APPLY_THRESHOLD;
+        int threshold = resolveApplyThreshold(profileId, priority);
         ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
@@ -282,7 +283,8 @@ public class JobAiAnalysisService {
     private String buildPrompt(String resumeText, JobAnalysisRequest request, boolean priority, int threshold) {
         return "你是求职投递决策助手。请根据候选人简历和岗位信息判断是否值得自动投递。\n" +
                 "只返回JSON，不要使用Markdown代码块。JSON字段必须包含 score, decision, summary, strengths, risks, greeting。\n" +
-                "decision 只能是 APPLY 或 SKIP。普通公司投递阈值75，优先公司阈值65；当前公司" +
+                "score 必须是0到100之间的整数，请综合评估核心技能、工作经验、学历、地点、薪资和岗位硬性要求，不要为了达到阈值而抬高分数。\n" +
+                "decision 只能是 APPLY 或 SKIP。当前公司" +
                 (priority ? "是" : "不是") + "优先公司，当前阈值为" + threshold + "。\n" +
                 "简历：\n" + limit(resumeText, 6000) + "\n\n" +
                 "平台：" + safe(request.getPlatform()) + "\n" +
@@ -300,7 +302,7 @@ public class JobAiAnalysisService {
     private AnalysisResult parseResult(String raw) {
         JSONObject obj = new JSONObject(repairJsonObject(extractJson(raw)));
         AnalysisResult result = new AnalysisResult();
-        result.setScore(obj.has("score") ? obj.optInt("score") : 0);
+        result.setScore(clampScore(obj.has("score") ? obj.optInt("score") : 0));
         result.setDecision(obj.optString("decision", "SKIP"));
         result.setSummary(obj.optString("summary", ""));
         result.setStrengths(toStringList(obj.opt("strengths")));
@@ -388,6 +390,20 @@ public class JobAiAnalysisService {
             }
         }
         return 0;
+    }
+
+    private int clampScore(int score) {
+        return Math.max(0, Math.min(100, score));
+    }
+
+    private int resolveApplyThreshold(Long profileId, boolean priority) {
+        AiEntity config = aiService.getAiConfig(profileId);
+        if (config == null) {
+            return priority ? DEFAULT_PRIORITY_APPLY_THRESHOLD : DEFAULT_APPLY_THRESHOLD;
+        }
+        Integer configured = priority ? config.getPriorityApplyThreshold() : config.getApplyThreshold();
+        int fallback = priority ? DEFAULT_PRIORITY_APPLY_THRESHOLD : DEFAULT_APPLY_THRESHOLD;
+        return configured == null ? fallback : Math.max(0, Math.min(100, configured));
     }
 
     private String extractDecision(String text) {

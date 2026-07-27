@@ -60,6 +60,7 @@ tasks.test {
 
 // 显示已过时 API 的详细告警，便于定位并修复
 tasks.withType<JavaCompile> {
+    options.encoding = "UTF-8"
     options.compilerArgs.addAll(listOf("-Xlint:deprecation"))
 }
 

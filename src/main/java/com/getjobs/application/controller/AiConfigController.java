@@ -4,6 +4,7 @@ import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.service.AiService;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.ProfileService;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -62,16 +63,16 @@ public class AiConfigController {
 
     /**
      * 保存或更新AI配置
-     * @param requestBody 请求体包含introduce和prompt
+     * @param requestBody 请求体包含介绍、提示词和岗位匹配分数线
      * @return 保存结果
      */
     @PostMapping("/config")
-    public ResponseEntity<Map<String, Object>> saveAiConfig(@RequestBody Map<String, String> requestBody) {
+    public ResponseEntity<Map<String, Object>> saveAiConfig(@RequestBody AiConfigRequest requestBody) {
         Map<String, Object> response = new HashMap<>();
 
         try {
-            String introduce = requestBody.get("introduce");
-            String prompt = requestBody.get("prompt");
+            String introduce = requestBody.getIntroduce();
+            String prompt = requestBody.getPrompt();
 
             if (introduce == null || prompt == null) {
                 response.put("success", false);
@@ -79,7 +80,12 @@ public class AiConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
-            AiEntity aiEntity = aiService.saveOrUpdateAiConfig(introduce, prompt);
+            AiEntity aiEntity = aiService.saveOrUpdateAiConfig(
+                    introduce,
+                    prompt,
+                    requestBody.getApplyThreshold(),
+                    requestBody.getPriorityApplyThreshold()
+            );
 
             response.put("success", true);
             response.put("data", aiEntity);
@@ -88,12 +94,68 @@ public class AiConfigController {
             log.info("保存AI配置成功，ID: {}", aiEntity.getId());
             return ResponseEntity.ok(response);
 
+        } catch (IllegalArgumentException e) {
+            log.warn("AI配置参数不合法: {}", e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
         } catch (Exception e) {
             log.error("保存AI配置失败", e);
             response.put("success", false);
             response.put("message", "保存AI配置失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
+    }
+
+    @GetMapping("/thresholds")
+    public ResponseEntity<Map<String, Object>> getAiThresholds() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            AiEntity aiEntity = aiService.getAiConfig();
+            response.put("success", true);
+            response.put("data", thresholdData(aiEntity));
+            response.put("currentProfile", profileService.getCurrentProfile());
+            response.put("hasProfile", profileService.hasProfiles());
+            response.put("message", "获取AI投递分数线成功");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("获取AI投递分数线失败", e);
+            response.put("success", false);
+            response.put("message", "获取AI投递分数线失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PostMapping("/thresholds")
+    public ResponseEntity<Map<String, Object>> saveAiThresholds(@RequestBody AiThresholdRequest requestBody) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            AiEntity aiEntity = aiService.saveOrUpdateAiThresholds(
+                    requestBody.getApplyThreshold(),
+                    requestBody.getPriorityApplyThreshold()
+            );
+            response.put("success", true);
+            response.put("data", thresholdData(aiEntity));
+            response.put("message", "AI投递分数线已保存");
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            log.warn("AI投递分数线参数不合法: {}", e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            log.error("保存AI投递分数线失败", e);
+            response.put("success", false);
+            response.put("message", "保存AI投递分数线失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    private Map<String, Object> thresholdData(AiEntity aiEntity) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("applyThreshold", aiEntity.getApplyThreshold());
+        data.put("priorityApplyThreshold", aiEntity.getPriorityApplyThreshold());
+        return data;
     }
 
     @GetMapping("/resume")
@@ -235,5 +297,19 @@ public class AiConfigController {
             response.put("message", e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
+    }
+
+    @Data
+    public static class AiConfigRequest {
+        private String introduce;
+        private String prompt;
+        private Integer applyThreshold;
+        private Integer priorityApplyThreshold;
+    }
+
+    @Data
+    public static class AiThresholdRequest {
+        private Integer applyThreshold;
+        private Integer priorityApplyThreshold;
     }
 }

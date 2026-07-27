@@ -15,8 +15,8 @@ const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
 const ANALYSIS_LOGIC_TEXT = `1. 平台配置页先决定怎么找岗位：关键词、城市、薪资、学历、经验、行业、公司规模等。
 2. 自动任务按这些条件进入招聘平台搜索岗位，并读取公司、岗位名、薪资、地点、经验、学历、公司信息和岗位描述。
 3. AI 会把你的简历内容和岗位信息放在一起分析，返回 score、decision、summary、strengths、risks、greeting。
-4. 普通公司默认 score 达到 75 才自动投递；优先公司名单命中后，阈值降到 65。
-5. 如果 decision 是 APPLY，系统会进入沟通页面，优先使用 AI 返回的 greeting；如果没有可用 greeting，就使用下面的打招呼话术。`
+4. 分数达到当前档案设置的投递分数线后，岗位进入“待确认”列表；分数线可在 Boss 投递分析页的“岗位数据”区域设置。
+5. 只有你在分析页确认后，系统才会执行实际投递，并优先使用 AI 返回的 greeting。`
 
 type AiConfig = {
   introduce: string
@@ -597,7 +597,7 @@ export default function AiConfigPage() {
         <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
           <CardHeader>
             <CardTitle>优先公司名单</CardTitle>
-            <CardDescription>每行一个公司名；命中后自动投递阈值从 75 降到 65</CardDescription>
+            <CardDescription>每行一个公司名；优先公司使用较低分数线，分数线在 Boss 投递分析页设置</CardDescription>
           </CardHeader>
           <CardContent>
             <Textarea
@@ -625,8 +625,8 @@ export default function AiConfigPage() {
                   <li>平台配置页决定搜索条件，例如关键词、城市、薪资、学历、经验、行业和公司规模。</li>
                   <li>自动任务按这些条件在招聘平台搜索岗位，并提取岗位详情和公司信息。</li>
                   <li>提交简历后，AI会用“简历内容 + 岗位信息 + 优先公司阈值”进行匹配打分。</li>
-                  <li>普通公司达到75分才投递；优先公司达到65分即可投递。</li>
-                  <li>决定投递后，系统优先发送AI生成的 greeting；没有可用 greeting 时发送默认打招呼话术。</li>
+                  <li>岗位达到设置的分数线后进入待确认，分数线可在 Boss 投递分析页的“岗位数据”区域修改。</li>
+                  <li>你确认投递后，系统优先发送AI生成的 greeting；没有可用 greeting 时发送默认打招呼话术。</li>
                 </ul>
               </div>
             </div>

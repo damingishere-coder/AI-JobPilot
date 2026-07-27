@@ -37,6 +37,18 @@ public class AiEntity {
     private String prompt;
 
     /**
+     * 普通公司的岗位匹配通过分数线
+     */
+    @TableField("apply_threshold")
+    private Integer applyThreshold;
+
+    /**
+     * 优先公司的岗位匹配通过分数线
+     */
+    @TableField("priority_apply_threshold")
+    private Integer priorityApplyThreshold;
+
+    /**
      * 创建时间
      */
     @TableField("created_at")

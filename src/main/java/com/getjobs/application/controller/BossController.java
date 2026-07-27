@@ -111,7 +111,8 @@ public class BossController {
         int restored = 0;
         int listCollected = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
-        boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
+        // 兼容旧版扩展继续传入 autoDeliver，但扫描阶段永远不生成真实投递任务。
+        boolean autoDeliver = false;
         boolean listOnlyCollection = isListOnlyCollection(request);
         List<Map<String, Object>> analyses = new ArrayList<>();
         List<Map<String, Object>> collectionWarnings = new ArrayList<>();

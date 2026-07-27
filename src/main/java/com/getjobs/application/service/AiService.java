@@ -476,7 +476,14 @@ public class AiService {
      */
     @Transactional(readOnly = true)
     public AiEntity getAiConfig() {
-        Long profileId = profileService.getCurrentProfileId();
+        return getAiConfig(profileService.getCurrentProfileId());
+    }
+
+    /**
+     * 获取指定档案的 AI 配置，旧档案未保存阈值时使用系统默认值。
+     */
+    @Transactional(readOnly = true)
+    public AiEntity getAiConfig(Long profileId) {
         AiEntity aiEntity = aiMapper.selectOne(new QueryWrapper<AiEntity>()
                 .eq("profile_id", profileId)
                 .orderByDesc("id")
@@ -487,6 +494,7 @@ public class AiService {
             aiEntity.setIntroduce("");
             aiEntity.setPrompt("");
         }
+        applyDefaultThresholds(aiEntity);
         return aiEntity;
     }
 
@@ -511,17 +519,43 @@ public class AiService {
      */
     @Transactional
     public AiEntity saveOrUpdateAiConfig(String introduce, String prompt) {
+        return saveOrUpdateAiConfig(introduce, prompt, null, null);
+    }
+
+    /**
+     * 保存或更新 AI 配置以及岗位匹配分数线。
+     */
+    @Transactional
+    public AiEntity saveOrUpdateAiConfig(
+            String introduce,
+            String prompt,
+            Integer applyThreshold,
+            Integer priorityApplyThreshold
+    ) {
         Long profileId = profileService.getCurrentProfileId();
         AiEntity aiEntity = aiMapper.selectOne(new QueryWrapper<AiEntity>()
                 .eq("profile_id", profileId)
                 .orderByDesc("id")
                 .last("LIMIT 1"));
+        int nextApplyThreshold = resolveThreshold(
+                applyThreshold,
+                aiEntity == null ? null : aiEntity.getApplyThreshold(),
+                JobAiAnalysisService.DEFAULT_APPLY_THRESHOLD
+        );
+        int nextPriorityApplyThreshold = resolveThreshold(
+                priorityApplyThreshold,
+                aiEntity == null ? null : aiEntity.getPriorityApplyThreshold(),
+                JobAiAnalysisService.DEFAULT_PRIORITY_APPLY_THRESHOLD
+        );
+        validateThresholds(nextApplyThreshold, nextPriorityApplyThreshold);
 
         if (aiEntity == null) {
             aiEntity = new AiEntity();
             aiEntity.setProfileId(profileId);
             aiEntity.setIntroduce(introduce);
             aiEntity.setPrompt(prompt);
+            aiEntity.setApplyThreshold(nextApplyThreshold);
+            aiEntity.setPriorityApplyThreshold(nextPriorityApplyThreshold);
             aiEntity.setCreatedAt(java.time.LocalDateTime.now());
             aiEntity.setUpdatedAt(java.time.LocalDateTime.now());
             aiMapper.insert(aiEntity);
@@ -530,12 +564,55 @@ public class AiService {
             aiEntity.setProfileId(profileId);
             aiEntity.setIntroduce(introduce);
             aiEntity.setPrompt(prompt);
+            aiEntity.setApplyThreshold(nextApplyThreshold);
+            aiEntity.setPriorityApplyThreshold(nextPriorityApplyThreshold);
             aiEntity.setUpdatedAt(java.time.LocalDateTime.now());
             aiMapper.updateById(aiEntity);
             log.info("更新AI配置，ID: {}", aiEntity.getId());
         }
 
         return aiEntity;
+    }
+
+    /**
+     * 只更新岗位匹配分数线，保留当前档案已经保存的介绍和提示词。
+     */
+    @Transactional
+    public AiEntity saveOrUpdateAiThresholds(Integer applyThreshold, Integer priorityApplyThreshold) {
+        AiEntity current = getAiConfig();
+        return saveOrUpdateAiConfig(
+                current.getIntroduce() == null ? "" : current.getIntroduce(),
+                current.getPrompt() == null ? "" : current.getPrompt(),
+                applyThreshold,
+                priorityApplyThreshold
+        );
+    }
+
+    private void applyDefaultThresholds(AiEntity aiEntity) {
+        if (aiEntity.getApplyThreshold() == null) {
+            aiEntity.setApplyThreshold(JobAiAnalysisService.DEFAULT_APPLY_THRESHOLD);
+        }
+        if (aiEntity.getPriorityApplyThreshold() == null) {
+            aiEntity.setPriorityApplyThreshold(JobAiAnalysisService.DEFAULT_PRIORITY_APPLY_THRESHOLD);
+        }
+    }
+
+    private int resolveThreshold(Integer requested, Integer existing, int defaultValue) {
+        if (requested != null) return requested;
+        if (existing != null) return existing;
+        return defaultValue;
+    }
+
+    private void validateThresholds(int applyThreshold, int priorityApplyThreshold) {
+        if (applyThreshold < 0 || applyThreshold > 100) {
+            throw new IllegalArgumentException("普通公司分数线必须是0到100之间的整数");
+        }
+        if (priorityApplyThreshold < 0 || priorityApplyThreshold > 100) {
+            throw new IllegalArgumentException("优先公司分数线必须是0到100之间的整数");
+        }
+        if (priorityApplyThreshold > applyThreshold) {
+            throw new IllegalArgumentException("优先公司分数线不能高于普通公司分数线");
+        }
     }
 
     /**
@@ -560,6 +637,8 @@ public class AiService {
         aiEntity.setProfileId(profileService.getCurrentProfileId());
         aiEntity.setIntroduce("请在此填写您的技能介绍");
         aiEntity.setPrompt("请在此填写AI提示词模板");
+        aiEntity.setApplyThreshold(JobAiAnalysisService.DEFAULT_APPLY_THRESHOLD);
+        aiEntity.setPriorityApplyThreshold(JobAiAnalysisService.DEFAULT_PRIORITY_APPLY_THRESHOLD);
         aiEntity.setCreatedAt(java.time.LocalDateTime.now());
         aiEntity.setUpdatedAt(java.time.LocalDateTime.now());
         aiMapper.insert(aiEntity);

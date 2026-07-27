@@ -1,7 +1,9 @@
 package com.getjobs.application.service;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
+import com.getjobs.application.entity.PriorityCompanyEntity;
 import com.getjobs.application.entity.ResumeProfileEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
@@ -121,6 +123,61 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(updates).extracting(ZhilianJobDataEntity::getDeliveryStatus)
                 .contains(DeliveryStatus.AI_ANALYZING, DeliveryStatus.WAITING_CONFIRM);
         assertThat(updates.get(updates.size() - 1).getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+    }
+
+    @Test
+    void customThresholdAcceptsScoreExactlyAtSixty() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":60,"decision":"SKIP","summary":"达到自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getScore()).isEqualTo(60);
+        assertThat(result.getThreshold()).isEqualTo(60);
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+        verify(aiService).sendRequest(prompt.capture());
+        assertThat(prompt.getValue()).contains("当前阈值为60");
+    }
+
+    @Test
+    void customThresholdRejectsScoreBelowSixty() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":59,"decision":"APPLY","summary":"低于自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getScore()).isEqualTo(59);
+        assertThat(result.getThreshold()).isEqualTo(60);
+        assertThat(result.getDecision()).isEqualTo("SKIP");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_NOT_MATCH);
+    }
+
+    @Test
+    void priorityCompanyUsesItsOwnCustomThreshold() {
+        when(priorityCompanyMapper.selectList(any())).thenReturn(List.of(priorityCompany("测试公司")));
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":50,"decision":"SKIP","summary":"达到优先公司分数线","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getPriorityCompany()).isTrue();
+        assertThat(result.getThreshold()).isEqualTo(50);
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
     }
 
     @Test
@@ -253,6 +310,22 @@ class JobAiAnalysisServiceStatusTest {
         resume.setProfileId(PROFILE_ID);
         resume.setResumeText("多年 Java 后端开发经验，熟悉 Spring Boot 和招聘业务系统。");
         return resume;
+    }
+
+    private AiEntity aiConfig(int applyThreshold, int priorityApplyThreshold) {
+        AiEntity config = new AiEntity();
+        config.setProfileId(PROFILE_ID);
+        config.setApplyThreshold(applyThreshold);
+        config.setPriorityApplyThreshold(priorityApplyThreshold);
+        return config;
+    }
+
+    private PriorityCompanyEntity priorityCompany(String companyName) {
+        PriorityCompanyEntity company = new PriorityCompanyEntity();
+        company.setProfileId(PROFILE_ID);
+        company.setCompanyName(companyName);
+        company.setEnabled(1);
+        return company;
     }
 
     private BossJobDataEntity lastBossUpdate() {

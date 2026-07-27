@@ -69,6 +69,8 @@ public class DatabaseSchemaService {
                         "profile_id INTEGER, " +
                         "introduce TEXT, " +
                         "prompt TEXT, " +
+                        "apply_threshold INTEGER DEFAULT 75, " +
+                        "priority_apply_threshold INTEGER DEFAULT 65, " +
                         "created_at DATETIME, " +
                         "updated_at DATETIME");
 
@@ -231,6 +233,8 @@ public class DatabaseSchemaService {
         addColumn(stmt, "ai", "profile_id", "INTEGER");
         addColumn(stmt, "ai", "introduce", "TEXT");
         addColumn(stmt, "ai", "prompt", "TEXT");
+        addColumn(stmt, "ai", "apply_threshold", "INTEGER DEFAULT 75");
+        addColumn(stmt, "ai", "priority_apply_threshold", "INTEGER DEFAULT 65");
         addColumn(stmt, "ai", "created_at", "DATETIME");
         addColumn(stmt, "ai", "updated_at", "DATETIME");
 
