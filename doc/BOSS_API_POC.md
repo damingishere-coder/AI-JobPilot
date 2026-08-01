@@ -2,41 +2,39 @@
 
 本功能只在你主动点击“测试 Boss API POC”后运行一次。它只读取一个关键词、一个城市、第一页，最多 10 条岗位；不会自动翻页、自动投递、绕过验证码或启动独立 Chrome。
 
-本次功能位于独立工作目录：
+本功能已经合入主项目。下文用 `<项目目录>` 表示你保存或克隆 `AI-JobPilot` 的目录，例如：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc
+C:\path\to\AI-JobPilot
 ```
-
-原来的 `AI-JobPilot` 目录有未提交修改，请不要用原目录测试本次扩展。
 
 ## 1. 重新加载 Chrome 扩展
 
 1. 在 Chrome 地址栏输入 `chrome://extensions/` 并回车。
 2. 打开右上角“开发者模式”。
-3. 如果还没有加载本次独立工作目录，点击“加载已解压的扩展程序”。
+3. 如果还没有加载主项目扩展，点击“加载已解压的扩展程序”。
 4. 选择下面这个文件夹：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc\chrome-extension
+C:\path\to\AI-JobPilot\chrome-extension
 ```
 
 5. 找到“投递牛马 Chrome Bridge”，点击卡片上的“重新加载”按钮。
 6. 刷新已经打开的 Boss 页面和 `http://localhost:6866/boss` 页面。
 
-成功后，扩展版本应为 `1.2.3`。如果出现“扩展上下文已失效”，再刷新一次 Boss 和投递牛马页面。
+成功后，扩展版本应为 `1.3.0`。如果出现“扩展上下文已失效”，再刷新一次 Boss 和投递牛马页面。
 
 ## 2. 启动投递牛马
 
 最简单的方法是在资源管理器中打开下面目录，然后双击 `start_windows.bat`：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc
+C:\path\to\AI-JobPilot
 ```
 
 也可以使用 PowerShell：
 
-- 执行目录：`C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc`
+- 执行目录：`<项目目录>`
 - 完整命令：
 
 ```powershell
@@ -48,7 +46,7 @@ C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc
 
 如果提示 `front\node_modules` 不存在，请在下面目录安装前端依赖：
 
-- 执行目录：`C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc\front`
+- 执行目录：`<项目目录>\front`
 - 完整命令：
 
 ```powershell
@@ -141,18 +139,18 @@ API_CODE_37
 后端启动日志位于：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc\logs\windows-backend.log
+<项目目录>\logs\windows-backend.log
 ```
 
 Spring Boot 文件日志位于：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc\target\logs\get-jobs.log
+<项目目录>\target\logs\get-jobs.log
 ```
 
 可以直接用记事本打开。也可以实时查看：
 
-- 执行目录：`C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc`
+- 执行目录：`<项目目录>`
 - 完整命令：
 
 ```powershell
@@ -168,7 +166,7 @@ Get-Content -LiteralPath ".\logs\windows-backend.log" -Wait
 
 如需直接读取数据库，请使用下面的只读 Node 命令：
 
-- 执行目录：`C:\Users\10578\Documents\New project 3\AI-JobPilot-boss-api-poc`
+- 执行目录：`<项目目录>`
 - 完整命令：
 
 ```powershell

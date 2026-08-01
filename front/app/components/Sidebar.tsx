@@ -256,7 +256,7 @@ export default function Sidebar() {
         {/* 版本信息 */}
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-900 text-sm font-semibold text-white shadow-sm">牛</div>
-          <p className="text-xs text-slate-500 dark:text-waterloo">v1.2.0</p>
+          <p className="text-xs text-slate-500 dark:text-waterloo">v1.3.0</p>
           <BiChevronDown className="ml-auto text-slate-400" />
         </div>
       </motion.div>
