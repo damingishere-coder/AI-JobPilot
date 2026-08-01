@@ -29,6 +29,32 @@ public class BossStatsService {
             boolean filterHeadhunter,
             String scanRunId
     ) {
+        return getBossStats(
+                statuses,
+                location,
+                experience,
+                degree,
+                minK,
+                maxK,
+                null,
+                keyword,
+                filterHeadhunter,
+                scanRunId
+        );
+    }
+
+    public BossService.StatsResponse getBossStats(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            Integer minAiScore,
+            String keyword,
+            boolean filterHeadhunter,
+            String scanRunId
+    ) {
         BossService.StatsResponse response = emptyResponse();
         try {
             Long profileId = profileService.getCurrentProfileIdOrNull();
@@ -44,6 +70,7 @@ public class BossStatsService {
                     degree,
                     minK,
                     maxK,
+                    minAiScore,
                     keyword,
                     filterHeadhunter,
                     bossService.normalizeExplicitBossScanRunId(scanRunId)
@@ -75,6 +102,7 @@ public class BossStatsService {
             String degree,
             Double minK,
             Double maxK,
+            Integer minAiScore,
             String keyword,
             boolean filterHeadhunter,
             String scanRunId
@@ -90,6 +118,7 @@ public class BossStatsService {
         query.setDegree(trimToNull(degree));
         query.setMinK(minK);
         query.setMaxK(maxK);
+        query.setMinAiScore(normalizeAiScore(minAiScore));
         query.setKeyword(trimToNull(keyword));
         query.setFilterHeadhunter(filterHeadhunter);
         query.setScanRunId(trimToNull(scanRunId));
@@ -132,6 +161,7 @@ public class BossStatsService {
         copy.setDegree(source.getDegree());
         copy.setMinK(source.getMinK());
         copy.setMaxK(source.getMaxK());
+        copy.setMinAiScore(source.getMinAiScore());
         copy.setKeyword(source.getKeyword());
         copy.setScanRunId(source.getScanRunId());
         copy.setFilterHeadhunter(source.getFilterHeadhunter());
@@ -279,6 +309,11 @@ public class BossStatsService {
 
     private String trimToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private Integer normalizeAiScore(Integer value) {
+        if (value == null) return null;
+        return Math.max(0, Math.min(100, value));
     }
 
     private record PreparedQuery(BossStatsQuery query, List<BossStatsQuery.SalaryRow> salaryRows) {

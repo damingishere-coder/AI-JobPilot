@@ -47,6 +47,44 @@ const OFFICIAL_ZHILIAN_SALARY_CODES = new Set([
   '35001,50000',
   '50001,9999999',
 ])
+const ZHILIAN_KEYWORD_REQUIRED_MESSAGE = '请至少填写一个搜索关键词'
+
+const normalizeKeywordTokens = (value: unknown): string[] => {
+  const keywords: string[] = []
+
+  const append = (rawValue: unknown) => {
+    if (Array.isArray(rawValue)) {
+      rawValue.forEach(append)
+      return
+    }
+
+    const raw = String(rawValue ?? '').trim()
+    if (!raw) return
+    if (raw.startsWith('[') && raw.endsWith(']')) {
+      try {
+        const parsed: unknown = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          parsed.forEach(append)
+          return
+        }
+      } catch {
+        append(raw.slice(1, -1))
+        return
+      }
+    }
+
+    raw.split(/[,，;；\n\r]+/).forEach((item) => {
+      const keyword = item.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '').trim()
+      if (!keyword) return
+      if (!keywords.some((existing) => existing.toLocaleLowerCase() === keyword.toLocaleLowerCase())) {
+        keywords.push(keyword)
+      }
+    })
+  }
+
+  append(value)
+  return keywords
+}
 
 const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
@@ -329,30 +367,13 @@ export default function ZhilianPage() {
     return () => client.close()
   }, [appendProgressLog])
 
-  // 与猎聘一致的关键词解析/序列化
+  // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
-    if (!raw) return ''
-    const t = raw.trim()
-    if (t.startsWith('[') && t.endsWith(']')) {
-      try {
-        const arr = JSON.parse(t)
-        if (Array.isArray(arr)) return arr.filter(Boolean).join(', ')
-      } catch (e) {
-        console.warn('[智联] 解析关键词JSON失败，使用原值:', e)
-      }
-    }
-    return t.replace(/，/g, ',')
+    return normalizeKeywordTokens(raw).join(', ')
   }
 
-  const serializeKeywordsForDb = (display?: string): string => {
-    const raw = (display || '').trim()
-    if (!raw) return '[]'
-    const norm = raw.replace(/，/g, ',')
-    const tokens = norm
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-    return JSON.stringify(tokens)
+  const serializeKeywordsForDb = (display?: unknown): string => {
+    return JSON.stringify(normalizeKeywordTokens(display))
   }
 
   const fetchAllData = async () => {
@@ -447,6 +468,12 @@ export default function ZhilianPage() {
 
   const handleStartDelivery = async () => {
     try {
+      const keywords = normalizeKeywordTokens(config.keywords)
+      if (!keywords.length) {
+        appendProgressLog({ type: 'error', message: ZHILIAN_KEYWORD_REQUIRED_MESSAGE })
+        alert(ZHILIAN_KEYWORD_REQUIRED_MESSAGE)
+        return
+      }
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
         alert('请先在简历配置页新建档案。')
@@ -471,6 +498,7 @@ export default function ZhilianPage() {
         runId,
         config: {
           ...config,
+          keywords,
           searchJobLimit,
         },
       })
@@ -628,6 +656,12 @@ export default function ZhilianPage() {
   }
 
   const handleSaveConfig = async () => {
+    const keywords = normalizeKeywordTokens(config.keywords)
+    if (!keywords.length) {
+      setSaveResult({ success: false, message: ZHILIAN_KEYWORD_REQUIRED_MESSAGE })
+      setShowSaveDialog(true)
+      return
+    }
     if (!hasProfile) {
       setSaveResult({ success: false, message: '请先在简历配置页新建档案。' })
       setShowSaveDialog(true)
@@ -651,7 +685,7 @@ export default function ZhilianPage() {
         ...config,
         cityCode,
         salary,
-        keywords: serializeKeywordsForDb(config.keywords),
+        keywords: serializeKeywordsForDb(keywords),
         searchJobLimit,
       }
       setConfig((current) => ({ ...current, cityCode, salary, searchJobLimit }))
@@ -805,6 +839,9 @@ export default function ZhilianPage() {
                       onChange={(e) => setConfig((c) => ({ ...c, keywords: e.target.value }))}
                       disabled={!hasProfile}
                     />
+                    {!normalizeKeywordTokens(config.keywords).length && (
+                      <p className="text-sm text-destructive">{ZHILIAN_KEYWORD_REQUIRED_MESSAGE}</p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label>城市</Label>

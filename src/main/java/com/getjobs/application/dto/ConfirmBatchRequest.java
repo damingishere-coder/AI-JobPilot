@@ -13,8 +13,10 @@ public class ConfirmBatchRequest {
     private String degree;
     private Double minK;
     private Double maxK;
+    private Integer minAiScore;
     private String keyword;
     private String scanRunId;
     private Boolean filterHeadhunter;
     private Boolean aiRecommendedOnly;
+    private Boolean manualOverrideAiNotMatch;
 }

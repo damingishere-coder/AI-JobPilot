@@ -51,6 +51,101 @@ test("resumes from the stored failed batch without exceeding batch count", () =>
   assert.equal(support.normalizeBatchIndex(-1, 2), 0);
 });
 
+test("uses the current Boss degree codes", () => {
+  const support = loadSupport();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(support.DEGREE_NAME_BY_CODE)), {
+    "0": "不限",
+    "209": "初中及以下",
+    "208": "中专/中技",
+    "206": "高中",
+    "202": "大专",
+    "203": "本科",
+    "204": "硕士",
+    "205": "博士"
+  });
+  assert.equal(support.degreeNameForCode("203"), "本科");
+  assert.equal(support.degreeNameForCode(205), "博士");
+  assert.equal(support.degreeNameForCode("207"), "");
+});
+
+test("does not treat security-related words in a normal job description as a Boss challenge", () => {
+  const support = loadSupport();
+
+  assert.equal(support.isBossSecurityPage({
+    url: "https://www.zhipin.com/job_detail/example.html",
+    title: "AI Coding 应用研发工程师_BOSS直聘",
+    text: "编写高质量数据采集脚本，处理签名验证、滑块/九宫格验证码、风控指纹等工程问题",
+    hasNormalContent: true,
+    hasChallengeUi: false
+  }), false);
+  assert.equal(support.isBossSecurityPage({
+    url: "https://www.zhipin.com/job_detail/example.html",
+    title: "Captcha verification engineer_BOSS直聘",
+    text: "负责 verify、captcha 和安全验证相关系统研发",
+    hasNormalContent: true,
+    hasChallengeUi: false
+  }), false);
+});
+
+test("recognizes real Boss security pages and visible challenge controls", () => {
+  const support = loadSupport();
+
+  assert.equal(support.isBossSecurityPage({
+    url: "https://www.zhipin.com/web/user/safe/verify-slider",
+    hasNormalContent: false
+  }), true);
+  assert.equal(support.isBossSecurityPage({
+    url: "https://www.zhipin.com/web/geek/jobs",
+    text: "请按住滑块，拖动到最右边完成验证",
+    hasNormalContent: false
+  }), true);
+  assert.equal(support.isBossSecurityPage({
+    url: "https://www.zhipin.com/job_detail/example.html",
+    hasNormalContent: true,
+    hasChallengeUi: true
+  }), true);
+});
+
+test("clears the blocked checkpoint and stale paused status when continuing a scan", () => {
+  const support = loadSupport();
+  const task = support.prepareTaskForResume({
+    type: "BOSS_SCAN_START",
+    runId: "boss-resume-1",
+    phase: "detail",
+    detailIndex: 4,
+    blockedAt: 123,
+    blockState: "安全验证",
+    pausedAt: 124,
+    lastError: { type: "SECURITY_VERIFICATION" }
+  });
+  const resumedStatus = support.mergeScanStatus({
+    isRunning: false,
+    stage: "blocked",
+    paused: true,
+    resumable: true,
+    diagnosticType: "SECURITY_VERIFICATION"
+  }, {
+    isRunning: true,
+    stage: "resume"
+  }, 456);
+  const completedStatus = support.mergeScanStatus(resumedStatus, {
+    isRunning: false,
+    stage: "complete"
+  }, 789);
+
+  assert.equal(task.detailIndex, 4);
+  assert.equal("blockedAt" in task, false);
+  assert.equal("blockState" in task, false);
+  assert.equal("pausedAt" in task, false);
+  assert.equal("lastError" in task, false);
+  assert.equal(resumedStatus.paused, false);
+  assert.equal(resumedStatus.resumable, true);
+  assert.equal(resumedStatus.diagnosticType, "");
+  assert.equal(completedStatus.paused, false);
+  assert.equal(completedStatus.resumable, false);
+});
+
 test("classifies CORS and local service failures for actionable diagnostics", () => {
   const support = loadSupport();
 

@@ -140,7 +140,7 @@ public class BossController {
                             listOnlyCollection, listCollected, collectionWarnings
                     ));
                 }
-                BossJobDataEntity entity = toBossEntity(dto);
+                BossJobDataEntity entity = toBossEntity(dto, request.getKeyword());
                 BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
                 insertedOrUpdated++;
 
@@ -641,7 +641,7 @@ public class BossController {
         return "/boss#boss-backend-browser";
     }
 
-    private BossJobDataEntity toBossEntity(ChromeJobDto dto) {
+    private BossJobDataEntity toBossEntity(ChromeJobDto dto, String batchKeyword) {
         BossJobDataEntity entity = new BossJobDataEntity();
         if (dto == null) return entity;
         entity.setEncryptId(firstNonBlank(dto.getId(), extractBossId(dto.getUrl())));
@@ -664,6 +664,7 @@ public class BossController {
         entity.setIntroduce(dto.getCompanyInfo());
         entity.setFinancingStage(dto.getFinancingStage());
         entity.setCompanyScale(dto.getCompanyScale());
+        entity.setSourceKeyword(firstNonBlank(dto.getKeyword(), batchKeyword));
         return entity;
     }
 

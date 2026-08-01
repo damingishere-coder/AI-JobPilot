@@ -31,6 +31,7 @@ export function useBossDeliveryActions({
   const [blacklistingJobId, setBlacklistingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [actingAiBatch, setActingAiBatch] = useState(false)
+  const [actingManualBatch, setActingManualBatch] = useState(false)
   const [clearingAnalysis, setClearingAnalysis] = useState(false)
 
   const handleBlacklistCompany = useCallback(async (job: BossJob) => {
@@ -87,6 +88,7 @@ export function useBossDeliveryActions({
     degree: filters.degree || undefined,
     minK: filters.minK ? Number(filters.minK) : undefined,
     maxK: filters.maxK ? Number(filters.maxK) : undefined,
+    minAiScore: filters.minAiScore ? Number(filters.minAiScore) : undefined,
     keyword: filters.keyword || undefined,
     scanRunId: activeScanRunId || undefined,
     filterHeadhunter: filters.filterHeadhunter,
@@ -154,6 +156,53 @@ export function useBossDeliveryActions({
     }
   }, [activeScanRunId, loadList, openTextDialog, page, refreshStats, size])
 
+  const handleConfirmManualBatch = useCallback(async (ids: number[]) => {
+    const uniqueIds = Array.from(new Set(ids))
+    if (uniqueIds.length === 0) {
+      openTextDialog("人工投递", "请先勾选当前页中的AI不匹配岗位。")
+      return false
+    }
+
+    try {
+      setActingManualBatch(true)
+      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ids: uniqueIds,
+          manualOverrideAiNotMatch: true,
+        }),
+      })
+      const data = await res.json()
+      const tasks = data.tasks || []
+      if (!data.success || tasks.length === 0) {
+        openTextDialog("人工投递", data.message || "所选岗位中没有可人工投递的AI不匹配岗位。")
+        return false
+      }
+
+      const ok = window.confirm(
+        `AI 已将这些岗位判定为不匹配。你正在按人工判断强制投递 ${tasks.length} 个岗位，`
+        + `将通过 Chrome 真实联系 Boss HR。确认继续？${data.message ? `\n\n${data.message}` : ""}`,
+      )
+      if (!ok) return false
+
+      const result = await sendChromeBridgeMessage({
+        type: "BOSS_DELIVER_BATCH",
+        platform: "boss",
+        tasks,
+      }, Math.max(120000, tasks.length * 30000))
+      openTextDialog("人工投递", result.message || "人工批量投递任务已结束。")
+      await loadList(page, size)
+      await refreshStats()
+      return true
+    } catch {
+      openTextDialog("人工投递", "人工批量投递失败：网络或服务异常。")
+      return false
+    } finally {
+      setActingManualBatch(false)
+    }
+  }, [loadList, openTextDialog, page, refreshStats, size])
+
   const handleSkipJob = useCallback(async (job: BossJob) => {
     try {
       setActingJobId(job.id)
@@ -198,11 +247,13 @@ export function useBossDeliveryActions({
     blacklistingJobId,
     actingBatch,
     actingAiBatch,
+    actingManualBatch,
     clearingAnalysis,
     handleBlacklistCompany,
     handleConfirmJob,
     handleConfirmBatch,
     handleConfirmAiRecommendedBatch,
+    handleConfirmManualBatch,
     handleSkipJob,
     clearAnalysisData,
   }

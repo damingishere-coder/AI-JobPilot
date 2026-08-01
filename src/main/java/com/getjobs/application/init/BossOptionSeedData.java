@@ -134,14 +134,13 @@ final class BossOptionSeedData {
 
         add(options, "degree", 5000,
                 item("不限", "0"),
-                item("学历不限", "209"),
-                item("初中及以下", "201"),
-                item("中专/中技", "202"),
-                item("高中", "203"),
-                item("大专", "204"),
-                item("本科", "205"),
-                item("硕士", "206"),
-                item("博士", "207"));
+                item("初中及以下", "209"),
+                item("中专/中技", "208"),
+                item("高中", "206"),
+                item("大专", "202"),
+                item("本科", "203"),
+                item("硕士", "204"),
+                item("博士", "205"));
 
         add(options, "scale", 6000,
                 item("不限", "0"),

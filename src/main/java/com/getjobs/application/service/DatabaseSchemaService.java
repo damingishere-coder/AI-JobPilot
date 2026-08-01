@@ -158,6 +158,7 @@ public class DatabaseSchemaService {
                         "introduce TEXT, " +
                         "financing_stage TEXT, " +
                         "company_scale TEXT, " +
+                        "source_keyword TEXT, " +
                         "scan_run_id TEXT, " +
                         "ai_score INTEGER, " +
                         "ai_decision TEXT, " +
@@ -332,6 +333,7 @@ public class DatabaseSchemaService {
         addColumn(stmt, "boss_data", "introduce", "TEXT");
         addColumn(stmt, "boss_data", "financing_stage", "TEXT");
         addColumn(stmt, "boss_data", "company_scale", "TEXT");
+        addColumn(stmt, "boss_data", "source_keyword", "TEXT");
         addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
         addColumn(stmt, "boss_data", "ai_score", "INTEGER");
         addColumn(stmt, "boss_data", "ai_decision", "TEXT");

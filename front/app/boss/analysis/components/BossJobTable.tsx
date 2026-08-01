@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
 import type { BossJob } from "../types"
-import { badgeClass, deliveryStatusLabel, failureReasonText, formatDateOnly } from "../utils"
+import { badgeClass, canManualDeliverAiNotMatch, deliveryStatusLabel, failureReasonText, formatDateOnly } from "../utils"
 
 export function BossJobTable({
   items,
@@ -19,12 +19,17 @@ export function BossJobTable({
   showDetailColumns,
   loadingList,
   actingJobId,
+  actingManualBatch,
+  selectedManualJobIds,
   onOpenText,
   onConfirmJob,
   onSkipJob,
   onLoadList,
   onInputPageChange,
   onInputSizeChange,
+  onToggleManualJob,
+  onToggleAllManualJobs,
+  onConfirmManualBatch,
 }: {
   items: BossJob[]
   total: number
@@ -35,21 +40,73 @@ export function BossJobTable({
   showDetailColumns: boolean
   loadingList: boolean
   actingJobId: number | null
+  actingManualBatch: boolean
+  selectedManualJobIds: ReadonlySet<number>
   onOpenText: (title: string, content?: string) => void
   onConfirmJob: (job: BossJob) => void
   onSkipJob: (job: BossJob) => void
   onLoadList: (page: number, size: number) => void
   onInputPageChange: (value: number | string) => void
   onInputSizeChange: (value: number | string) => void
+  onToggleManualJob: (id: number, checked: boolean) => void
+  onToggleAllManualJobs: (ids: number[], checked: boolean) => void
+  onConfirmManualBatch: () => void
 }) {
   const totalPages = Math.max(1, Math.ceil(total / size))
+  const manualSelectableJobs = items.filter(canManualDeliverAiNotMatch)
+  const selectedManualCount = manualSelectableJobs.filter((job) => selectedManualJobIds.has(job.id)).length
+  const allManualSelected = manualSelectableJobs.length > 0 && selectedManualCount === manualSelectableJobs.length
+  const someManualSelected = selectedManualCount > 0 && !allManualSelected
 
   return (
     <>
+      {manualSelectableJobs.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2 dark:border-violet-900/60 dark:bg-violet-950/20">
+          <div className="text-sm">
+            <span className="font-medium text-violet-800 dark:text-violet-200">人工投递 AI不匹配岗位</span>
+            <span className="ml-2 text-muted-foreground">
+              本页可选 {manualSelectableJobs.length} 条，已选 {selectedManualCount} 条
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={selectedManualCount === 0 || actingManualBatch}
+            onClick={onConfirmManualBatch}
+          >
+            <BiBriefcase className="mr-1" />
+            {actingManualBatch ? "投递中..." : `投递已选岗位${selectedManualCount > 0 ? `（${selectedManualCount}）` : ""}`}
+          </Button>
+        </div>
+      )}
+
       <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
-        <table className={`${showDetailColumns ? "min-w-[2000px]" : "min-w-[1400px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
+        <table className={`${showDetailColumns ? "min-w-[2060px]" : "min-w-[1460px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
           <thead>
             <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
+              <th className="w-[60px] px-2 py-3 text-center text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">
+                <div className="inline-flex flex-col items-center gap-1" title="全选本页可人工投递的AI不匹配岗位">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-label="全选本页可人工投递岗位"
+                    aria-checked={someManualSelected ? "mixed" : allManualSelected}
+                    disabled={manualSelectableJobs.length === 0 || actingManualBatch}
+                    onClick={() => onToggleAllManualJobs(
+                      manualSelectableJobs.map((job) => job.id),
+                      !allManualSelected,
+                    )}
+                    className={`inline-flex h-4 w-4 items-center justify-center rounded border text-[10px] leading-none transition-colors ${
+                      allManualSelected || someManualSelected
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-slate-400 bg-background text-transparent"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {allManualSelected ? "✓" : someManualSelected ? "−" : ""}
+                  </button>
+                  <span>选择</span>
+                </div>
+              </th>
               <th className="w-[72px] px-3 py-3 text-center text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700">序号</th>
               <th className={`${showDetailColumns ? "w-[80px]" : "w-[86px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>操作</th>
               <th className={`${showDetailColumns ? "w-[140px]" : "w-[180px]"} px-3 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border-r border-gray-200 dark:border-gray-700`}>公司名称</th>
@@ -83,7 +140,7 @@ export function BossJobTable({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={showDetailColumns ? 24 : 18} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
+                <td colSpan={showDetailColumns ? 25 : 19} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
                   <div className="flex flex-col items-center gap-3">
                     <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
                     <p className="text-sm">当前还没有入库岗位；请查看 Boss 页进度日志里的采集数量、详情缺失和提交结果。</p>
@@ -91,8 +148,11 @@ export function BossJobTable({
                 </td>
               </tr>
             ) : (
-              items.map((job, idx) => (
-                <tr
+              items.map((job, idx) => {
+                const manualSelectable = canManualDeliverAiNotMatch(job)
+                const aiNotMatchWithoutUrl = job.deliveryStatus === "AI不匹配" && !job.jobUrl?.trim()
+                return (
+                  <tr
                   key={job.id}
                   className={`group transition-colors border-b last:border-b-0 ${
                     (job.deliveryStatus || "").includes("已投递")
@@ -103,7 +163,29 @@ export function BossJobTable({
                             : "bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
                         }`
                   }`}
-                >
+                  >
+                  <td className="px-2 py-3 text-center text-xs leading-6 align-top border-r border-gray-200 dark:border-gray-700">
+                    {job.deliveryStatus === "AI不匹配" ? (
+                      <button
+                        type="button"
+                        role="checkbox"
+                        aria-label={`选择 ${job.companyName || ""} ${job.jobName || ""}`}
+                        aria-checked={manualSelectable && selectedManualJobIds.has(job.id)}
+                        title={aiNotMatchWithoutUrl ? "该岗位缺少详情链接，无法投递" : "选择该AI不匹配岗位进行人工投递"}
+                        disabled={!manualSelectable || actingManualBatch}
+                        onClick={() => onToggleManualJob(job.id, !selectedManualJobIds.has(job.id))}
+                        className={`inline-flex h-4 w-4 items-center justify-center rounded border text-[10px] leading-none transition-colors ${
+                          manualSelectable && selectedManualJobIds.has(job.id)
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-slate-400 bg-background text-transparent"
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        {manualSelectable && selectedManualJobIds.has(job.id) ? "✓" : ""}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </td>
                   <td className="px-3 py-3 text-center text-xs font-medium leading-6 text-muted-foreground align-top border-r border-gray-200 dark:border-gray-700">
                     {(page - 1) * size + idx + 1}
                   </td>
@@ -185,8 +267,9 @@ export function BossJobTable({
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top">
                     <div className="truncate cursor-pointer hover:text-primary transition-colors" title={formatDateOnly(job.createdAt) || "-"} onClick={() => onOpenText("创建时间", formatDateOnly(job.createdAt))}>{formatDateOnly(job.createdAt) || "-"}</div>
                   </td>
-                </tr>
-              ))
+                  </tr>
+                )
+              })
             )}
           </tbody>
         </table>

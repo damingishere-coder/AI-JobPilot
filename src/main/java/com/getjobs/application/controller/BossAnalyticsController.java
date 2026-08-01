@@ -40,6 +40,7 @@ public class BossAnalyticsController {
             @RequestParam(value = "degree", required = false) String degree,
             @RequestParam(value = "minK", required = false) Double minK,
             @RequestParam(value = "maxK", required = false) Double maxK,
+            @RequestParam(value = "minAiScore", required = false) Integer minAiScore,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "scanRunId", required = false) String scanRunId,
             @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter
@@ -58,6 +59,7 @@ public class BossAnalyticsController {
                 degree,
                 minK,
                 maxK,
+                minAiScore,
                 keyword,
                 filterHeadhunter != null && filterHeadhunter,
                 scanRunId
@@ -75,6 +77,7 @@ public class BossAnalyticsController {
             @RequestParam(value = "degree", required = false) String degree,
             @RequestParam(value = "minK", required = false) Double minK,
             @RequestParam(value = "maxK", required = false) Double maxK,
+            @RequestParam(value = "minAiScore", required = false) Integer minAiScore,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "scanRunId", required = false) String scanRunId,
             @RequestParam(value = "filterHeadhunter", required = false) Boolean filterHeadhunter,
@@ -99,7 +102,8 @@ public class BossAnalyticsController {
                 page,
                 size,
                 filterHeadhunter != null && filterHeadhunter,
-                scanRunId
+                scanRunId,
+                minAiScore
         );
     }
 
@@ -135,7 +139,36 @@ public class BossAnalyticsController {
     public Map<String, Object> confirmBatch(@RequestBody ConfirmBatchRequest request) {
         List<BossJobDataEntity> candidates = new ArrayList<>();
         boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
-        if (aiRecommendedOnly) {
+        boolean manualOverrideAiNotMatch = request != null && Boolean.TRUE.equals(request.getManualOverrideAiNotMatch());
+        if (aiRecommendedOnly && manualOverrideAiNotMatch) {
+            return Map.of(
+                    "success", false,
+                    "message", "AI推荐投递与人工覆盖投递不能同时启用",
+                    "tasks", List.of(),
+                    "count", 0
+            );
+        }
+        if (manualOverrideAiNotMatch && (request.getIds() == null || request.getIds().isEmpty())) {
+            return Map.of(
+                    "success", false,
+                    "message", "请先选择需要人工投递的AI不匹配岗位",
+                    "tasks", List.of(),
+                    "count", 0
+            );
+        }
+
+        int requestedCount = 0;
+        if (manualOverrideAiNotMatch) {
+            List<Long> requestedIds = request.getIds().stream()
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+            requestedCount = requestedIds.size();
+            for (Long id : requestedIds) {
+                BossJobDataEntity job = bossService.getBossJobById(id);
+                if (job != null) candidates.add(job);
+            }
+        } else if (aiRecommendedOnly) {
             BossService.PagedResult page = bossService.listBossJobs(
                     List.of(DeliveryStatus.WAITING_CONFIRM),
                     null,
@@ -151,7 +184,7 @@ public class BossAnalyticsController {
             );
             if (page != null && page.items != null) candidates.addAll(page.items);
         } else if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
-            for (Long id : request.getIds()) {
+            for (Long id : request.getIds().stream().filter(Objects::nonNull).distinct().toList()) {
                 BossJobDataEntity job = bossService.getBossJobById(id);
                 if (job != null) candidates.add(job);
             }
@@ -167,20 +200,36 @@ public class BossAnalyticsController {
                     1,
                     500,
                     request != null && Boolean.TRUE.equals(request.getFilterHeadhunter()),
-                    request == null ? null : request.getScanRunId()
+                    request == null ? null : request.getScanRunId(),
+                    request == null ? null : request.getMinAiScore()
             );
             if (page != null && page.items != null) candidates.addAll(page.items);
         }
 
         List<Map<String, Object>> tasks = candidates.stream()
-                .filter(job -> DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()))
+                .filter(job -> manualOverrideAiNotMatch
+                        ? DeliveryStatus.AI_NOT_MATCH.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
+                        : DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()))
                 .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
                 .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
                 .map(this::toDeliveryTask)
                 .collect(Collectors.toList());
+        if (manualOverrideAiNotMatch && tasks.isEmpty()) {
+            return Map.of(
+                    "success", false,
+                    "message", "所选岗位中没有可人工投递的AI不匹配岗位，请刷新列表后重试",
+                    "tasks", List.of(),
+                    "count", 0
+            );
+        }
+        int skippedCount = manualOverrideAiNotMatch ? Math.max(0, requestedCount - tasks.size()) : 0;
+        String message = manualOverrideAiNotMatch
+                ? "已生成 " + tasks.size() + " 个AI不匹配岗位的人工投递任务"
+                    + (skippedCount > 0 ? "，跳过 " + skippedCount + " 个不符合条件的岗位" : "")
+                : (aiRecommendedOnly ? "已生成 AI 推荐待确认 Chrome 投递任务" : "已生成批量 Chrome 投递任务");
         return Map.of(
                 "success", true,
-                "message", aiRecommendedOnly ? "已生成 AI 推荐待确认 Chrome 投递任务" : "已生成批量 Chrome 投递任务",
+                "message", message,
                 "tasks", tasks,
                 "count", tasks.size()
         );

@@ -19,6 +19,7 @@ import { useBossFilters } from "./hooks/useBossFilters"
 import { useBossJobs } from "./hooks/useBossJobs"
 import { useBossStats } from "./hooks/useBossStats"
 import { useCsvExport } from "./hooks/useCsvExport"
+import { canManualDeliverAiNotMatch } from "./utils"
 
 export default function AnalysisContent({
   showHeader = false,
@@ -35,6 +36,7 @@ export default function AnalysisContent({
   const [showDialog, setShowDialog] = useState(false)
   const [dialogTitle, setDialogTitle] = useState("")
   const [dialogContent, setDialogContent] = useState("")
+  const [selectedManualJobIds, setSelectedManualJobIds] = useState<Set<number>>(new Set())
 
   const {
     filters,
@@ -93,11 +95,13 @@ export default function AnalysisContent({
     blacklistingJobId,
     actingBatch,
     actingAiBatch,
+    actingManualBatch,
     clearingAnalysis,
     handleBlacklistCompany,
     handleConfirmJob,
     handleConfirmBatch,
     handleConfirmAiRecommendedBatch,
+    handleConfirmManualBatch,
     handleSkipJob,
     clearAnalysisData,
   } = useBossDeliveryActions({
@@ -126,6 +130,47 @@ export default function AnalysisContent({
     pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
   ), [pendingCardsExpanded, pendingJobs])
 
+  const selectedManualIds = useMemo(() => (
+    items
+      .filter((job) => canManualDeliverAiNotMatch(job) && selectedManualJobIds.has(job.id))
+      .map((job) => job.id)
+  ), [items, selectedManualJobIds])
+
+  const toggleManualJob = useCallback((id: number, checked: boolean) => {
+    setSelectedManualJobIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
+  const toggleAllManualJobs = useCallback((ids: number[], checked: boolean) => {
+    setSelectedManualJobIds((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => {
+        if (checked) next.add(id)
+        else next.delete(id)
+      })
+      return next
+    })
+  }, [])
+
+  const confirmSelectedManualJobs = useCallback(async () => {
+    const completed = await handleConfirmManualBatch(selectedManualIds)
+    if (completed) setSelectedManualJobIds(new Set())
+  }, [handleConfirmManualBatch, selectedManualIds])
+
+  const reloadJobsAndClearSelection = useCallback(() => {
+    setSelectedManualJobIds(new Set())
+    void reloadJobs(refreshStats)
+  }, [refreshStats, reloadJobs])
+
+  const clearAnalysisAndSelection = useCallback(() => {
+    setSelectedManualJobIds(new Set())
+    void clearAnalysisData()
+  }, [clearAnalysisData])
+
   useEffect(() => {
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,6 +194,10 @@ export default function AnalysisContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters])
 
+  useEffect(() => {
+    setSelectedManualJobIds(new Set())
+  }, [filters, page, size])
+
   return (
     <div className="space-y-8">
       {showHeader && (
@@ -157,7 +206,7 @@ export default function AnalysisContent({
           subtitle="基于 boss_data 表的统计图与列表分析"
           icon={<BiBarChart size={28} />}
           actions={
-            <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
+            <Button size="sm" variant="destructive" onClick={clearAnalysisAndSelection} disabled={clearingAnalysis}>
               <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
             </Button>
           }
@@ -180,9 +229,10 @@ export default function AnalysisContent({
               showDetailColumns={showDetailColumns}
               actingAiBatch={actingAiBatch}
               actingBatch={actingBatch}
+              actingManualBatch={actingManualBatch}
               onExport={exportCSV}
-              onReload={() => reloadJobs(refreshStats)}
-              onClear={clearAnalysisData}
+              onReload={reloadJobsAndClearSelection}
+              onClear={clearAnalysisAndSelection}
               onToggleDetailColumns={() => setShowDetailColumns((value) => !value)}
               onConfirmAiRecommendedBatch={handleConfirmAiRecommendedBatch}
               onConfirmBatch={handleConfirmBatch}
@@ -233,12 +283,17 @@ export default function AnalysisContent({
             showDetailColumns={showDetailColumns}
             loadingList={loadingList}
             actingJobId={actingJobId}
+            actingManualBatch={actingManualBatch}
+            selectedManualJobIds={selectedManualJobIds}
             onOpenText={openTextDialog}
             onConfirmJob={handleConfirmJob}
             onSkipJob={handleSkipJob}
             onLoadList={loadList}
             onInputPageChange={setInputPage}
             onInputSizeChange={setInputSize}
+            onToggleManualJob={toggleManualJob}
+            onToggleAllManualJobs={toggleAllManualJobs}
+            onConfirmManualBatch={confirmSelectedManualJobs}
           />
         </CardContent>
       </Card>

@@ -592,6 +592,7 @@ public class BossService {
                         "introduce TEXT, " +
                         "financing_stage TEXT, " +
                         "company_scale TEXT, " +
+                        "source_keyword TEXT, " +
                         "scan_run_id TEXT, " +
                         "ai_score INTEGER, " +
                         "ai_decision TEXT, " +
@@ -605,7 +606,7 @@ public class BossService {
                 String copySql = "INSERT INTO boss_data_new (" +
                         "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, salary_min_k, salary_max_k, salary_median_k, salary_months, location, experience, degree, " +
                         "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
+                        "company_address, industry, introduce, financing_stage, company_scale, source_keyword, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
                         ") SELECT " +
                         "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, " +
                         (cols.contains("salary_min_k") ? "salary_min_k" : "NULL") + ", " +
@@ -617,6 +618,7 @@ public class BossService {
                         (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
                         (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
                         "company_address, industry, introduce, financing_stage, company_scale, " +
+                        (cols.contains("source_keyword") ? "source_keyword" : "NULL") + ", " +
                         (cols.contains("scan_run_id") ? "scan_run_id" : "NULL") + ", " +
                         (cols.contains("ai_score") ? "ai_score" : "NULL") + ", " +
                         (cols.contains("ai_decision") ? "ai_decision" : "NULL") + ", " +
@@ -776,6 +778,7 @@ public class BossService {
         merged.setIntroduce(bestLongText(incoming.getIntroduce(), existing.getIntroduce()));
         merged.setFinancingStage(firstNonBlank(incoming.getFinancingStage(), existing.getFinancingStage()));
         merged.setCompanyScale(firstNonBlank(incoming.getCompanyScale(), existing.getCompanyScale()));
+        merged.setSourceKeyword(firstNonBlank(incoming.getSourceKeyword(), existing.getSourceKeyword()));
         merged.setScanRunId(firstNonBlank(incoming.getScanRunId(), existing.getScanRunId()));
         merged.setAiScore(existing.getAiScore());
         merged.setAiDecision(existing.getAiDecision());
@@ -1350,7 +1353,8 @@ public class BossService {
             if (StringUtils.isNotBlank(keyword)) {
                 wrapper.and(w -> w.like("company_name", keyword)
                         .or().like("job_name", keyword)
-                        .or().like("hr_name", keyword));
+                        .or().like("hr_name", keyword)
+                        .or().like("source_keyword", keyword));
             }
             if (filterHeadhunter) {
                 wrapper.and(w -> w.isNull("hr_position").or().notLike("hr_position", "猎头"));
@@ -1641,6 +1645,36 @@ public class BossService {
             boolean filterHeadhunter,
             String scanRunId
     ) {
+        return listBossJobs(
+                statuses,
+                location,
+                experience,
+                degree,
+                minK,
+                maxK,
+                keyword,
+                page,
+                size,
+                filterHeadhunter,
+                scanRunId,
+                null
+        );
+    }
+
+    public PagedResult listBossJobs(
+            List<String> statuses,
+            String location,
+            String experience,
+            String degree,
+            Double minK,
+            Double maxK,
+            String keyword,
+            int page,
+            int size,
+            boolean filterHeadhunter,
+            String scanRunId,
+            Integer minAiScore
+    ) {
         if (page <= 0) page = 1;
         if (size <= 0) size = 20;
 
@@ -1663,11 +1697,15 @@ public class BossService {
         if (StringUtils.isNotBlank(location)) wrapper.eq("location", location);
         if (StringUtils.isNotBlank(experience)) wrapper.eq("experience", experience);
         if (StringUtils.isNotBlank(degree)) wrapper.eq("degree", degree);
+        if (minAiScore != null) {
+            wrapper.ge("ai_score", Math.max(0, Math.min(100, minAiScore)));
+        }
 
         if (StringUtils.isNotBlank(keyword)) {
             wrapper.and(w -> w.like("company_name", keyword)
                     .or().like("job_name", keyword)
-                    .or().like("hr_name", keyword));
+                    .or().like("hr_name", keyword)
+                    .or().like("source_keyword", keyword));
         }
 
         // 查询阶段过滤猎头：hr_position 不包含“猎头”或为空

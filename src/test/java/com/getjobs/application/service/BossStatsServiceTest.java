@@ -118,6 +118,28 @@ class BossStatsServiceTest {
         assertThat(response.kpi.avgMonthlyK).isEqualTo(40.0);
     }
 
+    @Test
+    void minimumAiScoreIsAppliedToEverySqlAggregate() {
+        stubCommonMapperResults(List.of(salaryRow(1L, "20-30K")));
+
+        service.getBossStats(
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                60,
+                null,
+                false,
+                null
+        );
+
+        ArgumentCaptor<BossStatsQuery> queryCaptor = ArgumentCaptor.forClass(BossStatsQuery.class);
+        verify(bossStatsMapper).selectKpi(queryCaptor.capture());
+        assertThat(queryCaptor.getValue().getMinAiScore()).isEqualTo(60);
+    }
+
     private void stubCommonMapperResults(List<BossStatsQuery.SalaryRow> salaryRows) {
         when(bossStatsMapper.selectKpi(any())).thenReturn(kpiRow());
         when(bossStatsMapper.selectOverview(any())).thenReturn(overviewRow());

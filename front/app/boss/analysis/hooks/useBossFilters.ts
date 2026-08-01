@@ -21,6 +21,7 @@ export function useBossFilters() {
     if (filters.experience) count += 1
     if (filters.degree) count += 1
     if (filters.minK || filters.maxK) count += 1
+    if (filters.minAiScore) count += 1
     if (filters.keyword.trim()) count += 1
     if (filters.filterHeadhunter) count += 1
     return count
@@ -34,6 +35,7 @@ export function useBossFilters() {
     if (source.degree) params.set("degree", source.degree)
     if (source.minK) params.set("minK", String(Number(source.minK)))
     if (source.maxK) params.set("maxK", String(Number(source.maxK)))
+    if (source.minAiScore) params.set("minAiScore", String(Number(source.minAiScore)))
     if (source.keyword.trim()) params.set("keyword", source.keyword.trim())
     if (source.filterHeadhunter) params.set("filterHeadhunter", "true")
     if (scanRunId) params.set("scanRunId", scanRunId)

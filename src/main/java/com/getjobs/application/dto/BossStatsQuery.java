@@ -13,6 +13,7 @@ public class BossStatsQuery {
     private String degree;
     private Double minK;
     private Double maxK;
+    private Integer minAiScore;
     private String keyword;
     private String scanRunId;
     private Boolean filterHeadhunter = false;

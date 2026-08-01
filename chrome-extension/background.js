@@ -27,13 +27,13 @@ const pageTabs = new Map();
 let scanSessionsWriteQueue = Promise.resolve();
 const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
 const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-const BACKGROUND_VERSION = "2026-06-25-scan-resume-redirect-2";
+const BACKGROUND_VERSION = "2026-07-29-zhilian-security-resume-fix";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-06-25-scan-resume-redirect-2";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-16-search-resume-navigation-1";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-07-18-boss-security-resume-fix";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-29-zhilian-security-resume-fix";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -87,6 +87,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     handleBossLocalApiRequest(message).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, message: error.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.source === "GET_JOBS_ZHILIAN_CONTENT" && message.type === "ZHILIAN_LOCAL_API") {
+    if (!isZhilianSender(sender)) {
+      sendResponse({ success: false, message: "拒绝非智联页面发起的本地接口请求" });
+      return;
+    }
+    handleZhilianLocalApiRequest(message).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
     return true;
@@ -223,9 +234,26 @@ async function handleBossLocalApiRequest(message) {
     method: endpoint.method,
     body: message.body,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
-    pageTabId: message.pageTabId
+    pageTabId: message.pageTabId,
+    platform: "boss"
   });
   console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
+  return result;
+}
+
+async function handleZhilianLocalApiRequest(message) {
+  const endpoint = resolveZhilianLocalApiEndpoint(message);
+  if (!endpoint.success) return endpoint;
+
+  const result = await requestLocalApi(endpoint.path, {
+    operation: String(message.operation || ""),
+    method: endpoint.method,
+    body: message.body,
+    timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
+    pageTabId: message.pageTabId,
+    platform: "zhilian"
+  });
+  console.log("[GetJobs BG] Zhilian API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
   return result;
 }
 
@@ -248,6 +276,21 @@ function resolveBossLocalApiEndpoint(message) {
     return { success: true, method: "POST", path: `/api/boss/jobs/${encodeURIComponent(id)}/delivery-result` };
   }
   return { success: false, message: "Boss本地接口请求类型不被允许" };
+}
+
+function resolveZhilianLocalApiEndpoint(message) {
+  const operation = String(message?.operation || "");
+  if (operation === "chrome-jobs") {
+    return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs" };
+  }
+  if (operation === "delivery-result") {
+    const id = String(message?.params?.id || "").trim();
+    if (!/^[1-9]\d*$/.test(id)) {
+      return { success: false, message: "智联投递结果接口缺少有效岗位ID" };
+    }
+    return { success: true, method: "POST", path: `/api/zhilian/jobs/${id}/delivery-result` };
+  }
+  return { success: false, message: "智联本地接口请求类型不被允许" };
 }
 
 async function requestLocalApi(path, options = {}) {
@@ -286,7 +329,7 @@ async function requestLocalApi(path, options = {}) {
     }
 
     if (attempt < BOSS_LOCAL_API_MAX_ATTEMPTS) {
-      await postBossLocalApiRetryProgress(options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
+      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
       await sleep(350 * attempt);
     }
   }
@@ -346,12 +389,13 @@ function classifyLocalApiError(status, message) {
   return "LOCAL_API_ERROR";
 }
 
-async function postBossLocalApiRetryProgress(pageTabId, operation, nextAttempt, totalAttempts, error) {
+async function postLocalApiRetryProgress(platform, pageTabId, operation, nextAttempt, totalAttempts, error) {
   if (!pageTabId || operation !== "chrome-jobs") return;
+  const platformName = platform === "zhilian" ? "智联" : "Boss";
   await postPlatformProgress(pageTabId, {
-    platform: "boss",
+    platform,
     type: "warning",
-    message: `Boss本地服务请求失败，正在自动重试 ${nextAttempt}/${totalAttempts}：${friendlyLocalApiError(error)}`,
+    message: `${platformName}本地服务请求失败，正在自动重试 ${nextAttempt}/${totalAttempts}：${friendlyLocalApiError(error)}`,
     operation: "scan",
     stage: "submitting"
   });
@@ -368,6 +412,10 @@ async function handlePageMessage(message, sender) {
   const platform = message.platform || inferPlatform(message.type);
   if (!platform || !PLATFORM_CONFIG[platform]) {
     return { success: false, message: "未知平台" };
+  }
+
+  if (platform === "zhilian" && message.type === "ZHILIAN_SCAN_START" && !normalizeZhilianKeywordList(readZhilianKeywordInput(message)).length) {
+    return { success: false, message: "请至少填写一个搜索关键词" };
   }
 
   const config = PLATFORM_CONFIG[platform];
@@ -431,6 +479,45 @@ async function handlePageMessage(message, sender) {
       message: buildContentScriptError(platform, error)
     };
   }
+}
+
+function readZhilianKeywordInput(message) {
+  const config = message?.config || {};
+  if (Object.prototype.hasOwnProperty.call(message || {}, "keywords")) return message.keywords;
+  if (Object.prototype.hasOwnProperty.call(config, "keywords")) return config.keywords;
+  return config.keyword;
+}
+
+function normalizeZhilianKeywordList(value) {
+  const keywords = [];
+  const append = (rawValue) => {
+    if (Array.isArray(rawValue)) {
+      rawValue.forEach(append);
+      return;
+    }
+    const raw = String(rawValue ?? "").trim();
+    if (!raw) return;
+    if (raw.startsWith("[") && raw.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(append);
+          return;
+        }
+      } catch {
+        append(raw.slice(1, -1));
+        return;
+      }
+    }
+    raw.split(/[,，;；\n\r]+/).forEach((item) => {
+      const keyword = item.replace(/\s+/g, " ").trim().replace(/^["']|["']$/g, "").trim();
+      if (keyword && !keywords.some((existing) => existing.toLowerCase() === keyword.toLowerCase())) {
+        keywords.push(keyword);
+      }
+    });
+  };
+  append(value);
+  return keywords;
 }
 
 function inferPlatform(type) {

@@ -98,6 +98,9 @@ public class BossJobDataEntity {
     @TableField("company_scale")
     private String companyScale;
 
+    @TableField("source_keyword")
+    private String sourceKeyword;
+
     @TableField("scan_run_id")
     private String scanRunId;
 

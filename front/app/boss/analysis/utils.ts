@@ -37,6 +37,10 @@ export function failureReasonText(job: BossJob) {
   return reason ? `${type}：${reason}` : type
 }
 
+export function canManualDeliverAiNotMatch(job: BossJob) {
+  return job.deliveryStatus === "AI不匹配" && Boolean(job.jobUrl?.trim())
+}
+
 export function deliveryStatusLabel(value?: string) {
   return value === "LIST_COLLECTED" ? "已采集" : value || "-"
 }

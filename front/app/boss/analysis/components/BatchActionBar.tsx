@@ -11,6 +11,7 @@ export function BatchActionBar({
   showDetailColumns,
   actingAiBatch,
   actingBatch,
+  actingManualBatch,
   onExport,
   onReload,
   onClear,
@@ -24,6 +25,7 @@ export function BatchActionBar({
   showDetailColumns: boolean
   actingAiBatch: boolean
   actingBatch: boolean
+  actingManualBatch: boolean
   onExport: () => void
   onReload: () => void
   onClear: () => void
@@ -46,10 +48,10 @@ export function BatchActionBar({
         {showDetailColumns ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
         {showDetailColumns ? "收起详情列" : "展开详情列"}
       </Button>
-      <Button size="sm" variant="success" onClick={onConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch}>
+      <Button size="sm" variant="success" onClick={onConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch || actingManualBatch}>
         <BiBriefcase className="mr-1" /> {actingAiBatch ? "投递中..." : "一键投递AI推荐待确认"}
       </Button>
-      <Button size="sm" variant="destructive" onClick={onConfirmBatch} disabled={actingBatch || actingAiBatch}>
+      <Button size="sm" variant="destructive" onClick={onConfirmBatch} disabled={actingBatch || actingAiBatch || actingManualBatch}>
         <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前待确认"}
       </Button>
     </div>

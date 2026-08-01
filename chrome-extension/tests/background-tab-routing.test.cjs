@@ -21,7 +21,10 @@ function loadBackground({
   statuses = {},
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
-  zhilianContentVersion = ZHILIAN_CONTENT_VERSION
+  zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
+  fetchImpl = async () => {
+    throw new Error("fetch should not be called");
+  }
 }) {
   const storage = {};
   const sentMessages = [];
@@ -30,9 +33,10 @@ function loadBackground({
   let currentContentReady = contentReady;
   let currentBossContentVersion = bossContentVersion;
   let currentZhilianContentVersion = zhilianContentVersion;
+  let runtimeMessageListener = null;
   const chrome = {
     runtime: {
-      onMessage: { addListener() {} },
+      onMessage: { addListener(listener) { runtimeMessageListener = listener; } },
       lastError: null
     },
     tabs: {
@@ -114,15 +118,20 @@ function loadBackground({
     console,
     URL,
     AbortController,
-    fetch: async () => {
-      throw new Error("fetch should not be called");
-    },
+    fetch: fetchImpl,
     setTimeout,
     clearTimeout
   });
   const source = fs.readFileSync(path.join(EXTENSION_DIR, "background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
-  return { context, storage, sentMessages, executedScripts };
+  return { context, storage, sentMessages, executedScripts, runtimeMessageListener };
+}
+
+function dispatchRuntimeMessage(listener, message, sender) {
+  return new Promise((resolve) => {
+    const asyncResponse = listener(message, sender, resolve);
+    if (asyncResponse !== true) queueMicrotask(() => resolve(undefined));
+  });
 }
 
 test("accepts the actual Zhilian content script version", async () => {
@@ -131,6 +140,19 @@ test("accepts the actual Zhilian content script version", async () => {
   });
 
   assert.equal(await context.isContentScriptReady(1, "zhilian-content.js"), true);
+});
+
+test("rejects empty Zhilian keywords before creating or starting a scan", async () => {
+  const { context } = loadBackground({ tabs: [] });
+
+  const response = await context.handlePageMessage({
+    type: "ZHILIAN_SCAN_START",
+    platform: "zhilian",
+    config: { keywords: "[]" }
+  }, { tab: { id: 20, url: "http://localhost:6866/zhilian" } });
+
+  assert.equal(response.success, false);
+  assert.equal(response.message, "请至少填写一个搜索关键词");
 });
 
 test("injects all Zhilian dependencies when the content script is missing", async () => {
@@ -202,6 +224,100 @@ test("rejects non-Zhilian search navigation", async () => {
   });
 
   assert.equal(lookalikeResult.success, false);
+});
+
+test("allows Zhilian job submission through the fixed local API route", async () => {
+  const requests = [];
+  const { runtimeMessageListener } = loadBackground({
+    tabs: [],
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ success: true, saved: 1 }); }
+      };
+    }
+  });
+
+  const response = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_ZHILIAN_CONTENT",
+    type: "ZHILIAN_LOCAL_API",
+    operation: "chrome-jobs",
+    body: { runId: "run-1", keyword: "Java", jobs: [{ title: "Java工程师" }] }
+  }, {
+    tab: { id: 8, url: "https://www.zhaopin.com/jobdetail/demo.htm" }
+  });
+
+  assert.equal(response.success, true);
+  assert.equal(response.data.saved, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://localhost:6866/api/zhilian/chrome/jobs");
+  assert.equal(requests[0].options.method, "POST");
+});
+
+test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown routes", async () => {
+  const urls = [];
+  const { runtimeMessageListener } = loadBackground({
+    tabs: [],
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { ok: true, status: 200, async text() { return '{"success":true}'; } };
+    }
+  });
+  const sender = { tab: { id: 9, url: "https://www.zhaopin.com/jobdetail/demo.htm" } };
+
+  const allowed = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_ZHILIAN_CONTENT",
+    type: "ZHILIAN_LOCAL_API",
+    operation: "delivery-result",
+    params: { id: 123 },
+    body: { success: true }
+  }, sender);
+  const invalidId = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_ZHILIAN_CONTENT",
+    type: "ZHILIAN_LOCAL_API",
+    operation: "delivery-result",
+    params: { id: "12/not-allowed" }
+  }, sender);
+  const unknown = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_ZHILIAN_CONTENT",
+    type: "ZHILIAN_LOCAL_API",
+    operation: "arbitrary-url",
+    url: "http://example.com/unsafe"
+  }, sender);
+
+  assert.equal(allowed.success, true);
+  assert.equal(urls[0], "http://localhost:6866/api/zhilian/jobs/123/delivery-result");
+  assert.equal(invalidId.success, false);
+  assert.match(invalidId.message, /有效岗位ID/);
+  assert.equal(unknown.success, false);
+  assert.match(unknown.message, /不被允许/);
+  assert.equal(urls.length, 1);
+});
+
+test("rejects forged Zhilian senders before any local API request", async () => {
+  let fetchCalls = 0;
+  const { runtimeMessageListener } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("forged sender must not reach fetch");
+    }
+  });
+
+  const response = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_ZHILIAN_CONTENT",
+    type: "ZHILIAN_LOCAL_API",
+    operation: "chrome-jobs",
+    body: {}
+  }, {
+    tab: { id: 10, url: "https://zhaopin.com.example.com/jobdetail/demo.htm" }
+  });
+
+  assert.equal(response.success, false);
+  assert.match(response.message, /拒绝非智联页面/);
+  assert.equal(fetchCalls, 0);
 });
 
 test("keeps Boss and Zhilian scan ownership when both start together", async () => {

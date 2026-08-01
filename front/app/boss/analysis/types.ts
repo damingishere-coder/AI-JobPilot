@@ -69,6 +69,7 @@ export type BossJob = {
   aiDecision?: string
   aiReason?: string
   priorityCompany?: number
+  sourceKeyword?: string
   scanRunId?: string
   createdAt?: string
 }
@@ -87,6 +88,7 @@ export type FilterState = {
   degree: string
   minK: string
   maxK: string
+  minAiScore: string
   keyword: string
   filterHeadhunter: boolean
 }
@@ -102,6 +104,7 @@ export const EMPTY_FILTERS: FilterState = {
   degree: "",
   minK: "",
   maxK: "",
+  minAiScore: "",
   keyword: "",
   filterHeadhunter: false,
 }
