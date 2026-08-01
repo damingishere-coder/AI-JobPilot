@@ -152,7 +152,9 @@
       description: text.slice(0, 2000),
       deliveryStatus: "LIST_COLLECTED",
       url,
-      keyword
+      keyword,
+      source: "boss-dom-card",
+      salarySource: "dom_untrusted"
     };
   }
 

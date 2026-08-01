@@ -89,6 +89,17 @@ function loadBackground({
     scripting: {
       async executeScript(options) {
         executedScripts.push(options);
+        if (options.world === "MAIN") {
+          return [{
+            result: {
+              success: true,
+              responseOk: true,
+              httpStatus: 200,
+              data: { code: 0, message: "Success", zpData: { jobList: [] } },
+              pageState: { isLoginPage: false, isSecurityPage: false }
+            }
+          }];
+        }
         currentContentReady = true;
         if (options.files.includes("boss-content.js")) {
           currentBossContentVersion = BOSS_CONTENT_VERSION;
@@ -96,6 +107,7 @@ function loadBackground({
         if (options.files.includes("zhilian-content.js")) {
           currentZhilianContentVersion = ZHILIAN_CONTENT_VERSION;
         }
+        return [];
       }
     },
     storage: {
@@ -119,6 +131,7 @@ function loadBackground({
     chrome,
     console,
     URL,
+    URLSearchParams,
     AbortController,
     fetch: fetchImpl,
     setTimeout,
@@ -126,7 +139,13 @@ function loadBackground({
   });
   const source = fs.readFileSync(path.join(EXTENSION_DIR, "background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
-  return { context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList };
+  async function dispatchRuntimeMessage(message, sender) {
+    return await new Promise((resolve) => {
+      const keepChannelOpen = runtimeMessageListener(message, sender, resolve);
+      if (keepChannelOpen !== true) setImmediate(() => resolve(undefined));
+    });
+  }
+  return { context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList, dispatchRuntimeMessage };
 }
 
 function dispatchRuntimeMessage(listener, message, sender) {
@@ -463,4 +482,60 @@ test("reports navigation as running while the registered scan content script rel
   assert.equal(status.hasStoredTask, true);
   assert.equal(status.stage, "navigating");
   assert.equal(status.runId, "boss-run");
+});
+
+test("runs only the fixed Boss search API request in the page MAIN world", async () => {
+  const { dispatchRuntimeMessage, executedScripts } = loadBackground({
+    tabs: [{ id: 7, windowId: 1, url: "https://www.zhipin.com/web/geek/job", status: "complete" }]
+  });
+  const request = {
+    source: "GET_JOBS_BOSS_CONTENT",
+    type: "BOSS_API_PAGE_REQUEST",
+    request: {
+      path: "/wapi/zpgeek/search/joblist.json",
+      params: {
+        scene: "1",
+        query: "Java",
+        city: "101280600",
+        page: "1",
+        pageSize: "10",
+        salary: "405,406"
+      }
+    }
+  };
+
+  const denied = await dispatchRuntimeMessage(request, {
+    tab: { id: 8, url: "https://example.com/" },
+    url: "https://example.com/"
+  });
+  assert.equal(denied.success, false);
+  assert.equal(executedScripts.length, 0);
+
+  const response = await dispatchRuntimeMessage(request, {
+    tab: { id: 7, url: "https://www.zhipin.com/web/geek/job" },
+    url: "https://www.zhipin.com/web/geek/job"
+  });
+  assert.equal(response.success, true, response.message || JSON.stringify(response));
+  assert.equal(executedScripts.length, 1);
+  assert.equal(executedScripts[0].world, "MAIN");
+  assert.equal(executedScripts[0].target.tabId, 7);
+  assert.match(executedScripts[0].args[0], /^\/wapi\/zpgeek\/search\/joblist\.json\?/);
+  assert.match(executedScripts[0].args[0], /pageSize=10/);
+});
+
+test("rejects unsafe Boss API paths and out-of-scope pagination", () => {
+  const { context } = loadBackground({ tabs: [] });
+
+  assert.equal(context.resolveBossApiPageRequest({
+    path: "/wapi/other.json",
+    params: {}
+  }).success, false);
+  assert.equal(context.resolveBossApiPageRequest({
+    path: "/wapi/zpgeek/search/joblist.json",
+    params: { scene: "1", query: "Java", city: "101280600", page: "2", pageSize: "10" }
+  }).success, false);
+  assert.equal(context.resolveBossApiPageRequest({
+    path: "/wapi/zpgeek/search/joblist.json",
+    params: { scene: "1", query: "Java", city: "101280600", page: "1", pageSize: "11" }
+  }).success, false);
 });

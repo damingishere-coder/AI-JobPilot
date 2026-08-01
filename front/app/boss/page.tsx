@@ -119,6 +119,19 @@ interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
   }
 }
 
+interface BossApiPocResponse extends BossDiagnosticsResponse {
+  runId?: string
+  apiCode?: number | null
+  apiMessage?: string
+  httpStatus?: number
+  candidateCount?: number
+  missingSalaryCount?: number
+  fallbackUsed?: boolean
+  collectorSource?: string
+  saved?: number
+  listCollected?: number
+}
+
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
   { key: 'config', title: '配置条件', description: '关键词与筛选条件' },
   { key: 'scan', title: '扫描岗位', description: '实时日志与采集进度' },
@@ -214,6 +227,7 @@ export default function BossPage() {
   const [logSpotlight, setLogSpotlight] = useState(false)
   const [isDiagnosingBoss, setIsDiagnosingBoss] = useState(false)
   const [isCollectingCurrentPage, setIsCollectingCurrentPage] = useState(false)
+  const [isRunningBossApiPoc, setIsRunningBossApiPoc] = useState(false)
   const logSectionRef = useRef<HTMLDivElement | null>(null)
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
@@ -1000,6 +1014,85 @@ export default function BossPage() {
     }
   }
 
+  const handleBossApiPoc = async () => {
+    if (isRunningBossApiPoc) return
+    if (isDelivering) {
+      appendProgressLog({ type: 'warning', message: '完整扫描正在运行，请先停止扫描，再测试 Boss API POC。' })
+      return
+    }
+    if (!hasProfile) {
+      appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存 POC 岗位。' })
+      return
+    }
+
+    const keywords = Array.from(new Set(
+      keywordsDisplay
+        .split(/[,，;；\n\r]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ))
+    if (keywords.length !== 1) {
+      appendProgressLog({ type: 'error', message: 'Boss API POC 仅支持一个关键词，请把关键词配置改为恰好一个后再测试。' })
+      return
+    }
+    const cityCode = String(config.cityCode || '').trim()
+    if (!cityCode || cityCode === '0') {
+      appendProgressLog({ type: 'error', message: 'Boss API POC 需要选择一个明确城市，不能使用“不限”。' })
+      return
+    }
+
+    const pageSize = Math.min(10, normalizeSearchJobLimit(config.searchJobLimit))
+    focusLogSection()
+    setIsRunningBossApiPoc(true)
+    appendProgressLog({
+      type: 'info',
+      message: `正在测试 Boss 搜索 API：关键词=${keywords[0]}，城市码=${cityCode}，第一页，pageSize=${pageSize}。不会自动翻页、重试风控、进入 AI 分析或投递。`,
+    })
+    try {
+      const data = await sendChromeBridgeMessage({
+        type: 'BOSS_API_POC_COLLECT',
+        platform: 'boss',
+        keyword: keywords[0],
+        cityCode,
+        page: 1,
+        pageSize,
+        runId: `boss-api-poc-${Date.now()}`,
+        config: {
+          jobType: config.jobType || '',
+          industry: selectedIndustry,
+          experience: selectedExperience,
+          degree: selectedDegree,
+          scale: selectedScale,
+          stage: selectedStage,
+          salary: selectedSalary,
+        },
+      }, 70000) as BossApiPocResponse
+
+      appendProgressLog({
+        type: data.success
+          ? (data.diagnosticType === 'API_SUCCESS' ? 'success' : 'warning')
+          : (data.diagnosticType === 'LOGIN_REQUIRED' || data.diagnosticType === 'SECURITY_VERIFICATION' || data.diagnosticType === 'API_CODE_37' ? 'warning' : 'error'),
+        message: data.message || (data.success ? 'Boss API POC 完成。' : 'Boss API POC 失败。'),
+      })
+      appendProgressLog({
+        type: data.success ? 'info' : 'warning',
+        message: `Boss API POC 诊断：diagnosticType=${data.diagnosticType || '未知'}；apiCode=${data.apiCode ?? '无'}；httpStatus=${Number(data.httpStatus || 0)}；candidateCount=${Number(data.candidateCount || 0)}；missingSalaryCount=${Number(data.missingSalaryCount || 0)}；fallbackUsed=${Boolean(data.fallbackUsed)}；collectorSource=${data.collectorSource || 'none'}；saved=${Number(data.saved || 0)}；listCollected=${Number(data.listCollected || 0)}。`,
+      })
+
+      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+        setAnalysisFocusRunId(data.runId)
+        setHasScanResult(true)
+        setAnalysisRefreshSignal((value) => value + 1)
+        setActiveStep('confirm')
+      }
+    } catch (error) {
+      console.error('Failed to run Boss API POC:', error)
+      appendProgressLog({ type: 'error', message: 'Boss API POC 失败：Chrome Bridge 或本地后端通信异常。' })
+    } finally {
+      setIsRunningBossApiPoc(false)
+    }
+  }
+
   const handleStopDelivery = async () => {
     if (isStopping) return
     setIsStopping(true)
@@ -1114,10 +1207,18 @@ export default function BossPage() {
             <Button
               onClick={handleCollectCurrentBossPage}
               size="sm"
-              disabled={!chromeBridgeReady || !hasProfile || isDelivering || isCollectingCurrentPage}
+              disabled={!chromeBridgeReady || !hasProfile || isDelivering || isCollectingCurrentPage || isRunningBossApiPoc}
               className="app-button-success px-4 disabled:opacity-60"
             >
               <BiBriefcase className="mr-1" /> {isCollectingCurrentPage ? '采集中...' : '采集当前 Boss 页面'}
+            </Button>
+            <Button
+              onClick={handleBossApiPoc}
+              size="sm"
+              disabled={!chromeBridgeReady || !hasProfile || isDelivering || isCollectingCurrentPage || isRunningBossApiPoc}
+              className="app-button-soft px-4 disabled:opacity-60"
+            >
+              <BiSearch className="mr-1" /> {isRunningBossApiPoc ? 'API POC 测试中...' : '测试 Boss API POC'}
             </Button>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
@@ -1181,6 +1282,7 @@ export default function BossPage() {
               <div className="space-y-4">
 	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
 	                <p className="text-sm text-muted-foreground">“诊断当前 Boss 页面”和“采集当前 Boss 页面”只读取你已经打开的页面，不会自动跳转；当前页采集结果先按 LIST_COLLECTED 入库，不进入 AI 分析。</p>
+	                <p className="text-sm text-muted-foreground">“测试 Boss API POC”只在你主动点击后请求一个关键词、一个城市的第一页，最多 10 条；不会自动翻页、处理验证码、进入 AI 分析或投递。</p>
 	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始完整采集；完整扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
@@ -1806,7 +1908,7 @@ function ProgressLogCard({
       </CardHeader>
       <CardContent>
         {logs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">点击“诊断当前 Boss 页面”“采集当前 Boss 页面”或“开始扫描”后，这里会显示选择器命中、采集结果、后台AI队列和错误信息。</p>
+          <p className="text-sm text-muted-foreground">点击“诊断当前 Boss 页面”“采集当前 Boss 页面”“测试 Boss API POC”或“开始扫描”后，这里会显示选择器命中、API诊断、采集结果、后台AI队列和错误信息。</p>
         ) : (
           <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (

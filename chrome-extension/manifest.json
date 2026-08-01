@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "投递牛马 Chrome Bridge",
-  "version": "1.2.7",
+  "version": "1.3.0",
   "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for 投递牛马.",
   "icons": {
     "16": "icons/icon16.png",
@@ -35,6 +35,7 @@
         "boss-selectors.js",
         "boss-debug.js",
         "boss-scan-support.js",
+        "boss-api-collector.js",
         "boss-search-collector.js",
         "boss-detail-collector.js",
         "boss-content.js"

@@ -143,6 +143,8 @@ Boss 和智联推荐使用 Chrome Bridge 路线：
 
 投递前仍需要你在分析页确认，不会默认绕过人工确认。
 
+Boss 搜索 API 手动 POC 的完整 Windows 验证步骤见 [doc/BOSS_API_POC.md](doc/BOSS_API_POC.md)。
+
 ## 常用命令
 
 ```powershell
@@ -196,4 +198,5 @@ pnpm build:prod
 | [TASK_FLOW.md](TASK_FLOW.md) | 从上传简历到确认投递的完整流程 |
 | [SECURITY.md](SECURITY.md) | 本地数据、Cookie、API Key 的安全边界 |
 | [ROADMAP.md](ROADMAP.md) | 阶段计划和后续方向 |
+| [doc/BOSS_API_POC.md](doc/BOSS_API_POC.md) | Boss 搜索 API 手动 POC 与 Windows 验证 |
 | [doc/文档索引.md](doc/文档索引.md) | 历史文档和补充资料索引 |

@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-07-18-boss-security-resume-fix";
+  const EXTENSION_VERSION = "2026-08-01-consolidated-boss-api";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -80,6 +80,26 @@
           success: false,
           message: `Boss当前页采集失败：${reason}`,
           ...diagnostics
+        });
+      });
+      return true;
+    }
+    if (message?.type === "BOSS_API_POC_COLLECT") {
+      handleBossApiPocCollect(message).then(sendResponse).catch((error) => {
+        const reason = safeErrorMessage(error);
+        postProgress(message, "error", `Boss API POC 执行失败：${reason}`, {
+          operation: "apiPoc",
+          stage: "error",
+          diagnosticType: "API_REQUEST_FAILED"
+        });
+        sendResponse({
+          success: false,
+          message: `Boss API POC 执行失败：${reason}`,
+          diagnosticType: "API_REQUEST_FAILED",
+          fallbackUsed: false,
+          collectorSource: "none",
+          saved: 0,
+          listCollected: 0
         });
       });
       return true;
@@ -298,6 +318,233 @@
       enrichCount: dedupeResult.enrichCount,
       skipCount: dedupeResult.skipCount
     };
+  }
+
+  async function handleBossApiPocCollect(message) {
+    const diagnostics = collectBossDiagnostics();
+    if (diagnostics.isSecurityPage) {
+      return finishBlockedBossApiPoc(message, "SECURITY_VERIFICATION", "检测到 Boss 安全验证页。本工具不会绕过验证码，请手动完成验证后再测试。", diagnostics);
+    }
+    if (diagnostics.isLoginPage) {
+      return finishBlockedBossApiPoc(message, "LOGIN_REQUIRED", "检测到 Boss 登录页，请先在当前 Chrome 中手动登录后再测试。", diagnostics);
+    }
+    if (!diagnostics.isSearchPage) {
+      return finishBlockedBossApiPoc(message, "API_REQUEST_FAILED", "当前不是 Boss 岗位搜索结果页，请先打开一个正常搜索页。", diagnostics);
+    }
+
+    const collector = window.GetJobsBossApiCollector;
+    if (!collector?.collectWithFallback) {
+      throw new Error("Boss API 采集模块未加载，请重新加载扩展并刷新 Boss 页面");
+    }
+
+    const keyword = compact(message?.keyword);
+    const cityCode = compact(message?.cityCode);
+    const pageSize = Math.min(10, Math.max(1, Number(message?.pageSize || 10)));
+    const runId = normalizeScanRunId(message?.runId) || `boss-api-poc-${Date.now()}`;
+    const baseMeta = { operation: "apiPoc", keyword, cityCode, page: 1, pageSize, runId };
+    postProgress(message, "info", `Boss API POC 开始：关键词=${keyword}，城市码=${cityCode}，页码=1，pageSize=${pageSize}。`, {
+      ...baseMeta,
+      stage: "requesting"
+    });
+
+    const result = await collector.collectWithFallback({
+      keyword,
+      cityCode,
+      page: 1,
+      pageSize,
+      config: message?.config || {}
+    }, async (apiResult) => {
+      postProgress(message, "warning", `${bossApiDiagnosticMessage(apiResult)} 将按页面内嵌数据、DOM 卡片和点击卡片的顺序降级。`, {
+        ...baseMeta,
+        stage: "fallback",
+        diagnosticType: apiResult.diagnosticType,
+        apiCode: apiResult.apiCode,
+        httpStatus: apiResult.httpStatus
+      });
+      const listResult = collectJobs(keyword, {
+        ...message,
+        config: { ...(message?.config || {}), searchJobLimit: pageSize }
+      }, baseMeta, { maxNodes: pageSize });
+      const listJobs = listResult.jobs.slice(0, pageSize);
+      if (listJobs.length) {
+        return {
+          jobs: listJobs,
+          collectorSource: listResult.embeddedParsed > 0 ? "boss-embedded-state" : "boss-dom-card",
+          embeddedParsed: listResult.embeddedParsed,
+          domParsed: Math.max(0, listJobs.length - listResult.embeddedParsed)
+        };
+      }
+
+      const clickResult = await collectBossJobsFromClickableCards(keyword, message, baseMeta, pageSize, { maxClicks: pageSize });
+      return {
+        ...clickResult,
+        jobs: clickResult.jobs.slice(0, pageSize).map((job) => ({
+          ...job,
+          source: "boss-click-fallback",
+          salarySource: job.salarySource || "dom_untrusted"
+        })),
+        collectorSource: "boss-click-fallback"
+      };
+    });
+
+    const diagnosticText = bossApiDiagnosticMessage(result);
+    postProgress(message, result.success ? (result.diagnosticType === "API_SUCCESS" ? "success" : "warning") : "error", diagnosticText, {
+      ...baseMeta,
+      stage: result.success ? "collected" : "blocked",
+      diagnosticType: result.diagnosticType,
+      apiCode: result.apiCode,
+      httpStatus: result.httpStatus,
+      candidateCount: result.candidateCount,
+      missingSalaryCount: result.missingSalaryCount,
+      fallbackUsed: result.fallbackUsed,
+      collectorSource: result.collectorSource
+    });
+
+    const candidates = (Array.isArray(result.jobs) ? result.jobs : []).slice(0, pageSize).map((job) => ({
+      ...job,
+      keyword,
+      deliveryStatus: "LIST_COLLECTED"
+    }));
+    if (!result.success || !candidates.length) {
+      return {
+        success: false,
+        message: diagnosticText,
+        runId,
+        diagnosticType: result.diagnosticType,
+        apiCode: result.apiCode,
+        apiMessage: result.apiMessage,
+        httpStatus: result.httpStatus,
+        candidateCount: candidates.length,
+        missingSalaryCount: result.missingSalaryCount,
+        fallbackUsed: result.fallbackUsed,
+        collectorSource: result.collectorSource,
+        saved: 0,
+        listCollected: 0,
+        ...diagnostics
+      };
+    }
+
+    const dedupeResult = await filterDuplicateJobs(candidates, { ...message, runId }, baseMeta);
+    if (!dedupeResult.jobs.length) {
+      const messageText = `${diagnosticText} 识别 ${candidates.length} 个岗位，全部为无需补全的历史岗位，本次未新增。`;
+      postProgress(message, "info", messageText, {
+        ...baseMeta,
+        stage: "dedupe",
+        diagnosticType: result.diagnosticType,
+        duplicates: dedupeResult.duplicateCount,
+        skippedDuplicates: dedupeResult.skipCount
+      });
+      return {
+        success: true,
+        message: messageText,
+        runId,
+        diagnosticType: result.diagnosticType,
+        apiCode: result.apiCode,
+        apiMessage: result.apiMessage,
+        httpStatus: result.httpStatus,
+        candidateCount: candidates.length,
+        missingSalaryCount: result.missingSalaryCount,
+        fallbackUsed: result.fallbackUsed,
+        collectorSource: result.collectorSource,
+        saved: 0,
+        listCollected: 0,
+        duplicateCount: dedupeResult.duplicateCount,
+        skipCount: dedupeResult.skipCount
+      };
+    }
+
+    const data = await callBossLocalApi("chrome-jobs", {
+      runId,
+      keyword,
+      collectionMode: "LIST_ONLY",
+      autoDeliver: false,
+      jobs: dedupeResult.jobs
+    }, {
+      pageTabId: message?.pageTabId,
+      timeoutMs: 60000
+    });
+    if (!data.success) throw new Error(data.message || "后端未接受 Boss API POC 岗位数据");
+
+    const successMessage = `${diagnosticText} 候选 ${candidates.length} 个，历史跳过 ${dedupeResult.skipCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入 AI 分析。`;
+    postProgress(message, "success", successMessage, {
+      ...baseMeta,
+      stage: "listCollected",
+      diagnosticType: result.diagnosticType,
+      apiCode: result.apiCode,
+      httpStatus: result.httpStatus,
+      candidateCount: candidates.length,
+      missingSalaryCount: result.missingSalaryCount,
+      fallbackUsed: result.fallbackUsed,
+      collectorSource: result.collectorSource,
+      saved: numberValue(data.saved),
+      listCollected: numberValue(data.listCollected)
+    });
+    return {
+      success: true,
+      message: successMessage,
+      runId,
+      diagnosticType: result.diagnosticType,
+      apiCode: result.apiCode,
+      apiMessage: result.apiMessage,
+      httpStatus: result.httpStatus,
+      candidateCount: candidates.length,
+      missingSalaryCount: result.missingSalaryCount,
+      fallbackUsed: result.fallbackUsed,
+      collectorSource: result.collectorSource,
+      saved: numberValue(data.saved),
+      listCollected: numberValue(data.listCollected),
+      duplicateCount: dedupeResult.duplicateCount,
+      enrichCount: dedupeResult.enrichCount,
+      skipCount: dedupeResult.skipCount,
+      backend: data
+    };
+  }
+
+  function finishBlockedBossApiPoc(message, diagnosticType, text, diagnostics) {
+    postProgress(message, "warning", text, {
+      operation: "apiPoc",
+      stage: "blocked",
+      diagnosticType,
+      ...diagnostics
+    });
+    return {
+      success: false,
+      blocked: true,
+      message: text,
+      diagnosticType,
+      apiCode: null,
+      apiMessage: "",
+      httpStatus: 0,
+      candidateCount: 0,
+      missingSalaryCount: 0,
+      fallbackUsed: false,
+      collectorSource: "none",
+      saved: 0,
+      listCollected: 0,
+      ...diagnostics
+    };
+  }
+
+  function bossApiDiagnosticMessage(result) {
+    const type = String(result?.diagnosticType || "API_REQUEST_FAILED");
+    const catalog = {
+      API_SUCCESS: "API_SUCCESS：Boss 搜索 API 返回正常，已获得结构化岗位和明文薪资。",
+      API_EMPTY: "API_EMPTY：Boss 搜索 API 返回空岗位列表。",
+      LOGIN_REQUIRED: "LOGIN_REQUIRED：Boss 登录状态已失效，请手动登录后再测试。",
+      SECURITY_VERIFICATION: "SECURITY_VERIFICATION：Boss 要求安全验证，本工具不会绕过验证。",
+      API_CODE_37: "API_CODE_37：Boss 搜索 API 返回 code 37，本次 POC 已停止且不会自动重试。",
+      API_SCHEMA_CHANGED: "API_SCHEMA_CHANGED：Boss 搜索 API 响应结构与预期不一致。",
+      API_REQUEST_FAILED: "API_REQUEST_FAILED：Boss 搜索 API 请求失败。",
+      API_SALARY_MISSING: `API_SALARY_MISSING：API 返回岗位，但有 ${numberValue(result?.missingSalaryCount)} 个岗位缺少 salaryDesc。`
+    };
+    const suffix = [
+      result?.apiCode !== null && result?.apiCode !== undefined && Number.isFinite(Number(result.apiCode)) ? `code=${Number(result.apiCode)}` : "",
+      result?.apiMessage ? `message=${compact(result.apiMessage)}` : "",
+      result?.httpStatus ? `httpStatus=${numberValue(result.httpStatus)}` : "",
+      result?.fallbackUsed ? `fallback=${result.collectorSource || "unknown"}` : "",
+      `jobs=${numberValue(result?.candidateCount)}`
+    ].filter(Boolean).join("；");
+    return `${catalog[type] || catalog.API_REQUEST_FAILED}${suffix ? ` ${suffix}` : ""}`;
   }
 
   function collectBossDiagnostics() {
@@ -1153,13 +1400,15 @@
       deliveryStatus: "",
       url,
       keyword,
-      source: "boss-embedded-state"
+      source: "boss-embedded-state",
+      salarySource: "embedded_state"
     };
   }
 
-  async function collectBossJobsFromClickableCards(keyword, message, baseMeta, searchJobLimit) {
+  async function collectBossJobsFromClickableCards(keyword, message, baseMeta, searchJobLimit, options = {}) {
     const limit = normalizeSearchJobLimit(searchJobLimit);
-    const nodes = collectJobNodes().slice(0, Math.max(12, limit));
+    const maxClicks = Math.max(1, Number(options.maxClicks || Math.max(12, limit)));
+    const nodes = collectJobNodes().slice(0, maxClicks);
     const jobs = [];
     const seen = new Set();
     let clicked = 0;
@@ -1503,7 +1752,9 @@
       description: text,
       deliveryStatus,
       url,
-      keyword
+      keyword,
+      source: "boss-dom-card",
+      salarySource: "dom_untrusted"
     };
   }
 
