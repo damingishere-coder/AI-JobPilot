@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
       target: backend-dev
     container_name: get-jobs-backend
+    restart: unless-stopped
     init: true
     shm_size: "1gb"
     working_dir: /workspace

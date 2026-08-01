@@ -51,8 +51,9 @@ public class StartupRunner implements ApplicationRunner {
         try {
             playwrightManager.init();
         } catch (Exception e) {
-            log.error("Playwright 初始化失败: {}", e.getMessage());
-            throw e;
+            // 浏览器自动化属于可降级能力。初始化失败时保留配置、岗位数据和 AI 接口，
+            // 后续真正使用 Playwright 时仍可再次尝试初始化。
+            log.error("Playwright 初始化失败，后台将以降级模式继续运行: {}", e.getMessage(), e);
         }
     }
 

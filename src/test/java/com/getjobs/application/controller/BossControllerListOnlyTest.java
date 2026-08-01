@@ -75,7 +75,8 @@ class BossControllerListOnlyTest {
         request.setRunId("boss-list-test");
         request.setKeyword("Java");
         request.setCollectionMode("LIST_ONLY");
-        request.setAutoDeliver(false);
+        // 旧版扩展即使仍传 true，扫描阶段也必须强制关闭自动投递。
+        request.setAutoDeliver(true);
         request.setJobs(List.of(dto));
 
         BossJobDataEntity saved = new BossJobDataEntity();
@@ -102,7 +103,9 @@ class BossControllerListOnlyTest {
                 .containsEntry("saved", 1)
                 .containsEntry("listCollected", 1)
                 .containsEntry("collectionMode", "LIST_ONLY")
-                .containsEntry("asyncAnalysis", false);
+                .containsEntry("asyncAnalysis", false)
+                .containsEntry("autoDeliver", false)
+                .containsEntry("tasks", List.of());
         verify(queueService, never()).enqueue(any());
     }
 

@@ -96,7 +96,60 @@
   }
 
   function detectSecurityPage(text) {
-    return /安全验证|滑块|访问异常|身份验证|请完成验证|验证码|verify|captcha/i.test(text || "");
+    const support = window.GetJobsBossScanSupport || {};
+    const hasNormalContent = hasNormalBossPageContent();
+    const hasChallengeUi = hasVisibleBossSecurityUi(support);
+    if (typeof support.isBossSecurityPage === "function") {
+      return support.isBossSecurityPage({
+        url: window.location.href,
+        title: document.title || "",
+        text,
+        hasNormalContent,
+        hasChallengeUi
+      });
+    }
+    return hasChallengeUi || (!hasNormalContent && /请.{0,12}(?:完成|进行|通过).{0,8}验证|请.{0,8}(?:拖动|按住).{0,8}滑块|访问异常/.test(text || ""));
+  }
+
+  function hasNormalBossPageContent() {
+    const path = String(window.location.pathname || "");
+    if (/\/job_detail\//.test(path)) {
+      return Boolean(document.querySelector(".job-banner, .job-detail, .job-detail-box, .job-detail-container, [class*='job-detail']"));
+    }
+    if (path === "/web/geek/job" || path === "/web/geek/jobs") {
+      return document.querySelectorAll("a[href*='/job_detail/'], a[href*='job_detail']").length > 0;
+    }
+    return false;
+  }
+
+  function hasVisibleBossSecurityUi(support) {
+    const selectors = [
+      "iframe[src*='captcha' i]",
+      "iframe[src*='verify' i]",
+      "[class*='geetest' i]",
+      "[id*='geetest' i]",
+      "[class*='captcha' i]",
+      "[id*='captcha' i]",
+      "[class*='verify-slider' i]",
+      "[id*='verify-slider' i]",
+      "[class*='security-check' i]",
+      "[id*='security-check' i]"
+    ];
+    if (selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isVisibleElement))) return true;
+    if (typeof support.isBossSecurityInstructionText !== "function") return false;
+    const overlays = document.querySelectorAll("[role='dialog'], [aria-modal='true'], [class*='dialog' i], [class*='modal' i]");
+    return Array.from(overlays).some((node) => isVisibleElement(node) && support.isBossSecurityInstructionText(node.innerText || node.textContent || ""));
+  }
+
+  function isVisibleElement(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return false;
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle?.(node);
+    return rect.width > 0
+      && rect.height > 0
+      && style?.display !== "none"
+      && style?.visibility !== "hidden"
+      && style?.opacity !== "0";
   }
 
   function detectLoginPage(url, text) {

@@ -180,10 +180,14 @@ public class BossStatsSqlProvider {
         if (hasText(query.getDegree())) {
             sql.append(" AND degree = #{degree}");
         }
+        if (query.getMinAiScore() != null) {
+            sql.append(" AND ai_score >= #{minAiScore}");
+        }
         if (hasText(query.getKeyword())) {
             sql.append(" AND (company_name LIKE '%' || #{keyword} || '%'")
                     .append(" OR job_name LIKE '%' || #{keyword} || '%'")
-                    .append(" OR hr_name LIKE '%' || #{keyword} || '%')");
+                    .append(" OR hr_name LIKE '%' || #{keyword} || '%'")
+                    .append(" OR source_keyword LIKE '%' || #{keyword} || '%')");
         }
         if (Boolean.TRUE.equals(query.getFilterHeadhunter())) {
             sql.append(" AND (hr_position IS NULL OR hr_position NOT LIKE '%猎头%')");

@@ -86,6 +86,7 @@ public class PlaywrightManager {
     private final Object playwrightLifecycleLock = new Object();
     private final Object bossPageOperationLock = new Object();
     private volatile boolean playwrightInitializing = false;
+    private volatile String lastInitializationError = "";
 
     // 默认超时时间（毫秒）
   private static final int DEFAULT_TIMEOUT = 30000;
@@ -176,6 +177,7 @@ public class PlaywrightManager {
             if (launchSettings.usesPersistentContext()) {
                 Path userDataDir = launchSettings.userDataDir().orElseThrow();
                 Files.createDirectories(userDataDir);
+                removeStaleChromiumProfileLocks(userDataDir);
                 BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
                         .setHeadless(launchSettings.headless())
                         .setSlowMo(launchSettings.slowMoMs())
@@ -233,13 +235,81 @@ public class PlaywrightManager {
             // 等待所有平台初始化完成
             CompletableFuture.allOf(bossFuture, liepinFuture, job51Future, zhilianFuture).join();
 
+            lastInitializationError = "";
             log.info("✓ 浏览器自动化引擎初始化完成（所有平台已并发启动）");
             log.info("========================================");
         } catch (Exception e) {
+            lastInitializationError = buildPlaywrightStartupError(e);
             log.error("✗ 浏览器自动化引擎初始化失败", e);
-            throw new RuntimeException(buildPlaywrightStartupError(e), e);
+            cleanupPlaywrightResources("初始化失败清理");
+            throw new RuntimeException(lastInitializationError, e);
         } finally {
             playwrightInitializing = false;
+        }
+    }
+
+    /**
+     * Remove Chromium singleton files only when the owning process is no longer
+     * running. Docker keeps the persistent profile on the host, so an abrupt
+     * container replacement can otherwise leave these symlinks behind forever.
+     */
+    static void removeStaleChromiumProfileLocks(Path userDataDir) {
+        Path singletonLock = userDataDir.resolve("SingletonLock");
+        boolean lockExists = Files.exists(singletonLock, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+
+        if (lockExists && !Files.isSymbolicLink(singletonLock)) {
+            log.warn("Chromium profile lock is not a symlink; leaving it untouched: {}", singletonLock);
+            return;
+        }
+
+        if (lockExists) {
+            try {
+                String lockOwner = Files.readSymbolicLink(singletonLock).toString();
+                if (isChromiumProfileLockActive(lockOwner)) {
+                    log.info("Chromium profile is already owned by a running process; keeping its lock");
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("Unable to validate Chromium profile lock; leaving it untouched: {}", singletonLock, e);
+                return;
+            }
+        }
+
+        boolean removed = false;
+        for (String filename : List.of("SingletonCookie", "SingletonLock", "SingletonSocket")) {
+            Path lockFile = userDataDir.resolve(filename);
+            try {
+                removed = Files.deleteIfExists(lockFile) || removed;
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to remove stale Chromium profile lock: " + lockFile, e);
+            }
+        }
+        if (removed) {
+            log.warn("Removed stale Chromium profile locks left by a stopped process");
+        }
+    }
+
+    static boolean isChromiumProfileLockActive(String lockOwner) {
+        int separator = lockOwner.lastIndexOf('-');
+        if (separator <= 0 || separator == lockOwner.length() - 1) {
+            return false;
+        }
+
+        String currentHost = System.getenv("HOSTNAME");
+        if (currentHost == null || currentHost.isBlank()) {
+            return true;
+        }
+
+        String ownerHost = lockOwner.substring(0, separator);
+        if (!currentHost.equals(ownerHost)) {
+            return false;
+        }
+
+        try {
+            long ownerPid = Long.parseLong(lockOwner.substring(separator + 1));
+            return ProcessHandle.of(ownerPid).map(ProcessHandle::isAlive).orElse(false);
+        } catch (NumberFormatException e) {
+            return false;
         }
     }
 
@@ -406,10 +476,7 @@ public class PlaywrightManager {
     }
 
     private Page ensureBossPage() {
-        waitForPlaywrightReady();
-        if (context == null) {
-            throw new IllegalStateException("浏览器上下文尚未初始化");
-        }
+        ensureBrowserContextAvailable();
         try {
             if (bossPage != null && !bossPage.isClosed()) {
                 return bossPage;
@@ -424,10 +491,7 @@ public class PlaywrightManager {
     }
 
     private Page ensureZhilianPage() {
-        waitForPlaywrightReady();
-        if (context == null) {
-            throw new IllegalStateException("浏览器上下文尚未初始化");
-        }
+        ensureBrowserContextAvailable();
         try {
             if (zhilianPage != null && !zhilianPage.isClosed()) {
                 return zhilianPage;
@@ -440,6 +504,27 @@ public class PlaywrightManager {
         setLoginStatus("zhilian", false);
         log.info("智联招聘 Page 已重新创建");
         return zhilianPage;
+    }
+
+    private void ensureBrowserContextAvailable() {
+        waitForPlaywrightReady();
+        if (context == null) {
+            try {
+                init();
+            } catch (Exception e) {
+                String message = lastInitializationError == null || lastInitializationError.isBlank()
+                        ? "浏览器自动化暂不可用，请稍后重试"
+                        : lastInitializationError;
+                throw new IllegalStateException(message, e);
+            }
+        }
+        waitForPlaywrightReady();
+        if (context == null) {
+            String message = lastInitializationError == null || lastInitializationError.isBlank()
+                    ? "浏览器自动化暂不可用，请稍后重试"
+                    : lastInitializationError;
+            throw new IllegalStateException(message);
+        }
     }
 
     private void waitForPlaywrightReady() {
@@ -2055,45 +2140,62 @@ public class PlaywrightManager {
     @PreDestroy
     public void destroy() {
         log.info("开始关闭Playwright管理器...");
+        cleanupPlaywrightResources("关闭");
+        log.info("Playwright管理器关闭完成！");
+    }
 
-        try {
-            // 关闭所有页面
-            if (bossPage != null) {
-                bossPage.close();
-                log.info("Boss直聘页面已关闭");
-            }
-            if (liepinPage != null) {
-                liepinPage.close();
-                log.info("猎聘页面已关闭");
-            }
-            if (job51Page != null) {
-                job51Page.close();
-                log.info("51job页面已关闭");
-            }
-            if (zhilianPage != null) {
-                zhilianPage.close();
-                log.info("智联招聘页面已关闭");
-            }
+    private void cleanupPlaywrightResources(String reason) {
+        closePageSafely("Boss直聘", bossPage, reason);
+        bossPage = null;
+        closePageSafely("猎聘", liepinPage, reason);
+        liepinPage = null;
+        closePageSafely("51job", job51Page, reason);
+        job51Page = null;
+        closePageSafely("智联招聘", zhilianPage, reason);
+        zhilianPage = null;
 
-            // 关闭共享的BrowserContext
-            if (context != null) {
+        if (context != null) {
+            try {
                 context.close();
-                log.info("共享BrowserContext已关闭");
+                log.info("{}共享BrowserContext已关闭", reason);
+            } catch (Exception e) {
+                log.warn("{}共享BrowserContext失败: {}", reason, e.getMessage());
+            } finally {
+                context = null;
             }
-
-            // 关闭浏览器
-            if (browser != null) {
+        }
+        if (browser != null) {
+            try {
                 browser.close();
-                log.info("浏览器已关闭");
+                log.info("{}浏览器已关闭", reason);
+            } catch (Exception e) {
+                log.warn("{}浏览器失败: {}", reason, e.getMessage());
+            } finally {
+                browser = null;
             }
-            if (playwright != null) {
+        }
+        if (playwright != null) {
+            try {
                 playwright.close();
-                log.info("Playwright实例已关闭");
+                log.info("{}Playwright实例已关闭", reason);
+            } catch (Exception e) {
+                log.warn("{}Playwright实例失败: {}", reason, e.getMessage());
+            } finally {
+                playwright = null;
             }
+        }
+        loginStatus.clear();
+    }
 
-            log.info("Playwright管理器关闭完成！");
+    private void closePageSafely(String platform, Page page, String reason) {
+        if (page == null) {
+            return;
+        }
+        try {
+            page.close();
+            log.info("{}{}页面已关闭", reason, platform);
         } catch (Exception e) {
-            log.error("关闭Playwright管理器时发生错误", e);
+            log.warn("{}{}页面失败: {}", reason, platform, e.getMessage());
         }
     }
 
@@ -2101,7 +2203,32 @@ public class PlaywrightManager {
      * 检查Playwright是否已初始化
      */
     public boolean isInitialized() {
-        return playwright != null && browser != null && bossPage != null;
+        return !playwrightInitializing
+                && playwright != null
+                && context != null
+                && isPageAvailable(bossPage)
+                && isPageAvailable(liepinPage)
+                && isPageAvailable(job51Page)
+                && isPageAvailable(zhilianPage);
+    }
+
+    private boolean isPageAvailable(Page page) {
+        if (page == null) {
+            return false;
+        }
+        try {
+            return !page.isClosed();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public boolean isInitializing() {
+        return playwrightInitializing;
+    }
+
+    public String getLastInitializationError() {
+        return lastInitializationError == null ? "" : lastInitializationError;
     }
 
     /**

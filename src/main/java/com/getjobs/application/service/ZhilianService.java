@@ -30,6 +30,8 @@ public class ZhilianService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
     public static final int MAX_SEARCH_JOB_LIMIT = 200;
+    public static final String DEFAULT_CITY_CODE = "489";
+    public static final String DEFAULT_SALARY_CODE = "0000,9999999";
 
     private final ZhilianConfigMapper zhilianConfigMapper;
     private final ZhilianOptionMapper zhilianOptionMapper;
@@ -59,8 +61,8 @@ public class ZhilianService {
         if (entity == null) {
             log.warn("zhilian_config 表为空，使用默认空配置");
             config.setKeywords(new ArrayList<>());
-            config.setCityCode("0");
-            config.setSalary("0");
+            config.setCityCode(DEFAULT_CITY_CODE);
+            config.setSalary(DEFAULT_SALARY_CODE);
             config.setSearchJobLimit(DEFAULT_SEARCH_JOB_LIMIT);
             return config;
         }
@@ -68,30 +70,8 @@ public class ZhilianService {
         // 关键词解析：支持逗号或括号列表
         config.setKeywords(parseListString(entity.getKeywords()));
         config.setSearchJobLimit(normalizeSearchJobLimit(entity.getSearchJobLimit()));
-
-        // 城市：中文名映射到代码；缺省或“不限”映射为 0
-        String city = safeTrim(entity.getCityCode());
-        if (city == null || city.isEmpty() || "不限".equals(city)) {
-            config.setCityCode("0");
-        } else if (city.chars().allMatch(Character::isDigit)) {
-            config.setCityCode(city);
-        } else {
-            String code = getCodeByTypeAndName("city", city);
-            if (code == null) {
-                log.warn("智联配置中的城市 {} 未在 zhilian_option 表中找到，回退为 0", city);
-                config.setCityCode("0");
-            } else {
-                config.setCityCode(code);
-            }
-        }
-
-        // 薪资：缺省或“不限”映射为 0，其它保持原值
-        String salary = safeTrim(entity.getSalary());
-        if (salary == null || salary.isEmpty() || "不限".equals(salary)) {
-            config.setSalary("0");
-        } else {
-            config.setSalary(salary);
-        }
+        config.setCityCode(normalizeCityCode(entity.getCityCode()));
+        config.setSalary(normalizeSalaryCode(entity.getSalary()));
         return config;
     }
 
@@ -125,6 +105,8 @@ public class ZhilianService {
     public ZhilianConfigEntity updateConfig(ZhilianConfigEntity config) {
         if (config == null) return null;
         config.setId(null);
+        config.setCityCode(normalizeCityCode(config.getCityCode()));
+        config.setSalary(normalizeSalaryCode(config.getSalary()));
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
         return saveOrUpdateFirstSelective(config);
     }
@@ -171,8 +153,59 @@ public class ZhilianService {
         return zhilianOptionMapper.selectList(
                 new QueryWrapper<ZhilianOptionEntity>()
                         .eq("type", type)
-                        .orderByAsc("sort_order")
+                        .orderByAsc("sort_order", "id")
         );
+    }
+
+    public String normalizeCityCode(String raw) {
+        String city = safeTrim(raw);
+        if (city == null || city.isEmpty() || "不限".equals(city) || "0".equals(city)) {
+            return DEFAULT_CITY_CODE;
+        }
+        if (city.chars().allMatch(Character::isDigit)) {
+            return city;
+        }
+        String code = getCodeByTypeAndName("city", city);
+        if (code == null || code.isBlank()) {
+            log.warn("智联配置中的城市 {} 未在 zhilian_option 表中找到，回退为全国", city);
+            return DEFAULT_CITY_CODE;
+        }
+        return code;
+    }
+
+    public String normalizeSalaryCode(String raw) {
+        String salary = safeTrim(raw);
+        if (salary == null || salary.isEmpty() || "不限".equals(salary) || "0".equals(salary)) {
+            return DEFAULT_SALARY_CODE;
+        }
+        if (isKnownSalaryCode(salary)) {
+            return salary;
+        }
+        ZhilianOptionEntity byCode = getOptionByTypeAndCode("salary", salary);
+        if (byCode != null) {
+            return byCode.getCode();
+        }
+        String code = getCodeByTypeAndName("salary", salary);
+        if (code == null || code.isBlank()) {
+            log.warn("智联配置中的薪资 {} 不是官方薪资区间，回退为不限", salary);
+            return DEFAULT_SALARY_CODE;
+        }
+        return code;
+    }
+
+    private boolean isKnownSalaryCode(String code) {
+        return Set.of(
+                DEFAULT_SALARY_CODE,
+                "0000,4000",
+                "4001,6000",
+                "6001,8000",
+                "8001,10000",
+                "10001,15000",
+                "15001,25000",
+                "25001,35000",
+                "35001,50000",
+                "50001,9999999"
+        ).contains(code);
     }
 
     public ZhilianOptionEntity getOptionByTypeAndCode(String type, String code) {

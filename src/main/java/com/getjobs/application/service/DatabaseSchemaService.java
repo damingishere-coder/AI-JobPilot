@@ -69,6 +69,8 @@ public class DatabaseSchemaService {
                         "profile_id INTEGER, " +
                         "introduce TEXT, " +
                         "prompt TEXT, " +
+                        "apply_threshold INTEGER DEFAULT 75, " +
+                        "priority_apply_threshold INTEGER DEFAULT 65, " +
                         "created_at DATETIME, " +
                         "updated_at DATETIME");
 
@@ -156,6 +158,7 @@ public class DatabaseSchemaService {
                         "introduce TEXT, " +
                         "financing_stage TEXT, " +
                         "company_scale TEXT, " +
+                        "source_keyword TEXT, " +
                         "scan_run_id TEXT, " +
                         "ai_score INTEGER, " +
                         "ai_decision TEXT, " +
@@ -231,6 +234,8 @@ public class DatabaseSchemaService {
         addColumn(stmt, "ai", "profile_id", "INTEGER");
         addColumn(stmt, "ai", "introduce", "TEXT");
         addColumn(stmt, "ai", "prompt", "TEXT");
+        addColumn(stmt, "ai", "apply_threshold", "INTEGER DEFAULT 75");
+        addColumn(stmt, "ai", "priority_apply_threshold", "INTEGER DEFAULT 65");
         addColumn(stmt, "ai", "created_at", "DATETIME");
         addColumn(stmt, "ai", "updated_at", "DATETIME");
 
@@ -328,6 +333,7 @@ public class DatabaseSchemaService {
         addColumn(stmt, "boss_data", "introduce", "TEXT");
         addColumn(stmt, "boss_data", "financing_stage", "TEXT");
         addColumn(stmt, "boss_data", "company_scale", "TEXT");
+        addColumn(stmt, "boss_data", "source_keyword", "TEXT");
         addColumn(stmt, "boss_data", "scan_run_id", "TEXT");
         addColumn(stmt, "boss_data", "ai_score", "INTEGER");
         addColumn(stmt, "boss_data", "ai_decision", "TEXT");

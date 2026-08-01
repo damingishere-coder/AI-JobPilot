@@ -3,12 +3,15 @@
 import { useEffect, useRef } from "react"
 import {
   ArcElement,
+  BarController,
   BarElement,
   CategoryScale,
   Chart,
   Legend,
   LinearScale,
+  LineController,
   LineElement,
+  PieController,
   PointElement,
   Title,
   Tooltip,
@@ -23,7 +26,20 @@ import { deliveryStatusLabel, failureTypeLabel } from "../utils"
 
 type ChartRef = { destroy: () => void }
 
-Chart.register(ArcElement, BarElement, LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Title)
+Chart.register(
+  PieController,
+  BarController,
+  LineController,
+  ArcElement,
+  BarElement,
+  LineElement,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  Tooltip,
+  Legend,
+  Title
+)
 
 function ChartCanvas({
   type,

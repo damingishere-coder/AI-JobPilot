@@ -527,7 +527,7 @@ export default function BossPage() {
           cityCode: normalizeCityCode(data.config.cityCode),
           jobType: normalizeJobType(data.config.jobType),
           searchJobLimit,
-          autoDeliver: data.config.autoDeliver ?? 0,
+          autoDeliver: 0,
         })
         // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
         const toDisplayKeywords = (raw?: string): string => {
@@ -666,7 +666,7 @@ export default function BossPage() {
         setConfig(prev => ({
           ...prev,
           filterDeadHr: normalizedFilterDeadHr,
-          autoDeliver: data.config?.autoDeliver ?? 0,
+          autoDeliver: 0,
           searchJobLimit: optionSearchJobLimit,
         }))
 
@@ -738,6 +738,8 @@ export default function BossPage() {
         scale: toBracketList(selectedScale),
         stage: toBracketList(selectedStage),
         salary: toBracketList(selectedSalary),
+        // 扫描只生成待确认岗位，兼容字段固定保存为关闭。
+        autoDeliver: 0,
       }
       const response = await fetch(`${API_BASE}/api/boss/config`, {
         method: 'PUT',
@@ -852,9 +854,6 @@ export default function BossPage() {
       const runId = `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
-      if (Number(config.autoDeliver || 0) === 1) {
-        appendProgressLog({ type: 'warning', message: '扫描优先模式：扫描期间不会自动投递，AI通过岗位会进入待确认列表。' })
-      }
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
@@ -871,9 +870,9 @@ export default function BossPage() {
           salary: selectedSalary,
           cityCode: config.cityCode,
           searchJobLimit,
-          autoDeliver: config.autoDeliver ?? 0,
+          autoDeliver: 0,
         },
-        autoDeliver: config.autoDeliver ?? 0,
+        autoDeliver: 0,
       })
 
       if (data.success) {
@@ -1318,19 +1317,6 @@ export default function BossPage() {
                   <option value="1">开启</option>
                 </Select>
                 <p className="text-xs text-muted-foreground">开启后将过滤活跃状态包含“年”的HR，但仍保存数据。</p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="autoDeliver">AI通过后自动投递</Label>
-                <Select
-                  id="autoDeliver"
-                  value={String(config.autoDeliver ?? 0)}
-                  onChange={(e) => setConfig({ ...config, autoDeliver: Number(e.target.value) })}
-                  disabled={!hasProfile}
-                >
-                  <option value="0">关闭</option>
-                  <option value="1">开启</option>
-                </Select>
-                <p className="text-xs text-muted-foreground">扫描期间不会自动投递；AI通过岗位会进入待确认列表，可在分析页统一确认投递。</p>
               </div>
               </div>
             </CardContent>

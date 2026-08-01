@@ -30,6 +30,8 @@ public class PlaywrightController {
     public ResponseEntity<Map<String, Object>> getStatus() {
         Map<String, Object> status = new HashMap<>();
         status.put("initialized", playwrightManager.isInitialized());
+        status.put("initializing", playwrightManager.isInitializing());
+        status.put("lastError", playwrightManager.getLastInitializationError());
         status.put("cdpPort", playwrightManager.getCdpPort());
         status.put("hasBossPage", playwrightManager.getBossPage() != null);
         status.put("hasBrowser", playwrightManager.getBrowser() != null);

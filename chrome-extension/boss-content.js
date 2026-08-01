@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-06-25-scan-resume-redirect-2";
+  const EXTENSION_VERSION = "2026-07-18-boss-security-resume-fix";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -17,6 +17,7 @@
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
   const SEARCH_NAVIGATION_MAX_ATTEMPTS = 5;
+  const DETAIL_NAVIGATION_MAX_ATTEMPTS = 3;
   const SEARCH_PARAM_KEYS = ["city", "jobType", "salary", "experience", "degree", "scale", "industry", "stage", "query"];
   const BOSS_SELECTORS = window.GetJobsBossSelectors || {};
   const JOB_CARD_SELECTORS = BOSS_SELECTORS.JOB_CARD_SELECTORS || ["a[href*='/job_detail/'], a[href*='job_detail']"];
@@ -524,8 +525,11 @@
   }
 
   async function resumeStoredScanTaskIfActive(force = false) {
-    const task = await readStoredScanTaskFromAnyStorage();
-    if (!task || task.completed || stopRequested) return;
+    const storedTask = await readStoredScanTaskFromAnyStorage();
+    if (!storedTask || storedTask.completed || stopRequested) return;
+    const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
+      ? SCAN_SUPPORT.prepareTaskForResume(storedTask)
+      : storedTask;
     activeScanRunId = normalizeScanRunId(task.runId);
     if (await hasStopRequested(task.runId)) {
       stopRequested = true;
@@ -543,6 +547,8 @@
       });
       return;
     }
+
+    storeScanTask(task);
 
     writeScanStatus({
       isRunning: true,
@@ -782,11 +788,15 @@
         break;
       }
 
-      const collectResult = collectJobs(keyword, task, baseMeta);
+      const collectResult = collectJobs(keyword, task, baseMeta, {
+        maxNodes: bossDiscoveryCandidateLimit(searchJobLimit)
+      });
       let candidates = collectResult.jobs;
-      postProgress(task, "info", `Boss Chrome卡片解析完成：节点 ${collectResult.nodeCount} 个，页面脚本数据 ${collectResult.embeddedParsed || 0} 个，成功 ${collectResult.parsed} 个，跳过 ${collectResult.skipped} 个。`, {
+      postProgress(task, "info", `Boss Chrome卡片解析完成：节点 ${collectResult.nodeCount} 个，页面脚本数据 ${collectResult.embeddedParsed || 0} 个，成功 ${collectResult.parsed} 个，跳过 ${collectResult.skipped} 个。搜索URL：${window.location.href}`, {
         ...baseMeta,
         stage: "collecting",
+        currentUrl: window.location.href,
+        targetUrl: url,
         nodeCount: collectResult.nodeCount,
         parsed: collectResult.parsed,
         embeddedParsed: collectResult.embeddedParsed || 0,
@@ -852,25 +862,34 @@
         continue;
       }
 
-      const dedupeResult = await filterDuplicateJobs(candidates, task, baseMeta);
-      const freshCandidates = dedupeResult.jobs;
-      const jobs = freshCandidates.slice(0, searchJobLimit);
-      postProgress(task, dedupeResult.duplicateCount > 0 ? "info" : "success", `Boss重复岗位检查完成：候选 ${candidates.length} 个，历史命中 ${dedupeResult.duplicateCount} 个，可补全 ${dedupeResult.enrichCount} 个，跳过 ${dedupeResult.skipCount} 个，将进入前 ${jobs.length}/${searchJobLimit} 个详情页。`, {
+      const discoveryResult = await collectFreshJobsForKeyword(keyword, task, baseMeta, searchJobLimit, candidates);
+      candidates = discoveryResult.candidates;
+      const freshCandidates = discoveryResult.jobs;
+      const detailReadyCandidates = freshCandidates.filter(isDetailQueueJob);
+      const invalidDetailCandidates = Math.max(0, freshCandidates.length - detailReadyCandidates.length);
+      const jobs = detailReadyCandidates.slice(0, searchJobLimit);
+      postProgress(task, discoveryResult.duplicateCount > 0 || discoveryResult.filteredCount > 0 ? "info" : "success", `Boss重复与条件检查完成：候选 ${discoveryResult.candidateCount} 个，学历不匹配 ${discoveryResult.filteredCount} 个，历史命中 ${discoveryResult.duplicateCount} 个，可补全 ${discoveryResult.enrichCount} 个，历史跳过 ${discoveryResult.skipCount} 个，新岗位 ${jobs.length}/${searchJobLimit} 个。`, {
         ...baseMeta,
         stage: "dedupe",
-        collected: candidates.length,
-        duplicates: dedupeResult.duplicateCount,
-        enrich: dedupeResult.enrichCount,
-        skippedDuplicates: dedupeResult.skipCount,
+        collected: discoveryResult.candidateCount,
+        conditionFiltered: discoveryResult.filteredCount,
+        duplicates: discoveryResult.duplicateCount,
+        enrich: discoveryResult.enrichCount,
+        skippedDuplicates: discoveryResult.skipCount,
         fresh: freshCandidates.length,
-        searchJobLimit
+        invalidDetailCandidates,
+        searchJobLimit,
+        discoveryRounds: discoveryResult.rounds,
+        stoppedByStagnation: discoveryResult.stoppedByStagnation
       });
       if (!jobs.length) {
-        postProgress(task, "warning", `Boss关键词 ${keyword} 的岗位都已扫描过，跳过本关键词。`, {
+        postProgress(task, "warning", `Boss关键词 ${keyword} 已继续向下采集，但没有找到新的可分析岗位，跳过本关键词。`, {
           ...baseMeta,
           stage: "dedupe",
-          collected: candidates.length,
-          duplicates: dedupeResult.duplicateCount,
+          collected: discoveryResult.candidateCount,
+          conditionFiltered: discoveryResult.filteredCount,
+          duplicates: discoveryResult.duplicateCount,
+          invalidDetailCandidates,
           fresh: 0
         });
         advanceKeywordCursor(task, index + 1, keyword);
@@ -879,13 +898,16 @@
       }
 
       const diagnostics = buildListDiagnostics();
-      postProgress(task, "info", `Boss Chrome采集到 ${candidates.length} 个岗位，过滤重复后剩余 ${freshCandidates.length} 个，将按配置进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
+      postProgress(task, "info", `Boss Chrome采集到 ${discoveryResult.candidateCount} 个候选岗位，学历过滤 ${discoveryResult.filteredCount} 个，历史跳过 ${discoveryResult.skipCount} 个，剩余 ${freshCandidates.length} 个可分析岗位，将进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
-        candidates: candidates.length,
+        candidates: discoveryResult.candidateCount,
+        conditionFiltered: discoveryResult.filteredCount,
         fresh: freshCandidates.length,
-        duplicates: dedupeResult.duplicateCount,
+        invalidDetailCandidates,
+        duplicates: discoveryResult.duplicateCount,
+        skippedDuplicates: discoveryResult.skipCount,
         searchJobLimit,
         ...diagnostics
       });
@@ -901,20 +923,12 @@
         searchUrl: url
       };
       storeScanTask(detailTask);
-      postProgress(task, "info", `Boss Chrome正在查看详情 1/${jobs.length}：${jobs[0].title}`, {
-        ...baseMeta,
-        stage: "details",
-        collected: jobs.length,
-        detailIndex: 1,
-        detailTotal: jobs.length
-      });
-      window.location.href = jobs[0].url;
-      return { success: true, saved: totalSaved, pendingNavigation: true };
+      return continueBossDetailScan(detailTask, keyword, runId, baseMeta);
     }
 
     if (isStopRequested(runId)) stopRequested = true;
 
-    if (!stopRequested && !task.aiKeywordsLoaded) {
+    if (!stopRequested && shouldAppendAiKeywords(task) && !task.aiKeywordsLoaded) {
       const aiResult = await appendAiKeywords(task, keywords);
       task = aiResult.task;
       keywords = aiResult.keywords;
@@ -965,7 +979,7 @@
     return `https://www.zhipin.com/web/geek/job?${params.toString()}`;
   }
 
-  function collectJobs(keyword, message, baseMeta) {
+  function collectJobs(keyword, message, baseMeta, options = {}) {
     const nodes = collectJobNodes();
     const embeddedJobs = collectBossEmbeddedListJobs(keyword);
     const jobs = [];
@@ -973,13 +987,15 @@
     let skipped = 0;
     let errorCount = 0;
     const missingSamples = [];
+    const maxNodes = Math.max(1, Number(options.maxNodes || Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))));
+    const warnLimit = Number.isFinite(Number(options.warnLimit)) ? Number(options.warnLimit) : 3;
     embeddedJobs.forEach((job) => {
       const key = bossCandidateKey(job);
       if (!key || seenJobs.has(key)) return;
       seenJobs.add(key);
       jobs.push(job);
     });
-    nodes.slice(0, Math.max(40, normalizeSearchJobLimit(message?.config?.searchJobLimit))).forEach((node, index) => {
+    nodes.slice(0, maxNodes).forEach((node, index) => {
       try {
         const job = parseCard(node, keyword);
         const key = bossCandidateKey(job);
@@ -999,7 +1015,7 @@
       } catch (error) {
         skipped += 1;
         errorCount += 1;
-        if (errorCount <= 3) {
+        if (warnLimit > 0 && errorCount <= warnLimit) {
           postProgress(message, "warning", `Boss Chrome跳过第 ${index + 1} 张岗位卡片：${error.message || String(error)}`, {
             ...baseMeta,
             stage: "collecting",
@@ -1193,9 +1209,181 @@
     return { jobs, clicked, failed };
   }
 
+  async function collectFreshJobsForKeyword(keyword, message, baseMeta, searchJobLimit, initialCandidates = []) {
+    const target = normalizeSearchJobLimit(searchJobLimit);
+    const maxRounds = bossDiscoveryMaxRounds(target);
+    const maxCandidates = bossDiscoveryCandidateLimit(target);
+    const allCandidates = new Map();
+    const processableJobs = new Map();
+    const duplicateKeys = new Set();
+    const enrichKeys = new Set();
+    const skipKeys = new Set();
+    const conditionFilteredKeys = new Set();
+    let lastUniqueCount = -1;
+    let lastScrollSignature = "";
+    let stagnantRounds = 0;
+    let stoppedByStagnation = false;
+    let roundsRan = 0;
+
+    addUniqueJobs(allCandidates, initialCandidates, maxCandidates);
+
+    for (let round = 0; round < maxRounds && processableJobs.size < target && allCandidates.size < maxCandidates && !isStopRequested(); round++) {
+      roundsRan = round + 1;
+      if (round > 0) {
+        await scrollForMoreBossCards(round);
+        const collectResult = collectJobs(keyword, message, baseMeta, {
+          maxNodes: maxCandidates,
+          warnLimit: 0
+        });
+        addUniqueJobs(allCandidates, collectResult.jobs, maxCandidates);
+      }
+
+      const filterResult = filterJobsByScanConfig(Array.from(allCandidates.values()), message?.config || {});
+      filterResult.rejected.forEach((job) => {
+        const key = dedupeJobKey(job);
+        if (key) conditionFilteredKeys.add(key);
+      });
+
+      const pendingDedupe = filterResult.jobs.filter((job) => {
+        const key = dedupeJobKey(job);
+        return key && !processableJobs.has(key) && !skipKeys.has(key);
+      });
+      const dedupeResult = await filterDuplicateJobs(pendingDedupe, message, baseMeta);
+      const itemByKey = new Map((dedupeResult.items || []).map((item) => [dedupeItemKey(item), item]));
+
+      pendingDedupe.forEach((job) => {
+        const key = dedupeJobKey(job);
+        if (!key) return;
+        const item = itemByKey.get(key);
+        const action = String(item?.action || (item?.duplicate ? "SKIP" : "NEW")).toUpperCase();
+        if (item?.duplicate) duplicateKeys.add(key);
+        if (action === "ENRICH") enrichKeys.add(key);
+        if (action === "SKIP") {
+          skipKeys.add(key);
+          return;
+        }
+        processableJobs.set(key, job);
+      });
+
+      const currentScrollSignature = bossScrollSignature();
+      const noNewCandidates = allCandidates.size === lastUniqueCount && currentScrollSignature === lastScrollSignature;
+      stagnantRounds = noNewCandidates ? stagnantRounds + 1 : 0;
+      lastUniqueCount = allCandidates.size;
+      lastScrollSignature = currentScrollSignature;
+
+      if (round > 0 || skipKeys.size || conditionFilteredKeys.size) {
+        postProgress(message, "info", `Boss继续采集 ${keyword}：第 ${round + 1}/${maxRounds} 轮，候选 ${allCandidates.size} 个，学历不匹配 ${conditionFilteredKeys.size} 个，历史跳过 ${skipKeys.size} 个，可分析 ${processableJobs.size}/${target} 个。`, {
+          ...baseMeta,
+          stage: "collecting",
+          discoveryRound: round + 1,
+          collected: allCandidates.size,
+          conditionFiltered: conditionFilteredKeys.size,
+          skippedDuplicates: skipKeys.size,
+          fresh: processableJobs.size,
+          searchJobLimit: target
+        });
+      }
+
+      if (stagnantRounds >= 2) {
+        stoppedByStagnation = true;
+        break;
+      }
+    }
+
+    resetBossScrollPosition();
+    return {
+      candidates: Array.from(allCandidates.values()),
+      jobs: Array.from(processableJobs.values()).slice(0, target),
+      candidateCount: allCandidates.size,
+      filteredCount: conditionFilteredKeys.size,
+      duplicateCount: duplicateKeys.size,
+      enrichCount: enrichKeys.size,
+      skipCount: skipKeys.size,
+      rounds: roundsRan,
+      stoppedByStagnation
+    };
+  }
+
+  function addUniqueJobs(target, jobs, maxSize) {
+    (Array.isArray(jobs) ? jobs : []).forEach((job) => {
+      if (target.size >= maxSize) return;
+      if (!isListCandidateJob(job)) return;
+      const key = dedupeJobKey(job);
+      if (key && !target.has(key)) target.set(key, job);
+    });
+  }
+
+  function filterJobsByScanConfig(jobs, config) {
+    const accepted = [];
+    const rejected = [];
+    (Array.isArray(jobs) ? jobs : []).forEach((job) => {
+      if (isJobAllowedByDegree(job, config)) accepted.push(job);
+      else rejected.push(job);
+    });
+    return { jobs: accepted, rejected };
+  }
+
+  function isJobAllowedByDegree(job, config) {
+    const selected = normalizeConfiguredDegrees(config?.degree);
+    if (!selected.length || selected.some((item) => item === "不限" || item === "学历不限")) return true;
+    const jobDegree = normalizeJobDegree(job?.degree);
+    if (!jobDegree || jobDegree === "不限" || jobDegree === "学历不限") return true;
+    if (selected.includes("本科") && (jobDegree === "硕士" || jobDegree === "博士")) return false;
+    return selected.includes(jobDegree);
+  }
+
+  function normalizeConfiguredDegrees(value) {
+    return uniqueStrings(toList(value).map(normalizeDegreeValue).filter(Boolean));
+  }
+
+  function normalizeDegreeValue(value) {
+    const text = compact(value);
+    if (!text) return "不限";
+    const degreeName = typeof SCAN_SUPPORT.degreeNameForCode === "function"
+      ? SCAN_SUPPORT.degreeNameForCode(text)
+      : "";
+    if (degreeName) return degreeName;
+    return normalizeJobDegree(text) || text;
+  }
+
+  function normalizeJobDegree(value) {
+    const text = compact(value);
+    if (!text) return "";
+    if (/学历不限|不限/.test(text)) return "学历不限";
+    if (/博士/.test(text)) return "博士";
+    if (/硕士|研究生/.test(text)) return "硕士";
+    if (/本科/.test(text)) return "本科";
+    if (/大专|专科/.test(text)) return "大专";
+    if (/高中/.test(text)) return "高中";
+    if (/中专|中技/.test(text)) return "中专/中技";
+    if (/初中/.test(text)) return "初中及以下";
+    return text;
+  }
+
+  function bossDiscoveryCandidateLimit(searchJobLimit) {
+    const limit = normalizeSearchJobLimit(searchJobLimit);
+    return Math.min(300, Math.max(80, limit * 8));
+  }
+
+  function bossDiscoveryMaxRounds(searchJobLimit) {
+    const limit = normalizeSearchJobLimit(searchJobLimit);
+    return Math.min(18, Math.max(6, Math.ceil(limit / 5) + 5));
+  }
+
+  async function scrollForMoreBossCards(round = 0) {
+    const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
+    const scrollStep = Math.max(520, Math.min(1100, Math.floor(viewportHeight * 0.95) || 720));
+    scrollBossResults(scrollStep);
+    await humanPause(650, 1100);
+    if (round % 3 === 2) {
+      scrollBossResults(scrollStep, { bottom: true });
+      await humanPause(800, 1300);
+    }
+  }
+
   async function filterDuplicateJobs(jobs, message, baseMeta) {
     const list = Array.isArray(jobs) ? jobs : [];
-    if (!list.length) return { jobs: [], duplicateCount: 0, enrichCount: 0, skipCount: 0 };
+    if (!list.length) return { jobs: [], duplicateCount: 0, enrichCount: 0, skipCount: 0, items: [] };
 
     try {
       const data = await callBossLocalApi("chrome-jobs-dedupe", {
@@ -1213,7 +1401,8 @@
         jobs: freshJobs,
         duplicateCount: Number(data.duplicateCount ?? 0),
         enrichCount: Number(data.enrichCount ?? data.items.filter((item) => item.action === "ENRICH").length),
-        skipCount: Number(data.skipCount ?? data.items.filter((item) => item.action === "SKIP").length)
+        skipCount: Number(data.skipCount ?? data.items.filter((item) => item.action === "SKIP").length),
+        items: data.items
       };
     } catch (error) {
       postProgress(message, "warning", `Boss重复岗位检查失败，将继续扫描本页岗位：${error.message || String(error)}`, {
@@ -1221,7 +1410,20 @@
         stage: "dedupe",
         collected: list.length
       });
-      return { jobs: list, duplicateCount: 0, enrichCount: 0, skipCount: 0 };
+      return {
+        jobs: list,
+        duplicateCount: 0,
+        enrichCount: 0,
+        skipCount: 0,
+        items: list.map((job) => ({
+          id: job?.id || extractBossId(job?.url),
+          url: job?.url || "",
+          title: job?.title || "",
+          company: job?.company || "",
+          duplicate: false,
+          action: "NEW"
+        }))
+      };
     }
   }
 
@@ -1301,7 +1503,22 @@
   }
 
   function isListCandidateJob(job) {
-    return Boolean(compact(job?.url) && (compact(job?.title) || compact(job?.company) || compact(job?.description)));
+    const url = compact(job?.url);
+    const title = compact(job?.title);
+    if (!url || !isBossDetailPageUrl(url)) return false;
+    if (!title || isInvalidBossCandidateTitle(title)) return false;
+    return Boolean(compact(job?.company) || compact(job?.description));
+  }
+
+  function isDetailQueueJob(job) {
+    return isListCandidateJob(job) && !job?.detailNavigationFailed;
+  }
+
+  function isInvalidBossCandidateTitle(title) {
+    const text = compact(title);
+    if (!text) return false;
+    if (/^(职位搜索|搜索职位|职位列表|职位详情|找工作|招聘|首页|登录|注册|访问异常|安全验证)$/i.test(text)) return true;
+    return /^(BOSS|Boss)直聘/.test(text) || /找工作.*招聘|招聘.*找工作/.test(text);
   }
 
   function missingCardFields(job) {
@@ -1549,6 +1766,28 @@
     }
 
     const currentJob = jobs[detailIndex];
+    if (currentJob && !isDetailQueueJob(currentJob)) {
+      jobs[detailIndex] = markBossDetailNavigationFailed(currentJob, "候选岗位不是有效详情页，已跳过");
+      postProgress(message, "warning", `Boss Chrome跳过无效候选 ${detailIndex + 1}/${jobs.length}：${compact(currentJob.title) || "未识别岗位名"}`, {
+        ...baseMeta,
+        stage: "details",
+        collected: jobs.length,
+        detailIndex: detailIndex + 1,
+        detailTotal: jobs.length,
+        currentUrl: window.location.href,
+        targetUrl: currentJob.url || "",
+        reason: "INVALID_DETAIL_CANDIDATE"
+      });
+      const nextTask = resetBossDetailNavigationState({
+        ...message,
+        jobs,
+        detailIndex: detailIndex + 1,
+        totalSaved
+      });
+      storeScanTask(nextTask);
+      return continueBossDetailScan(nextTask, keyword, runId, baseMeta);
+    }
+
     if (currentJob) {
       const pageBlockDiagnostics = buildPageBlockDiagnostics();
       if (handleBlockingState(message, pageBlockDiagnostics, { ...baseMeta, stage: "details" })) {
@@ -1556,13 +1795,56 @@
       }
     }
 
-    if (currentJob && !isSameUrl(window.location.href, currentJob.url)) {
+    if (currentJob && !isSameBossJobUrl(window.location.href, currentJob.url)) {
+      const detailNavigationKey = bossDetailNavigationKey(currentJob);
+      const previousKey = compact(message.detailNavigationKey);
+      const previousAttempts = previousKey && previousKey === detailNavigationKey
+        ? Number(message.detailNavigationAttempts || 0)
+        : 0;
+      if (previousAttempts >= DETAIL_NAVIGATION_MAX_ATTEMPTS) {
+        jobs[detailIndex] = markBossDetailNavigationFailed(currentJob, "详情页连续跳转失败，已跳过");
+        postProgress(message, "warning", `Boss Chrome详情页连续跳转失败，已跳过 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
+          ...baseMeta,
+          stage: "details",
+          collected: jobs.length,
+          detailIndex: detailIndex + 1,
+          detailTotal: jobs.length,
+          currentUrl: window.location.href,
+          targetUrl: currentJob.url,
+          navigationAttempts: previousAttempts,
+          reason: "DETAIL_NAVIGATION_FAILED"
+        });
+        const nextTask = resetBossDetailNavigationState({
+          ...message,
+          jobs,
+          detailIndex: detailIndex + 1,
+          totalSaved
+        });
+        storeScanTask(nextTask);
+        return continueBossDetailScan(nextTask, keyword, runId, baseMeta);
+      }
+
+      const nextAttempts = previousAttempts + 1;
+      const navigationTask = {
+        ...message,
+        jobs,
+        detailIndex,
+        totalSaved,
+        detailNavigationKey,
+        detailNavigationAttempts: nextAttempts,
+        detailNavigationStartedAt: Date.now()
+      };
+      storeScanTask(navigationTask);
       postProgress(message, "info", `Boss Chrome正在查看详情 ${detailIndex + 1}/${jobs.length}：${currentJob.title}`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
         detailIndex: detailIndex + 1,
-        detailTotal: jobs.length
+        detailTotal: jobs.length,
+        navigationAttempts: nextAttempts,
+        navigationAttemptLimit: DETAIL_NAVIGATION_MAX_ATTEMPTS,
+        currentUrl: window.location.href,
+        targetUrl: currentJob.url
       });
       window.location.href = currentJob.url;
       return { success: true, totalSaved, pendingNavigation: true };
@@ -1602,17 +1884,9 @@
     const nextIndex = detailIndex + 1;
     if (isStopRequested(runId)) stopRequested = true;
     if (!stopRequested && nextIndex < jobs.length) {
-      const nextJob = jobs[nextIndex];
-      storeScanTask({ ...message, jobs, detailIndex: nextIndex, totalSaved });
-      postProgress(message, "info", `Boss Chrome正在查看详情 ${nextIndex + 1}/${jobs.length}：${nextJob.title}`, {
-        ...baseMeta,
-        stage: "details",
-        collected: jobs.length,
-        detailIndex: nextIndex + 1,
-        detailTotal: jobs.length
-      });
-      window.location.href = nextJob.url;
-      return { success: true, totalSaved, pendingNavigation: true };
+      const nextTask = resetBossDetailNavigationState({ ...message, jobs, detailIndex: nextIndex, totalSaved });
+      storeScanTask(nextTask);
+      return continueBossDetailScan(nextTask, keyword, runId, baseMeta);
     }
 
     const detailSummary = summarizeJobCollection(jobs);
@@ -1655,12 +1929,38 @@
       phase: "submitting",
       jobs,
       detailIndex: jobs.length - 1,
+      detailNavigationKey: "",
+      detailNavigationAttempts: 0,
+      detailNavigationStartedAt: 0,
       submitBatchIndex: 0,
       submitSummary: null,
       totalSaved
     };
     storeScanTask(submittingTask);
     return submitCollectedBossJobs(submitJobs, submittingTask, keyword, runId, baseMeta, totalSaved);
+  }
+
+  function bossDetailNavigationKey(job) {
+    return bossCandidateKey(job) || normalizeBossJobUrl(job?.url) || compact(job?.url);
+  }
+
+  function markBossDetailNavigationFailed(job, reason) {
+    return {
+      ...job,
+      detailNavigationFailed: true,
+      detailSkipReason: reason,
+      description: "",
+      companyInfo: ""
+    };
+  }
+
+  function resetBossDetailNavigationState(task) {
+    return {
+      ...task,
+      detailNavigationKey: "",
+      detailNavigationAttempts: 0,
+      detailNavigationStartedAt: 0
+    };
   }
 
   async function submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved) {
@@ -2773,11 +3073,10 @@
 
   function writeScanStatus(nextStatus) {
     const previous = readScanStatus();
-    sessionStorage.setItem(SCAN_STATUS_KEY, JSON.stringify({
-      ...previous,
-      ...nextStatus,
-      updatedAt: Date.now()
-    }));
+    const merged = typeof SCAN_SUPPORT.mergeScanStatus === "function"
+      ? SCAN_SUPPORT.mergeScanStatus(previous, nextStatus, Date.now())
+      : { ...previous, ...nextStatus, updatedAt: Date.now() };
+    sessionStorage.setItem(SCAN_STATUS_KEY, JSON.stringify(merged));
   }
 
   function readScanStatus() {
@@ -2986,10 +3285,64 @@
     const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
     const scrollStep = Math.max(480, Math.min(900, Math.floor(viewportHeight * 0.9) || 640));
     for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
-      window.scrollBy(0, scrollStep);
+      scrollBossResults(scrollStep);
       await humanPause(550, 950);
     }
+    resetBossScrollPosition();
+  }
+
+  function scrollBossResults(delta, options = {}) {
+    const targets = bossScrollableContainers();
+    if (options.bottom) {
+      window.scrollTo(0, Number(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0));
+      targets.forEach((target) => {
+        target.scrollTop = target.scrollHeight;
+        dispatchBossScrollEvents(target);
+      });
+      return;
+    }
+    window.scrollBy(0, delta);
+    targets.forEach((target) => {
+      target.scrollTop = Math.min(target.scrollHeight, Number(target.scrollTop || 0) + delta);
+      dispatchBossScrollEvents(target);
+    });
+  }
+
+  function resetBossScrollPosition() {
     window.scrollTo(0, 0);
+    bossScrollableContainers().forEach((target) => {
+      target.scrollTop = 0;
+      dispatchBossScrollEvents(target);
+    });
+  }
+
+  function bossScrollSignature() {
+    const pageHeight = Number(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0);
+    const pageTop = Number(window.scrollY || window.pageYOffset || 0);
+    const containers = bossScrollableContainers().map((target) => `${Math.round(target.scrollTop || 0)}:${target.scrollHeight || 0}`);
+    return [pageTop, pageHeight, ...containers].join("|");
+  }
+
+  function bossScrollableContainers() {
+    const selectors = [
+      ".job-list-box",
+      ".search-job-result",
+      "[class*='job-list']",
+      "[class*='search-job-result']",
+      "[class*='scroll']"
+    ];
+    return unique(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
+      .filter((node) => node && node !== document.body && node !== document.documentElement)
+      .filter((node) => Number(node.scrollHeight || 0) > Number(node.clientHeight || 0) + 40);
+  }
+
+  function dispatchBossScrollEvents(target) {
+    try {
+      target.dispatchEvent(new Event("scroll", { bubbles: true }));
+      target.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 240 }));
+    } catch {
+      target.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
   }
 
   async function waitForJobCards() {
@@ -3258,7 +3611,60 @@
   }
 
   function isSecurityPrompt(text) {
-    return /安全验证|滑块|访问异常|身份验证|请完成验证|验证码|verify|captcha/i.test(text || "");
+    const hasNormalContent = hasNormalBossPageContent();
+    const hasChallengeUi = hasVisibleBossSecurityUi();
+    if (typeof SCAN_SUPPORT.isBossSecurityPage === "function") {
+      return SCAN_SUPPORT.isBossSecurityPage({
+        url: window.location.href,
+        title: document.title || "",
+        text,
+        hasNormalContent,
+        hasChallengeUi
+      });
+    }
+    return hasChallengeUi || (!hasNormalContent && /请.{0,12}(?:完成|进行|通过).{0,8}验证|请.{0,8}(?:拖动|按住).{0,8}滑块|访问异常/.test(text || ""));
+  }
+
+  function hasNormalBossPageContent() {
+    const path = String(window.location.pathname || "");
+    if (/\/job_detail\//.test(path)) {
+      return Boolean(document.querySelector(".job-banner, .job-detail, .job-detail-box, .job-detail-container, [class*='job-detail']"));
+    }
+    if (isBossSearchPath(path)) {
+      return document.querySelectorAll("a[href*='/job_detail/'], a[href*='job_detail']").length > 0;
+    }
+    return false;
+  }
+
+  function hasVisibleBossSecurityUi() {
+    const selectors = [
+      "iframe[src*='captcha' i]",
+      "iframe[src*='verify' i]",
+      "[class*='geetest' i]",
+      "[id*='geetest' i]",
+      "[class*='captcha' i]",
+      "[id*='captcha' i]",
+      "[class*='verify-slider' i]",
+      "[id*='verify-slider' i]",
+      "[class*='security-check' i]",
+      "[id*='security-check' i]"
+    ];
+    if (selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isVisibleElement))) return true;
+    const instructionMatcher = SCAN_SUPPORT.isBossSecurityInstructionText;
+    if (typeof instructionMatcher !== "function") return false;
+    const overlays = document.querySelectorAll("[role='dialog'], [aria-modal='true'], [class*='dialog' i], [class*='modal' i]");
+    return Array.from(overlays).some((node) => isVisibleElement(node) && instructionMatcher(node.innerText || node.textContent || ""));
+  }
+
+  function isVisibleElement(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return false;
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle?.(node);
+    return rect.width > 0
+      && rect.height > 0
+      && style?.display !== "none"
+      && style?.visibility !== "hidden"
+      && style?.opacity !== "0";
   }
 
   function isStrongLoginPrompt(text, url) {
@@ -3417,6 +3823,16 @@
   function isAutoDeliverEnabled(message) {
     const value = message?.autoDeliver ?? message?.config?.autoDeliver ?? message?.config?.auto_deliver;
     return value === true || value === 1 || value === "1" || value === "true";
+  }
+
+  function shouldAppendAiKeywords(task) {
+    const config = task?.config || {};
+    const value = task?.appendAiKeywords
+      ?? task?.expandAiKeywords
+      ?? config.appendAiKeywords
+      ?? config.expandAiKeywords
+      ?? config.enableAiKeywords;
+    return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
   }
 
   function uniqueStrings(values) {
@@ -3715,7 +4131,13 @@
   }
 
   function isSubmittableJob(job) {
-    return Boolean(compact(job?.title) && compact(job?.company) && compact(job?.url));
+    return Boolean(
+      !job?.detailNavigationFailed
+        && compact(job?.title)
+        && !isInvalidBossCandidateTitle(job?.title)
+        && compact(job?.company)
+        && isBossDetailPageUrl(job?.url)
+    );
   }
 
   function normalizeJobForSubmit(job) {

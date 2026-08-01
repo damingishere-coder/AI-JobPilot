@@ -39,9 +39,23 @@ class BossOptionMappingTest {
     }
 
     @Test
+    void convertsBachelorDegreeNameToCurrentBossCode() {
+        BossOptionMapper bossOptionMapper = mock(BossOptionMapper.class);
+        when(bossOptionMapper.selectOne(any()))
+                .thenReturn(null)
+                .thenReturn(option("degree", "本科", "203"));
+        BossService bossService = bossService(bossOptionMapper);
+
+        List<String> codes = bossService.toCodes("degree", List.of("本科"));
+
+        assertThat(codes).containsExactly("203");
+    }
+
+    @Test
     void selectedBossFilterCodesAreAddedToSearchUrlParams() {
         assertThat(JobUtils.appendListParam("salary", List.of("405"))).isEqualTo("&salary=405");
         assertThat(JobUtils.appendListParam("experience", List.of("104"))).isEqualTo("&experience=104");
+        assertThat(JobUtils.appendListParam("degree", List.of("203"))).isEqualTo("&degree=203");
         assertThat(JobUtils.appendListParam("industry", List.of("100006"))).isEqualTo("&industry=100006");
         assertThat(JobUtils.appendListParam("salary", List.of("0", "405"))).isEmpty();
     }

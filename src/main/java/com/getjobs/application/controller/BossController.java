@@ -111,7 +111,8 @@ public class BossController {
         int restored = 0;
         int listCollected = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
-        boolean autoDeliver = request != null && Boolean.TRUE.equals(request.getAutoDeliver());
+        // 兼容旧版扩展继续传入 autoDeliver，但扫描阶段永远不生成真实投递任务。
+        boolean autoDeliver = false;
         boolean listOnlyCollection = isListOnlyCollection(request);
         List<Map<String, Object>> analyses = new ArrayList<>();
         List<Map<String, Object>> collectionWarnings = new ArrayList<>();
@@ -139,7 +140,7 @@ public class BossController {
                             listOnlyCollection, listCollected, collectionWarnings
                     ));
                 }
-                BossJobDataEntity entity = toBossEntity(dto);
+                BossJobDataEntity entity = toBossEntity(dto, request.getKeyword());
                 BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
                 insertedOrUpdated++;
 
@@ -640,7 +641,7 @@ public class BossController {
         return "/boss#boss-backend-browser";
     }
 
-    private BossJobDataEntity toBossEntity(ChromeJobDto dto) {
+    private BossJobDataEntity toBossEntity(ChromeJobDto dto, String batchKeyword) {
         BossJobDataEntity entity = new BossJobDataEntity();
         if (dto == null) return entity;
         entity.setEncryptId(firstNonBlank(dto.getId(), extractBossId(dto.getUrl())));
@@ -663,6 +664,7 @@ public class BossController {
         entity.setIntroduce(dto.getCompanyInfo());
         entity.setFinancingStage(dto.getFinancingStage());
         entity.setCompanyScale(dto.getCompanyScale());
+        entity.setSourceKeyword(firstNonBlank(dto.getKeyword(), batchKeyword));
         return entity;
     }
 

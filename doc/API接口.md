@@ -30,8 +30,25 @@ http://localhost:8888
 | --- | --- | --- |
 | `GET` | `/api/ai/config` | 获取 AI 配置 |
 | `POST` | `/api/ai/config` | 保存 AI 配置 |
+| `GET` | `/api/ai/thresholds` | 获取当前档案的 AI 投递分数线 |
+| `POST` | `/api/ai/thresholds` | 只保存当前档案的 AI 投递分数线 |
 | `GET` | `/api/ai/health` | AI 配置健康检查 |
 | `GET` | `/api/ai/chat` | AI 聊天测试接口 |
+
+`POST /api/ai/config` 按当前档案保存配置，请求体示例：
+
+```json
+{
+  "introduce": "个人技能和经历摘要",
+  "prompt": "打招呼生成提示词",
+  "applyThreshold": 60,
+  "priorityApplyThreshold": 50
+}
+```
+
+两个分数线都必须是0到100之间的整数，优先公司分数线不能高于普通公司分数线。达到对应分数线的岗位只会进入“待确认”，仍需用户确认后才会实际投递。
+
+Boss 投递分析页“岗位数据”区域使用 `GET/POST /api/ai/thresholds` 单独加载和保存分数线，不会覆盖简历摘要或打招呼提示词。
 
 ## Cookie
 
@@ -141,6 +158,7 @@ Profile 用于区分不同候选人或简历上下文。当前档案会影响 AI
 | `GET` | `/api/zhilian/config` | 获取智联配置 |
 | `PUT` | `/api/zhilian/config` | 更新智联配置 |
 | `GET` | `/api/zhilian/config/options/city` | 获取智联城市选项 |
+| `GET` | `/api/zhilian/config/options/salary` | 获取智联官方薪资区间选项 |
 | `GET` | `/api/zhilian/login-status` | 智联登录状态 |
 | `POST` | `/api/zhilian/login` | 智联登录 |
 | `POST` | `/api/zhilian/logout` | 智联退出登录 |

@@ -59,7 +59,7 @@ export function BossFilterPanel({
 
       {filtersOpen && (
         <div className="mt-3 space-y-3">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-7">
             <div className="xl:col-span-2">
               <Label className="text-xs">关键词</Label>
               <div className="relative mt-1">
@@ -131,6 +131,27 @@ export function BossFilterPanel({
                   className="h-9"
                 />
               </div>
+            </div>
+            <div>
+              <Label className="text-xs">AI最低分</Label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={draftFilters.minAiScore}
+                onChange={(e) => {
+                  const value = e.target.value
+                  if (value === "" || (Number(value) >= 0 && Number(value) <= 100)) {
+                    onDraftChange((prev) => ({ ...prev, minAiScore: value }))
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onApply()
+                }}
+                placeholder="如 60"
+                className="mt-1 h-9"
+              />
             </div>
           </div>
 

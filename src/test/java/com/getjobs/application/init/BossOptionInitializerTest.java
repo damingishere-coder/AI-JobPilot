@@ -1,5 +1,6 @@
 package com.getjobs.application.init;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.getjobs.application.entity.BossOptionEntity;
 import com.getjobs.application.mapper.BossOptionMapper;
 import org.junit.jupiter.api.Test;
@@ -53,6 +54,36 @@ class BossOptionInitializerTest {
             assertThat(option.getName()).isEqualTo("10-15K");
             assertThat(option.getCode()).isEqualTo("405");
         });
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<QueryWrapper<BossOptionEntity>> deleteCaptor =
+                ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(bossOptionMapper).delete(deleteCaptor.capture());
+        assertThat(deleteCaptor.getValue().getSqlSegment())
+                .contains("type", "code")
+                .containsIgnoringCase("NOT IN");
+    }
+
+    @Test
+    void usesCurrentBossDegreeCodes() {
+        Map<String, String> degreeByCode = BossOptionSeedData.options().stream()
+                .filter(option -> "degree".equals(option.type()))
+                .collect(Collectors.toMap(
+                        BossOptionSeedData.Option::code,
+                        BossOptionSeedData.Option::name
+                ));
+
+        assertThat(degreeByCode).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "0", "不限",
+                "209", "初中及以下",
+                "208", "中专/中技",
+                "206", "高中",
+                "202", "大专",
+                "203", "本科",
+                "204", "硕士",
+                "205", "博士"
+        ));
+        assertThat(degreeByCode).doesNotContainKeys("201", "207");
     }
 
     @Test
