@@ -84,8 +84,26 @@ function createCard(index) {
   return { root, link };
 }
 
-function loadCollector(cardCount = 6) {
-  const cards = Array.from({ length: cardCount }, (_, index) => createCard(index + 1));
+function createNavigationCard(titleText, href) {
+  const title = field(titleText);
+  const company = field("示例导航公司");
+  const salary = field("20-30K");
+  const location = field("深圳·南山");
+  const tags = field("3-5年 本科");
+  const link = new FakeElement({
+    text: title.innerText,
+    attrs: { href }
+  });
+  const root = new FakeElement({
+    text: [title.innerText, salary.innerText, location.innerText, tags.innerText, company.innerText].join("\n"),
+    fields: { title, company, salary, location, tags, detailLink: link }
+  });
+  link.cardRoot = root;
+  return { root, link };
+}
+
+function loadCollector(cardCount = 6, extraCards = []) {
+  const cards = Array.from({ length: cardCount }, (_, index) => createCard(index + 1)).concat(extraCards);
   const roots = cards.map((card) => card.root);
   const links = cards.map((card) => card.link);
   const body = new FakeElement({ text: roots.map((root) => root.innerText).join("\n") });
@@ -152,4 +170,17 @@ test("reports selector counts and detail links for diagnostics", () => {
   assert.equal(diagnostics.isSecurityPage, false);
   assert.equal(diagnostics.isSearchPage, true);
   assert.equal(diagnostics.bodyText, undefined);
+});
+
+test("skips Boss navigation and non-Boss detail links", () => {
+  const window = loadCollector(2, [
+    createNavigationCard("职位搜索", "https://www.zhipin.com/web/geek/job?city=101280600&query=Java"),
+    createNavigationCard("Java开发工程师外链", "https://example.com/job_detail/not-boss.html")
+  ]);
+  const result = window.GetJobsBossSearchCollector.collectVisibleJobs({ keyword: "Java" });
+
+  assert.equal(result.candidateCount, 4);
+  assert.equal(result.jobs.length, 2);
+  assert.equal(result.jobs.some((job) => job.title === "职位搜索"), false);
+  assert.equal(result.jobs.some((job) => job.url.includes("example.com")), false);
 });

@@ -27,7 +27,11 @@ const pageTabs = new Map();
 let scanSessionsWriteQueue = Promise.resolve();
 const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
 const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-const BACKGROUND_VERSION = "2026-07-29-zhilian-security-resume-fix";
+const PLATFORM_SHARED_SCAN_KEYS = {
+  boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
+  zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
+};
+const BACKGROUND_VERSION = "2026-08-01-consolidated-scan-fix";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
@@ -199,12 +203,15 @@ function isZhilianSender(sender) {
 
 async function handleBossContentNavigation(message, sender) {
   const tabId = sender.tab?.id;
-  const targetUrl = String(message?.url || "");
+  const targetUrl = normalizeBossUrl(message?.url);
   if (!tabId) return { success: false, message: "缺少Boss标签页ID" };
-  if (!isBossSearchUrl(targetUrl)) return { success: false, message: "拒绝打开非Boss搜索页" };
+  if (!targetUrl) return { success: false, message: "Boss页面链接为空或格式错误" };
+  if (!isBossSearchUrl(targetUrl) && !isBossJobDetailUrl(targetUrl)) {
+    return { success: false, message: `拒绝打开非Boss搜索页或岗位详情页：${targetUrl}` };
+  }
 
   await chrome.tabs.update(tabId, { url: targetUrl });
-  return { success: true };
+  return { success: true, url: targetUrl };
 }
 
 async function handleZhilianContentNavigation(message, sender) {
@@ -977,11 +984,12 @@ async function buildRegisteredNavigationStatus(platform, tabId) {
 
 async function sendPassiveStop(tabId, platform, message, pageTabId) {
   if (!await pingContentScript(tabId)) {
+    await cleanupPlatformScanState(platform, tabId);
     return {
       success: true,
-      message: platform === "boss" ? "没有正在运行的Boss扫描任务" : "没有正在运行的扫描任务",
+      message: platform === "boss" ? "没有正在运行的Boss扫描任务，后台旧扫描状态已清理" : "没有正在运行的扫描任务，后台旧扫描状态已清理",
       isRunning: false,
-      stage: "idle"
+      stage: "stopped"
     };
   }
 
@@ -992,15 +1000,16 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
       pageTabId
     });
     if (response?.success !== false) {
-      await clearScanSession(platform, tabId);
+      await cleanupPlatformScanState(platform, tabId);
     }
     return response || { success: true, isRunning: false, stage: "stopped" };
   } catch (error) {
+    await cleanupPlatformScanState(platform, tabId);
     return {
-      success: false,
-      message: buildContentScriptError(platform, error),
+      success: true,
+      message: `${buildContentScriptError(platform, error)}；后台旧扫描状态已清理，请刷新页面后重新开始扫描。`,
       isRunning: false,
-      stage: "idle"
+      stage: "stopped"
     };
   }
 }
@@ -1013,7 +1022,7 @@ async function resolvePlatformTab(platform, message) {
     return await findDeliveryPlatformTab(platform, platformStartUrl(message));
   }
   if (isScanStartMessage(message.type)) {
-    return await findScanPlatformTab(platform, platformStartUrl(message));
+    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId);
   }
   if (isNoCreatePlatformMessage(message.type)) {
     return await findPlatformTab(platform);
@@ -1021,11 +1030,11 @@ async function resolvePlatformTab(platform, message) {
   return await findOrCreatePlatformTab(platform, platformStartUrl(message));
 }
 
-async function findScanPlatformTab(platform, startUrl) {
-  const registered = await getRegisteredScanTab(platform);
+async function findScanPlatformTab(platform, startUrl, requestedRunId = "") {
+  const registered = await getRegisteredScanTab(platform, requestedRunId);
   if (registered) return registered;
 
-  const running = await findRunningPlatformTab(platform);
+  const running = await findRunningPlatformTab(platform, requestedRunId);
   if (running) return running;
 
   return await findOrCreatePlatformTab(platform, startUrl);
@@ -1073,7 +1082,7 @@ async function findPlatformTab(platform) {
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
-async function findRunningPlatformTab(platform) {
+async function findRunningPlatformTab(platform, requestedRunId = "") {
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
     .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
@@ -1082,6 +1091,7 @@ async function findRunningPlatformTab(platform) {
     if (!tab.id) continue;
     const status = await probePlatformScanStatus(tab.id, platform);
     if (isActiveScanStatus(status)) {
+      if (requestedRunId && !scanRunMatches(status?.runId, requestedRunId)) continue;
       await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken);
       return tab;
     }
@@ -1176,9 +1186,13 @@ async function readScanSessions() {
   }
 }
 
-async function getRegisteredScanTab(platform) {
+async function getRegisteredScanTab(platform, requestedRunId = "") {
   const session = await readScanSession(platform);
   if (!session?.tabId) return null;
+  if (requestedRunId && !scanRunMatches(session.runId, requestedRunId)) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   const tab = await chrome.tabs.get(session.tabId).catch(() => null);
   if (!tab || !isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG[platform])) {
     await clearScanSession(platform, session.tabId);
@@ -1194,6 +1208,20 @@ async function clearScanSession(platform, expectedTabId = null) {
     if (expectedTabId && existing.tabId !== expectedTabId) return;
     delete sessions[platform];
   });
+}
+
+async function cleanupPlatformScanState(platform, expectedTabId = null) {
+  await clearScanSession(platform, expectedTabId);
+  const keys = PLATFORM_SHARED_SCAN_KEYS[platform] || [];
+  if (keys.length) {
+    await chrome.storage.local.remove(keys).catch(() => {});
+  }
+}
+
+function scanRunMatches(currentRunId, requestedRunId) {
+  const current = String(currentRunId || "").trim();
+  const requested = String(requestedRunId || "").trim();
+  return Boolean(current && requested && current === requested);
 }
 
 async function mutateScanSessions(mutator) {
@@ -1391,6 +1419,32 @@ function isBossSearchUrl(url) {
     return parsed.protocol === "https:"
       && parsed.hostname.endsWith("zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeBossUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""), "https://www.zhipin.com");
+    if (parsed.hostname.endsWith("zhipin.com") && parsed.protocol === "http:") {
+      parsed.protocol = "https:";
+    }
+    parsed.hash = "";
+    if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function isBossJobDetailUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:"
+      && parsed.hostname.endsWith("zhipin.com")
+      && parsed.pathname.includes("/job_detail/")
+      && Boolean(extractBossJobId(parsed.href));
   } catch {
     return false;
   }
