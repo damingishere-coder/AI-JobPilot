@@ -9,12 +9,14 @@ import { Label } from '@/components/ui/label'
 import PageHeader from '@/app/components/PageHeader'
 import { API_BASE } from '@/lib/api'
 
+const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash'
+
 export default function EnvConfig() {
   const [envConfig, setEnvConfig] = useState({
     hookUrl: '',
     baseUrl: '',
     apiKey: '',
-    model: '',
+    model: DEFAULT_DEEPSEEK_MODEL,
     botIsSend: 0,
   })
 
@@ -46,7 +48,7 @@ export default function EnvConfig() {
           hookUrl: result.data.HOOK_URL || '',
           baseUrl: result.data.BASE_URL || '',
           apiKey: result.data.API_KEY || '',
-          model: result.data.MODEL || '',
+          model: result.data.MODEL || DEFAULT_DEEPSEEK_MODEL,
           botIsSend: (() => {
             const raw = result.data.BOT_IS_SEND
             const val = String(raw ?? '').trim().toLowerCase()
@@ -207,9 +209,9 @@ export default function EnvConfig() {
                   type="text"
                   value={envConfig.model}
                   onChange={(e) => setEnvConfig({ ...envConfig, model: e.target.value })}
-                  placeholder="deepseek-chat"
+                  placeholder={DEFAULT_DEEPSEEK_MODEL}
                 />
-                <p className="text-xs text-muted-foreground">DeepSeek 推荐模型 deepseek-chat；也可以填写其他 OpenAI-compatible 模型名</p>
+                <p className="text-xs text-muted-foreground">DeepSeek 推荐模型 deepseek-v4-flash；也可以填写其他 OpenAI-compatible 模型名</p>
               </div>
             </div>
           </CardContent>
