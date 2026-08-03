@@ -5,13 +5,15 @@
 **A local-first, human-in-the-loop AI workspace for job searching.**  
 Collect job listings, analyze fit, review suggested actions, and track application results from one place.
 
-[简体中文](README.md) · [Quick Start](#quick-start) · [Task Flow](TASK_FLOW.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Security](SECURITY.md)
+[简体中文](README.md) · [Quick Start](#quick-start) · [Downloads](docs/releases.md) · [Documentation](docs/README.md) · [Roadmap](ROADMAP.md) · [Security](SECURITY.md)
 
 [![Version](https://img.shields.io/badge/version-1.3.0-4f46e5.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](WINDOWS_SETUP.md)
 [![Java](https://img.shields.io/badge/Java-21-E76F00.svg)](build.gradle.kts)
 [![Node](https://img.shields.io/badge/Node.js-20.19%2B-339933.svg)](front/package.json)
 [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml)
+[![Release](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Non--Commercial-f59e0b.svg)](LICENSE)
 
 </div>
@@ -75,6 +77,24 @@ AI JobPilot brings these steps into a local workspace:
 | 51job | 🟡 | ✅ | ✅ | Basic local flow; adapter work is ongoing |
 
 `✅` means the current primary workflow is supported. `🟡` means basic functionality exists but coverage and stability still need validation.
+
+## Downloads and releases
+
+The GitHub Release workflow runs backend tests, frontend lint and build, Chrome extension validation, and SHA256 generation before publishing a tagged version.
+
+Current automated artifacts are:
+
+```text
+AI-JobPilot-vX.Y.Z.jar
+AI-JobPilot-vX.Y.Z-chrome-extension.zip
+AI-JobPilot-vX.Y.Z-frontend-static.zip
+AI-JobPilot-vX.Y.Z-source.zip
+SHA256SUMS.txt
+```
+
+These are technical preview artifacts, **not yet a complete Windows installer that removes the Java, Node.js, and pnpm requirements**. See [docs/releases.md](docs/releases.md) for artifact details, checksum instructions, and release boundaries.
+
+Published versions are available from [GitHub Releases](https://github.com/damingishere-coder/AI-JobPilot/releases).
 
 ## Quick start
 
@@ -191,18 +211,27 @@ Read [SECURITY.md](SECURITY.md) before reporting a security issue or sharing dia
 - The project does not bypass authentication, CAPTCHAs, anti-abuse controls, or application rate limits.
 - OpenClaw integration remains experimental and is not required for the primary Windows workflow.
 - The current product is a Windows-focused single-user local application, not a hosted SaaS platform.
+- Release automation is available, but a full Windows installer without development prerequisites is not finished yet.
 
 ## Documentation
 
 | Document | Purpose |
 | --- | --- |
+| [docs/README.md](docs/README.md) | Unified navigation for usage, development, security, demo, and release documents |
 | [WINDOWS_SETUP.md](WINDOWS_SETUP.md) | Windows installation, startup, verification, and troubleshooting |
 | [TASK_FLOW.md](TASK_FLOW.md) | End-to-end flow from resume configuration to reviewed application actions |
+| [docs/releases.md](docs/releases.md) | Release artifacts, versioning, and SHA256 verification |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture, module responsibilities, and data flow |
 | [SECURITY.md](SECURITY.md) | Local data, cookies, API keys, and security boundaries |
 | [ROADMAP.md](ROADMAP.md) | Current stage, priorities, and future direction |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Bug reports, feature proposals, and code contributions |
+
+## Project status
+
+The repository now includes backend and frontend CI, Chrome extension validation, Docker configuration validation, CodeQL security analysis, Dependabot maintenance, and validated Release artifacts.
+
+The next priorities are the unified platform adapter, offline Demo mode, a complete Windows distribution, and carefully scoped communication or interview-assistance capabilities that preserve platform compliance and human confirmation. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 
