@@ -76,3 +76,40 @@ jobs:
       - name: Build frontend
         working-directory: front
         run: pnpm build
+
+  chrome-extension:
+    name: Chrome Extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate manifest and referenced files
+        run: node scripts/validate-chrome-extension.mjs
+
+  docker-config:
+    name: Docker Configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Verify required Dockerfile stages
+        shell: bash
+        run: |
+          for stage in backend-dev frontend-dev frontend-build backend-build runtime; do
+            grep -Eq "^[[:space:]]*FROM[[:space:]].*[[:space:]]AS[[:space:]]${stage}([[:space:]]|$)" Dockerfile || {
+              echo "Missing Dockerfile stage: ${stage}"
+              exit 1
+            }
+          done
