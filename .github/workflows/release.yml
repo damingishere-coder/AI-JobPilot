@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/validate-chrome-extension.mjs"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label used for preview artifacts, for example v1.3.1-rc.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-package:
+    name: Build and package release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      HOSTNAME: ai-jobpilot-release
+      APP_AUTO_OPEN_BROWSER: "false"
+      APP_BROWSER_HEADLESS: "true"
+      APP_CACHE_DIR: /tmp/ai-jobpilot-release/cache
+      APP_DATA_DIR: /tmp/ai-jobpilot-release/data
+      APP_OUTPUT_DIR: /tmp/ai-jobpilot-release/output
+      LOGGING_FILE_NAME: /tmp/ai-jobpilot-release/logs/get-jobs.log
+      SPRING_DATASOURCE_URL: jdbc:sqlite:/tmp/ai-jobpilot-release/getjobs-release.db
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            VERSION="v0.0.0-pr${{ github.event.pull_request.number }}"
+          else
+            VERSION="$GITHUB_REF_NAME"
+          fi
+
+          if [[ ! "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $VERSION"
+            exit 1
+          fi
+
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: front/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: front
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate frontend
+        working-directory: front
+        run: |
+          pnpm lint
+          pnpm build
+
+      - name: Validate Chrome extension
+        run: node scripts/validate-chrome-extension.mjs
+
+      - name: Build backend JAR with frontend assets
+        shell: bash
+        run: |
+          mkdir -p "$APP_CACHE_DIR" "$APP_DATA_DIR" "$APP_OUTPUT_DIR" "$(dirname "$LOGGING_FILE_NAME")"
+          rm -rf src/main/resources/dist
+          mkdir -p src/main/resources/dist
+          cp -a front/out/. src/main/resources/dist/
+          chmod +x ./gradlew
+          ./gradlew clean test bootJar --no-daemon
+
+      - name: Assemble release artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          JAR_PATH="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-plain.jar' | head -n 1)"
+          if [[ -z "$JAR_PATH" ]]; then
+            echo "No bootable JAR found in build/libs"
+            exit 1
+          fi
+
+          cp "$JAR_PATH" "dist/AI-JobPilot-${RELEASE_VERSION}.jar"
+          (cd chrome-extension && zip -qr "../dist/AI-JobPilot-${RELEASE_VERSION}-chrome-extension.zip" .)
+          (cd front/out && zip -qr "../../dist/AI-JobPilot-${RELEASE_VERSION}-frontend-static.zip" .)
+          git archive --format=zip --output="dist/AI-JobPilot-${RELEASE_VERSION}-source.zip" HEAD
+
+          (
+            cd dist
+            sha256sum AI-JobPilot-* > SHA256SUMS.txt
+          )
+
+      - name: Upload preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-JobPilot-${{ env.RELEASE_VERSION }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release for tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          EXTRA_ARGS=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            EXTRA_ARGS+=(--prerelease)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "AI JobPilot ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "${EXTRA_ARGS[@]}"
