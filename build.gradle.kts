@@ -40,7 +40,7 @@ dependencies {
     implementation("org.freemarker:freemarker:2.3.32")
     implementation("org.json:json:20231013")
     implementation("io.github.cdimascio:dotenv-java:2.2.0")
-    implementation("jakarta.annotation:jakarta.annotation-api:2.1.1")
+    implementation("jakarta.annotation:jakarta.annotation-api:3.0.0")
     implementation("org.apache.pdfbox:pdfbox:3.0.3")
     developmentOnly("org.springframework.boot:spring-boot-devtools:3.5.7")
 
