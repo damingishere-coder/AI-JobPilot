@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      HOSTNAME: ai-jobpilot-release
       APP_AUTO_OPEN_BROWSER: "false"
       APP_BROWSER_HEADLESS: "true"
       APP_CACHE_DIR: /tmp/ai-jobpilot-release/cache
