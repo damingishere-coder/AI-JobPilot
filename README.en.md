@@ -36,6 +36,26 @@ AI JobPilot brings these steps into a local workspace:
 
 ![AI JobPilot workflow](docs/images/workflow.svg)
 
+## Product preview
+
+> These illustrations are temporary placeholders based on the current frontend code. Replace them with real screenshots later while keeping the same filenames, and the README links will continue to work.
+
+### Application dashboard
+
+![Application dashboard placeholder](docs/images/screenshots/dashboard-placeholder.svg)
+
+### Boss Zhipin collection
+
+![Boss Zhipin collection placeholder](docs/images/screenshots/boss-scan-placeholder.svg)
+
+### AI analysis and human review
+
+![Boss analysis placeholder](docs/images/screenshots/analysis-placeholder.svg)
+
+### AI configuration and candidate profile
+
+![AI configuration placeholder](docs/images/screenshots/ai-config-placeholder.svg)
+
 ## Core capabilities
 
 - Multiple candidate profiles, resume text, preferences, model configuration, platform settings, and blacklists.
