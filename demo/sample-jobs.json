@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "1.0",
+  "notice": "Synthetic demo data only. Not copied from any recruitment platform.",
+  "jobs": [
+    {
+      "id": "demo-job-001",
+      "platform": "demo",
+      "title": "AI 产品运营",
+      "company": "远山智能科技",
+      "city": "深圳",
+      "salary": "20K-28K",
+      "experience": "3-5年",
+      "degree": "本科",
+      "companySize": "500-999人",
+      "industry": "企业服务 / AI 应用",
+      "description": [
+        "负责企业级 AI 助手的用户运营和场景落地",
+        "建设试用反馈、效果评估和版本迭代机制",
+        "协同产品、研发和业务专家优化知识库与提示词",
+        "输出使用手册、培训材料和运营分析报告"
+      ],
+      "tags": ["AI应用", "B端产品", "知识库", "用户运营"]
+    },
+    {
+      "id": "demo-job-002",
+      "platform": "demo",
+      "title": "知识库运营专员",
+      "company": "北辰云服务",
+      "city": "深圳",
+      "salary": "15K-20K",
+      "experience": "2-4年",
+      "degree": "本科",
+      "companySize": "1000-4999人",
+      "industry": "SaaS / 客户服务",
+      "description": [
+        "负责企业知识库内容治理、分类和标签体系维护",
+        "推动业务文档结构化和版本管理",
+        "分析搜索与问答数据，持续优化内容命中率",
+        "配合 AI 团队建设问答测试集和运营规则"
+      ],
+      "tags": ["知识管理", "内容治理", "RAG", "数据分析"]
+    },
+    {
+      "id": "demo-job-003",
+      "platform": "demo",
+      "title": "大模型解决方案销售",
+      "company": "启明星联创",
+      "city": "广州",
+      "salary": "18K-30K",
+      "experience": "3-5年",
+      "degree": "本科",
+      "companySize": "100-499人",
+      "industry": "人工智能",
+      "description": [
+        "承担企业客户拓展和销售指标",
+        "负责商务谈判、合同签署和回款",
+        "需要频繁出差拜访客户",
+        "有大客户销售经验者优先"
+      ],
+      "tags": ["销售", "客户拓展", "频繁出差"]
+    },
+    {
+      "id": "demo-job-004",
+      "platform": "demo",
+      "title": "B 端产品运营",
+      "company": "海隅协同办公",
+      "city": "深圳",
+      "salary": "17K-23K",
+      "experience": "3-5年",
+      "degree": "本科",
+      "companySize": "500-999人",
+      "industry": "协同办公 / SaaS",
+      "description": [
+        "负责新功能上线、用户教育和活跃提升",
+        "建立客户反馈、问题分析和需求闭环",
+        "协同产品团队推动高频问题优化",
+        "通过运营数据评估功能使用效果"
+      ],
+      "tags": ["B端运营", "SaaS", "用户培训", "数据复盘"]
+    }
+  ]
+}
