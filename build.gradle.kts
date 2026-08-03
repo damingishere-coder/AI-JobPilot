@@ -3,7 +3,7 @@ import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
     java
-    id("org.springframework.boot") version "3.5.7"
+    id("org.springframework.boot") version "4.1.0"
     // 使用 BOM(platform) 管理版本，不需要 dependency-management 插件
     // id("io.spring.dependency-management") version "1.1.6"
 }
