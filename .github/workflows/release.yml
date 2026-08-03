@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/validate-chrome-extension.mjs"
   workflow_dispatch:
     inputs:
       version:
@@ -37,6 +41,8 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.version }}"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            VERSION="v0.0.0-pr${{ github.event.pull_request.number }}"
           else
             VERSION="$GITHUB_REF_NAME"
           fi
