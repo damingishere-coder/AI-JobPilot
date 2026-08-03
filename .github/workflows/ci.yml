@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      HOSTNAME: ai-jobpilot-ci
       APP_AUTO_OPEN_BROWSER: "false"
       APP_BROWSER_HEADLESS: "true"
       APP_CACHE_DIR: /tmp/ai-jobpilot-ci/cache
@@ -25,10 +26,10 @@ jobs:
       SPRING_DATASOURCE_URL: jdbc:sqlite:/tmp/ai-jobpilot-ci/getjobs-ci.db
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -42,26 +43,33 @@ jobs:
       - name: Run backend tests
         run: ./gradlew test --no-daemon --stacktrace
 
-      - name: Print backend failure diagnostics
+      - name: Print failed JUnit reports
         if: failure()
         shell: bash
         run: |
-          echo "::group::JUnit XML reports"
-          find build/test-results/test -type f -name '*.xml' -print -exec cat {} \; 2>/dev/null || true
-          echo "::endgroup::"
+          found_failure=false
+          for report in build/test-results/test/*.xml; do
+            if grep -Eq 'failures="[1-9]|errors="[1-9]' "$report"; then
+              found_failure=true
+              echo "::group::$report"
+              cat "$report"
+              echo "::endgroup::"
+            fi
+          done
+          if [[ "$found_failure" == "false" ]]; then
+            echo "No failed JUnit XML report was found."
+          fi
 
-          echo "::group::Playwright profile-lock test source"
-          find src/test -type f -name '*PlaywrightManagerProfileLockTest*' -print -exec sed -n '1,240p' {} \; 2>/dev/null || true
-          echo "::endgroup::"
-
-          echo "::group::Related Playwright manager source"
-          grep -RIl --include='*.java' 'SingletonLock\|SingletonCookie\|SingletonSocket' src/main src/test 2>/dev/null \
-            | sort -u \
-            | while read -r file; do
-                echo "===== $file ====="
-                sed -n '1,320p' "$file"
-              done
-          echo "::endgroup::"
+      - name: Upload backend test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Build backend
         run: ./gradlew build --no-daemon
@@ -72,7 +80,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -80,7 +88,7 @@ jobs:
           version: 10.20.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: pnpm
@@ -104,10 +112,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -120,7 +128,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate Docker Compose
         run: docker compose config --quiet
