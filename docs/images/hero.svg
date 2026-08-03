@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">AI JobPilot repository cover</title>
+  <desc id="desc">A local-first AI job search workspace that collects jobs, analyzes fit, asks for confirmation, and tracks applications.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.55" stop-color="#172554"/>
+      <stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="520" rx="28" fill="url(#bg)"/>
+  <circle cx="1080" cy="72" r="150" fill="#38bdf8" opacity="0.08"/>
+  <circle cx="108" cy="470" r="190" fill="#818cf8" opacity="0.09"/>
+
+  <g font-family="Inter,Segoe UI,Arial,sans-serif" fill="#f8fafc">
+    <text x="72" y="92" font-size="22" font-weight="700" letter-spacing="2">LOCAL-FIRST · HUMAN-IN-THE-LOOP</text>
+    <text x="72" y="166" font-size="64" font-weight="800">AI JobPilot</text>
+    <text x="72" y="210" font-size="28" font-weight="600" fill="#cbd5e1">投递牛马 · 本地 AI 求职工作台</text>
+    <text x="72" y="258" font-size="22" fill="#94a3b8">采集岗位、分析匹配、人工确认、记录投递结果</text>
+  </g>
+
+  <g transform="translate(72 330)" filter="url(#shadow)" font-family="Inter,Segoe UI,Arial,sans-serif">
+    <g>
+      <rect width="220" height="112" rx="18" fill="#111827" stroke="#38bdf8" stroke-width="2"/>
+      <text x="28" y="45" font-size="18" font-weight="700" fill="#7dd3fc">01 · COLLECT</text>
+      <text x="28" y="78" font-size="24" font-weight="700" fill="#f8fafc">采集岗位</text>
+    </g>
+    <path d="M232 56 H274" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+    <path d="M264 44 L278 56 L264 68" fill="none" stroke="#818cf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="translate(290 0)">
+      <rect width="220" height="112" rx="18" fill="#111827" stroke="#60a5fa" stroke-width="2"/>
+      <text x="28" y="45" font-size="18" font-weight="700" fill="#93c5fd">02 · ANALYZE</text>
+      <text x="28" y="78" font-size="24" font-weight="700" fill="#f8fafc">AI 匹配分析</text>
+    </g>
+    <path d="M522 56 H564" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+    <path d="M554 44 L568 56 L554 68" fill="none" stroke="#818cf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="translate(580 0)">
+      <rect width="220" height="112" rx="18" fill="#111827" stroke="#818cf8" stroke-width="2"/>
+      <text x="28" y="45" font-size="18" font-weight="700" fill="#a5b4fc">03 · CONFIRM</text>
+      <text x="28" y="78" font-size="24" font-weight="700" fill="#f8fafc">人工确认</text>
+    </g>
+    <path d="M812 56 H854" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+    <path d="M844 44 L858 56 L844 68" fill="none" stroke="#818cf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="translate(870 0)">
+      <rect width="220" height="112" rx="18" fill="#111827" stroke="#a78bfa" stroke-width="2"/>
+      <text x="28" y="45" font-size="18" font-weight="700" fill="#c4b5fd">04 · TRACK</text>
+      <text x="28" y="78" font-size="24" font-weight="700" fill="#f8fafc">跟踪结果</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">AI JobPilot 投递工作台占位截图</title>
+  <desc id="desc">依据前端代码绘制的投递工作台页面示意图，用于 README 临时展示。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8fbff"/><stop offset="1" stop-color="#eef4ff"/></linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#0f172a" flood-opacity=".08"/></filter>
+    <style>
+      .t{font-family:Inter,"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;fill:#0f172a}.muted{fill:#64748b}.small{font-size:18px}.tiny{font-size:15px}.label{font-size:17px;font-weight:600}.title{font-size:34px;font-weight:800}.num{font-size:42px;font-weight:800}.card{fill:#fff;stroke:#dbe5f2;stroke-width:1.5}.nav{font-size:18px;font-weight:600}.section{font-size:14px;font-weight:700;letter-spacing:1.3px;fill:#94a3b8}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" rx="30" fill="url(#bg)"/>
+  <rect x="24" y="24" width="1552" height="952" rx="26" fill="#fff" stroke="#dce6f3" filter="url(#shadow)"/>
+  <rect x="24" y="24" width="258" height="952" rx="26" fill="#fbfdff"/>
+  <path d="M282 24v952" stroke="#e2e8f0"/>
+
+  <rect x="54" y="58" width="50" height="50" rx="15" fill="url(#brand)"/>
+  <text x="79" y="91" text-anchor="middle" font-size="26" font-weight="800" fill="#fff" font-family="Microsoft YaHei">牛</text>
+  <text class="t" x="120" y="78" font-size="24" font-weight="800">投递牛马</text>
+  <text class="muted" x="120" y="104" font-size="15" font-family="Microsoft YaHei">AI JobPilot 工作台</text>
+  <rect x="54" y="128" width="198" height="42" rx="12" fill="#ecfdf5" stroke="#bbf7d0"/>
+  <circle cx="76" cy="149" r="6" fill="#22c55e"/>
+  <text class="t tiny" x="92" y="155">系统运行正常</text>
+
+  <text class="section" x="58" y="214">工作台</text>
+  <rect x="48" y="228" width="210" height="48" rx="12" fill="#eff6ff"/>
+  <circle cx="75" cy="252" r="10" fill="#3b82f6" opacity=".16"/><path d="M69 252h12M75 246v12" stroke="#2563eb" stroke-width="2"/>
+  <text class="t nav" x="98" y="259" fill="#2563eb">首页</text>
+  <text class="section" x="58" y="318">求职资料</text>
+  <text class="t nav" x="98" y="358">AI 配置</text>
+  <text class="section" x="58" y="408">投递平台</text>
+  <text class="t nav" x="98" y="448">Boss 直聘</text>
+  <text class="t nav" x="98" y="494">智联招聘</text>
+  <text class="section" x="58" y="544">投递记录</text>
+  <text class="t nav" x="98" y="584">Boss 分析</text>
+  <text class="t nav" x="98" y="630">智联分析</text>
+  <text class="section" x="58" y="680">系统设置</text>
+  <text class="t nav" x="98" y="720">环境配置</text>
+  <rect x="54" y="902" width="198" height="42" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text class="muted tiny" x="74" y="929">v1.3.0 · 本地运行</text>
+
+  <text class="t title" x="328" y="86">投递工作台</text>
+  <text class="muted small" x="328" y="118">连接状态、待确认岗位与投递进度集中看板</text>
+  <rect x="1418" y="62" width="112" height="44" rx="12" fill="#fff" stroke="#cbd5e1"/>
+  <text class="t label" x="1474" y="90" text-anchor="middle">刷新</text>
+
+  <rect class="card" x="328" y="154" width="760" height="226" rx="20" filter="url(#shadow)"/>
+  <text class="t" x="360" y="196" font-size="23" font-weight="750">今日投递概览</text>
+  <text class="muted tiny" x="360" y="224">最后刷新 14:36:08</text>
+  <rect x="360" y="252" width="214" height="96" rx="16" fill="#ecfeff" stroke="#a5f3fc"/>
+  <text x="384" y="283" font-size="17" font-weight="700" fill="#0e7490" font-family="Microsoft YaHei">待确认</text><text class="t num" x="384" y="331">18</text>
+  <rect x="592" y="252" width="214" height="96" rx="16" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="616" y="283" font-size="17" font-weight="700" fill="#047857" font-family="Microsoft YaHei">已投递</text><text class="t num" x="616" y="331">42</text>
+  <rect x="824" y="252" width="232" height="96" rx="16" fill="#fff1f2" stroke="#fecdd3"/>
+  <text x="848" y="283" font-size="17" font-weight="700" fill="#be123c" font-family="Microsoft YaHei">失败</text><text class="t num" x="848" y="331">3</text>
+
+  <rect class="card" x="1112" y="154" width="418" height="226" rx="20" filter="url(#shadow)"/>
+  <text class="t" x="1144" y="196" font-size="23" font-weight="750">快捷入口</text>
+  <text class="muted tiny" x="1144" y="224">扫描、待确认和 AI 配置入口</text>
+  <rect x="1144" y="246" width="354" height="44" rx="12" fill="#2563eb"/><text x="1321" y="274" text-anchor="middle" font-size="17" font-weight="700" fill="#fff" font-family="Microsoft YaHei">去 Boss 扫描</text>
+  <rect x="1144" y="300" width="171" height="44" rx="12" fill="#fff" stroke="#cbd5e1"/><text class="t label" x="1229" y="328" text-anchor="middle">Boss 待确认</text>
+  <rect x="1327" y="300" width="171" height="44" rx="12" fill="#fff" stroke="#cbd5e1"/><text class="t label" x="1412" y="328" text-anchor="middle">AI 配置</text>
+
+  <rect class="card" x="328" y="404" width="1202" height="180" rx="20" filter="url(#shadow)"/>
+  <text class="t" x="360" y="446" font-size="23" font-weight="750">首次使用检查</text>
+  <text class="muted tiny" x="360" y="474">完成以下步骤后即可开始岗位扫描和 AI 分析</text>
+  <g font-family="Microsoft YaHei" font-size="16">
+    <rect x="360" y="502" width="266" height="54" rx="14" fill="#f8fafc" stroke="#e2e8f0"/><circle cx="390" cy="529" r="11" fill="#22c55e"/><path d="m384 529 4 4 8-9" fill="none" stroke="#fff" stroke-width="3"/><text class="t" x="414" y="535">后端服务已连接</text>
+    <rect x="644" y="502" width="266" height="54" rx="14" fill="#f8fafc" stroke="#e2e8f0"/><circle cx="674" cy="529" r="11" fill="#22c55e"/><path d="m668 529 4 4 8-9" fill="none" stroke="#fff" stroke-width="3"/><text class="t" x="698" y="535">AI 配置已保存</text>
+    <rect x="928" y="502" width="266" height="54" rx="14" fill="#f8fafc" stroke="#e2e8f0"/><circle cx="958" cy="529" r="11" fill="#22c55e"/><path d="m952 529 4 4 8-9" fill="none" stroke="#fff" stroke-width="3"/><text class="t" x="982" y="535">简历档案已创建</text>
+    <rect x="1212" y="502" width="286" height="54" rx="14" fill="#fff7ed" stroke="#fed7aa"/><circle cx="1242" cy="529" r="11" fill="#f59e0b"/><text x="1242" y="535" text-anchor="middle" font-size="13" font-weight="800" fill="#fff">!</text><text class="t" x="1266" y="535">Chrome Bridge 待连接</text>
+  </g>
+
+  <rect class="card" x="328" y="610" width="586" height="274" rx="20" filter="url(#shadow)"/>
+  <text class="t" x="360" y="652" font-size="23" font-weight="750">Boss 直聘</text><text class="muted tiny" x="360" y="680">岗位库状态与待处理任务</text>
+  <g><rect x="360" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="382" y="746">待确认</text><text class="t num" x="382" y="802">12</text>
+  <rect x="535" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="557" y="746">已投递</text><text class="t num" x="557" y="802">27</text>
+  <rect x="710" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="732" y="746">失败</text><text class="t num" x="732" y="802">2</text></g>
+
+  <rect class="card" x="944" y="610" width="586" height="274" rx="20" filter="url(#shadow)"/>
+  <text class="t" x="976" y="652" font-size="23" font-weight="750">智联招聘</text><text class="muted tiny" x="976" y="680">岗位库状态与待处理任务</text>
+  <g><rect x="976" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="998" y="746">待确认</text><text class="t num" x="998" y="802">6</text>
+  <rect x="1151" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="1173" y="746">已投递</text><text class="t num" x="1173" y="802">15</text>
+  <rect x="1326" y="716" width="158" height="112" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><text class="muted tiny" x="1348" y="746">失败</text><text class="t num" x="1348" y="802">1</text></g>
+
+  <rect x="1176" y="922" width="354" height="34" rx="17" fill="#0f172a" opacity=".86"/><text x="1353" y="944" text-anchor="middle" font-size="14" fill="#fff" font-family="Microsoft YaHei">占位示意图 · 回家后请替换为真实截图</text>
+</svg>

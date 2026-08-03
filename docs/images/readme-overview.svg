@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#eef4ff"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      .title{font:700 42px Arial,'Microsoft YaHei',sans-serif;fill:#0f172a}
+      .sub{font:400 20px Arial,'Microsoft YaHei',sans-serif;fill:#475569}
+      .h2{font:700 23px Arial,'Microsoft YaHei',sans-serif;fill:#0f172a}
+      .h3{font:700 18px Arial,'Microsoft YaHei',sans-serif;fill:#0f172a}
+      .body{font:400 15px Arial,'Microsoft YaHei',sans-serif;fill:#64748b}
+      .small{font:500 13px Arial,'Microsoft YaHei',sans-serif;fill:#64748b}
+      .white{fill:#fff}
+    </style>
+  </defs>
+
+  <rect width="1200" height="900" rx="28" fill="url(#bg)"/>
+  <rect x="32" y="32" width="1136" height="836" rx="26" fill="#fff" stroke="#dbeafe" filter="url(#shadow)"/>
+
+  <g transform="translate(70 70)">
+    <rect width="58" height="58" rx="18" fill="url(#brand)"/>
+    <text x="29" y="40" text-anchor="middle" font-family="Arial,'Microsoft YaHei'" font-size="30" font-weight="700" fill="#fff">牛</text>
+    <text x="78" y="38" class="title">AI JobPilot · 投递牛马</text>
+    <text x="2" y="88" class="sub">本地优先、人工确认的 AI 求职工作台</text>
+
+    <g transform="translate(0 118)">
+      <rect width="116" height="34" rx="17" fill="#dbeafe"/><text x="58" y="23" text-anchor="middle" font-size="14" font-weight="700" fill="#1d4ed8">Local-first</text>
+      <rect x="126" width="136" height="34" rx="17" fill="#ede9fe"/><text x="194" y="23" text-anchor="middle" font-size="14" font-weight="700" fill="#6d28d9">AI Matching</text>
+      <rect x="272" width="154" height="34" rx="17" fill="#dcfce7"/><text x="349" y="23" text-anchor="middle" font-size="14" font-weight="700" fill="#15803d">Human Review</text>
+      <rect x="436" width="124" height="34" rx="17" fill="#ffedd5"/><text x="498" y="23" text-anchor="middle" font-size="14" font-weight="700" fill="#c2410c">Windows</text>
+    </g>
+
+    <g transform="translate(630 0)">
+      <rect width="430" height="200" rx="20" fill="#f8fafc" stroke="#e2e8f0"/>
+      <rect x="18" y="18" width="92" height="164" rx="13" fill="#eff6ff"/>
+      <circle cx="43" cy="44" r="13" fill="#2563eb"/><text x="43" y="49" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">牛</text>
+      <rect x="66" y="35" width="28" height="8" rx="4" fill="#94a3b8"/>
+      <g fill="#cbd5e1"><rect x="32" y="73" width="58" height="7" rx="3"/><rect x="32" y="96" width="58" height="7" rx="3"/><rect x="32" y="119" width="58" height="7" rx="3"/><rect x="32" y="142" width="58" height="7" rx="3"/></g>
+      <text x="132" y="42" class="h3">投递工作台</text>
+      <g transform="translate(132 60)">
+        <rect width="82" height="58" rx="12" fill="#ecfeff"/><text x="12" y="23" class="small">待确认</text><text x="12" y="48" font-size="23" font-weight="700" fill="#0f172a">18</text>
+        <rect x="92" width="82" height="58" rx="12" fill="#ecfdf5"/><text x="104" y="23" class="small">已投递</text><text x="104" y="48" font-size="23" font-weight="700" fill="#0f172a">42</text>
+        <rect x="184" width="82" height="58" rx="12" fill="#fff1f2"/><text x="196" y="23" class="small">失败</text><text x="196" y="48" font-size="23" font-weight="700" fill="#0f172a">3</text>
+      </g>
+      <rect x="132" y="132" width="266" height="32" rx="10" fill="#fff" stroke="#e2e8f0"/><text x="148" y="153" class="small">Boss / 智联数据集中查看</text>
+    </g>
+  </g>
+
+  <g transform="translate(70 300)">
+    <text class="h2">核心价值</text>
+    <g transform="translate(0 28)">
+      <rect width="250" height="115" rx="18" fill="#eff6ff"/><circle cx="35" cy="34" r="18" fill="#2563eb"/><text x="35" y="40" text-anchor="middle" font-size="20" fill="#fff">⌕</text><text x="65" y="39" class="h3">多平台岗位采集</text><text x="22" y="75" class="body">复用已登录浏览器页面</text><text x="22" y="98" class="body">统一收集结构化岗位信息</text>
+      <rect x="265" width="250" height="115" rx="18" fill="#f5f3ff"/><circle cx="300" cy="34" r="18" fill="#7c3aed"/><text x="300" y="41" text-anchor="middle" font-size="18" fill="#fff">AI</text><text x="330" y="39" class="h3">AI 匹配分析</text><text x="287" y="75" class="body">结合简历与求职偏好</text><text x="287" y="98" class="body">输出评分、优势与风险</text>
+      <rect x="530" width="250" height="115" rx="18" fill="#ecfdf5"/><circle cx="565" cy="34" r="18" fill="#16a34a"/><text x="565" y="41" text-anchor="middle" font-size="20" fill="#fff">✓</text><text x="595" y="39" class="h3">人工确认后执行</text><text x="552" y="75" class="body">岗位先进入待确认队列</text><text x="552" y="98" class="body">最终决定权始终属于用户</text>
+      <rect x="795" width="265" height="115" rx="18" fill="#fff7ed"/><circle cx="830" cy="34" r="18" fill="#ea580c"/><text x="830" y="41" text-anchor="middle" font-size="20" fill="#fff">▥</text><text x="860" y="39" class="h3">本地数据与追踪</text><text x="817" y="75" class="body">SQLite 保存任务与结果</text><text x="817" y="98" class="body">查看进度、统计和失败原因</text>
+    </g>
+  </g>
+
+  <g transform="translate(70 490)">
+    <text class="h2">工作流程</text>
+    <g transform="translate(0 34)">
+      <g><circle cx="58" cy="42" r="30" fill="#dbeafe"/><text x="58" y="49" text-anchor="middle" font-size="22" font-weight="700" fill="#2563eb">1</text><text x="58" y="91" text-anchor="middle" class="h3">配置档案</text><text x="58" y="114" text-anchor="middle" class="small">简历与求职偏好</text></g>
+      <path d="M105 42 H205" stroke="#94a3b8" stroke-width="3"/><path d="M195 34 L207 42 L195 50" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <g transform="translate(220 0)"><circle cx="58" cy="42" r="30" fill="#ede9fe"/><text x="58" y="49" text-anchor="middle" font-size="22" font-weight="700" fill="#7c3aed">2</text><text x="58" y="91" text-anchor="middle" class="h3">扫描岗位</text><text x="58" y="114" text-anchor="middle" class="small">Boss / 智联</text></g>
+      <path d="M325 42 H425" stroke="#94a3b8" stroke-width="3"/><path d="M415 34 L427 42 L415 50" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <g transform="translate(440 0)"><circle cx="58" cy="42" r="30" fill="#fef3c7"/><text x="58" y="49" text-anchor="middle" font-size="22" font-weight="700" fill="#d97706">3</text><text x="58" y="91" text-anchor="middle" class="h3">AI 分析</text><text x="58" y="114" text-anchor="middle" class="small">评分、优势与风险</text></g>
+      <path d="M545 42 H645" stroke="#94a3b8" stroke-width="3"/><path d="M635 34 L647 42 L635 50" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <g transform="translate(660 0)"><circle cx="58" cy="42" r="30" fill="#dcfce7"/><text x="58" y="49" text-anchor="middle" font-size="22" font-weight="700" fill="#16a34a">4</text><text x="58" y="91" text-anchor="middle" class="h3">人工确认</text><text x="58" y="114" text-anchor="middle" class="small">单个或批量处理</text></g>
+      <path d="M765 42 H865" stroke="#94a3b8" stroke-width="3"/><path d="M855 34 L867 42 L855 50" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <g transform="translate(880 0)"><circle cx="58" cy="42" r="30" fill="#ffe4e6"/><text x="58" y="49" text-anchor="middle" font-size="22" font-weight="700" fill="#e11d48">5</text><text x="58" y="91" text-anchor="middle" class="h3">追踪结果</text><text x="58" y="114" text-anchor="middle" class="small">状态、统计与原因</text></g>
+    </g>
+  </g>
+
+  <g transform="translate(70 690)">
+    <text class="h2">产品页面</text>
+    <g transform="translate(0 28)">
+      <rect width="250" height="105" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><rect x="16" y="16" width="218" height="52" rx="10" fill="#eff6ff"/><text x="125" y="48" text-anchor="middle" class="h3">投递工作台</text><text x="125" y="88" text-anchor="middle" class="small">总览与快捷入口</text>
+      <rect x="265" width="250" height="105" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><rect x="281" y="16" width="218" height="52" rx="10" fill="#fff7ed"/><text x="390" y="48" text-anchor="middle" class="h3">Boss 岗位扫描</text><text x="390" y="88" text-anchor="middle" class="small">条件、进度与日志</text>
+      <rect x="530" width="250" height="105" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><rect x="546" y="16" width="218" height="52" rx="10" fill="#ecfdf5"/><text x="655" y="48" text-anchor="middle" class="h3">岗位分析</text><text x="655" y="88" text-anchor="middle" class="small">评分、筛选与确认</text>
+      <rect x="795" width="265" height="105" rx="16" fill="#f8fafc" stroke="#e2e8f0"/><rect x="811" y="16" width="233" height="52" rx="10" fill="#f5f3ff"/><text x="927" y="48" text-anchor="middle" class="h3">AI 配置</text><text x="927" y="88" text-anchor="middle" class="small">简历、模型与档案</text>
+    </g>
+  </g>
+
+  <rect x="70" y="835" width="1060" height="1" fill="#e2e8f0"/>
+  <text x="70" y="858" class="small">仅用于个人求职辅助、技术研究与学习 · 不绕过登录验证、验证码、风控或平台限制</text>
+</svg>

@@ -1,0 +1,111 @@
+name: Bug 报告
+about: 报告可复现的错误、平台适配问题或启动故障
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交问题。请勿上传 Cookie、API Key、账号密码、真实简历、数据库或未脱敏截图。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题模块
+      options:
+        - Windows 安装或启动
+        - 前端界面
+        - 后端服务
+        - Chrome Bridge 扩展
+        - Boss 直聘
+        - 智联招聘
+        - 猎聘
+        - 前程无忧 51job
+        - AI 分析
+        - 数据库或迁移
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 简洁说明发生了什么。
+      placeholder: 扫描开始后任务立即失败，分析页没有新增岗位。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、完整、可重复的操作步骤。
+      placeholder: |
+        1. 启动前后端
+        2. 加载 Chrome Bridge
+        3. 登录招聘平台
+        4. 点击开始扫描
+        5. 出现错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      placeholder: 应采集岗位并进入 AI 分析队列。
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      placeholder: 任务状态变为失败，并显示……
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本或提交
+      placeholder: 1.3.0 / commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Windows 版本
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Java / Node.js / Chrome 版本
+      placeholder: Java 21, Node.js 20.19, Chrome 150
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或截图
+      description: 删除姓名、手机号、邮箱、Cookie、Token、API Key、简历和账号信息后再粘贴。
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有 Issue，确认不是重复问题。
+          required: true
+        - label: 我已移除日志和截图中的敏感信息。
+          required: true
+        - label: 该问题不要求绕过验证码、登录验证、平台风控或投递限制。
+          required: true
