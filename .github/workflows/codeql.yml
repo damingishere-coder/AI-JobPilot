@@ -1,0 +1,71 @@
+name: CodeQL
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  packages: read
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+
+      - name: Setup Java
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build Java for CodeQL
+        if: matrix.language == 'java-kotlin'
+        env:
+          APP_AUTO_OPEN_BROWSER: "false"
+          APP_BROWSER_HEADLESS: "true"
+          APP_CACHE_DIR: /tmp/ai-jobpilot-codeql/cache
+          APP_DATA_DIR: /tmp/ai-jobpilot-codeql/data
+          APP_OUTPUT_DIR: /tmp/ai-jobpilot-codeql/output
+          LOGGING_FILE_NAME: /tmp/ai-jobpilot-codeql/logs/get-jobs.log
+          SPRING_DATASOURCE_URL: jdbc:sqlite:/tmp/ai-jobpilot-codeql/getjobs-codeql.db
+        run: |
+          mkdir -p "$APP_CACHE_DIR" "$APP_DATA_DIR" "$APP_OUTPUT_DIR" "$(dirname "$LOGGING_FILE_NAME")"
+          chmod +x ./gradlew
+          ./gradlew clean classes --no-daemon
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
