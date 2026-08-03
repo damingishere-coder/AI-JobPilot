@@ -6,12 +6,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- CodeQL Java / Kotlin 与 JavaScript / TypeScript 安全扫描
+- Chrome 扩展 Manifest、引用文件和 JavaScript 语法自动校验
+- Docker Compose 与 Dockerfile 阶段配置检查
+- Git 标签驱动的 Release 构建、打包和 SHA256 校验流程
+- Release Notes 分类配置
+- Release 产物、版本命名和校验文档
+- Dependabot、CODEOWNERS、开发者启动文档和统一文档中心
+- 完全虚构的 Demo 简历、岗位和分析示例数据
+
+### Changed
+
+- CI 从后端与前端双任务扩展为后端、前端、Chrome 扩展和 Docker 配置四类检查
+- Dependabot 默认只自动提交 Minor 与 Patch 更新，避免未经评估的大版本升级
+- 中英文 README 增加 CodeQL、Release、下载说明和文档中心入口
+- 安全文档增加自动化检查和 Release 数据边界
+
 ### 计划中
 
+- 将 Demo 示例数据接入独立、可重置且不触发真实投递的离线 Demo 模式
+- 提供不依赖开发环境的完整 Windows 发行包
 - 统一智联、猎聘和 51job 的平台适配层
 - 继续拆分其他平台分析页面的 hooks 与 components
-- 增加脱敏 Demo 数据和首次体验流程
-- 补充真实界面截图、操作 GIF 和发布包
+- 补充真实界面截图和操作 GIF
 - 继续将旧兼容 DDL 迁移到 Flyway
 
 ## [1.3.0] - 2026-08-03
