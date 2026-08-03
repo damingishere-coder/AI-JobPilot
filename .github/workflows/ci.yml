@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,14 +14,15 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       APP_AUTO_OPEN_BROWSER: "false"
       APP_BROWSER_HEADLESS: "true"
-      APP_CACHE_DIR: ${{ runner.temp }}/cache
-      APP_DATA_DIR: ${{ runner.temp }}/data
-      APP_OUTPUT_DIR: ${{ runner.temp }}/output
-      LOGGING_FILE_NAME: ${{ runner.temp }}/logs/get-jobs.log
-      SPRING_DATASOURCE_URL: jdbc:sqlite:${{ runner.temp }}/getjobs-ci.db
+      APP_CACHE_DIR: /tmp/ai-jobpilot-ci/cache
+      APP_DATA_DIR: /tmp/ai-jobpilot-ci/data
+      APP_OUTPUT_DIR: /tmp/ai-jobpilot-ci/output
+      LOGGING_FILE_NAME: /tmp/ai-jobpilot-ci/logs/get-jobs.log
+      SPRING_DATASOURCE_URL: jdbc:sqlite:/tmp/ai-jobpilot-ci/getjobs-ci.db
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,8 +34,10 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Prepare Gradle wrapper
-        run: chmod +x ./gradlew
+      - name: Prepare CI directories and Gradle wrapper
+        run: |
+          mkdir -p "$APP_CACHE_DIR" "$APP_DATA_DIR" "$APP_OUTPUT_DIR" "$(dirname "$LOGGING_FILE_NAME")"
+          chmod +x ./gradlew
 
       - name: Run backend tests
         run: ./gradlew test --no-daemon
@@ -44,6 +48,7 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
