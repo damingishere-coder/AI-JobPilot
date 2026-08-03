@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "1.0",
+  "notice": "Synthetic demo analysis only. Scores are illustrative and were not produced from real candidate or platform data.",
+  "candidate": "林晓舟（虚构）",
+  "threshold": 75,
+  "results": [
+    {
+      "jobId": "demo-job-001",
+      "score": 92,
+      "decision": "recommended",
+      "deliveryStatus": "待确认",
+      "summary": "岗位与候选人的 AI 应用运营、知识库建设和跨团队推动经验高度匹配。",
+      "strengths": [
+        "具备 AI 助手场景运营和效果评估经验",
+        "有知识结构化、标签和测试集建设经历",
+        "目标城市、薪资和工作年限符合"
+      ],
+      "risks": [
+        "需要在面试中补充实际模型指标和业务结果"
+      ],
+      "greeting": "您好，我有企业级 AI 应用运营、知识库治理和用户反馈闭环经验，与该岗位的主要职责较为匹配，期待进一步沟通。"
+    },
+    {
+      "jobId": "demo-job-002",
+      "score": 86,
+      "decision": "recommended",
+      "deliveryStatus": "待确认",
+      "summary": "候选人的知识库运营和内容治理能力符合岗位要求，但岗位薪资上限略低于目标区间。",
+      "strengths": [
+        "具备知识分类、标签和版本管理经验",
+        "了解 RAG 测试集与问答优化",
+        "城市和行业方向匹配"
+      ],
+      "risks": [
+        "薪资区间需要进一步确认",
+        "岗位可能偏内容维护，需要确认产品运营占比"
+      ],
+      "greeting": "您好，我长期参与企业知识库治理、标签体系和 AI 问答优化，和岗位职责有较高匹配度，希望了解团队当前的知识库规模和运营重点。"
+    },
+    {
+      "jobId": "demo-job-003",
+      "score": 38,
+      "decision": "not_recommended",
+      "deliveryStatus": "AI不匹配",
+      "summary": "岗位核心是销售指标与客户拓展，和候选人的产品运营方向不一致。",
+      "strengths": [
+        "了解 AI 应用场景，能够支持方案沟通"
+      ],
+      "risks": [
+        "岗位为纯销售导向",
+        "需要频繁出差",
+        "工作城市和求职偏好不匹配"
+      ],
+      "greeting": ""
+    },
+    {
+      "jobId": "demo-job-004",
+      "score": 81,
+      "decision": "recommended",
+      "deliveryStatus": "待确认",
+      "summary": "B 端产品运营、用户培训和反馈闭环经历与岗位匹配，AI 专项经验是额外优势。",
+      "strengths": [
+        "有企业服务产品上线与用户培训经验",
+        "能够通过反馈和工单推动产品优化",
+        "城市、薪资和经验要求符合"
+      ],
+      "risks": [
+        "需要确认岗位是否包含较多客户成功或售后职责"
+      ],
+      "greeting": "您好，我有 B 端产品运营、功能上线、用户培训和反馈闭环经验，也参与过 AI 应用落地，希望进一步了解该岗位的核心产品和用户群体。"
+    }
+  ],
+  "dashboard": {
+    "totalJobs": 4,
+    "recommended": 3,
+    "pendingConfirm": 3,
+    "notRecommended": 1,
+    "delivered": 0,
+    "failed": 0
+  }
+}
