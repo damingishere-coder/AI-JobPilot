@@ -3,7 +3,7 @@ import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
     java
-    id("org.springframework.boot") version "3.5.7"
+    id("org.springframework.boot") version "4.1.0"
     // 使用 BOM(platform) 管理版本，不需要 dependency-management 插件
     // id("io.spring.dependency-management") version "1.1.6"
 }
@@ -22,7 +22,7 @@ repositories {
 
 dependencies {
     // 用 Spring Boot 官方 BOM 管理版本（推荐）
-    implementation(platform("org.springframework.boot:spring-boot-dependencies:3.5.7"))
+    implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 
     // 受 BOM 管理的依赖（不写版本）
     implementation("org.springframework.boot:spring-boot-starter-web")
@@ -42,7 +42,7 @@ dependencies {
     implementation("io.github.cdimascio:dotenv-java:2.2.0")
     implementation("jakarta.annotation:jakarta.annotation-api:2.1.1")
     implementation("org.apache.pdfbox:pdfbox:3.0.3")
-    developmentOnly("org.springframework.boot:spring-boot-devtools:3.5.7")
+    developmentOnly("org.springframework.boot:spring-boot-devtools:4.1.0")
 
     // Lombok（仅 Java 项目需要）
     compileOnly("org.projectlombok:lombok:1.18.42")
