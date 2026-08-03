@@ -5,13 +5,15 @@
 **一个本地运行、由用户确认后执行的 AI 求职工作台。**  
 采集岗位、分析匹配度、管理待确认任务，并持续记录投递结果。
 
-[English](README.en.md) · [快速开始](#快速开始) · [完整流程](TASK_FLOW.md) · [架构说明](ARCHITECTURE.md) · [路线图](ROADMAP.md) · [安全说明](SECURITY.md)
+[English](README.en.md) · [快速开始](#快速开始) · [下载与版本](docs/releases.md) · [文档中心](docs/README.md) · [路线图](ROADMAP.md) · [安全说明](SECURITY.md)
 
 [![Version](https://img.shields.io/badge/version-1.3.0-4f46e5.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](WINDOWS_SETUP.md)
 [![Java](https://img.shields.io/badge/Java-21-E76F00.svg)](build.gradle.kts)
 [![Node](https://img.shields.io/badge/Node.js-20.19%2B-339933.svg)](front/package.json)
 [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml)
+[![Release](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Non--Commercial-f59e0b.svg)](LICENSE)
 
 </div>
@@ -96,6 +98,24 @@ Boss 直聘和智联招聘支持 Chrome Bridge，复用你已登录的 Chrome �
 | 前程无忧 51job | 🟡 | ✅ | ✅ | 本地基础流程，仍在持续适配 |
 
 `✅` 表示当前主流程支持，`🟡` 表示已有基础能力但稳定性和覆盖范围仍需继续验证。
+
+## 下载与版本
+
+GitHub Release 工作流会在版本标签发布前自动执行后端测试、前端 lint 与构建、Chrome 扩展校验，并生成 SHA256 校验文件。
+
+当前自动化产物包括：
+
+```text
+AI-JobPilot-vX.Y.Z.jar
+AI-JobPilot-vX.Y.Z-chrome-extension.zip
+AI-JobPilot-vX.Y.Z-frontend-static.zip
+AI-JobPilot-vX.Y.Z-source.zip
+SHA256SUMS.txt
+```
+
+这些产物目前属于技术预览包，**还不是不依赖 Java、Node.js 和 pnpm 的完整 Windows 安装器**。详细说明、校验方法和发布边界见 [docs/releases.md](docs/releases.md)。
+
+正式版本发布后，可在 [GitHub Releases](https://github.com/damingishere-coder/AI-JobPilot/releases) 下载。
 
 ## 快速开始
 
@@ -218,13 +238,16 @@ db/getjobs.db
 - 项目不会绕过平台风控、登录验证、验证码或投递频率限制。
 - OpenClaw 通路仍属于实验能力，不是 Windows 主流程的必需项。
 - 当前以 Windows 单机使用为主，不是面向公网多人使用的 SaaS 服务。
+- Release 自动化已经建立，但完整 Windows 免开发环境安装器尚未完成。
 
 ## 文档
 
 | 文档 | 用途 |
 | --- | --- |
+| [docs/README.md](docs/README.md) | 使用、开发、安全、Demo 与版本发布的统一文档导航 |
 | [WINDOWS_SETUP.md](WINDOWS_SETUP.md) | Windows 安装、启动、验证和排错 |
 | [TASK_FLOW.md](TASK_FLOW.md) | 从简历配置到确认投递的完整流程 |
+| [docs/releases.md](docs/releases.md) | Release 产物、版本命名和 SHA256 校验 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构、模块职责与数据流 |
 | [SECURITY.md](SECURITY.md) | 本地数据、Cookie、API Key 与安全边界 |
 | [ROADMAP.md](ROADMAP.md) | 当前阶段、后续方向与优先事项 |
@@ -237,7 +260,7 @@ db/getjobs.db
 
 当前版本为 `1.3.0`，重点是巩固 Boss / 智联 Chrome Bridge 采集、AI 分析、人工确认、失败诊断和本地可维护性。
 
-后续计划包括统一平台适配层、继续组件化其他分析页面，以及在明确合规和人工确认边界后评估 AI 代聊、提醒和面试信息汇总能力。详见 [ROADMAP.md](ROADMAP.md)。
+仓库现已具备后端与前端 CI、Chrome 扩展校验、Docker 配置校验、CodeQL 安全扫描、Dependabot 依赖维护和 Release 产物校验。后续计划包括统一平台适配层、离线 Demo、完整 Windows 发行包，以及在明确合规和人工确认边界后评估 AI 代聊、提醒和面试信息汇总能力。详见 [ROADMAP.md](ROADMAP.md)。
 
 ## 参与贡献
 
