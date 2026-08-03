@@ -36,6 +36,26 @@ AI JobPilot 将这些步骤集中到一个本地工作台中：
 
 ![AI JobPilot workflow](docs/images/workflow.svg)
 
+## 产品预览
+
+> 以下为依据当前前端代码绘制的临时占位图。回家后截取真实页面时，直接用同名文件覆盖即可，README 无需再次修改。
+
+### 投递工作台
+
+![投递工作台占位截图](docs/images/screenshots/dashboard-placeholder.svg)
+
+### Boss 岗位扫描
+
+![Boss 岗位扫描占位截图](docs/images/screenshots/boss-scan-placeholder.svg)
+
+### AI 岗位分析与人工确认
+
+![Boss 投递分析占位截图](docs/images/screenshots/analysis-placeholder.svg)
+
+### AI 配置与求职档案
+
+![AI 配置占位截图](docs/images/screenshots/ai-config-placeholder.svg)
+
 ## 核心能力
 
 ### 多候选人求职配置
