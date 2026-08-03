@@ -1,0 +1,15 @@
+# Default owner for all repository changes
+* @damingishere-coder
+
+# Product areas
+/front/ @damingishere-coder
+/src/ @damingishere-coder
+/chrome-extension/ @damingishere-coder
+/docs/ @damingishere-coder
+/.github/ @damingishere-coder
+
+# Release and configuration files
+/build.gradle.kts @damingishere-coder
+/settings.gradle.kts @damingishere-coder
+/docker-compose.yml @damingishere-coder
+/.env.example @damingishere-coder
