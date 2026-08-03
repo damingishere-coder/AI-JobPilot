@@ -18,6 +18,10 @@
 
 ![AI JobPilot cover](docs/images/hero.svg)
 
+## 一图看懂 AI JobPilot
+
+![AI JobPilot 产品总览](docs/images/readme-overview.svg)
+
 > AI JobPilot 不会替你绕过登录验证、验证码或平台限制。岗位进入“待确认”后，仍需由你决定是否执行投递。
 
 ## 为什么使用 AI JobPilot
