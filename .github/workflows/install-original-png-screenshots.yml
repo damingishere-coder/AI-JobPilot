@@ -1,0 +1,61 @@
+name: Install original PNG screenshots
+
+on:
+  push:
+    branches:
+      - docs/real-product-screenshots
+    paths:
+      - ".github/png-payload/READY"
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout screenshot branch
+        uses: actions/checkout@v6
+        with:
+          ref: docs/real-product-screenshots
+          fetch-depth: 0
+
+      - name: Restore original PNG bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/images/screenshots
+
+          cat .github/png-payload/dashboard.part* | base64 --decode > docs/images/screenshots/dashboard.png
+          cat .github/png-payload/analysis.part* | base64 --decode > docs/images/screenshots/boss-analysis.png
+          cat .github/png-payload/ai-config.part* | base64 --decode > docs/images/screenshots/ai-config.png
+
+      - name: Verify exact original files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(sha256sum docs/images/screenshots/dashboard.png | cut -d' ' -f1)" = "4eff6ace794ed360d2b2a215e9c9948471b82c25480f3afc85bae9ea441ed790"
+          test "$(sha256sum docs/images/screenshots/boss-analysis.png | cut -d' ' -f1)" = "686ab83facb65960d684229c596c4dc049435f84120583854d6aaaff1aa00222"
+          test "$(sha256sum docs/images/screenshots/ai-config.png | cut -d' ' -f1)" = "9b6a5f77850b4dee9eb26bd1bc13b6fae572b8fa78d3f3c0a728e2bc31e1e1ac"
+
+          file docs/images/screenshots/dashboard.png
+          file docs/images/screenshots/boss-analysis.png
+          file docs/images/screenshots/ai-config.png
+          ls -lh docs/images/screenshots/*.png
+
+      - name: Remove temporary transport files
+        shell: bash
+        run: |
+          rm -rf .github/png-payload
+          rm -f .github/workflows/install-original-png-screenshots.yml
+
+      - name: Commit exact PNG files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "docs: install byte-identical original PNG screenshots"
+          git push origin HEAD:docs/real-product-screenshots
