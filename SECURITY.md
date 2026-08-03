@@ -81,6 +81,24 @@ AI JobPilot（投递牛马）默认作为个人电脑上的本地工具使用。
 - 不应把包含隐私数据的日志、数据库或浏览器缓存上传为 Artifact。
 - 新增第三方 Action 时，应优先锁定可信版本或提交 SHA。
 
+## 自动化安全检查
+
+仓库使用以下自动化检查降低常见风险：
+
+- **CodeQL**：分别分析 Java / Kotlin 与 JavaScript / TypeScript，包含扩展安全查询。
+- **Dependabot**：每周检查 Gradle、前端依赖和 GitHub Actions，默认不自动提交大版本升级。
+- **Chrome 扩展校验**：检查 Manifest V3、版本号、声明文件、脚本引用和 JavaScript 语法。
+- **CI 临时数据隔离**：测试只使用 GitHub Runner 的临时目录和 SQLite 测试数据库。
+- **Release 校验**：发布前执行测试、构建、扩展校验并生成 SHA256 校验文件。
+
+自动化扫描通过并不代表项目不存在安全问题。涉及账号会话、浏览器消息、文件路径、日志输出和外部请求的修改仍需人工审查。
+
+## Release 安全
+
+Release 产物不得包含 `.env`、数据库、日志、Chrome Profile、真实简历、Cookie、Token 或 API Key。
+
+发布后应使用 `SHA256SUMS.txt` 校验文件完整性。完整发布流程与校验方法见 [`docs/releases.md`](docs/releases.md)。
+
 ## 后续能力的安全要求
 
 AI 代聊 HR、消息提醒、面试信息汇总等能力上线前，必须明确：
