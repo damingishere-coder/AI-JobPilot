@@ -1,0 +1,43 @@
+name: Fetch temporary Gradio tunnel binary
+
+on:
+  push:
+    branches:
+      - chore/temp-frpc-binary
+    paths:
+      - ".github/frpc-ready"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v6
+        with:
+          ref: chore/temp-frpc-binary
+          fetch-depth: 0
+
+      - name: Download and verify frpc
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 \
+            https://cdn-media.huggingface.co/frpc-gradio-0.3/frpc_linux_amd64 \
+            -o frpc_linux_amd64_v0.3
+          echo "c791d1f047b41ff5885772fc4bf20b797c6059bbd82abb9e31de15e55d6a57c4  frpc_linux_amd64_v0.3" | sha256sum -c -
+          chmod +x frpc_linux_amd64_v0.3
+
+      - name: Remove temporary workflow and commit binary
+        shell: bash
+        run: |
+          rm -f .github/frpc-ready
+          rm -f .github/workflows/fetch-temp-frpc.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: stage temporary Gradio tunnel binary"
+          git push origin HEAD:chore/temp-frpc-binary
