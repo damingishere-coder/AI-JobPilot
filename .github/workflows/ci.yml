@@ -40,7 +40,28 @@ jobs:
           chmod +x ./gradlew
 
       - name: Run backend tests
-        run: ./gradlew test --no-daemon
+        run: ./gradlew test --no-daemon --stacktrace
+
+      - name: Print backend failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          echo "::group::JUnit XML reports"
+          find build/test-results/test -type f -name '*.xml' -print -exec cat {} \; 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::Playwright profile-lock test source"
+          find src/test -type f -name '*PlaywrightManagerProfileLockTest*' -print -exec sed -n '1,240p' {} \; 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::Related Playwright manager source"
+          grep -RIl --include='*.java' 'SingletonLock\|SingletonCookie\|SingletonSocket' src/main src/test 2>/dev/null \
+            | sort -u \
+            | while read -r file; do
+                echo "===== $file ====="
+                sed -n '1,320p' "$file"
+              done
+          echo "::endgroup::"
 
       - name: Build backend
         run: ./gradlew build --no-daemon
