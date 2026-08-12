@@ -40,23 +40,17 @@ AI JobPilot brings these steps into a local workspace:
 
 ## Product preview
 
-> These illustrations are temporary placeholders based on the current frontend code. Replace them with real screenshots later while keeping the same filenames, and the README links will continue to work.
-
 ### Application dashboard
 
-![Application dashboard placeholder](docs/images/screenshots/dashboard-placeholder.svg)
+![AI JobPilot application dashboard](docs/images/screenshots/dashboard.png)
 
-### Boss Zhipin collection
+### BOSS application analysis
 
-![Boss Zhipin collection placeholder](docs/images/screenshots/boss-scan-placeholder.svg)
-
-### AI analysis and human review
-
-![Boss analysis placeholder](docs/images/screenshots/analysis-placeholder.svg)
+![BOSS application analysis](docs/images/screenshots/boss-analysis.png)
 
 ### AI configuration and candidate profile
 
-![AI configuration placeholder](docs/images/screenshots/ai-config-placeholder.svg)
+![AI configuration and candidate profile](docs/images/screenshots/ai-config.png)
 
 ## Core capabilities
 
