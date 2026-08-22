@@ -26,23 +26,40 @@ public class HealthController {
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> health() {
         Map<String, Object> response = new HashMap<>();
-        boolean browserAvailable = playwrightManager.isInitialized();
+        boolean browserInitialized = playwrightManager.isInitialized();
+        boolean browserInitializing = playwrightManager.isInitializing();
+        String initializationError = playwrightManager.getLastInitializationError();
+        boolean browserFailed = !browserInitialized
+                && !browserInitializing
+                && initializationError != null
+                && !initializationError.isBlank();
         Map<String, Object> browserAutomation = new HashMap<>();
-        browserAutomation.put("available", browserAvailable);
-        browserAutomation.put("initialized", browserAvailable);
-        browserAutomation.put("initializing", playwrightManager.isInitializing());
-        browserAutomation.put("message", browserAvailable
-                ? "浏览器自动化运行正常"
-                : firstNonBlank(playwrightManager.getLastInitializationError(), "浏览器自动化暂不可用"));
+        browserAutomation.put("available", !browserFailed);
+        browserAutomation.put("initialized", browserInitialized);
+        browserAutomation.put("initializing", browserInitializing);
+        browserAutomation.put("message", browserMessage(
+                browserInitialized,
+                browserInitializing,
+                initializationError
+        ));
 
-        response.put("status", browserAvailable ? "UP" : "DEGRADED");
+        response.put("status", browserFailed ? "DEGRADED" : "UP");
         response.put("timestamp", System.currentTimeMillis());
         response.put("service", "GetJobs");
         response.put("browserAutomation", browserAutomation);
         return ResponseEntity.ok(response);
     }
 
-    private String firstNonBlank(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
+    private String browserMessage(boolean initialized, boolean initializing, String initializationError) {
+        if (initialized) {
+            return "浏览器自动化运行正常";
+        }
+        if (initializing) {
+            return "浏览器自动化正在初始化";
+        }
+        if (initializationError != null && !initializationError.isBlank()) {
+            return initializationError;
+        }
+        return "浏览器自动化尚未启动，将在使用招聘平台功能时按需初始化";
     }
 }

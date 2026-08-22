@@ -58,21 +58,72 @@ function Test-PortOpen {
     }
 }
 
-function Wait-ForPort {
+function Test-HttpEndpoint {
+    param([string]$Url)
+
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3
+        return $response.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
+function Wait-ForHttpEndpoint {
     param(
-        [int]$Port,
+        [string]$Url,
         [int]$TimeoutSeconds
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        if (Test-PortOpen -Port $Port) {
+        if (Test-HttpEndpoint -Url $Url) {
             return $true
         }
         Start-Sleep -Seconds 1
     } while ((Get-Date) -lt $deadline)
 
     return $false
+}
+
+function Get-PortOwner {
+    param([int]$Port)
+
+    try {
+        $connection = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop |
+            Select-Object -First 1
+        if ($null -eq $connection) {
+            return $null
+        }
+        return Get-CimInstance Win32_Process -Filter "ProcessId=$($connection.OwningProcess)" -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Get-PortOwnerDescription {
+    param([int]$Port)
+
+    $process = Get-PortOwner -Port $Port
+    if ($null -eq $process) {
+        return "无法读取占用进程信息"
+    }
+    return "PID $($process.ProcessId)，进程 $($process.Name)，命令 $($process.CommandLine)"
+}
+
+function Test-PortOwnedByProject {
+    param(
+        [int]$Port,
+        [string]$ProjectRoot,
+        [string]$ExpectedProcessPattern
+    )
+
+    $process = Get-PortOwner -Port $Port
+    if ($null -eq $process) {
+        return $false
+    }
+    return $process.Name -match $ExpectedProcessPattern -and
+        $process.CommandLine -like "*$ProjectRoot*"
 }
 
 function ConvertTo-PowerShellLiteral {
@@ -196,62 +247,77 @@ if (-not $env:LOGGING_FILE_NAME) {
 if (-not $env:APP_BROWSER_USER_DATA_DIR) {
     $env:APP_BROWSER_USER_DATA_DIR = $ChromeProfileDir
 }
+if (-not $env:APP_AUTO_OPEN_BROWSER) {
+    $env:APP_AUTO_OPEN_BROWSER = "false"
+}
+if (-not $env:APP_BROWSER_INITIALIZE_ON_STARTUP) {
+    $env:APP_BROWSER_INITIALIZE_ON_STARTUP = "false"
+}
+if (-not $env:APP_STATIC_SERVER_ENABLED) {
+    $env:APP_STATIC_SERVER_ENABLED = "false"
+}
 $env:JAVA_TOOL_OPTIONS = "-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 
 $BackendLog = Join-Path $LogDir "windows-backend.log"
 $FrontendLog = Join-Path $LogDir "windows-frontend.log"
 
-$projectRootLiteral = ConvertTo-PowerShellLiteral $ProjectRoot
-$frontDirLiteral = ConvertTo-PowerShellLiteral $FrontDir
 $backendLogLiteral = ConvertTo-PowerShellLiteral $BackendLog
 $frontendLogLiteral = ConvertTo-PowerShellLiteral $FrontendLog
-$javaToolOptionsLiteral = ConvertTo-PowerShellLiteral $env:JAVA_TOOL_OPTIONS
-$datasourceUrlLiteral = ConvertTo-PowerShellLiteral $env:SPRING_DATASOURCE_URL
-$loggingFileLiteral = ConvertTo-PowerShellLiteral $env:LOGGING_FILE_NAME
-$chromeProfileLiteral = ConvertTo-PowerShellLiteral $env:APP_BROWSER_USER_DATA_DIR
+$backendScriptLiteral = ConvertTo-PowerShellLiteral (Join-Path $ProjectRoot "scripts\run_backend.ps1")
+$frontendScriptLiteral = ConvertTo-PowerShellLiteral (Join-Path $ProjectRoot "scripts\run_frontend.ps1")
+$FrontendUrl = "http://127.0.0.1:6866/"
+$BackendHealthUrl = "http://127.0.0.1:8888/api/health"
 
 Write-Section "5. 启动前端"
-if (Test-PortOpen -Port 6866) {
-    Write-Host "前端端口 6866 已在监听，跳过重复启动。" -ForegroundColor Green
+if ((Test-HttpEndpoint -Url $FrontendUrl) -and
+    (Test-PortOwnedByProject -Port 6866 -ProjectRoot $ProjectRoot -ExpectedProcessPattern '^node(\.exe)?$')) {
+    Write-Host "当前项目的前端已经正常运行，跳过重复启动。" -ForegroundColor Green
+} elseif (Test-PortOpen -Port 6866) {
+    $owner = Get-PortOwnerDescription -Port 6866
+    Fail-WithHelp `
+        "前端端口 6866 已被占用，但不是当前项目可复用的健康前端：$owner" `
+        "请先停止占用 6866 的旧进程，再重新运行本启动器。"
 } else {
     $FrontendCommand = @"
-Set-Location -LiteralPath $frontDirLiteral
-& pnpm dev *>> $frontendLogLiteral
+& $frontendScriptLiteral *>> $frontendLogLiteral
+exit `$LASTEXITCODE
 "@
     $frontendProcess = Start-BackgroundPowerShell -Command $FrontendCommand
     Write-Host "前端启动进程：$($frontendProcess.Id)"
     Write-Host "前端日志：$FrontendLog"
 
-    if (-not (Wait-ForPort -Port 6866 -TimeoutSeconds 60)) {
+    if (-not (Wait-ForHttpEndpoint -Url $FrontendUrl -TimeoutSeconds 60)) {
         Fail-WithHelp `
-            "前端在 60 秒内未能监听 6866 端口。" `
+            "前端在 60 秒内未能通过 HTTP 健康检查。" `
             "请查看日志：$FrontendLog"
     }
-    Write-Host "前端端口 6866 已就绪。" -ForegroundColor Green
+    Write-Host "前端 HTTP 服务已就绪。" -ForegroundColor Green
 }
 
 Write-Section "6. 启动后端"
-if (Test-PortOpen -Port 8888) {
-    Write-Host "后端端口 8888 已在监听，跳过重复启动。" -ForegroundColor Green
+if ((Test-HttpEndpoint -Url $BackendHealthUrl) -and
+    (Test-PortOwnedByProject -Port 8888 -ProjectRoot $ProjectRoot -ExpectedProcessPattern '^java(\.exe)?$')) {
+    Write-Host "当前项目的后端已经正常运行，跳过重复启动。" -ForegroundColor Green
+} elseif (Test-PortOpen -Port 8888) {
+    $owner = Get-PortOwnerDescription -Port 8888
+    Fail-WithHelp `
+        "后端端口 8888 已被占用，但不是当前项目可复用的健康后端：$owner" `
+        "请先停止占用 8888 的旧进程，再重新运行本启动器。"
 } else {
     $BackendCommand = @"
-Set-Location -LiteralPath $projectRootLiteral
-`$env:JAVA_TOOL_OPTIONS = $javaToolOptionsLiteral
-`$env:SPRING_DATASOURCE_URL = $datasourceUrlLiteral
-`$env:LOGGING_FILE_NAME = $loggingFileLiteral
-`$env:APP_BROWSER_USER_DATA_DIR = $chromeProfileLiteral
-& (Join-Path $projectRootLiteral 'gradlew.bat') bootRun *>> $backendLogLiteral
+& $backendScriptLiteral *>> $backendLogLiteral
+exit `$LASTEXITCODE
 "@
     $backendProcess = Start-BackgroundPowerShell -Command $BackendCommand
     Write-Host "后端启动进程：$($backendProcess.Id)"
     Write-Host "后端日志：$BackendLog"
 
-    if (-not (Wait-ForPort -Port 8888 -TimeoutSeconds 90)) {
+    if (-not (Wait-ForHttpEndpoint -Url $BackendHealthUrl -TimeoutSeconds 120)) {
         Fail-WithHelp `
-            "后端在 90 秒内未能监听 8888 端口。" `
+            "后端在 120 秒内未能通过健康检查。" `
             "请查看日志：$BackendLog"
     }
-    Write-Host "后端端口 8888 已就绪。" -ForegroundColor Green
+    Write-Host "后端健康检查已通过。" -ForegroundColor Green
 }
 
 Write-Section "7. 启动完成"

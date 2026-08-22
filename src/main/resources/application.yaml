@@ -40,13 +40,16 @@ server:
   port: ${SERVER_PORT:8888}  # 后端 API 固定端口
 
 app:
-  auto-open-browser: ${APP_AUTO_OPEN_BROWSER:true}
+  auto-open-browser: ${APP_AUTO_OPEN_BROWSER:false}
+  static-server:
+    enabled: ${APP_STATIC_SERVER_ENABLED:true}
   paths:
     data-dir: ${APP_DATA_DIR:./data}
     output-dir: ${APP_OUTPUT_DIR:./output}
     cache-dir: ${APP_CACHE_DIR:./target/cache}
     log-dir: ${APP_LOG_DIR:./target/logs}
   browser:
+    initialize-on-startup: ${APP_BROWSER_INITIALIZE_ON_STARTUP:false}
     # Windows 示例：C:\Users\YourName\AppData\Local\AI-JobPilot\chrome-profile
     # macOS 示例：/Users/YourName/Library/Application Support/AI-JobPilot/chrome-profile
     user-data-dir: ${APP_BROWSER_USER_DATA_DIR:}

@@ -2,6 +2,7 @@ package com.getjobs.application.config;
 
 import org.apache.catalina.connector.Connector;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
@@ -26,9 +27,17 @@ public class StaticServerConfiguration {
     private static final String DIST_PATH = "src/main/resources/dist";
     private static final String STATIC_PATH = "src/main/resources/static";
 
+    @Value("${app.static-server.enabled:true}")
+    private boolean staticServerEnabled;
+
     @Bean
     public WebServerFactoryCustomizer<TomcatServletWebServerFactory> servletContainer() {
         return server -> {
+            if (!staticServerEnabled) {
+                log.info("已关闭后端静态资源附加端口，6866 端口将只由前端服务使用");
+                return;
+            }
+
             // 检查前端 dev 服务是否运行
             boolean hasFrontendDev = detectFrontendDevServer();
 

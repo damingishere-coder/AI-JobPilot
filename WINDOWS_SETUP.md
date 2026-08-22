@@ -35,7 +35,7 @@ chrome-extension
 你当前项目目录是：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot
+C:\Users\10578\Documents\New project 3
 ```
 
 后面的命令如果需要手动执行，都在这个目录或它的 `front` 子目录执行。
@@ -93,9 +93,9 @@ start_windows.bat
 3. 检查 Node.js 和 pnpm。
 4. 检查 `front\node_modules` 是否存在。
 5. 准备 `db`、`data`、`output`、`logs`、`target\cache` 等目录。
-6. 启动后端。
-7. 启动前端。
-8. 简单检查 8888 和 6866 端口。
+6. 先启动前端，再启动后端，避免 6866 端口冲突。
+7. 分别检查前端页面和后端健康接口，而不只是检查端口是否被占用。
+8. 默认不自动打开管理页或招聘网站。
 
 启动成功后打开：
 
@@ -114,6 +114,37 @@ http://localhost:8888/api/health
 ```json
 {"status":"UP","service":"GetJobs"}
 ```
+
+## 交给 Alter 启动
+
+不要让 Alter 启动根目录的 `start_windows.bat`。该文件用于人工双击，会在后台拉起两个服务；Alter 应分别托管下面两个前台脚本。
+
+### Frontend 组件
+
+```text
+脚本：C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+参数：-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\10578\Documents\New project 3\scripts\run_frontend.ps1"
+工作目录：C:\Users\10578\Documents\New project 3
+健康地址：http://127.0.0.1:6866
+```
+
+### Backend 组件
+
+```text
+脚本：C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+参数：-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Users\10578\Documents\New project 3\scripts\run_backend.ps1"
+工作目录：C:\Users\10578\Documents\New project 3
+健康地址：http://127.0.0.1:8888/api/health
+```
+
+如果你只想手动运行脚本，也可以在 PowerShell 中分别执行：
+
+```powershell
+.\scripts\run_frontend.ps1
+.\scripts\run_backend.ps1
+```
+
+两个组件可以同时交给 Alter 启动。Backend 脚本会关闭后端对 6866 的额外占用，因此前后端不再抢端口。
 
 ## 第一次启动前安装前端依赖
 
@@ -156,7 +187,7 @@ http://localhost:8888/api/health
 另开一个 PowerShell 窗口，进入前端目录：
 
 ```powershell
-cd C:\Users\10578\Documents\New project 3\AI-JobPilot\front
+cd "C:\Users\10578\Documents\New project 3\front"
 pnpm dev
 ```
 
@@ -183,7 +214,7 @@ Boss 和智联建议使用 Chrome Bridge。
 5. 选择：
 
 ```text
-C:\Users\10578\Documents\New project 3\AI-JobPilot\chrome-extension
+C:\Users\10578\Documents\New project 3\chrome-extension
 ```
 
 6. 回到 `http://localhost:6866` 并刷新页面。
