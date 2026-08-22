@@ -5,32 +5,17 @@ import { BiPlus, BiRefresh, BiTrash, BiUserCircle } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { API_BASE } from '@/lib/api'
+import { API_BASE, type ApiEnvelope, friendlyApiError, readApiResponse } from '@/lib/api'
 
-type ApiResponse = {
-  success?: boolean
-  data?: unknown
+type ApiResponse = ApiEnvelope<unknown> & {
   current?: unknown
-  message?: string
   impactCounts?: Record<string, number>
   totalRelatedCount?: number
   forceRequired?: boolean
 }
 
 const parseApiResponse = async (response: Response, fallback: string): Promise<ApiResponse> => {
-  let result: ApiResponse | null = null
-  try {
-    result = await response.json()
-  } catch {
-    result = null
-  }
-  if (response.status === 404) {
-    throw new Error('档案接口暂不可用，请重启后端服务后再试')
-  }
-  if (!response.ok || result?.success === false) {
-    throw new Error(result?.message || fallback)
-  }
-  return result || {}
+  return await readApiResponse<unknown>(response, fallback) as ApiResponse
 }
 
 const parseDeleteResponse = async (response: Response, fallback: string): Promise<ApiResponse> => {
@@ -77,9 +62,11 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
   const [currentId, setCurrentId] = useState('')
   const [newName, setNewName] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const loadProfiles = async () => {
     setLoading(true)
+    setLoadError('')
     try {
       const response = await fetch(`${API_BASE}/api/profiles`)
       const result = await parseApiResponse(response, '档案加载失败')
@@ -93,7 +80,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
         setCurrentId('')
       }
     } catch (error) {
-      console.error('加载档案失败:', error)
+      setLoadError(friendlyApiError(error, '档案加载失败'))
     } finally {
       setLoading(false)
     }
@@ -228,6 +215,11 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       <Button type="button" size="sm" variant="ghost" onClick={loadProfiles} disabled={loading} title="刷新档案列表">
         <BiRefresh className="mr-1" /> 刷新
       </Button>
+      {loadError ? (
+        <span role="status" aria-live="polite" className="text-xs font-medium text-amber-700 dark:text-amber-300">
+          {loadError}
+        </span>
+      ) : null}
     </div>
   )
 }
