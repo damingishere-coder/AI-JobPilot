@@ -36,7 +36,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       BASE_URL: ${BASE_URL:-}
       API_KEY: ${API_KEY:-}
-      MODEL: ${MODEL:-}
+      MODEL: ${MODEL:-deepseek-v4-flash}
     volumes:
       - .:/workspace
       - gradle-cache:/root/.gradle

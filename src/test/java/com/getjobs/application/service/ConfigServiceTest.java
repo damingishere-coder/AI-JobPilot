@@ -70,7 +70,7 @@ class ConfigServiceTest {
         when(configMapper.selectOne(any())).thenReturn(existing);
         when(configMapper.updateById(any(ConfigEntity.class))).thenReturn(1);
 
-        int count = configService.batchUpdateConfigs(Map.of("MODEL", "deepseek-chat"));
+        int count = configService.batchUpdateConfigs(Map.of("MODEL", "deepseek-v4-flash"));
 
         ArgumentCaptor<ConfigEntity> captor = ArgumentCaptor.forClass(ConfigEntity.class);
         verify(configMapper).updateById(captor.capture());
@@ -78,7 +78,7 @@ class ConfigServiceTest {
         ConfigEntity updated = captor.getValue();
         assertThat(count).isEqualTo(1);
         assertThat(updated.getConfigKey()).isEqualTo("MODEL");
-        assertThat(updated.getConfigValue()).isEqualTo("deepseek-chat");
+        assertThat(updated.getConfigValue()).isEqualTo("deepseek-v4-flash");
         assertThat(updated.getUpdatedAt()).isNotNull();
     }
 
@@ -90,14 +90,14 @@ class ConfigServiceTest {
                 .thenReturn(blankConfig("MODEL"));
         when(environment.getProperty("BASE_URL")).thenReturn("https://api.deepseek.com");
         when(environment.getProperty("API_KEY")).thenReturn("env-api-key");
-        when(environment.getProperty("MODEL")).thenReturn("deepseek-chat");
+        when(environment.getProperty("MODEL")).thenReturn("deepseek-v4-flash");
 
         Map<String, String> configs = configService.getAiConfigs();
 
         assertThat(configs)
                 .containsEntry("BASE_URL", "https://api.deepseek.com")
                 .containsEntry("API_KEY", "env-api-key")
-                .containsEntry("MODEL", "deepseek-chat");
+                .containsEntry("MODEL", "deepseek-v4-flash");
     }
 
     @Test
