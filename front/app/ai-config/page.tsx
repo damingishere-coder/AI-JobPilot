@@ -1,14 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { BiSave, BiBrain, BiInfoCircle, BiUpload } from 'react-icons/bi'
+import { BiSave, BiBrain, BiInfoCircle, BiRefresh, BiUpload } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import PageHeader from '@/app/components/PageHeader'
 import ProfileSwitcher, { type Profile } from '@/app/components/ProfileSwitcher'
-import { API_BASE } from '@/lib/api'
+import { API_BASE, type ApiEnvelope, friendlyApiError, readApiResponse } from '@/lib/api'
 
 const MAX_RESUME_FILE_SIZE = 30 * 1024 * 1024
 
@@ -40,6 +40,24 @@ type SavedResume = {
   parseMessage?: string
 }
 
+type ProfileAwareResponse<T> = ApiEnvelope<T> & {
+  currentProfile?: Profile | null
+  hasProfile?: boolean
+}
+
+type BossConfigResponse = ProfileAwareResponse<never> & {
+  config?: {
+    enableAi?: unknown
+    sayHi?: string
+  }
+}
+
+type GeneratedAiConfig = {
+  introduce?: string
+  prompt?: string
+  sayHi?: string
+}
+
 type SaveOptions = {
   nextAiConfig?: AiConfig
   nextResumeText?: string
@@ -65,6 +83,7 @@ export default function AiConfigPage() {
   const [generating, setGenerating] = useState(false)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [enableAi, setEnableAi] = useState<number>(0)
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
@@ -90,6 +109,7 @@ export default function AiConfigPage() {
   }
 
   const reloadCurrentData = async () => {
+    setLoadError('')
     await Promise.all([fetchAiConfig(), fetchBossConfig(), fetchResume(), fetchPriorityCompanies()])
     setHasUnsavedChanges(false)
     setResumeDirty(false)
@@ -102,8 +122,7 @@ export default function AiConfigPage() {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       })
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
-      const result = await response.json()
+      const result = await readApiResponse<AiConfig>(response, 'AI配置加载失败') as ProfileAwareResponse<AiConfig>
       if (result.success && result.data) {
         setAiConfig({
           introduce: result.data.introduce || '',
@@ -115,7 +134,7 @@ export default function AiConfigPage() {
       setCurrentProfile(result.currentProfile || null)
       setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
-      console.error('加载AI配置失败:', error)
+      setLoadError((current) => current || friendlyApiError(error, 'AI配置加载失败'))
       setAiConfig({ introduce: '', prompt: '' })
     }
   }
@@ -123,7 +142,7 @@ export default function AiConfigPage() {
   const fetchResume = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/ai/resume`)
-      const result = await response.json()
+      const result = await readApiResponse<SavedResume>(response, '简历加载失败') as ProfileAwareResponse<SavedResume>
       if (result.success && result.data) {
         setResumeText(result.data.resumeText || '')
         setResumeMeta({
@@ -138,7 +157,7 @@ export default function AiConfigPage() {
       setCurrentProfile(result.currentProfile || null)
       setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
-      console.error('加载简历失败:', error)
+      setLoadError((current) => current || friendlyApiError(error, '简历加载失败'))
       setResumeText('')
       setResumeMeta(null)
     }
@@ -147,7 +166,7 @@ export default function AiConfigPage() {
   const fetchPriorityCompanies = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/ai/companies/priority`)
-      const result = await response.json()
+      const result = await readApiResponse<PriorityCompany[]>(response, '优先公司加载失败') as ProfileAwareResponse<PriorityCompany[]>
       if (result.success && Array.isArray(result.data)) {
         setPriorityCompanies(result.data.map((it: PriorityCompany) => it.companyName).filter(Boolean).join('\n'))
       } else {
@@ -156,7 +175,7 @@ export default function AiConfigPage() {
       setCurrentProfile(result.currentProfile || null)
       setHasProfile(Boolean(result.hasProfile || result.currentProfile))
     } catch (error) {
-      console.error('加载优先公司失败:', error)
+      setLoadError((current) => current || friendlyApiError(error, '优先公司加载失败'))
       setPriorityCompanies('')
     }
   }
@@ -167,29 +186,18 @@ export default function AiConfigPage() {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       })
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
-      const result = await response.json()
+      const result = await readApiResponse<never>(response, 'Boss配置加载失败') as BossConfigResponse
       setEnableAi(parseEnableAi(result?.config?.enableAi))
       setSayHi(result?.config?.sayHi || '')
       setCurrentProfile(result?.currentProfile || null)
       setHasProfile(Boolean(result?.hasProfile || result?.currentProfile))
-    } catch (e) {
-      console.error('加载Boss AI配置失败:', e)
+    } catch (error) {
+      setLoadError((current) => current || friendlyApiError(error, 'Boss配置加载失败'))
     }
   }
 
-  const parseJsonResponse = async (response: Response, fallback: string) => {
-    try {
-      const result = await response.json()
-      if (!response.ok || result?.success === false) {
-        throw new Error(result?.message || fallback)
-      }
-      return result
-    } catch (error) {
-      if (error instanceof Error) throw error
-      throw new Error(fallback)
-    }
-  }
+  const parseJsonResponse = async <T,>(response: Response, fallback: string) =>
+    readApiResponse<T>(response, fallback)
 
   const toggleEnableAi = async () => {
     if (!hasProfile) {
@@ -204,12 +212,11 @@ export default function AiConfigPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enableAi: next }),
       })
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+      await readApiResponse<unknown>(response, 'AI开关保存失败')
       setStatusMessage('AI开关已保存')
-    } catch (e) {
-      console.error('更新enable_ai失败:', e)
+    } catch (error) {
       setEnableAi((prev) => (prev ? 0 : 1))
-      alert('切换失败，请检查后端服务连接')
+      alert(friendlyApiError(error, '切换失败，请检查后端服务连接'))
     }
   }
 
@@ -219,7 +226,7 @@ export default function AiConfigPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(configToSave),
     })
-    const result = await parseJsonResponse(response, 'AI配置保存失败')
+    const result = await parseJsonResponse<AiConfig>(response, 'AI配置保存失败')
     return result.data
   }
 
@@ -239,7 +246,7 @@ export default function AiConfigPage() {
       method: 'POST',
       body: resumeForm,
     })
-    const result = await parseJsonResponse(response, '简历保存失败')
+    const result = await parseJsonResponse<SavedResume>(response, '简历保存失败')
     if (result.data) {
       setResumeText(result.data.resumeText || textToSave)
       setResumeMeta({
@@ -265,7 +272,7 @@ export default function AiConfigPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(companies),
     })
-    const result = await parseJsonResponse(response, '优先公司保存失败')
+    const result = await parseJsonResponse<PriorityCompany[]>(response, '优先公司保存失败')
     return result.data
   }
 
@@ -275,8 +282,7 @@ export default function AiConfigPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sayHi: nextSayHi, enableAi }),
     })
-    if (!response.ok) throw new Error('Boss默认打招呼语保存失败')
-    return response.json()
+    await readApiResponse<unknown>(response, 'Boss默认打招呼语保存失败')
   }
 
   const saveEverything = async ({
@@ -309,8 +315,7 @@ export default function AiConfigPage() {
     try {
       await saveEverything()
     } catch (error) {
-      console.error('保存AI配置失败:', error)
-      alert(error instanceof Error ? error.message : '保存失败，请检查服务器连接！')
+      alert(friendlyApiError(error, '保存失败，请检查服务器连接！'))
     } finally {
       setLoading(false)
     }
@@ -336,7 +341,7 @@ export default function AiConfigPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resumeText: latestResumeText }),
       })
-      const result = await parseJsonResponse(response, 'AI配置生成失败')
+      const result = await parseJsonResponse<GeneratedAiConfig>(response, 'AI配置生成失败')
 
       const nextSayHi = result.data?.sayHi || ''
       const nextAiConfig = {
@@ -358,8 +363,7 @@ export default function AiConfigPage() {
       setStatusMessage('已提交简历并生成AI配置')
       alert('已提交简历，并生成打招呼话术和AI配置！')
     } catch (error) {
-      console.error('提交简历并生成AI配置失败:', error)
-      alert(error instanceof Error ? error.message : '提交简历并生成AI配置失败')
+      alert(friendlyApiError(error, '提交简历并生成AI配置失败'))
     } finally {
       setGenerating(false)
     }
@@ -422,6 +426,15 @@ export default function AiConfigPage() {
           reloadCurrentData()
         }}
       />
+
+      {loadError ? (
+        <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>{loadError}</span>
+          <Button type="button" size="sm" variant="ghost" onClick={reloadCurrentData}>
+            <BiRefresh className="mr-1" /> 重试加载
+          </Button>
+        </div>
+      ) : null}
 
       {!hasProfile ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

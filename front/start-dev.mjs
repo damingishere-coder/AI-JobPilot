@@ -19,10 +19,11 @@ const config = require(configPath);
 const port = config.port || 3000;
 const hostname = config.development?.hostname || 'localhost';
 
-// 启动Next.js开发服务器
-const nextDev = spawn('npx', ['next', 'dev', '-p', port.toString(), '-H', hostname], {
+// 直接使用当前项目安装的 Next.js CLI，避免 npx/shell 产生脱离托管的中间进程。
+const nextCli = require.resolve('next/dist/bin/next');
+const nextDev = spawn(process.execPath, [nextCli, 'dev', '-p', port.toString(), '-H', hostname], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
   env: {
     ...process.env,
     API_BASE_URL: config.api?.baseUrl ?? '',

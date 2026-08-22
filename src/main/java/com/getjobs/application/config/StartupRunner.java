@@ -26,8 +26,11 @@ public class StartupRunner implements ApplicationRunner {
     @Value("${server.port:8888}")
     private int backendPort;
 
-    @Value("${app.auto-open-browser:true}")
+    @Value("${app.auto-open-browser:false}")
     private boolean autoOpenBrowser;
+
+    @Value("${app.browser.initialize-on-startup:false}")
+    private boolean initializeBrowserOnStartup;
 
     private static final int FRONTEND_PORT = 6866;
     private static final String FRONTEND_URL = "http://localhost:" + FRONTEND_PORT;
@@ -38,22 +41,27 @@ public class StartupRunner implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
-        String urlToOpen = determineUrlToOpen();
-        if (urlToOpen != null && autoOpenBrowser) {
-            openBrowser(urlToOpen);
-        } else if (urlToOpen != null) {
-            log.info("已关闭自动打开浏览器，请手动访问管理页面: {}", urlToOpen);
+        if (autoOpenBrowser) {
+            String urlToOpen = determineUrlToOpen();
+            if (urlToOpen != null) {
+                openBrowser(urlToOpen);
+            } else {
+                log.info("未找到可用的管理页面，跳过自动打开浏览器");
+            }
         } else {
-            log.info("未找到可用的管理页面，跳过自动打开浏览器");
+            log.info("已关闭自动打开管理页面，请手动访问 http://localhost:{}", FRONTEND_PORT);
         }
 
-        // 在尝试打开管理页面之后，初始化 Playwright（满足“先打开管理页，再实例化”）
-        try {
-            playwrightManager.init();
-        } catch (Exception e) {
-            // 浏览器自动化属于可降级能力。初始化失败时保留配置、岗位数据和 AI 接口，
-            // 后续真正使用 Playwright 时仍可再次尝试初始化。
-            log.error("Playwright 初始化失败，后台将以降级模式继续运行: {}", e.getMessage(), e);
+        if (initializeBrowserOnStartup) {
+            try {
+                playwrightManager.init();
+            } catch (Exception e) {
+                // 浏览器自动化属于可降级能力。初始化失败时保留配置、岗位数据和 AI 接口，
+                // 后续真正使用 Playwright 时仍可再次尝试初始化。
+                log.error("Playwright 初始化失败，后台将以降级模式继续运行: {}", e.getMessage(), e);
+            }
+        } else {
+            log.info("已关闭启动时浏览器自动化初始化；使用招聘平台功能时将按需启动浏览器");
         }
     }
 
