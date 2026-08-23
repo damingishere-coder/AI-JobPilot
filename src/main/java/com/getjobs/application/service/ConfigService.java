@@ -107,17 +107,28 @@ public class ConfigService {
     }
 
     /**
-     * 获取AI调用所需的基础配置（BASE_URL, API_KEY, MODEL）
-     * @return 配置Map，包含 BASE_URL, API_KEY, MODEL 键
+     * 获取 AI 调用配置。默认使用本机 Codex CLI；选择 api 时才要求远程地址和密钥。
      */
     public Map<String, String> getAiConfigs() {
         Map<String, String> result = new HashMap<>();
-        String baseUrl = requireAiConfigValue("BASE_URL");
-        String apiKey = requireAiConfigValue("API_KEY");
-        String model = requireAiConfigValue("MODEL");
-        result.put("BASE_URL", baseUrl);
-        result.put("API_KEY", apiKey);
-        result.put("MODEL", model);
+        String provider = optionalAiConfigValue("AI_PROVIDER", "codex").toLowerCase();
+        if (!"codex".equals(provider) && !"api".equals(provider) && !"remote".equals(provider)) {
+            throw new IllegalStateException("AI_PROVIDER 只能是 codex 或 api");
+        }
+        result.put("AI_PROVIDER", "remote".equals(provider) ? "api" : provider);
+        result.put("CODEX_PATH", optionalAiConfigValue("CODEX_PATH", "codex"));
+        result.put("CODEX_HOME", optionalAiConfigValue("CODEX_HOME", ""));
+        result.put("CODEX_MODEL", optionalAiConfigValue("CODEX_MODEL", "gpt-5.6-sol"));
+        result.put("CODEX_TIMEOUT_SECONDS", optionalAiConfigValue("CODEX_TIMEOUT_SECONDS", "300"));
+        if ("codex".equals(provider)) {
+            result.put("BASE_URL", optionalAiConfigValue("BASE_URL", ""));
+            result.put("API_KEY", optionalAiConfigValue("API_KEY", ""));
+            result.put("MODEL", optionalAiConfigValue("MODEL", ""));
+        } else {
+            result.put("BASE_URL", requireAiConfigValue("BASE_URL"));
+            result.put("API_KEY", requireAiConfigValue("API_KEY"));
+            result.put("MODEL", requireAiConfigValue("MODEL"));
+        }
         return result;
     }
 
@@ -221,12 +232,20 @@ public class ConfigService {
         return value.trim();
     }
 
+    private String optionalAiConfigValue(String configKey, String defaultValue) {
+        String value = getConfigValue(configKey);
+        if (value == null || value.isBlank()) {
+            value = environment.getProperty(configKey);
+        }
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
     private String resolveConfigCategory(String configKey) {
         if (configKey == null) {
             return "general";
         }
         return switch (configKey) {
-            case "BASE_URL", "API_KEY", "MODEL" -> "ai";
+            case "AI_PROVIDER", "BASE_URL", "API_KEY", "MODEL", "CODEX_PATH", "CODEX_HOME", "CODEX_MODEL", "CODEX_TIMEOUT_SECONDS" -> "ai";
             case "HOOK_URL", "BOT_IS_SEND" -> "notification";
             default -> "general";
         };
@@ -237,9 +256,14 @@ public class ConfigService {
             return "运行配置";
         }
         return switch (configKey) {
+            case "AI_PROVIDER" -> "AI 调用方式（Codex CLI 或远程 API）";
             case "BASE_URL" -> "AI 服务地址";
             case "API_KEY" -> "AI 服务密钥";
             case "MODEL" -> "AI 模型名称";
+            case "CODEX_PATH" -> "Codex CLI 可执行文件";
+            case "CODEX_HOME" -> "Codex 登录配置目录";
+            case "CODEX_MODEL" -> "Codex 模型名称";
+            case "CODEX_TIMEOUT_SECONDS" -> "Codex 单任务超时秒数";
             case "HOOK_URL" -> "企业微信 Webhook 地址";
             case "BOT_IS_SEND" -> "企业微信通知发送开关";
             default -> "运行配置";

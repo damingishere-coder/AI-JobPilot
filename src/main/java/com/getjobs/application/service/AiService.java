@@ -36,6 +36,7 @@ public class AiService {
     private final ConfigService configService;
     private final AiMapper aiMapper;
     private final ProfileService profileService;
+    private final CodexCliService codexCliService;
     private static final String DEFAULT_GREETING_PROMPT_TEMPLATE =
             "我目前在找工作，%s。我的期望岗位方向是【%s】，我需要投递的岗位名称是【%s】，岗位要求是【%s】。" +
             "如果岗位和我的经历基本符合，请生成一段给HR的中文打招呼文本；如果完全不符合，只返回false。" +
@@ -49,6 +50,9 @@ public class AiService {
     public String sendRequest(String content) {
         // 读取并校验配置
         var cfg = configService.getAiConfigs();
+        if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
+            return codexCliService.generateText(content, cfg);
+        }
         String baseUrl = cfg.get("BASE_URL");
         String apiKey = cfg.get("API_KEY");
         String model = cfg.get("MODEL");
@@ -146,6 +150,9 @@ public class AiService {
             throw new IllegalArgumentException("图片内容不能为空");
         }
         var cfg = configService.getAiConfigs();
+        if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
+            return codexCliService.extractResumeFromImage(imageBytes, mimeType, cfg);
+        }
         String baseUrl = cfg.get("BASE_URL");
         String apiKey = cfg.get("API_KEY");
         String model = cfg.get("MODEL");
