@@ -12,6 +12,10 @@ import { API_BASE } from '@/lib/api'
 export default function EnvConfig() {
   const [envConfig, setEnvConfig] = useState({
     hookUrl: '',
+    aiProvider: 'codex',
+    codexPath: 'codex',
+    codexModel: 'gpt-5.6-sol',
+    codexTimeoutSeconds: '300',
     baseUrl: '',
     apiKey: '',
     model: '',
@@ -44,6 +48,10 @@ export default function EnvConfig() {
       if (result.success && result.data) {
         setEnvConfig({
           hookUrl: result.data.HOOK_URL || '',
+          aiProvider: result.data.AI_PROVIDER === 'api' || result.data.AI_PROVIDER === 'remote' ? 'api' : 'codex',
+          codexPath: result.data.CODEX_PATH || 'codex',
+          codexModel: result.data.CODEX_MODEL || 'gpt-5.6-sol',
+          codexTimeoutSeconds: result.data.CODEX_TIMEOUT_SECONDS || '300',
           baseUrl: result.data.BASE_URL || '',
           apiKey: result.data.API_KEY || '',
           model: result.data.MODEL || '',
@@ -72,6 +80,10 @@ export default function EnvConfig() {
 
       const configMap = {
         HOOK_URL: envConfig.hookUrl,
+        AI_PROVIDER: envConfig.aiProvider,
+        CODEX_PATH: envConfig.codexPath,
+        CODEX_MODEL: envConfig.codexModel,
+        CODEX_TIMEOUT_SECONDS: envConfig.codexTimeoutSeconds,
         BASE_URL: envConfig.baseUrl,
         API_KEY: envConfig.apiKey,
         MODEL: envConfig.model,
@@ -177,16 +189,45 @@ export default function EnvConfig() {
           </CardContent>
         </Card>
 
-        {/* API 配置 */}
+        {/* AI 调用方式 */}
         <Card className="animate-in fade-in slide-in-from-bottom-6 duration-700">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <BiCodeAlt className="text-primary" />
-              API 配置
+              AI 调用方式
             </CardTitle>
-            <CardDescription>配置 API 服务器地址和使用的 AI 模型</CardDescription>
+            <CardDescription>本机默认复用 Codex/ChatGPT 登录态；需要时仍可手动切回远程 API</CardDescription>
           </CardHeader>
           <CardContent>
+            <div className="mb-6 space-y-2">
+              <Label htmlFor="aiProvider">当前 Provider</Label>
+              <select
+                id="aiProvider"
+                value={envConfig.aiProvider}
+                onChange={(e) => setEnvConfig({ ...envConfig, aiProvider: e.target.value })}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="codex">Codex CLI（推荐，不使用 API Key）</option>
+                <option value="api">远程 API（DeepSeek/OpenAI-compatible）</option>
+              </select>
+            </div>
+
+            <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-2">
+                <Label htmlFor="codexPath">Codex 可执行文件</Label>
+                <Input id="codexPath" value={envConfig.codexPath} onChange={(e) => setEnvConfig({ ...envConfig, codexPath: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codexModel">Codex 模型</Label>
+                <Input id="codexModel" value={envConfig.codexModel} onChange={(e) => setEnvConfig({ ...envConfig, codexModel: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codexTimeout">单任务超时（秒）</Label>
+                <Input id="codexTimeout" type="number" min="10" max="1800" value={envConfig.codexTimeoutSeconds} onChange={(e) => setEnvConfig({ ...envConfig, codexTimeoutSeconds: e.target.value })} />
+              </div>
+            </div>
+
+            <p className="mb-4 text-xs text-muted-foreground">下面的远程 API 配置仅在 Provider 选择“远程 API”时使用。</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <Label htmlFor="baseUrl">API Base URL</Label>

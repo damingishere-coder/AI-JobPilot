@@ -84,20 +84,35 @@ class ConfigServiceTest {
 
     @Test
     void getAiConfigsFallsBackToEnvironmentWhenDatabaseValueIsBlank() {
-        when(configMapper.selectOne(any()))
-                .thenReturn(blankConfig("BASE_URL"))
-                .thenReturn(blankConfig("API_KEY"))
-                .thenReturn(blankConfig("MODEL"));
-        when(environment.getProperty("BASE_URL")).thenReturn("https://api.deepseek.com");
-        when(environment.getProperty("API_KEY")).thenReturn("env-api-key");
-        when(environment.getProperty("MODEL")).thenReturn("deepseek-chat");
+        when(configMapper.selectOne(any())).thenReturn(null);
+        Map<String, String> environmentValues = Map.of(
+                "AI_PROVIDER", "api",
+                "BASE_URL", "https://api.deepseek.com",
+                "API_KEY", "env-api-key",
+                "MODEL", "deepseek-chat"
+        );
+        when(environment.getProperty(any())).thenAnswer(invocation -> environmentValues.get(invocation.getArgument(0)));
 
         Map<String, String> configs = configService.getAiConfigs();
 
         assertThat(configs)
                 .containsEntry("BASE_URL", "https://api.deepseek.com")
                 .containsEntry("API_KEY", "env-api-key")
-                .containsEntry("MODEL", "deepseek-chat");
+                .containsEntry("MODEL", "deepseek-chat")
+                .containsEntry("AI_PROVIDER", "api");
+    }
+
+    @Test
+    void codexIsDefaultAndDoesNotRequireApiKey() {
+        when(configMapper.selectOne(any())).thenReturn(null);
+
+        Map<String, String> configs = configService.getAiConfigs();
+
+        assertThat(configs)
+                .containsEntry("AI_PROVIDER", "codex")
+                .containsEntry("CODEX_PATH", "codex")
+                .containsEntry("CODEX_MODEL", "gpt-5.6-sol")
+                .containsEntry("API_KEY", "");
     }
 
     @Test
@@ -112,10 +127,4 @@ class ConfigServiceTest {
         assertThat(output).doesNotContain("sk-real-secret");
     }
 
-    private ConfigEntity blankConfig(String key) {
-        ConfigEntity entity = new ConfigEntity();
-        entity.setConfigKey(key);
-        entity.setConfigValue(" ");
-        return entity;
-    }
 }
