@@ -108,7 +108,7 @@ public class BossAnalyticsController {
     }
 
     /**
-     * 刷新 boss_data（列顺序检查 + VACUUM）
+     * 刷新 Boss 数据视图；只重新读取统计，不执行 Schema 或数据库维护操作。
      */
     @GetMapping("/reload")
     public Map<String, Object> reload() {

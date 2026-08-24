@@ -61,6 +61,9 @@ chrome-profile/
 
 # Database files
 db/
+!src/main/java/db/
+!src/main/java/db/migration/
+!src/main/java/db/migration/*.java
 !src/main/resources/db/
 !src/main/resources/db/migration/
 !src/main/resources/db/migration/*.sql

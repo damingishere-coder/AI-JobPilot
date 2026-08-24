@@ -528,119 +528,6 @@ public class BossService {
     // ==================== boss_data（岗位数据）相关方法 ====================
 
     /**
-     * 确保 boss_data 表的列顺序以 encrypt_id、encrypt_user_id 开头。
-     * 若不满足，则进行一次在线迁移：创建新表、复制数据、替换旧表。
-     * 该迁移会重建 boss_data，比普通补列风险更高，暂时保留在业务刷新入口中按需执行。
-     */
-    public void ensureBossDataColumnOrder() {
-        java.sql.Connection conn = null;
-        try {
-            conn = dataSource.getConnection();
-            try (java.sql.Statement stmt = conn.createStatement()) {
-                java.util.List<String> cols = new java.util.ArrayList<>();
-                try (java.sql.ResultSet rs = stmt.executeQuery("PRAGMA table_info('boss_data')")) {
-                    while (rs.next()) {
-                        cols.add(rs.getString("name"));
-                    }
-                }
-                if (cols.isEmpty()) return; // 表不存在或无列
-                boolean needMigrate = true;
-                if (cols.size() >= 3) {
-                    String c0 = cols.get(0) == null ? "" : cols.get(0).toLowerCase();
-                    String c1 = cols.get(1) == null ? "" : cols.get(1).toLowerCase();
-                    String c2 = cols.get(2) == null ? "" : cols.get(2).toLowerCase();
-                    String c3 = cols.size() > 3 && cols.get(3) != null ? cols.get(3).toLowerCase() : "";
-                    // 允许第一列是 id 或 encrypt_id；档案模式下 profile_id 可以紧跟 id。
-                    if ("id".equals(c0) && "encrypt_id".equals(c1) && "encrypt_user_id".equals(c2)) {
-                        needMigrate = false;
-                    } else if ("id".equals(c0) && "profile_id".equals(c1) && "encrypt_id".equals(c2) && "encrypt_user_id".equals(c3)) {
-                        needMigrate = false;
-                    } else if ("encrypt_id".equals(c0) && "encrypt_user_id".equals(c1)) {
-                        needMigrate = false;
-                    }
-                }
-                if (!needMigrate) return;
-
-                stmt.execute("BEGIN TRANSACTION");
-                // 新表：将 encrypt_id、encrypt_user_id 移到最前（紧随 id）
-                String createSql = "CREATE TABLE boss_data_new (" +
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                        "profile_id INTEGER, " +
-                        "encrypt_id TEXT, " +
-                        "encrypt_user_id TEXT, " +
-                        "company_name TEXT, " +
-                        "job_name TEXT, " +
-                        "salary TEXT, " +
-                        "salary_min_k REAL, " +
-                        "salary_max_k REAL, " +
-                        "salary_median_k REAL, " +
-                        "salary_months INTEGER, " +
-                        "location TEXT, " +
-                        "experience TEXT, " +
-                        "degree TEXT, " +
-                        "hr_name TEXT, " +
-                        "hr_position TEXT, " +
-                        "hr_active_status TEXT, " +
-                        "delivery_status TEXT, " +
-                        "failure_type TEXT, " +
-                        "failure_reason TEXT, " +
-                        "job_description TEXT, " +
-                        "job_url TEXT, " +
-                        "recruitment_status TEXT, " +
-                        "company_address TEXT, " +
-                        "industry TEXT, " +
-                        "introduce TEXT, " +
-                        "financing_stage TEXT, " +
-                        "company_scale TEXT, " +
-                        "source_keyword TEXT, " +
-                        "scan_run_id TEXT, " +
-                        "ai_score INTEGER, " +
-                        "ai_decision TEXT, " +
-                        "ai_reason TEXT, " +
-                        "priority_company INTEGER DEFAULT 0, " +
-                        "created_at TEXT, " +
-                        "updated_at TEXT" +
-                        ")";
-                stmt.execute(createSql);
-
-                String copySql = "INSERT INTO boss_data_new (" +
-                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, salary_min_k, salary_max_k, salary_median_k, salary_months, location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, source_keyword, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
-                        ") SELECT " +
-                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, " +
-                        (cols.contains("salary_min_k") ? "salary_min_k" : "NULL") + ", " +
-                        (cols.contains("salary_max_k") ? "salary_max_k" : "NULL") + ", " +
-                        (cols.contains("salary_median_k") ? "salary_median_k" : "NULL") + ", " +
-                        (cols.contains("salary_months") ? "salary_months" : "NULL") + ", " +
-                        "location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, " +
-                        (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
-                        (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, " +
-                        (cols.contains("source_keyword") ? "source_keyword" : "NULL") + ", " +
-                        (cols.contains("scan_run_id") ? "scan_run_id" : "NULL") + ", " +
-                        (cols.contains("ai_score") ? "ai_score" : "NULL") + ", " +
-                        (cols.contains("ai_decision") ? "ai_decision" : "NULL") + ", " +
-                        (cols.contains("ai_reason") ? "ai_reason" : "NULL") + ", " +
-                        (cols.contains("priority_company") ? "priority_company" : "0") + ", created_at, updated_at " +
-                        "FROM boss_data";
-                stmt.execute(copySql);
-
-                stmt.execute("DROP TABLE boss_data");
-                stmt.execute("ALTER TABLE boss_data_new RENAME TO boss_data");
-                stmt.execute("COMMIT");
-                log.info("已调整 boss_data 表列顺序：将 encrypt_id、encrypt_user_id 前置");
-            }
-        } catch (Exception e) {
-            log.warn("调整 boss_data 列顺序失败：{}", e.getMessage());
-            try { if (conn != null) conn.createStatement().execute("ROLLBACK"); } catch (Exception ignore) {}
-        } finally {
-            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
-        }
-    }
-
-    /**
      * 判断岗位是否已存在（相同 encrypt_id AND encrypt_user_id）
      */
     public boolean existsBossJob(String encryptId, String encryptUserId) {
@@ -1750,18 +1637,13 @@ public class BossService {
     }
 
     /**
-     * 刷新数据：执行列顺序检查，并执行 VACUUM 以优化数据库；返回当前总数
+     * 刷新数据视图并返回当前档案总数。该入口不再执行任何数据库维护或 DDL。
      */
     public Map<String, Object> reloadBossData() {
         Map<String, Object> resp = new HashMap<>();
         Connection conn = null;
         try {
-            ensureBossDataColumnOrder();
             conn = dataSource.getConnection();
-            try (Statement st = conn.createStatement()) {
-                try { st.execute("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (Exception ignore) {}
-                try { st.execute("VACUUM"); } catch (Exception ignore) {}
-            }
             Long profileId = profileService.getCurrentProfileIdOrNull();
             long total = profileId == null ? 0 : scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE profile_id=" + profileId);
             resp.put("success", true);

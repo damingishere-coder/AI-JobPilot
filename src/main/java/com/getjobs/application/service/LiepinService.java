@@ -13,10 +13,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.*;
-import jakarta.annotation.PostConstruct;
 import javax.sql.DataSource;
 import java.sql.Connection;
-import java.sql.Statement;
 import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -37,47 +35,7 @@ public class LiepinService {
     private final LiepinMapper liepinMapper;
     private final DataSource dataSource;
 
-    // ==================== 记录表初始化与快照保存 ====================
-
-    @PostConstruct
-    public void ensureTableExists() {
-        String createSql = "CREATE TABLE IF NOT EXISTS liepin_data (" +
-                " job_id            BIGINT PRIMARY KEY," +
-                " job_title         VARCHAR(200)," +
-                " job_link          VARCHAR(300)," +
-                " job_salary_text   VARCHAR(100)," +
-                " job_area          VARCHAR(100)," +
-                " job_edu_req       VARCHAR(50)," +
-                " job_exp_req       VARCHAR(50)," +
-                " job_publish_time  VARCHAR(50)," +
-                " comp_id           BIGINT," +
-                " comp_name         VARCHAR(200)," +
-                " comp_industry     VARCHAR(100)," +
-                " comp_scale        VARCHAR(50)," +
-                " hr_id             VARCHAR(64)," +
-                " hr_name           VARCHAR(50)," +
-                " hr_title          VARCHAR(100)," +
-                " hr_im_id          VARCHAR(64)," +
-                " delivered         INTEGER DEFAULT 0," +
-                " create_time       DATETIME," +
-                " update_time       DATETIME" +
-                ")";
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute(createSql);
-            // 兼容旧库：尝试添加 delivered 列（如已存在则忽略错误）
-            try {
-                stmt.execute("ALTER TABLE liepin_data ADD COLUMN delivered INTEGER DEFAULT 0");
-            } catch (Exception ignored) {}
-            // 兼容旧库：尝试移除无数据列（SQLite 3.35+ 支持；不支持则忽略错误）
-            try { stmt.execute("ALTER TABLE liepin_data DROP COLUMN job_function"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE liepin_data DROP COLUMN job_city"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE liepin_data DROP COLUMN comp_full_name"); } catch (Exception ignored) {}
-            try { stmt.execute("ALTER TABLE liepin_data DROP COLUMN comp_kind"); } catch (Exception ignored) {}
-            log.info("确保 liepin_data 表已存在");
-        } catch (Exception e) {
-            log.warn("创建 liepin_data 表失败: {}", e.getMessage());
-        }
-    }
+    // 表结构只由 Flyway 管理；Service 运行时不再执行 DDL。
 
     /**
      * 保存或更新一条岗位快照（以 job_id 作为主键）
