@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CodexCliServiceTest {
     @Test
@@ -44,5 +45,26 @@ class CodexCliServiceTest {
                 "/c",
                 "C:\\Users\\demo\\AppData\\Roaming\\npm\\codex.cmd"
         );
+    }
+
+    @Test
+    void executableValidationAllowsOnlyCodexLaunchers() {
+        CodexCliService service = new CodexCliService();
+
+        service.validateExecutableName("codex");
+        service.validateExecutableName("C:\\Users\\demo\\AppData\\Roaming\\npm\\codex.cmd");
+        service.validateExecutableName("C:\\tools\\codex.exe");
+    }
+
+    @Test
+    void executableValidationRejectsOtherProgramsAndInjectedArguments() {
+        CodexCliService service = new CodexCliService();
+
+        assertThatThrownBy(() -> service.validateExecutableName("powershell.exe"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("仅允许 Codex CLI");
+        assertThatThrownBy(() -> service.validateExecutableName("codex.cmd --dangerous-argument"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不允许其他程序或命令参数");
     }
 }

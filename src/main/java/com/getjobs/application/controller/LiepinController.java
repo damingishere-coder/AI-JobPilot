@@ -1,6 +1,7 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.LiepinConfigEntity;
 import com.getjobs.application.entity.LiepinOptionEntity;
 import com.getjobs.application.service.CookieService;
@@ -279,19 +280,7 @@ public class LiepinController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("liepin");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "liepin");
-                data.put("cookie_value", null);
-                data.put("message", "未找到猎聘Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "liepin", "未找到猎聘Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);

@@ -19,6 +19,7 @@ class ProjectConfigurationSmokeTest {
         JsonNode root = yamlMapper.readTree(Path.of("src/main/resources/application.yaml").toFile());
 
         assertThat(root.path("server").path("port").asText()).contains("8888");
+        assertThat(root.path("server").path("address").asText()).contains("127.0.0.1");
         assertThat(root.path("spring").path("datasource").path("url").asText()).contains("jdbc:sqlite");
         assertThat(root.path("app").path("paths").path("data-dir").asText()).contains("APP_DATA_DIR");
     }
@@ -41,5 +42,14 @@ class ProjectConfigurationSmokeTest {
         assertThat(copyScript).contains("..', 'out'");
         assertThat(startScript).contains("'out'");
         assertThat(startScript).contains("http.createServer");
+        assertThat(startScript).contains("127.0.0.1");
+    }
+
+    @Test
+    void dockerOverridesContainerBindAddressButKeepsHostLoopbackOnly() throws Exception {
+        String compose = Files.readString(Path.of("docker-compose.yml"), StandardCharsets.UTF_8);
+
+        assertThat(compose).contains("SERVER_ADDRESS: 0.0.0.0");
+        assertThat(compose).contains("127.0.0.1:${BACKEND_PORT:-8888}:8888");
     }
 }

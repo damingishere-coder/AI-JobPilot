@@ -13,8 +13,10 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.env.Environment;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -37,7 +39,8 @@ class ConfigServiceTest {
                 null,
                 null,
                 null,
-                environment
+                environment,
+                new CodexCliService()
         );
     }
 
@@ -125,6 +128,78 @@ class ConfigServiceTest {
         assertThat(output).contains("API_KEY");
         assertThat(output).contains("[已隐藏]");
         assertThat(output).doesNotContain("sk-real-secret");
+    }
+
+    @Test
+    void uiConfigSnapshotDoesNotExposeSecretsOrCodexHome() {
+        ConfigEntity apiKey = config("API_KEY", "sk-real-secret");
+        ConfigEntity hookUrl = config("HOOK_URL", "https://example.test/secret-hook");
+        ConfigEntity codexHome = config("CODEX_HOME", "C:/private/codex-home");
+        ConfigEntity model = config("MODEL", "deepseek-chat");
+        when(configMapper.selectList(null)).thenReturn(List.of(apiKey, hookUrl, codexHome, model));
+
+        Map<String, Object> configs = configService.getUiConfigsAsMap();
+
+        assertThat(configs)
+                .containsEntry("MODEL", "deepseek-chat")
+                .containsEntry("API_KEY", null)
+                .containsEntry("HOOK_URL", null)
+                .doesNotContainKey("CODEX_HOME");
+        assertThat(configs.toString())
+                .doesNotContain("sk-real-secret")
+                .doesNotContain("secret-hook")
+                .doesNotContain("private/codex-home");
+    }
+
+    @Test
+    void blankSensitiveValuePreservesExistingConfig() {
+        ConfigEntity model = config("MODEL", "old-model");
+        when(configMapper.selectOne(any())).thenReturn(model);
+        when(configMapper.updateById(any(ConfigEntity.class))).thenReturn(1);
+
+        int count = configService.batchUpdateConfigs(Map.of(
+                "API_KEY", "",
+                "MODEL", "new-model"
+        ));
+
+        assertThat(count).isEqualTo(1);
+        verify(configMapper).updateById(model);
+        assertThat(model.getConfigValue()).isEqualTo("new-model");
+    }
+
+    @Test
+    void rejectsUnknownUiConfigBeforeWriting() {
+        assertThatThrownBy(() -> configService.batchUpdateConfigs(Map.of("CODEX_HOME", "C:/private")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不允许");
+
+        verify(configMapper, never()).insert(any(ConfigEntity.class));
+        verify(configMapper, never()).updateById(any(ConfigEntity.class));
+    }
+
+    @Test
+    void rejectsNonCodexExecutableBeforeWriting() {
+        assertThatThrownBy(() -> configService.batchUpdateConfigs(Map.of("CODEX_PATH", "powershell.exe")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("仅允许 Codex CLI");
+
+        verify(configMapper, never()).insert(any(ConfigEntity.class));
+        verify(configMapper, never()).updateById(any(ConfigEntity.class));
+    }
+
+    @Test
+    void sensitiveConfiguredStatusCanUseEnvironmentWithoutReturningValue() {
+        when(configMapper.selectOne(any())).thenReturn(null);
+        when(environment.getProperty("API_KEY")).thenReturn("env-secret");
+
+        assertThat(configService.isSensitiveUiConfigConfigured("API_KEY")).isTrue();
+    }
+
+    private ConfigEntity config(String key, String value) {
+        ConfigEntity entity = new ConfigEntity();
+        entity.setConfigKey(key);
+        entity.setConfigValue(value);
+        return entity;
     }
 
 }

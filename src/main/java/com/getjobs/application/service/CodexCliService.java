@@ -132,6 +132,7 @@ public class CodexCliService {
     }
 
     private String resolveExecutable(String configured) {
+        validateExecutableName(configured);
         Path configuredPath = Path.of(configured);
         if (configuredPath.isAbsolute() || configuredPath.getParent() != null) {
             if (Files.isRegularFile(configuredPath)) {
@@ -151,7 +152,7 @@ public class CodexCliService {
             for (String directory : directories) {
                 if (directory == null || directory.isBlank()) continue;
                 String normalizedDirectory = directory.trim().replaceAll("^\"|\"$", "");
-                for (String extension : List.of(".exe", ".com", ".cmd", ".bat", ".ps1", "")) {
+                for (String extension : List.of(".exe", ".cmd", ".bat", ".ps1", "")) {
                     Path candidate = Path.of(normalizedDirectory).resolve(configured + extension);
                     if (Files.isRegularFile(candidate)) {
                         return candidate.toAbsolutePath().normalize().toString();
@@ -160,6 +161,22 @@ public class CodexCliService {
             }
         }
         throw new IllegalStateException("未找到 Codex CLI：" + configured);
+    }
+
+    void validateExecutableName(String configured) {
+        if (configured == null || configured.isBlank()) {
+            throw new IllegalArgumentException("CODEX_PATH 不能为空");
+        }
+        final String fileName;
+        try {
+            Path file = Path.of(configured.trim()).getFileName();
+            fileName = file == null ? "" : file.toString().toLowerCase(Locale.ROOT);
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("CODEX_PATH 不是有效路径", e);
+        }
+        if (!List.of("codex", "codex.exe", "codex.cmd", "codex.bat", "codex.ps1").contains(fileName)) {
+            throw new IllegalArgumentException("CODEX_PATH 仅允许 Codex CLI 启动文件，不允许其他程序或命令参数");
+        }
     }
 
     private void addExecutable(List<String> command, String executable) {

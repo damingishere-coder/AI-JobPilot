@@ -6,6 +6,7 @@ import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.ZhilianConfigEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
@@ -251,19 +252,7 @@ public class ZhilianController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("zhilian");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "zhilian");
-                data.put("cookie_value", null);
-                data.put("message", "未找到智联招聘Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "zhilian", "未找到智联招聘Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);

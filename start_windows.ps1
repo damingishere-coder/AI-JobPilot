@@ -241,6 +241,9 @@ Write-Host "运行目录已准备完成。"
 if (-not $env:SPRING_DATASOURCE_URL) {
     $env:SPRING_DATASOURCE_URL = "jdbc:sqlite:$(Join-Path $DbDir 'getjobs.db')"
 }
+if (-not $env:SERVER_ADDRESS) {
+    $env:SERVER_ADDRESS = "127.0.0.1"
+}
 if (-not $env:LOGGING_FILE_NAME) {
     $env:LOGGING_FILE_NAME = Join-Path $TargetLogDir "get-jobs.log"
 }

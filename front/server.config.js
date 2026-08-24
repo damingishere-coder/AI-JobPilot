@@ -21,7 +21,7 @@ module.exports = {
     // 生产环境端口
     port: 6866,
     // 主机名
-    hostname: '0.0.0.0',
+    hostname: process.env.FRONTEND_HOST || '127.0.0.1',
   },
 
   // API 配置（如果需要在构建时使用）
