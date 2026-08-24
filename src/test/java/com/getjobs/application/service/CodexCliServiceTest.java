@@ -1,6 +1,8 @@
 package com.getjobs.application.service;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -54,12 +56,27 @@ class CodexCliServiceTest {
     }
 
     @Test
-    void executableValidationAllowsOnlyCodexLaunchers() {
+    void executableValidationAllowsPortableCodexName() {
         CodexCliService service = new CodexCliService();
 
         service.validateExecutableName("codex");
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void executableValidationAllowsWindowsCodexLaunchersOnWindows() {
+        CodexCliService service = new CodexCliService();
+
         service.validateExecutableName("C:\\Users\\demo\\AppData\\Roaming\\npm\\codex.cmd");
         service.validateExecutableName("C:\\tools\\codex.exe");
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void executableValidationAllowsUnixCodexLauncherOnUnix() {
+        CodexCliService service = new CodexCliService();
+
+        service.validateExecutableName("/usr/local/bin/codex");
     }
 
     @Test
