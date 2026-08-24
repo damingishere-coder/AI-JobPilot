@@ -16,6 +16,7 @@ export default function EnvConfig() {
     codexPath: 'codex',
     codexModel: 'gpt-5.6-sol',
     codexTimeoutSeconds: '300',
+    apiTimeoutSeconds: '120',
     baseUrl: '',
     apiKey: '',
     model: '',
@@ -54,6 +55,7 @@ export default function EnvConfig() {
           codexPath: result.data.CODEX_PATH || 'codex',
           codexModel: result.data.CODEX_MODEL || 'gpt-5.6-sol',
           codexTimeoutSeconds: result.data.CODEX_TIMEOUT_SECONDS || '300',
+          apiTimeoutSeconds: result.data.AI_REQUEST_TIMEOUT_SECONDS || '120',
           baseUrl: result.data.BASE_URL || '',
           apiKey: '',
           model: result.data.MODEL || '',
@@ -90,6 +92,7 @@ export default function EnvConfig() {
         CODEX_PATH: envConfig.codexPath,
         CODEX_MODEL: envConfig.codexModel,
         CODEX_TIMEOUT_SECONDS: envConfig.codexTimeoutSeconds,
+        AI_REQUEST_TIMEOUT_SECONDS: envConfig.apiTimeoutSeconds,
         BASE_URL: envConfig.baseUrl,
         MODEL: envConfig.model,
         BOT_IS_SEND: String(envConfig.botIsSend ?? 0),
@@ -311,6 +314,18 @@ export default function EnvConfig() {
                   placeholder="deepseek-chat"
                 />
                 <p className="text-xs text-muted-foreground">DeepSeek 推荐模型 deepseek-chat；也可以填写其他 OpenAI-compatible 模型名</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="apiTimeout">远程 API 总超时（秒）</Label>
+                <Input
+                  id="apiTimeout"
+                  type="number"
+                  min="1"
+                  max="1800"
+                  value={envConfig.apiTimeoutSeconds}
+                  onChange={(e) => setEnvConfig({ ...envConfig, apiTimeoutSeconds: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">默认 120 秒；超时或网络中断不会自动重发，以避免重复计费。</p>
               </div>
             </div>
           </CardContent>

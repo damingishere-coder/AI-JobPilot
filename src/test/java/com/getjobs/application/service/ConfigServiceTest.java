@@ -18,6 +18,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -115,7 +116,27 @@ class ConfigServiceTest {
                 .containsEntry("AI_PROVIDER", "codex")
                 .containsEntry("CODEX_PATH", "codex")
                 .containsEntry("CODEX_MODEL", "gpt-5.6-sol")
+                .containsEntry("AI_REQUEST_TIMEOUT_SECONDS", "120")
                 .containsEntry("API_KEY", "");
+    }
+
+    @Test
+    void validatesRemoteApiTimeoutBeforeWriting() {
+        assertThatThrownBy(() -> configService.batchUpdateConfigs(
+                Map.of("AI_REQUEST_TIMEOUT_SECONDS", "0")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("1 到 1800");
+        assertThatThrownBy(() -> configService.batchUpdateConfigs(
+                Map.of("AI_REQUEST_TIMEOUT_SECONDS", "1801")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("1 到 1800");
+        assertThatThrownBy(() -> configService.batchUpdateConfigs(
+                Map.of("AI_REQUEST_TIMEOUT_SECONDS", "abc")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("整数");
+
+        verify(configMapper, never()).insert(any(ConfigEntity.class));
+        verify(configMapper, never()).updateById(any(ConfigEntity.class));
     }
 
     @Test
@@ -149,6 +170,17 @@ class ConfigServiceTest {
                 .doesNotContain("sk-real-secret")
                 .doesNotContain("secret-hook")
                 .doesNotContain("private/codex-home");
+    }
+
+    @Test
+    void uiConfigSnapshotShowsNonSensitiveEnvironmentFallback() {
+        when(configMapper.selectList(null)).thenReturn(List.of());
+        when(environment.getProperty(anyString())).thenAnswer(invocation ->
+                "AI_REQUEST_TIMEOUT_SECONDS".equals(invocation.getArgument(0)) ? "10" : null);
+
+        Map<String, Object> configs = configService.getUiConfigsAsMap();
+
+        assertThat(configs).containsEntry("AI_REQUEST_TIMEOUT_SECONDS", "10");
     }
 
     @Test

@@ -124,6 +124,27 @@ class JobAnalysisTaskStoreTest {
                 .contains(taskId);
     }
 
+    @Test
+    void currentLeaseCanCompleteUnknownAndRequiresConfirmedRetry() {
+        long taskId = store.submit(request(1L, "boss", "job-provider-timeout", "run-a")).task().id();
+        assertThat(store.claim(taskId, "lease-provider-timeout", Duration.ofMinutes(1))).isNotNull();
+
+        assertThat(store.completeUnknown(taskId, "wrong-lease", "provider result unknown")).isFalse();
+        assertThat(store.completeUnknown(
+                taskId,
+                "lease-provider-timeout",
+                "provider result unknown"
+        )).isTrue();
+
+        JobAnalysisTaskStore.TaskRecord task = store.findById(taskId);
+        assertThat(task.status()).isEqualTo("UNKNOWN");
+        assertThat(task.completedAt()).isNull();
+        assertThat(task.leaseExpiresAt()).isNull();
+        assertThat(task.lastError()).contains("provider result unknown");
+        assertThat(store.retry(taskId, 1L).accepted()).isFalse();
+        assertThat(store.retry(taskId, 1L, true).accepted()).isTrue();
+    }
+
     private boolean claimAfterBarrier(long taskId,
                                       String lease,
                                       CountDownLatch ready,

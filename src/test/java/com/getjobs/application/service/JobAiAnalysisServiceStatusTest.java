@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
+import com.getjobs.application.entity.JobAiAnalysisEntity;
 import com.getjobs.application.entity.PriorityCompanyEntity;
 import com.getjobs.application.entity.ResumeProfileEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
@@ -65,6 +66,10 @@ class JobAiAnalysisServiceStatusTest {
                 zhilianJobDataMapper
         );
         lenient().when(priorityCompanyMapper.selectList(any())).thenReturn(List.of());
+        lenient().when(jobAiAnalysisMapper.insert(
+                any(com.getjobs.application.entity.JobAiAnalysisEntity.class))).thenReturn(1);
+        lenient().when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
+        lenient().when(zhilianJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
     }
 
     @Test
@@ -313,6 +318,157 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void emptyProviderOutputBecomesExplicitAiFailureInsteadOfSkip() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenReturn("   ");
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_EMPTY");
+        assertThat(result.isProviderOutcomeUnknown()).isFalse();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+    }
+
+    @Test
+    void missingRequiredOutputFieldBecomesExplicitAiFailure() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":80,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[]}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_MISSING_FIELD");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+    }
+
+    @Test
+    void invalidScoreAndArrayElementTypesAreRejected() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any()))
+                .thenReturn("""
+                        {"score":101,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                        """)
+                .thenReturn("""
+                        {"score":80,"decision":"APPLY","summary":"匹配","strengths":[1],"risks":[],"greeting":"你好"}
+                        """);
+
+        JobAiAnalysisService.AnalysisResult invalidScore = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult invalidArray = service.analyzeJob(bossRequest());
+
+        assertThat(invalidScore.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCORE");
+        assertThat(invalidArray.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
+    }
+
+    @Test
+    void invalidJsonAndDecisionAreRejected() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any()))
+                .thenReturn("not-json-at-all")
+                .thenReturn("""
+                        {"score":80,"decision":"MAYBE","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                        """);
+
+        JobAiAnalysisService.AnalysisResult invalidJson = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult invalidDecision = service.analyzeJob(bossRequest());
+
+        assertThat(invalidJson.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_JSON");
+        assertThat(invalidDecision.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_DECISION");
+    }
+
+    @Test
+    void rawProviderResponseIsReplacedWithDiagnosticFingerprint() {
+        String marker = "sensitive-response-marker";
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":88,"decision":"APPLY","summary":"sensitive-response-marker","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        ArgumentCaptor<JobAiAnalysisEntity> captor = ArgumentCaptor.forClass(JobAiAnalysisEntity.class);
+        verify(jobAiAnalysisMapper).insert(captor.capture());
+        assertThat(captor.getValue().getRawResponse())
+                .contains("provider_response_fingerprint", "sha256", "length")
+                .doesNotContain(marker);
+    }
+
+    @Test
+    void persistenceFailureNeverReportsTaskSuccess() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(jobAiAnalysisMapper.insert(any(JobAiAnalysisEntity.class))).thenReturn(0);
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1);
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_PERSISTENCE_FAILED");
+        assertThat(result.isProviderOutcomeUnknown()).isTrue();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+    }
+
+    @Test
+    void platformWriteFailureCanBeConfirmedAndRetriedWithoutGettingStuckAnalyzing() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.AI_ANALYZING));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1, 1, 1);
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult firstResult = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult confirmedRetryResult = service.analyzeJob(bossRequest());
+
+        assertThat(firstResult.isFailure()).isTrue();
+        assertThat(firstResult.getErrorCode()).isEqualTo("AI_PLATFORM_WRITE_FAILED");
+        assertThat(firstResult.isProviderOutcomeUnknown()).isTrue();
+        assertThat(confirmedRetryResult.isFailure()).isFalse();
+        List<BossJobDataEntity> updates = allBossUpdates();
+        assertThat(updates).extracting(BossJobDataEntity::getDeliveryStatus)
+                .containsSequence(
+                        DeliveryStatus.AI_ANALYZING,
+                        DeliveryStatus.WAITING_CONFIRM,
+                        DeliveryStatus.AI_ANALYSIS_FAILED,
+                        DeliveryStatus.AI_ANALYZING,
+                        DeliveryStatus.WAITING_CONFIRM
+                );
+        verify(aiService, times(2)).sendRequest(any());
+    }
+
+    @Test
+    void providerTimeoutIsPersistedAsUnknownOutcome() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenThrow(new AiProviderException(
+                AiProviderException.Code.TIMEOUT,
+                "AI Provider 请求超时（requestId=test-request）",
+                null,
+                "test-request",
+                "",
+                true,
+                null
+        ));
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_PROVIDER_TIMEOUT");
+        assertThat(result.isProviderOutcomeUnknown()).isTrue();
+    }
+
+    @Test
     void deliveryFailureStatusKeepsFailureTypeAndReason() {
         ZhilianService zhilianService = new ZhilianService(null, null, zhilianJobDataMapper, null, profileService);
 
@@ -424,10 +580,14 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     private BossJobDataEntity lastBossUpdate() {
+        List<BossJobDataEntity> values = allBossUpdates();
+        return values.get(values.size() - 1);
+    }
+
+    private List<BossJobDataEntity> allBossUpdates() {
         ArgumentCaptor<BossJobDataEntity> captor = ArgumentCaptor.forClass(BossJobDataEntity.class);
         verify(bossJobDataMapper, atLeastOnce()).update(captor.capture(), any(UpdateWrapper.class));
-        List<BossJobDataEntity> values = captor.getAllValues();
-        return values.get(values.size() - 1);
+        return captor.getAllValues();
     }
 
     private ZhilianJobDataEntity lastZhilianUpdate() {

@@ -379,6 +379,13 @@ public class BossController {
                     "message", e.getMessage(),
                     "keywords", List.of()
             ));
+        } catch (RuntimeException e) {
+            log.warn("生成 Boss AI 关键词失败: {}", e.getMessage());
+            return ResponseEntity.status(502).body(Map.of(
+                    "success", false,
+                    "message", e.getMessage() == null ? "AI 关键词生成失败" : e.getMessage(),
+                    "keywords", List.of()
+            ));
         }
     }
 
