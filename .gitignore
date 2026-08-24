@@ -85,6 +85,9 @@ front/coverage/
 # Gradle cache
 .gradle/
 
+# SonarQube local scanner working directory
+.scannerwork/
+
 # Python / local tools
 __pycache__/
 *.py[cod]
