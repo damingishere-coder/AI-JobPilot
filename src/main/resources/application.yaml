@@ -37,6 +37,7 @@ spring:
 
 # 服务器配置
 server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8888}  # 后端 API 固定端口
 
 app:

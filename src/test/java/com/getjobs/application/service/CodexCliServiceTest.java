@@ -1,11 +1,14 @@
 package com.getjobs.application.service;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CodexCliServiceTest {
     @Test
@@ -44,5 +47,41 @@ class CodexCliServiceTest {
                 "/c",
                 "C:\\Users\\demo\\AppData\\Roaming\\npm\\codex.cmd"
         );
+    }
+
+    @Test
+    void executableValidationAllowsPortableCodexName() {
+        CodexCliService service = new CodexCliService();
+
+        service.validateExecutableName("codex");
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void executableValidationAllowsWindowsCodexLaunchersOnWindows() {
+        CodexCliService service = new CodexCliService();
+
+        service.validateExecutableName("C:\\Users\\demo\\AppData\\Roaming\\npm\\codex.cmd");
+        service.validateExecutableName("C:\\tools\\codex.exe");
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void executableValidationAllowsUnixCodexLauncherOnUnix() {
+        CodexCliService service = new CodexCliService();
+
+        service.validateExecutableName("/usr/local/bin/codex");
+    }
+
+    @Test
+    void executableValidationRejectsOtherProgramsAndInjectedArguments() {
+        CodexCliService service = new CodexCliService();
+
+        assertThatThrownBy(() -> service.validateExecutableName("powershell.exe"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("仅允许 Codex CLI");
+        assertThatThrownBy(() -> service.validateExecutableName("codex.cmd --dangerous-argument"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不允许其他程序或命令参数");
     }
 }

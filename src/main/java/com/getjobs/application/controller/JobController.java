@@ -2,6 +2,7 @@ package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.Job51ConfigEntity;
 import com.getjobs.application.entity.Job51OptionEntity;
 import com.getjobs.application.service.CookieService;
@@ -346,19 +347,7 @@ public class JobController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("51job");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "51job");
-                data.put("cookie_value", null);
-                data.put("message", "未找到51job Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "51job", "未找到51job Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);

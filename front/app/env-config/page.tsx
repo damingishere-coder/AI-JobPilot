@@ -23,6 +23,8 @@ export default function EnvConfig() {
   })
 
   const [showApiKey, setShowApiKey] = useState(false)
+  const [sensitiveConfigured, setSensitiveConfigured] = useState({ hookUrl: false, apiKey: false })
+  const [sensitiveDirty, setSensitiveDirty] = useState({ hookUrl: false, apiKey: false })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
@@ -47,13 +49,13 @@ export default function EnvConfig() {
 
       if (result.success && result.data) {
         setEnvConfig({
-          hookUrl: result.data.HOOK_URL || '',
+          hookUrl: '',
           aiProvider: result.data.AI_PROVIDER === 'api' || result.data.AI_PROVIDER === 'remote' ? 'api' : 'codex',
           codexPath: result.data.CODEX_PATH || 'codex',
           codexModel: result.data.CODEX_MODEL || 'gpt-5.6-sol',
           codexTimeoutSeconds: result.data.CODEX_TIMEOUT_SECONDS || '300',
           baseUrl: result.data.BASE_URL || '',
-          apiKey: result.data.API_KEY || '',
+          apiKey: '',
           model: result.data.MODEL || '',
           botIsSend: (() => {
             const raw = result.data.BOT_IS_SEND
@@ -61,6 +63,11 @@ export default function EnvConfig() {
             return val === '1' || val === 'true' ? 1 : 0
           })(),
         })
+        setSensitiveConfigured({
+          hookUrl: result.sensitive?.HOOK_URL === true,
+          apiKey: result.sensitive?.API_KEY === true,
+        })
+        setSensitiveDirty({ hookUrl: false, apiKey: false })
       }
     } catch (error) {
       console.error('获取配置失败:', error)
@@ -78,16 +85,20 @@ export default function EnvConfig() {
     try {
       setSaving(true)
 
-      const configMap = {
-        HOOK_URL: envConfig.hookUrl,
+      const configMap: Record<string, string> = {
         AI_PROVIDER: envConfig.aiProvider,
         CODEX_PATH: envConfig.codexPath,
         CODEX_MODEL: envConfig.codexModel,
         CODEX_TIMEOUT_SECONDS: envConfig.codexTimeoutSeconds,
         BASE_URL: envConfig.baseUrl,
-        API_KEY: envConfig.apiKey,
         MODEL: envConfig.model,
         BOT_IS_SEND: String(envConfig.botIsSend ?? 0),
+      }
+      if (sensitiveDirty.hookUrl && envConfig.hookUrl.trim()) {
+        configMap.HOOK_URL = envConfig.hookUrl.trim()
+      }
+      if (sensitiveDirty.apiKey && envConfig.apiKey.trim()) {
+        configMap.API_KEY = envConfig.apiKey.trim()
       }
 
       const response = await fetch(`${API_BASE}/api/config`, {
@@ -105,6 +116,12 @@ export default function EnvConfig() {
       const result = await response.json()
 
       if (result.success) {
+        setSensitiveConfigured((current) => ({
+          hookUrl: sensitiveDirty.hookUrl && envConfig.hookUrl.trim() ? true : current.hookUrl,
+          apiKey: sensitiveDirty.apiKey && envConfig.apiKey.trim() ? true : current.apiKey,
+        }))
+        setSensitiveDirty({ hookUrl: false, apiKey: false })
+        setEnvConfig((current) => ({ ...current, hookUrl: '', apiKey: '' }))
         if (!silent) {
           setSaveResult({ success: true, message: '保存成功' })
           setShowSaveDialog(true)
@@ -118,6 +135,39 @@ export default function EnvConfig() {
         setSaveResult({ success: false, message: '保存配置失败：网络或服务异常。' })
         setShowSaveDialog(true)
       }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const clearSensitiveConfig = async (key: 'HOOK_URL' | 'API_KEY') => {
+    const label = key === 'HOOK_URL' ? 'Webhook URL' : 'API Key'
+    if (!window.confirm(`确定清除已保存的 ${label} 吗？清除后相关功能将无法使用，直到重新填写。`)) {
+      return
+    }
+
+    try {
+      setSaving(true)
+      const response = await fetch(`${API_BASE}/api/config/${key}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || '清除失败')
+      }
+      if (key === 'HOOK_URL') {
+        setSensitiveConfigured((current) => ({ ...current, hookUrl: result.configured === true }))
+        setSensitiveDirty((current) => ({ ...current, hookUrl: false }))
+        setEnvConfig((current) => ({ ...current, hookUrl: '' }))
+      } else {
+        setSensitiveConfigured((current) => ({ ...current, apiKey: result.configured === true }))
+        setSensitiveDirty((current) => ({ ...current, apiKey: false }))
+        setEnvConfig((current) => ({ ...current, apiKey: '' }))
+      }
+      setSaveResult({ success: true, message: result.message || `${label} 已清除` })
+      setShowSaveDialog(true)
+    } catch (error) {
+      console.error('清除敏感配置失败:', error)
+      setSaveResult({ success: false, message: `${label} 清除失败，请检查后端服务。` })
+      setShowSaveDialog(true)
     } finally {
       setSaving(false)
     }
@@ -177,14 +227,24 @@ export default function EnvConfig() {
               <Label htmlFor="hookUrl">Webhook URL</Label>
               <Input
                 id="hookUrl"
-                type="text"
+                type="password"
                 value={envConfig.hookUrl}
-                onChange={(e) => setEnvConfig({ ...envConfig, hookUrl: e.target.value })}
-                placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key"
+                onChange={(e) => {
+                  setEnvConfig({ ...envConfig, hookUrl: e.target.value })
+                  setSensitiveDirty({ ...sensitiveDirty, hookUrl: true })
+                }}
+                placeholder={sensitiveConfigured.hookUrl ? '已配置；输入新值可替换' : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key'}
               />
-              <p className="text-xs text-muted-foreground">
-                企业微信群机器人webhook地址，用于接收通知消息
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {sensitiveConfigured.hookUrl ? '已配置，页面不会读取或显示原值。' : '尚未配置企业微信 Webhook。'}
+                </p>
+                {sensitiveConfigured.hookUrl && (
+                  <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => clearSensitiveConfig('HOOK_URL')}>
+                    清除已保存值
+                  </Button>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -273,8 +333,11 @@ export default function EnvConfig() {
                   id="apiKey"
                   type={showApiKey ? 'text' : 'password'}
                   value={envConfig.apiKey}
-                  onChange={(e) => setEnvConfig({ ...envConfig, apiKey: e.target.value })}
-                  placeholder="sk-xxxxxxxxxxxxxxxxx"
+                  onChange={(e) => {
+                    setEnvConfig({ ...envConfig, apiKey: e.target.value })
+                    setSensitiveDirty({ ...sensitiveDirty, apiKey: true })
+                  }}
+                  placeholder={sensitiveConfigured.apiKey ? '已配置；输入新值可替换' : 'sk-xxxxxxxxxxxxxxxxx'}
                 />
                 <Button
                   onClick={() => setShowApiKey(!showApiKey)}
@@ -286,9 +349,16 @@ export default function EnvConfig() {
                   {showApiKey ? '隐藏' : '显示'}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                🔐 API密钥将被安全存储，请妥善保管
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {sensitiveConfigured.apiKey ? '已配置，页面不会读取或显示原值。' : '尚未配置远程 API Key。'}
+                </p>
+                {sensitiveConfigured.apiKey && (
+                  <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => clearSensitiveConfig('API_KEY')}>
+                    清除已保存值
+                  </Button>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -300,9 +370,8 @@ export default function EnvConfig() {
               <BiInfoCircle className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm text-foreground">
-                  <strong className="font-semibold">提示：</strong> 这些环境变量将保存到{' '}
-                  <code className="bg-primary/10 px-2 py-0.5 rounded text-primary font-mono text-xs">.env</code>{' '}
-                  文件中。请勿将包含敏感信息的 .env 文件提交到版本控制系统。
+                  <strong className="font-semibold">提示：</strong> 配置保存在本机项目数据库中。API Key 和 Webhook
+                  只允许写入，页面只显示“是否已配置”，不会读取或回显原值。
                 </p>
               </div>
             </div>
