@@ -2,6 +2,8 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
 import com.getjobs.application.service.JobAnalysisTaskStore;
+import com.getjobs.application.service.JobAiAnalysisService;
+import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.ProfileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,14 +22,17 @@ class AiConfigControllerJobTaskTest {
     private AiConfigController controller;
     private ProfileService profileService;
     private ChromeJobAnalysisQueueService queueService;
+    private JobAiAnalysisService jobAiAnalysisService;
 
     @BeforeEach
     void setUp() {
         controller = new AiConfigController();
         profileService = mock(ProfileService.class);
         queueService = mock(ChromeJobAnalysisQueueService.class);
+        jobAiAnalysisService = mock(JobAiAnalysisService.class);
         ReflectionTestUtils.setField(controller, "profileService", profileService);
         ReflectionTestUtils.setField(controller, "chromeJobAnalysisQueueService", queueService);
+        ReflectionTestUtils.setField(controller, "jobAiAnalysisService", jobAiAnalysisService);
         when(profileService.getCurrentProfileId()).thenReturn(7L);
     }
 
@@ -57,5 +62,24 @@ class AiConfigControllerJobTaskTest {
                 .containsEntry("success", false)
                 .containsEntry("message", "仅 FAILED 或 UNKNOWN 任务允许显式重试");
         verify(queueService).retry(12L, 7L, false);
+    }
+
+    @Test
+    void directAnalyzeReturnsBadGatewayForExplicitAnalysisFailure() {
+        JobAiAnalysisService.JobAnalysisRequest request = new JobAiAnalysisService.JobAnalysisRequest();
+        JobAiAnalysisService.AnalysisResult failure = JobAiAnalysisService.AnalysisResult.failed(
+                DeliveryStatus.AI_ANALYSIS_FAILED,
+                "AI Provider 返回空内容"
+        );
+        failure.setErrorCode("AI_PROVIDER_EMPTY_RESPONSE");
+        when(jobAiAnalysisService.analyzeJob(request)).thenReturn(failure);
+
+        ResponseEntity<Map<String, Object>> response = controller.analyzeJob(request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(502);
+        assertThat(response.getBody())
+                .containsEntry("success", false)
+                .containsEntry("message", "AI Provider 返回空内容")
+                .containsEntry("data", failure);
     }
 }

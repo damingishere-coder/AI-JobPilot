@@ -250,10 +250,13 @@ public class AiConfigController {
     public ResponseEntity<Map<String, Object>> analyzeJob(@RequestBody JobAiAnalysisService.JobAnalysisRequest request) {
         Map<String, Object> response = new HashMap<>();
         try {
-            response.put("success", true);
-            response.put("data", jobAiAnalysisService.analyzeJob(request));
-            response.put("message", "AI岗位分析完成");
-            return ResponseEntity.ok(response);
+            JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(request);
+            response.put("success", !result.isFailure());
+            response.put("data", result);
+            response.put("message", result.isFailure() ? result.getSummary() : "AI岗位分析完成");
+            return result.isFailure()
+                    ? ResponseEntity.status(502).body(response)
+                    : ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("AI岗位分析失败", e);
             response.put("success", false);

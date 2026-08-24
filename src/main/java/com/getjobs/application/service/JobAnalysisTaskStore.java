@@ -315,6 +315,18 @@ public class JobAnalysisTaskStore {
         return changed == 1;
     }
 
+    public boolean completeUnknown(long taskId, String leaseToken, String message) {
+        String now = dbTime(LocalDateTime.now());
+        int changed = jdbcTemplate.update("UPDATE job_analysis_task SET status='UNKNOWN', processed_count=0, " +
+                        "success_count=0, failed_count=0, message=?, last_error=?, completed_at=NULL, updated_at=?, " +
+                        "lease_expires_at=NULL WHERE id=? AND status='LEASED' AND lease_owner=? " +
+                        "AND lease_expires_at IS NOT NULL AND lease_expires_at>?",
+                firstNonBlank(message, "AI Provider 结果未知，需要人工确认"),
+                firstNonBlank(message, "AI Provider 结果未知，需要人工确认"),
+                now, taskId, leaseToken, now);
+        return changed == 1;
+    }
+
     public boolean reconcileExpired(long taskId,
                                     String leaseToken,
                                     Status target,
@@ -450,7 +462,7 @@ public class JobAnalysisTaskStore {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    private TaskRecord findByIdAndProfile(long id, long profileId) {
+    TaskRecord findByIdAndProfile(long id, long profileId) {
         List<TaskRecord> rows = jdbcTemplate.query(
                 "SELECT " + selectColumns() + " FROM job_analysis_task WHERE id=? AND profile_id=?",
                 TASK_MAPPER,

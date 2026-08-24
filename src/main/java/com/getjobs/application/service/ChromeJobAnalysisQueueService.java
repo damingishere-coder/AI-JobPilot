@@ -113,6 +113,20 @@ public class ChromeJobAnalysisQueueService {
     }
 
     public JobAnalysisTaskStore.RetryResult retry(long taskId, long profileId, boolean confirmUnknown) {
+        JobAnalysisTaskStore.TaskRecord current = taskStore.findByIdAndProfile(taskId, profileId);
+        if (current != null
+                && current.statusEnum() == JobAnalysisTaskStore.Status.UNKNOWN
+                && confirmUnknown) {
+            JobAiAnalysisService.JobAnalysisRequest request = taskStore.deserialize(current);
+            JobAiAnalysisService.PlatformAnalysisState platformState =
+                    jobAiAnalysisService.inspectPlatformAnalysis(request);
+            if (DeliveryStatus.AI_ANALYZING.equals(platformState.status())
+                    && !jobAiAnalysisService.markAnalysisInterrupted(
+                            request, "用户已确认 UNKNOWN 任务，重试前安全复位 AI 分析状态")) {
+                return JobAnalysisTaskStore.RetryResult.rejected(
+                        "岗位仍处于 AI 分析中且安全复位失败，未重新调用 AI Provider；请稍后重试");
+            }
+        }
         JobAnalysisTaskStore.RetryResult result = taskStore.retry(taskId, profileId, confirmUnknown);
         if (result.accepted() && result.task() != null) {
             schedule(result.task().id());
@@ -205,22 +219,32 @@ public class ChromeJobAnalysisQueueService {
             }
             boolean failed = result.isFailure();
             String summary = Objects.toString(result.getSummary(), "");
-            boolean completed = taskStore.complete(taskId, leaseToken, failed, summary);
-            if (!completed) {
+            boolean completed = result.isProviderOutcomeUnknown()
+                    ? taskStore.completeUnknown(taskId, leaseToken, summary)
+                    : taskStore.complete(taskId, leaseToken, failed, summary);
+            if (!completed && !result.isProviderOutcomeUnknown()) {
                 reconcileLateWorkerResult(claimed, leaseToken, failed, summary);
             }
+            if (!completed && result.isProviderOutcomeUnknown()) {
+                log.warn("AI 任务 {} 的 UNKNOWN 终态写入未命中当前租约，将等待过期对账", taskId);
+            }
 
-            if (failed) {
+            if (result.isProviderOutcomeUnknown()) {
+                emit(progress, JobProgressMessage.warning(
+                        platform, "AI分析结果未知：" + jobName + "，" + summary));
+            } else if (failed) {
                 emit(progress, JobProgressMessage.warning(platform, "AI分析失败：" + jobName + "，" + summary));
             }
+            String completionLabel = "跳过：";
+            if (result.shouldApply()) {
+                completionLabel = DeliveryStatus.WAITING_CONFIRM + "：";
+            } else if (result.isProviderOutcomeUnknown()) {
+                completionLabel = "结果未知：";
+            } else if (failed) {
+                completionLabel = DeliveryStatus.AI_ANALYSIS_FAILED + "：";
+            }
             emit(progress, JobProgressMessage.progress(
-                    platform,
-                    (result.shouldApply()
-                            ? DeliveryStatus.WAITING_CONFIRM + "："
-                            : failed ? DeliveryStatus.AI_ANALYSIS_FAILED + "：" : "跳过：") + jobName,
-                    current,
-                    total
-            ));
+                    platform, completionLabel + jobName, current, total));
         } catch (Exception e) {
             log.warn("Chrome 后台 AI 分析任务 {} 失败: {}", taskId, e.getMessage(), e);
             if (claimed != null) {

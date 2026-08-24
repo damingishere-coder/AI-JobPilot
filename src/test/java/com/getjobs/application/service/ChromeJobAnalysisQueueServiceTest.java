@@ -173,6 +173,65 @@ class ChromeJobAnalysisQueueServiceTest {
         verify(analysisService, timeout(3000).times(1)).analyzeJob(any(), any(), any());
     }
 
+    @Test
+    void providerUnknownOutcomeStopsWithoutAutomaticDuplicateCall() {
+        JobAiAnalysisService.AnalysisResult unknown = JobAiAnalysisService.AnalysisResult.failed(
+                DeliveryStatus.AI_ANALYSIS_FAILED,
+                "provider timeout"
+        );
+        unknown.setErrorCode("AI_PROVIDER_TIMEOUT");
+        unknown.setProviderOutcomeUnknown(true);
+        when(analysisService.analyzeJob(any(), any(), any())).thenReturn(unknown);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        ChromeJobAnalysisQueueService.EnqueueResult submitted = queue.enqueue(
+                job(request("boss", "job-provider-unknown", "run-a")));
+
+        long taskId = submittedTaskId("job-provider-unknown");
+        awaitStatus(taskId, "UNKNOWN");
+        assertThat(store.findById(taskId).lastError()).contains("provider timeout");
+        verify(analysisService, timeout(3000).times(1)).analyzeJob(any(), any(), any());
+        queue.initialize();
+        verify(analysisService, times(1)).analyzeJob(any(), any(), any());
+    }
+
+    @Test
+    void confirmedUnknownRetryResetsAnalyzingStatusBeforeCallingProviderAgain() {
+        long taskId = store.submit(request("boss", "job-confirmed-retry", "run-a")).task().id();
+        assertThat(store.claim(taskId, "lease-unknown", Duration.ofMinutes(1))).isNotNull();
+        assertThat(store.completeUnknown(taskId, "lease-unknown", "provider result unknown")).isTrue();
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(true);
+        when(analysisService.analyzeJob(any(), any(), any())).thenReturn(successResult());
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        JobAnalysisTaskStore.RetryResult retried = queue.retry(taskId, 1L, true);
+
+        assertThat(retried.accepted()).isTrue();
+        verify(analysisService).markAnalysisInterrupted(any(), any());
+        verify(analysisService, timeout(3000).times(1)).analyzeJob(any(), any(), any());
+        awaitStatus(taskId, "SUCCEEDED");
+    }
+
+    @Test
+    void confirmedUnknownRetryFailsClosedWhenAnalyzingStatusCannotBeReset() {
+        long taskId = store.submit(request("boss", "job-reset-rejected", "run-a")).task().id();
+        assertThat(store.claim(taskId, "lease-unknown", Duration.ofMinutes(1))).isNotNull();
+        assertThat(store.completeUnknown(taskId, "lease-unknown", "provider result unknown")).isTrue();
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(false);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        JobAnalysisTaskStore.RetryResult retried = queue.retry(taskId, 1L, true);
+
+        assertThat(retried.accepted()).isFalse();
+        assertThat(retried.message()).contains("未重新调用 AI Provider");
+        assertThat(store.findById(taskId).status()).isEqualTo("UNKNOWN");
+        verify(analysisService, never()).analyzeJob(any(), any(), any());
+    }
+
     private long leaseExpiredTask(String platform, String jobKey) {
         long taskId = store.submit(request(platform, jobKey, "run-a")).task().id();
         assertThat(store.claim(taskId, "expired-lease", Duration.ofMinutes(1))).isNotNull();

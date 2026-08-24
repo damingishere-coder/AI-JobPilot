@@ -37,6 +37,7 @@ public class ConfigService {
             "BASE_URL",
             "API_KEY",
             "MODEL",
+            "AI_REQUEST_TIMEOUT_SECONDS",
             "CODEX_PATH",
             "CODEX_MODEL",
             "CODEX_TIMEOUT_SECONDS",
@@ -81,6 +82,13 @@ public class ConfigService {
             String key = normalizeUiConfigKey(config.getConfigKey());
             if (UI_CONFIG_KEYS.contains(key) && !SENSITIVE_UI_CONFIG_KEYS.contains(key)) {
                 configMap.put(key, config.getConfigValue());
+            }
+        }
+        for (String key : UI_CONFIG_KEYS) {
+            if (SENSITIVE_UI_CONFIG_KEYS.contains(key) || configMap.containsKey(key)) continue;
+            String environmentValue = environment.getProperty(key);
+            if (environmentValue != null && !environmentValue.isBlank()) {
+                configMap.put(key, environmentValue.trim());
             }
         }
         return configMap;
@@ -185,6 +193,7 @@ public class ConfigService {
         result.put("CODEX_HOME", optionalAiConfigValue("CODEX_HOME", ""));
         result.put("CODEX_MODEL", optionalAiConfigValue("CODEX_MODEL", "gpt-5.6-sol"));
         result.put("CODEX_TIMEOUT_SECONDS", optionalAiConfigValue("CODEX_TIMEOUT_SECONDS", "300"));
+        result.put("AI_REQUEST_TIMEOUT_SECONDS", optionalAiConfigValue("AI_REQUEST_TIMEOUT_SECONDS", "120"));
         if ("codex".equals(provider)) {
             result.put("BASE_URL", optionalAiConfigValue("BASE_URL", ""));
             result.put("API_KEY", optionalAiConfigValue("API_KEY", ""));
@@ -357,6 +366,21 @@ public class ConfigService {
         if ("CODEX_PATH".equals(configKey)) {
             codexCliService.validateExecutableName(configValue);
         }
+        if ("CODEX_TIMEOUT_SECONDS".equals(configKey) || "AI_REQUEST_TIMEOUT_SECONDS".equals(configKey)) {
+            validateTimeoutSeconds(configKey, configValue);
+        }
+    }
+
+    private void validateTimeoutSeconds(String configKey, String configValue) {
+        try {
+            int value = Integer.parseInt(configValue == null ? "" : configValue.trim());
+            int minimum = "CODEX_TIMEOUT_SECONDS".equals(configKey) ? 10 : 1;
+            if (value < minimum || value > 1800) {
+                throw new IllegalArgumentException(configKey + " 必须在 " + minimum + " 到 1800 秒之间");
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(configKey + " 必须是整数秒数", e);
+        }
     }
 
     private String normalizeUiConfigKey(String configKey) {
@@ -368,7 +392,8 @@ public class ConfigService {
             return "general";
         }
         return switch (configKey) {
-            case "AI_PROVIDER", "BASE_URL", "API_KEY", "MODEL", "CODEX_PATH", "CODEX_HOME", "CODEX_MODEL", "CODEX_TIMEOUT_SECONDS" -> "ai";
+            case "AI_PROVIDER", "BASE_URL", "API_KEY", "MODEL", "AI_REQUEST_TIMEOUT_SECONDS",
+                    "CODEX_PATH", "CODEX_HOME", "CODEX_MODEL", "CODEX_TIMEOUT_SECONDS" -> "ai";
             case "HOOK_URL", "BOT_IS_SEND" -> "notification";
             default -> "general";
         };
@@ -383,6 +408,7 @@ public class ConfigService {
             case "BASE_URL" -> "AI 服务地址";
             case "API_KEY" -> "AI 服务密钥";
             case "MODEL" -> "AI 模型名称";
+            case "AI_REQUEST_TIMEOUT_SECONDS" -> "一次远程 AI 调用的总超时秒数";
             case "CODEX_PATH" -> "Codex CLI 可执行文件";
             case "CODEX_HOME" -> "Codex 登录配置目录";
             case "CODEX_MODEL" -> "Codex 模型名称";

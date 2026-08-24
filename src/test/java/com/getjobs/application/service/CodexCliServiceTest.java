@@ -6,9 +6,15 @@ import org.junit.jupiter.api.condition.OS;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class CodexCliServiceTest {
     @Test
@@ -83,5 +89,34 @@ class CodexCliServiceTest {
         assertThatThrownBy(() -> service.validateExecutableName("codex.cmd --dangerous-argument"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不允许其他程序或命令参数");
+    }
+
+    @Test
+    void remainingMillisUsesOneSharedDeadline() {
+        CodexCliService service = new CodexCliService();
+
+        assertThat(service.remainingMillis(System.nanoTime() - 1)).isZero();
+        long futureDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        assertThat(service.remainingMillis(futureDeadline)).isBetween(1L, 2000L);
+    }
+
+    @Test
+    void terminateProcessTreeStopsDescendantsBeforeParent() throws Exception {
+        CodexCliService service = new CodexCliService();
+        Process process = mock(Process.class);
+        ProcessHandle parent = mock(ProcessHandle.class);
+        ProcessHandle firstChild = mock(ProcessHandle.class);
+        ProcessHandle secondChild = mock(ProcessHandle.class);
+        when(process.toHandle()).thenReturn(parent);
+        when(parent.descendants()).thenReturn(Stream.of(firstChild, secondChild));
+        when(process.waitFor(2, TimeUnit.SECONDS)).thenReturn(true);
+
+        service.terminateProcessTree(process);
+
+        var order = inOrder(secondChild, firstChild, process);
+        order.verify(secondChild).destroy();
+        order.verify(firstChild).destroy();
+        order.verify(process).destroy();
+        verify(process).waitFor(2, TimeUnit.SECONDS);
     }
 }

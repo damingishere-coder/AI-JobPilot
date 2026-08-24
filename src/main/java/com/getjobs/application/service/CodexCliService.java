@@ -48,6 +48,7 @@ public class CodexCliService {
         String executable = resolveExecutable(value(config, "CODEX_PATH", "codex"));
         String model = value(config, "CODEX_MODEL", "gpt-5.6-sol");
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
 
         Path tempDirectory = null;
         Path outputPath = null;
@@ -66,19 +67,20 @@ public class CodexCliService {
                 builder.environment().put("CODEX_HOME", Path.of(codexHome).toAbsolutePath().normalize().toString());
             }
 
-            slotAcquired = CODEX_SLOTS.tryAcquire(timeoutSeconds, TimeUnit.SECONDS);
+            slotAcquired = CODEX_SLOTS.tryAcquire(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
             if (!slotAcquired) {
                 throw new IllegalStateException("Codex CLI 当前任务过多，等待执行超时");
+            }
+            long processBudgetMillis = remainingMillis(deadlineNanos);
+            if (processBudgetMillis <= 0) {
+                throw new IllegalStateException("Codex CLI 总执行时间已耗尽");
             }
             process = builder.start();
             try (var writer = process.outputWriter(StandardCharsets.UTF_8)) {
                 writer.write(buildPrompt(content, imagePath != null));
             }
-            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-                process.destroy();
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                }
+            if (!process.waitFor(processBudgetMillis, TimeUnit.MILLISECONDS)) {
+                terminateProcessTree(process);
                 throw new IllegalStateException("Codex CLI 执行超时（>" + timeoutSeconds + " 秒）");
             }
             if (process.exitValue() != 0) {
@@ -98,8 +100,8 @@ public class CodexCliService {
         } catch (IOException e) {
             throw new IllegalStateException("Codex CLI 无法启动，请检查 CODEX_PATH", e);
         } finally {
-            if (process != null && process.isAlive()) {
-                process.destroyForcibly();
+            if (process != null) {
+                terminateProcessTree(process);
             }
             if (slotAcquired) {
                 CODEX_SLOTS.release();
@@ -223,6 +225,41 @@ public class CodexCliService {
             return Math.max(10, Math.min(1800, Integer.parseInt(raw)));
         } catch (NumberFormatException ignored) {
             return 300;
+        }
+    }
+
+    long remainingMillis(long deadlineNanos) {
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0) return 0;
+        return Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+    }
+
+    void terminateProcessTree(Process process) {
+        if (process == null) return;
+        List<ProcessHandle> descendants;
+        try {
+            descendants = process.toHandle().descendants().toList();
+        } catch (RuntimeException ignored) {
+            descendants = List.of();
+        }
+        for (int i = descendants.size() - 1; i >= 0; i--) {
+            descendants.get(i).destroy();
+        }
+        process.destroy();
+        try {
+            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                for (int i = descendants.size() - 1; i >= 0; i--) {
+                    ProcessHandle child = descendants.get(i);
+                    if (child.isAlive()) child.destroyForcibly();
+                }
+                if (process.isAlive()) process.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            for (ProcessHandle child : descendants) {
+                if (child.isAlive()) child.destroyForcibly();
+            }
+            if (process.isAlive()) process.destroyForcibly();
         }
     }
 
