@@ -1,38 +1,38 @@
 # PROJECT AUDIT — 投递牛马 AI-JobPilot V1
 
 > 审计日期：2026-08-24
+> 整改复评日期：2026-08-25
 > 审计方式：Codemap 全量模块地图 + Code Overhaul 全量工程审计 + 本地 SonarQube Community Build 静态扫描
-> 审计原则：只审计，不修改生产业务代码；不访问真实招聘网站、不调用真实 AI Provider、不发送真实投递、不修改现有业务数据。
+> 复评范围：已完成 P0.1–P1.6 与 P2.1；不访问真实招聘网站、不调用真实 AI Provider、不发送真实投递、不打开或修改现有业务数据库。
 
 ## 0. 结论先行
 
 ### 当前等级
 
-**可用 V1（仅限本机、单用户、人工在环）**。
+**稳定 V1（限定为本机、单用户、人工在环）**。
 
-它高于 Demo：核心链路已经真实接通，能够配置档案、从招聘平台采集岗位、持久化数据、调用 AI 分析、人工确认并驱动投递；已有 Java 单元测试、扩展纯函数测试、前端构建和 Windows/Docker 启动脚本。
+它已经跨过“能跑但主要靠运气”的阶段：核心链路保持接通，同时增加了本机安全边界、Flyway 迁移阻断、持久任务与投递 attempt、终态 compare-and-set、Provider 超时/退避、Profile 数据隔离、严格 URL/静态资源边界、真实 readiness、UNKNOWN 对账/显式重试以及核心故障测试。
 
-它还不是“稳定 V1”：进程重启、第三方超时、重复回调、半成功、并发扫描、旧数据库迁移、跨档案数据隔离和敏感接口暴露时，系统不一定进入明确且可恢复的状态。当前稳定性在很大程度上依赖以下前提：
+它仍不是生产级或对外 SaaS。当前评级依赖以下明确边界：
 
 1. 只有一个可信用户在本机使用；
-2. 招聘网站 DOM、登录态和扩展协议没有突然变化；
-3. AI Provider 能在合理时间返回格式近似正确的内容；
-4. 程序不在 AI 队列或投递回调中途重启；
-5. 当前 SQLite Schema 恰好兼容运行时补丁；
-6. 用户能够通过页面、日志和人工观察发现隐式失败。
+2. 招聘网站 DOM、登录态和浏览器行为仍需人工真实平台回归；
+3. 对外网络、多用户认证授权、租户隔离不在本轮产品范围；
+4. 历史数据库升级必须先在副本演练，V8 对无法确定归属的多 Profile 旧数据会主动失败；
+5. UNKNOWN 表示“真实动作结果无法证明”，需要用户在对账入口明确确认或批准重试。
 
 ### 总健康度
 
-**50 / 100**
+**80 / 100**
 
-这是“功能已经成形，但工程保护不足”的分数。Codemap 对 15 个功能模块的独立评分平均为 **52.5 / 100**：13 个 D、2 个 C，没有 A/B 模块；最弱区域是猎聘/51job 后端（42）、共享 API 契约（43）、旧 Playwright Worker（43）和数据基础（45）。
+这是“在明确本机边界内已经稳定，但仍有显著维护债”的分数。分数提升来自真实故障边界被封住，而不是 Sonar 数字变漂亮：旧库迁移失败会阻止启动，投递/AI 任务可恢复，跨 Profile 数据由数据库约束保护，Provider 与 URL/文件边界受限，UNKNOWN 有可审计恢复入口，CI 开始覆盖迁移、启动、扩展和前端契约。God Component、双执行链、低综合覆盖率和真实平台 E2E 仍阻止它进入“接近生产级”。
 
 ### 最重要的判断
 
-- **为什么现在能跑：** Chrome 扩展利用已登录页面执行 Boss/智联主流程；SQLite 降低部署复杂度；多级 DOM/API fallback、旧 Playwright 路径和运行时 DDL 吸收了历史差异；本机单用户降低了并发和安全压力。
-- **哪些相对可靠：** Chrome page bridge 已限制消息来源与类型；Codex CLI 采用 read-only sandbox、并发槽位、超时和临时目录清理；AI 队列有容量上限与进程内去重；Docker 对外端口默认绑定 loopback；Java/前端已有基础 CI。
-- **哪些只是侥幸：** 投递“点击过”常被当作“真实发送成功”；任务状态没有持久化恢复；多处异常被转换为 `0`、`SKIP`、空结果或 `success=true`；Schema 有 Flyway 与运行时 DDL 多套真相；敏感 API 的安全性依赖用户没有把服务暴露出去。
-- **第一原则：** 先保护数据、安全边界和状态真实性，再补失败恢复与测试；最后才拆大组件、清理旧代码。不要先做全面重构。
+- **为什么现在能跑：** Chrome 扩展复用已登录页面，Spring 单体与 SQLite 降低部署复杂度，各平台保留必要 DOM/API fallback；这些仍是合适的 V1 选择。
+- **哪些已经可靠：** 本机认证/loopback 边界、迁移启动阻断、AI 持久任务、Provider 有界失败、投递 attempt/终态保护、Liepin/51job Profile 约束、HTTPS host allowlist、静态文件根边界、readiness 和 UNKNOWN 对账均有自动化保护。
+- **哪些仍需人工：** 招聘网站真实 DOM 与平台确认信号、Chrome 安装态/登录态、历史真实库副本迁移、四平台完整 E2E；这些没有被单元测试伪装成“已真实验证”。
+- **下一原则：** 不再继续堆功能；先做真实旧库副本演练和一次受控平台 smoke，再处理 P2 的 God Component、查询下推和测试覆盖缺口。
 
 ---
 
@@ -47,14 +47,14 @@
 - Gradle、pnpm、Docker、Windows 启动脚本、GitHub Actions、文档和 demo；
 - 15 个功能模块，52,425 行、233 个文件。
 
-### 1.2 本轮没有做
+### 1.2 整改复评没有做
 
 - 没有真实登录招聘网站或发送简历；
 - 没有调用会计费的 AI Provider 或已登录 Codex CLI；
-- 没有启动生产数据库迁移、修改 Schema 或清理历史数据；
+- 没有对真实业务数据库执行迁移、查询或清理；迁移只在隔离临时 SQLite 中执行；
 - 没有验证真实多用户、互联网暴露或 SaaS 部署；
 - 没有删除 Dead/Legacy Code；
-- 没有为了评分修改生产代码或补“凑百分比”的测试。
+- 没有为了评分批量修改 Sonar smell 或补“凑百分比”的测试。
 
 ### 1.3 证据置信度
 
@@ -162,17 +162,17 @@ stateDiagram-v2
 
 | 维度 | 分数 | 依据 |
 |---|---:|---|
-| 架构合理性 | 5/10 | 本地单体 + SQLite 符合 V1 规模，没有必要上微服务；但 Chrome/Playwright 双主线、跨层 Controller、God Service 与未落地 Adapter 造成边界不清 |
-| 业务逻辑 | 6/10 | 核心用户流程完整且有人工作流；失败/部分成功/重复回调/旧 Worker 假成功没有统一状态机 |
-| 代码质量 | 5/10 | TypeScript strict、模块命名基本可读；同时存在多个 1,000–4,700 行文件、平台复制、静默 catch、散落 fallback |
-| 数据设计 | 4/10 | SQLite 足够简单，已有 Flyway 和索引；但多套运行时 DDL、缺少 FK/UNIQUE、跨扫描重复、Profile 隔离不完整 |
-| 稳定性 | 4/10 | 有容量限制、超时和部分去重；AI 队列不可恢复、Provider 无 request timeout、页面/投递状态常把未知当成功 |
-| 测试 | 4/10 | 29 个 Java 测试文件、93 个 `@Test`、5 个扩展测试文件；没有前端测试，也没有 Spring 集成测试注解，核心浏览器/数据库/恢复链仍靠人工 |
-| 安全性 | 4/10 | `.env` 已忽略、未发现当前跟踪文件中的常见真实密钥签名、Docker 端口绑定本机；但敏感配置/Cookie API 无认证、原文返回，原生后端未强制 loopback |
-| 性能与资源 | 6/10 | V1 数据量下可接受；多个平台列表/统计整表载入内存，Boss/智联分析页和扩展脚本巨大，AI fallback 可能重复计费 |
-| 可观测性 | 5/10 | 有日志、SSE 进度、诊断接口；健康接口不检查 DB/队列/AI，多处错误变空结果或 success，无法可靠识别半成功 |
-| 文档与可维护性 | 6/10 | README、架构、Windows/Docker 文档和 CI 都已存在；旧文档、多启动入口、多交付路径和实际测试契约存在漂移 |
-| **总分** | **50/100** | **可用 V1；尚未稳定** |
+| 架构合理性 | 7/10 | 本地单体 + SQLite 继续符合 V1 规模；任务、投递 attempt、readiness 与平台数据边界已经落地，但 Chrome/Playwright 双链和 God Service 仍存在 |
+| 业务逻辑 | 9/10 | 核心流程完整；重复/延迟结果受终态保护，UNKNOWN 不再伪装成功，并有人工对账与显式重试。真实平台成功信号仍需人工验证 |
+| 代码质量 | 6/10 | 类型、命名和失败契约改善；Sonar 仍有 1,336 smells，多个 1,000–4,700 行文件及平台复制，暂未为评分强拆 |
+| 数据设计 | 9/10 | Flyway 是迁移真相，失败阻止启动；V8 为猎聘/51job 增加 profile FK 与复合唯一约束，SQLite 每连接启用 FK；其余历史表约束仍需逐表收敛 |
+| 稳定性 | 9/10 | AI 任务可重启恢复，Provider 有总超时/有界重试，投递有 attempt/幂等/对账，readiness 覆盖 DB/Schema/队列；外部网站仍不可控 |
+| 测试 | 8/10 | 193 个 Java 测试、62 个扩展测试、真实 Spring 启动 + 临时 SQLite 集成、CI 覆盖 lint/typecheck/build/扩展；前端组件和真实浏览器 E2E 仍缺 |
+| 安全性 | 8/10 | 服务与 Secret 收紧到本机令牌边界，招聘 URL 强制 HTTPS 精确域名，静态资源防穿越，Next 生产依赖审计为 0；Sonar 仍需人工分诊动态 SQL/临时目录 |
+| 性能与资源 | 7/10 | 队列/重试/AI 成本边界已受控；整表载入、超大脚本和旧 Worker 固定等待仍会随数据量放大 |
+| 可观测性 | 8/10 | liveness/readiness 分离，任务/attempt/UNKNOWN 可查询，错误状态更明确；尚无长期指标、分布式 trace 或真实平台回执遥测 |
+| 文档与可维护性 | 9/10 | Code Map、审计、分轮任务、CI 和回滚边界齐全；旧文档与双执行链说明仍需持续收敛 |
+| **总分** | **80/100** | **稳定 V1（本地单用户边界）；不是生产级或对外 SaaS** |
 
 ---
 
@@ -182,54 +182,54 @@ stateDiagram-v2
 
 ### 4.1 扫描指标与人工分诊
 
-扫描环境：本机 SonarQube Community Build **26.8.0.126808**；分析 ID `cdd6d218-2030-45a3-89a9-af3449b5e3b9`。临时分析 Token 已在 `finally` 中撤销，未写入文件或报告。
+扫描环境：本机 SonarQube Community Build **26.8.0.126808**；最终分析 ID `57d5cabe-1069-4099-97e4-4a6f3e9ad593`，版本 `1.3.0-stable-v1-completion`。临时分析 Token 已在 `finally` 中撤销，扫描后再次确认撤销成功；未写入仓库或报告。
 
-扫描使用编译产物和 JaCoCo XML，但日志提示未提供完整 `sonar.java.libraries` / `sonar.java.test.libraries`，并有少量 unresolved import/preview feature 警告。因此总体指标可用于热点排序，个别 Java 规则仍需回到源码人工确认，不能直接批量修复。
+扫描使用编译产物和 JaCoCo XML，但日志提示未提供完整 `sonar.java.libraries` / `sonar.java.test.libraries`，并有 unresolved type/import/preview feature 警告；扩展 VM 测试也无法生成有效 LCOV。因此总体指标适合做热点排序，不能把每个 Java/JS 告警直接当成已证实缺陷。
 
 | 指标 | 结果 | 判断 |
 |---|---:|---|
-| 分析代码行 `ncloc` | 40,819 | 不含测试/文档/生成物后的 Sonar 口径 |
-| Bugs | 31 | 含 2 Blocker、2 Critical；需要人工按业务影响重排 |
-| Vulnerabilities | 45 | Security Rating D；多数是动态 SQL/伪随机/临时目录规则，不能全当作可利用漏洞 |
+| 分析代码行 `ncloc` | 44,812 | 不含测试、文档和生成物后的 Sonar 口径；本轮新增任务/状态/迁移与恢复入口导致 LOC 增长 |
+| Bugs | 26 | 未解决口径；含 2 个 Blocker，必须人工按真实控制流重排 |
+| Vulnerabilities | 64 | Security Rating D；44 个来自动态 SQL 规则，另含临时目录、PATH 搜索和伪随机规则，不能全当作可利用漏洞 |
 | Security Hotspots | 0 | 不代表没有安全风险；本轮人工 Review 发现了 Sonar 未表达的无认证信任边界 |
-| Code Smells | 1,248 | 主要集中在重复字面量、空 catch、嵌套 try、复杂度和嵌套三元表达式 |
-| Duplication | 8.2% | 跨平台 Controller/Service/UI 重复与人工 Review 一致 |
-| Coverage | 10.3% | Sonar 综合口径；前端与扩展无有效 LCOV，Java JaCoCo 行覆盖 17.2% |
-| Cognitive Complexity | 8,692 | 与 Codemap 的 God Component 热点高度重合 |
-| Cyclomatic Complexity | 10,775 | `boss-content.js` 单文件 1,660，智联 content 1,004 |
-| Maintainability Rating | A | 债务率 1.2%；该评级会被大量 LOC 稀释，不能覆盖业务风险 |
-| Reliability Rating | E | 31 Bugs，尤其并发锁等待、可空值和中断处理 |
-| Security Rating | D | 45 Vulnerabilities；需要逐项确认可利用性 |
-| Technical Debt | 14,131 分钟 | 约 235 小时 31 分钟，约 29.4 个 8 小时工作日 |
-| Quality Gate | OK，但 0 条 condition | 当前 Gate 没有任何条件，**这个 OK 没有发布门禁意义** |
+| Code Smells | 1,336 | 主要集中在重复字面量、空 catch、嵌套 try、认知复杂度和嵌套三元表达式 |
+| Duplication | 8.4% | 跨平台 Controller/Service/UI 重复与人工 Review 一致；本轮没有为降低指标强做超级抽象 |
+| Coverage | 19.6% | Sonar 全语言口径：line 18.7%、branch 22.1%；Java JaCoCo 已导入，前端与扩展仍无有效覆盖输入 |
+| Cognitive Complexity | 9,508 | 与 Codemap 的 God Component 热点高度重合 |
+| Cyclomatic Complexity | 11,891 | `boss-content.js` 单文件 1,709，智联 content 1,036 |
+| Maintainability Rating | A | 债务率 1.1%；该评级会被大量 LOC 稀释，不能覆盖业务风险 |
+| Reliability Rating | E | 26 个未解决 Bugs；最高严重度仍由旧 Playwright 持锁等待触发 |
+| Security Rating | D | 64 个未解决 Vulnerabilities；需要逐项确认输入是否可控和部署边界 |
+| Technical Debt | 15,112 分钟 | 约 251 小时 52 分钟，约 31.5 个 8 小时工作日 |
+| Quality Gate | **OK，但不足以作为发布通过** | 最终扫描相对同版本前一次扫描只看到极小增量，因此新代码 Coverage 100%、重复率 0%、新增问题 0；同一工作树在版本切换前曾因新代码 Coverage 9.7%、重复率 3.78%、新增问题 239 显示 ERROR。短窗口 OK 不能掩盖总体 E/D 评级和低覆盖 |
 
-问题严重度：2 Blocker、289 Critical、623 Major、347 Minor、63 Info，共 1,324 个。高数量不等于同等数量的真实故障；Sonar 的规则严重度必须服从本报告的 P0–P3 业务排序。
+未解决问题共 1,426 个：2 Blocker、345 Critical、641 Major、366 Minor、72 Info；按类型为 26 Bugs、64 Vulnerabilities、1,336 Code Smells。Sonar 数量增加主要由代码范围增长、规则/门禁生效和新增恢复逻辑引起，不代表本轮把系统改得更不稳定；但它明确说明“业务风险收口”不等于“代码维护债已经解决”。
 
 ### 4.1.1 最复杂文件
 
 | 文件 | Cognitive | Cyclomatic | Duplication | Coverage |
 |---|---:|---:|---:|---:|
-| `chrome-extension/boss-content.js` | 810 | 1,660 | 7.1% | 0% |
-| `chrome-extension/zhilian-content.js` | 617 | 1,004 | 13.1% | 0% |
-| `PlaywrightManager.java` | 563 | 363 | 10.0% | 1.9% |
-| `worker/boss/Boss.java` | 521 | 312 | — | 0% |
-| `BossService.java` | 412 | 455 | 10.0% | 19.9% |
-| `chrome-extension/background.js` | 371 | 653 | 3.5% | 0% |
+| `chrome-extension/boss-content.js` | 839 | 1,709 | 7.7% | 0% |
+| `chrome-extension/zhilian-content.js` | 633 | 1,036 | 15.1% | 0% |
+| `PlaywrightManager.java` | 563 | 363 | 10.0% | 2.4% |
+| `worker/boss/Boss.java` | 520 | 312 | 0% | 0% |
+| `chrome-extension/background.js` | 407 | 720 | 9.0% | 0% |
+| `BossService.java` | 375 | 427 | 11.0% | 23.3% |
 | `front/app/boss/page.tsx` | 357 | 499 | 9.3% | 0% |
-| `worker/job51/Job51.java` | 336 | 146 | 1.4% | 0% |
-| `Job51Service.java` | 318 | 237 | 9.0% | 0% |
-| `LiepinService.java` | 255 | 182 | 26.8% | 0% |
+| `worker/job51/Job51.java` | 396 | 174 | 1.2% | 0% |
+| `Job51Service.java` | 288 | 230 | 9.0% | 12.2% |
+| `JobAiAnalysisService.java` | 258 | 284 | 7.7% | 67.9% |
 
 ### 4.1.2 重复率最高的主要文件（至少 100 NCLOC）
 
-- `LiepinController.java` 41.0%；
 - `ZhilianJobService.java` 37.7%；
 - `BossJobService.java` 35.7%；
-- `JobController.java` 33.4%；
+- `LiepinController.java` 35.6%；
 - `BossChartPanel.tsx` 30.9%；
+- `JobController.java` 30.4%；
 - `front/app/liepin/page.tsx` 28.9%；
-- `AiConfigController.java` 26.9%；
-- `LiepinService.java` 26.8%。
+- `BossKpiCards.tsx` 28.5%；
+- `LiepinService.java` 27.5%。
 
 这些位置与 Code Overhaul 发现的“四平台复制”和旧 Worker 双实现一致，因此属于高置信度技术债；但应优先统一状态/幂等/错误契约，不应为了降低百分比抽取一个超级基类。
 
@@ -238,21 +238,21 @@ stateDiagram-v2
 | 规则/数量 | 人工判断 |
 |---|---|
 | `java:S2259` 1 个 | `ExternalToolSupport.java:44` 可能对 nullable `detail` 解引用；小成本真实 Bug，P1/P2 早期修 |
-| `java:S2142` 7 个 | AI/猎聘路径捕获中断后未恢复中断标记，会破坏取消/关闭语义；值得修 |
+| `java:S2142` 4 个 | 捕获中断后未恢复中断标记，会破坏取消/关闭语义；值得在 P2 小轮修复 |
 | `java:S2276` 2 个 Blocker | `PlaywrightManager:713,767` 在 synchronized 区域 sleep，持锁等待会阻塞其他页面操作；真实并发问题，但业务优先级低于数据/投递 P0 |
-| `java:S2077` 25 个 | 动态 SQL 主要集中在 Schema/统计代码；常量表名场景可能是假阳性，但与运行时 DDL 风险重合的必须人工逐条审计 |
+| `java:S2077` 44 个 | 动态 SQL 主要集中在迁移/Schema/统计代码；常量表名场景可能是假阳性，任何用户可控值进入拼接的路径必须逐条审计 |
 | `java:S5443` 3 个 Critical | Codex/旧 Boss Worker 使用系统临时目录；当前 read-only/及时删除降低风险，但应改为用户私有目录并验证权限 |
 | `java:S5693` 2 个 | 30 MB 上传阈值超过规则建议，和一次性内存读取组合后值得限制/流式化 |
 | `docker:S6471` 1 个 | 容器默认 root；开发 Compose 风险较低，若作为发布镜像则应建立非 root 用户 |
-| `S3776` 跨语言 83 个 | 与 Codemap 最差文件高度重合，适合在特征测试后按模块拆分 |
+| `S3776` Java 65 个（另有 JS/TS） | 与 Codemap 最差文件高度重合，适合在特征测试后按模块拆分 |
 
 ### 4.1.4 不应机械修复的 Sonar 问题
 
-- `java:S1192` 重复字符串 196 个：大量是状态、字段、平台选择器；先集中协议常量，不能批量抽取无语义常量。
-- `java:S108` 空 catch 139 个：业务写入/投递路径上的要修；关闭页面、读取可选标题等 best-effort 路径可以保留但应注释原因。
+- `java:S1192` 重复字符串 242 个：大量是状态、字段、平台选择器；先集中协议常量，不能批量抽取无语义常量。
+- `java:S108` 空 catch 121 个：业务写入/投递路径上的要修；关闭页面、读取可选标题等 best-effort 路径可以保留但应注释原因。
 - `S2245` 伪随机 9 个：当前多数用于 request id、抖动或本地 UI key，不是密码学令牌；不要一律换成重型方案，只有安全 token 才用 CSPRNG。
 - `java:S2119` 2 个被标 Critical 的重复 `new Random()`：属于质量/性能问题，不是本项目的 P0 业务缺陷。
-- 无障碍 click/keyboard 规则 10 个：真实体验问题，归 P2/P3，不应压过数据与安全整改。
+- `typescript:S1082` 10 个交互可访问性问题：真实体验问题，归 P2/P3，不应压过数据与状态整改。
 - 嵌套三元、命名、wrapper 等 smell：能读懂且稳定的代码不为评分而改。
 
 <!-- SONAR_RESULTS_END -->
@@ -273,33 +273,38 @@ stateDiagram-v2
 
 | 检查 | 结果 | 说明 |
 |---|---|---|
-| Gradle `test + jacocoTestReport` | 通过 | 93 tests：91 通过、2 跳过、0 失败；60.11s |
-| Java JaCoCo | 偏低 | 行 17.2%、分支 11.7%、指令 18.4%、方法 21.3%、复杂度 9.5%、类 40.8% |
-| 前端 lint | 通过但有警告 | 0 errors、36 warnings；主要是未使用变量和 React Hook 依赖 |
+| Gradle `clean test + jacocoTestReport` | 通过 | 193 tests：189 通过、4 跳过、0 失败；含真实 Spring 随机端口 + 临时 SQLite 启动集成 |
+| Java JaCoCo | 核心覆盖提升、总体仍偏低 | 行 31.03%、分支 22.10%、指令 32.52%、方法 39.86%、复杂度 18.45%、类 70.47% |
+| 前端 lint | 通过但有警告 | 0 errors、35 warnings；主要是既有未使用变量、React Hook 依赖和浏览器数据过期提示 |
 | TypeScript `tsc --noEmit` | 通过 | 0 错误 |
-| Next build | 通过 | 13/13 静态页面生成；browser mapping/caniuse 数据过旧警告 |
-| 扩展测试（目录参数） | 失败 | `node --test chrome-extension/tests` 在当前 Windows/Node 24 把目录当模块，报 `Cannot find module` |
-| 扩展测试（显式文件） | 通过 | 5 个 `*.test.cjs`，54 tests 全通过，0 失败 |
+| Next 16.3.2 build | 通过 | 13/13 静态页面生成 |
+| 扩展测试（显式文件） | 通过 | 6 个 `*.test.cjs`，62 tests 全通过，0 失败；Linux CI 使用 shell glob，Windows 验证用明确文件列表 |
 | 扩展 LCOV | 无效 | 生成文件仅 4 字节 `TN:`，没有可归因覆盖条目；Sonar 因此把扩展计为 0% |
 | Extension manifest/语法校验 | 通过 | 15 个引用文件、11 个 JS 语法检查通过 |
-| `pnpm audit` | 未通过 | 68 advisories：1 critical、38 high、25 moderate、4 low |
+| `pnpm audit --prod` | 通过 | `No known vulnerabilities found` |
 | Docker Compose 配置 | 通过 | `docker compose config` 退出码 0，0 warning |
-| Sonar 扫描 | 通过 | 40,819 NCLOC，分析上传并由 CE 成功处理；临时 token 已撤销 |
+| Sonar 扫描执行 | 通过 | 44,812 NCLOC，CE 成功处理，临时 token 已撤销；最终 Gate 的 3 条条件只覆盖最后一个极小增量窗口，不能当作整体发布门禁，详见第 4 节 |
+| 真实业务数据库保护 | **待归因** | 最终测试未打开数据库，且文件修改时间早于最终 Operator 验证；但当前 SHA/大小/mtime 与 2026-08-22 基准不同。未覆盖、未回滚，发布前必须由用户确认这是否为预期运行产生的变化 |
+| 残留服务 | 通过 | 6866 无监听；最终测试没有启动独立后端服务 |
 
-### 5.1 前端依赖漏洞分布
+真实 DB 只读指纹证据：
 
-| 包 | Advisory 数 | 重点 |
-|---|---:|---|
-| `next` | 34 | 含 1 个 React Flight RCE critical、多个 RSC/Server Actions DoS/SSRF/绕过 |
-| `brace-expansion` | 8 | 资源耗尽类 |
-| `minimatch` | 6 | ReDoS |
-| `js-yaml` | 4 | 原型污染等 |
-| `picomatch` | 4 | glob 匹配/注入/ReDoS |
-| `postcss` | 4 | 解析类 |
-| `flatted` | 2 | 递归 DoS/原型污染 |
-| 其他 | 6 | `nanoid`、`@babel/core`、`ajv`、`glob`、`sharp` |
+| 口径 | Size | LastWriteTimeUtc | SHA256 |
+|---|---:|---|---|
+| 2026-08-22 基准 | 10,579,968 | `2026-08-22T10:15:11.7688626Z` | `567B10BF197CC37B6E4E6B81C05ACE3FC6D709CD4B29E1C89A3294BF10403172` |
+| 本轮最终检查 | 10,752,000 | `2026-08-24T14:23:27.7431953Z` | `17B63982FFBF90AB33FA716C533F5C98DBCE1851CE060D40D156A0468CC5058B` |
 
-`next@16.0.1` 的 critical advisory 必须进入 P1 安全升级轮。当前生产路径以静态导出为主，未发现 Server Actions 业务，因此部分服务端 advisory 的可利用面可能较低；但开发服务器、构建链和未来配置变化仍会重新暴露，不能用“当前没用到”长期忽略。升级应选同一 major 的已修复版本，单独做一轮前端回归，而不是连 Tailwind major 一起升级。
+第二次完整测试明确采集了 BEFORE/AFTER：size、mtime、SHA256 完全一致，且无 `-wal/-shm` 与 8888 监听；这能证明最终验证没有再次写库，不能证明更早变化的责任归属。
+
+### 5.1 前端依赖安全复评
+
+- `next`：16.3.2；
+- `react` / `react-dom`：19.2.8；
+- `tailwindcss-animate` 已移入 `devDependencies`，不再扩大生产依赖口径；
+- `pnpm install --frozen-lockfile`、lint、typecheck、13 页面 build 全部通过；
+- `pnpm audit --prod`：0 个已知漏洞。
+
+这表示 P1.6 的已知生产依赖问题已关闭，不表示未来无需升级。Next/React 与 Tailwind major 仍应分轮，新的 advisory 进入依赖维护流程，不与业务重构混在一起。
 
 <!-- VALIDATION_RESULTS_END -->
 
@@ -307,10 +312,10 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    UT[Java 单元测试 29 文件 / 93 @Test] --> PURE[参数、Provider 路由、状态/helper]
-    ET[扩展 Node 测试 5 文件] --> VM[VM / fake DOM / 源码契约]
-    FT[前端自动化测试 0] --> MANUAL[人工点击]
-    IT[Spring/SQLite 集成测试 0 个显式注解] --> MANUAL
+    UT[Java 193 tests] --> PURE[参数、状态、Provider、任务、迁移]
+    ET[扩展 Node 6 文件 / 62 tests] --> VM[VM / fake DOM / 协议与恶意 URL]
+    FT[前端 component test 仍缺] --> MANUAL[人工 UI 回归]
+    IT[Spring RANDOM_PORT + 临时 SQLite] --> READY[启动、V8、FK、readiness HTTP]
     E2E[真实 Chrome + DB + 回调 E2E] --> MANUAL
 ```
 
@@ -318,19 +323,53 @@ flowchart TD
 
 1. 真实招聘页面 DOM/API 变化后的扫描；
 2. 扩展导航、断点恢复、跨页面 `chrome.storage` checkpoint；
-3. 点击投递后是否真正发送、部分失败与重复回调；
-4. 进程在 `AI_ANALYZING` 中途退出后的恢复；
-5. Provider 429/500/空内容/错误 JSON/长时间无响应；
-6. Flyway 与旧 SQLite 数据库的全量升级、回滚和双轨 Schema 一致性；
-7. 多 Profile 的猎聘/51job 数据隔离；
-8. 前端错误提示、批量状态和旧统计残留；
-9. 多平台同时运行时共享 BrowserContext 的并发行为。
+3. 点击投递后招聘平台是否真正接受；后端重复/延迟/UNKNOWN 语义已有自动化，但平台回执仍需人工；
+4. 真实旧 SQLite 副本从历史状态升级到 V8；临时构造矩阵已自动化；
+5. 前端 partial/error/UNKNOWN 的像素与交互体验；后端 API 契约已有自动化；
+6. 多平台同时运行时共享 BrowserContext 的并发行为；
+7. Chrome 扩展实际安装 ID、真实登录态和网站 DOM 更新后的端到端行为。
 
 ---
 
 ## 6. 交叉验证后的问题总表
 
 说明：`C`=Codemap，`O`=Code Overhaul，`S`=SonarQube。Sonar 未命中的业务语义问题不会因此降级；静态规则未产生业务影响时也不会机械升级。
+
+### 6.1 整改复评台账
+
+| 原问题 | 当前状态 | 复评证据 |
+|---|---|---|
+| SEC-01 本机敏感接口边界 | **已关闭** | 服务强制 loopback；敏感接口使用本地令牌与白名单；Secret 不再通过 GET 原文返回 |
+| DATA-01 多轨/在线破坏性 Schema | **已关闭** | 一次性迁移收敛到 Flyway；完整 Schema 校验失败阻止启动；迁移故障与旧库矩阵使用临时库测试 |
+| BIZ-01 / EXT-02 投递真实性与幂等 | **已关闭** | `delivery_attempt`、request key、CAS 终态、UNKNOWN、人工对账和显式重试已覆盖四平台 |
+| AI-01 / AI-02 持久任务与原子写回 | **已关闭** | 持久任务、租约、启动恢复、失败态和清理安全已落地 |
+| AI-03 Provider 超时/退避/成本 | **已关闭** | 总超时、Retry-After、有界重试、请求 ID、脱敏错误与坏输出失败态已落地 |
+| DATA-02 Liepin/51job Profile 隔离 | **已关闭** | V8 增加 `profile_id`、surrogate id、复合唯一键、Profile FK；服务查询/更新和 attempt 全链带 Profile |
+| DATA-03 全库约束 | **部分关闭** | Liepin/51job 已有 FK/UNIQUE；其余历史表仍需在真实旧库画像后逐表收敛 |
+| EXT-01 / API-01 URL 与静态文件边界 | **已关闭** | HTTPS 精确根/子域白名单、未知扩展 CORS 拒绝、canonical root containment、畸形 URI 400；恶意样例测试通过 |
+| API-02 Readiness | **已关闭** | `/api/health` 保持 liveness；`/api/ready` 检查 DB、完整 Schema 与队列且失败返回 503，不发起计费探测 |
+| SEC-02 Next 安全升级 | **已关闭** | Next 16.3.2、React 19.2.8；13 页面构建通过；`pnpm audit --prod` 为 0 |
+| TEST-01 核心故障自动化 | **核心范围已关闭** | 迁移、Profile/attempt、readiness、HTTP 恢复、静态边界、真实 Spring 启动 + 临时 SQLite、扩展协议已进测试/CI；真实平台 E2E 仍保留为 P2 |
+
+### 6.2 当前未关闭问题
+
+| ID | 优先级 | 问题 / 位置 / 模块 | 来源 | 原因与实际影响 | 概率 | 修改收益 | 成本 / 风险 | Blast Radius | 推荐方案 |
+|---|---|---|---|---|---|---|---|---|---|
+| REAL-01 | P1 | 真实平台确认与历史库副本尚未做受控 smoke；四平台 + V8 | O | 自动化证明了协议和失败语义，但没有证明当天网站 DOM、登录态和真实旧库数据可直接工作；上线前仍可能遇到平台变化或历史数据归属失败 | 中 | 高 | M / 涉及真实账号与备份，风险中 | 四平台真实操作、历史数据 | 在用户确认后，用数据库副本先演练 V8；每平台只做 1 个明确目标 smoke，记录页面证据、request key 与后端状态，不纳入 CI |
+| PW-01 | P2 | 共享 BrowserContext 与旧 Worker；`PlaywrightManager`、`worker/*` | C+O+S | 猎聘/51job 仍依赖旧链；共享 context、固定等待和站点 fallback 使并发恢复难预测 | 中 | 高 | L / 真实站点回归风险高 | 四平台浏览器运行 | 保持单用户串行边界；先修持锁 sleep 与中断，再按平台收敛 context 恢复；不要整体重写 |
+| ARCH-01 | P2 | God Component/Service；`boss-content.js`、`zhilian-content.js`、`background.js`、`BossService` | C+O+S | 最高认知复杂度 839，协议、状态、I/O、UI 混合；小改动容易跨模块扩散 | 高 | 高 | L / 回归风险高 | Boss、智联、AI 与 UI | 依托现有特征测试，按纯解析 helper → reducer → client/repository 小步拆分；每轮只拆一个模块 |
+| ARCH-02 | P2 | Chrome 主链与 Playwright 旧链并存 | C+O | 双实现是现阶段兼容资产，但状态和成功语义容易再次漂移 | 高 | 中高 | L / 删除风险高 | 四平台 | 先记录唯一正式执行链与遥测；猎聘/51job 完成 Chrome 迁移并观察后再删除旧链 |
+| TEST-02 | P2 | 前端组件/真实浏览器 E2E 覆盖不足；`front/**`、`chrome-extension/**` | O+S+Coverage | Java 核心故障覆盖已提升，但 Sonar 综合覆盖仅 4.3%，前端与 VM 扩展没有有效 LCOV；UI partial/error 仍主要人工验证 | 高 | 高 | M-L / 低 | 每次 UI、协议和站点改动 | 优先补 component/contract 和离线 DOM fixture；真实投递只做人工受控 smoke，不追求虚假总百分比 |
+| SONAR-01 | P2 | 26 Bugs / 64 Vulnerabilities / 1,336 Smells；主要在旧 Worker、动态 SQL、临时目录 | S+O | `S2276` 持锁 sleep、`S2259` nullable、`S2142` 中断等值得修；大量常量表名 SQL、重复字面量和空 catch 需人工区分 | 中 | 中高 | M / 批量修复风险高 | Worker、迁移、维护成本 | 先修可证明的控制流/临时目录边界；动态 SQL逐条确认输入；其余进入模块小轮，不把 Sonar 当自动修复清单 |
+| DATA-04 | P2 | 其余历史表 FK/UNIQUE 仍不完整；V1–V8 数据层 | C+O | 本轮只为 Liepin/51job 完成严格 Profile 约束，旧表仍可能依赖服务层清理/唯一性 | 低至中 | 中高 | M-L / 旧库风险高 | Profile 生命周期、旧历史数据 | 先对真实库副本生成重复/孤儿矩阵；一次只迁移一个主题并 fail-closed |
+| PERF-01 | P2 | 列表/统计整表读取；四平台 Service/页面 | C+O | 数据增长后 CPU、内存和延迟线性上升；当前小数据下尚无线上慢查询证据 | 中（随数据量增长） | 中 | M / 低中 | 分析页、导出、统计 | 先记录查询规模与耗时，再把稳定过滤/分页下推 SQL，并只加有证据的复合索引 |
+| OBS-01 | P2 | 缺少长期指标与真实平台回执遥测；readiness/日志/attempt | C+O | 当前能判断系统是否 ready、任务是否 UNKNOWN，但缺少趋势、告警和真实平台证据关联 | 中 | 中 | M / 低 | 故障定位、费用与平台变化 | 为 request/task/attempt 统一 correlation id；记录有限状态指标，不记录 Token/Cookie/完整 AI 响应 |
+| ENV-01 | P2 | 共享本机 SonarQube 仍使用默认管理员凭据 | S+环境核验 | 仅绑定 loopback 时外部风险较低，但任何本机进程都可能管理扫描服务；与产品运行无直接关系 | 低至中 | 中 | S / 共享环境影响中 | 本机 Sonar 项目与扫描历史 | 由机器维护者改默认密码并继续保持 loopback；不得删除共享 volume 或将凭据写入仓库 |
+| DOC-01 | P3 | 多代文档、demo 与旧入口 | C+O | 新维护者仍可能误选过期流程；当前不影响核心运行 | 中 | 低中 | S / 低 | 上手与维护 | 标记 current/legacy/archive；确认调用图后再删，不做目录美化式大迁移 |
+
+### 6.3 原始审计问题（历史基线）
+
+下表保留整改前的原因、影响和原始优先级，供追溯使用；当前状态以 6.1/6.2 为准，不能再把其中已关闭项解释为当前未修复问题。
 
 | ID | 优先级 | 问题 / 位置 / 模块 | 来源 | 原因与实际影响 | 概率 | 收益 | 成本 / 修改风险 | Blast Radius | 推荐方案 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -362,29 +401,23 @@ flowchart TD
 
 ### P0 — 必须先保护
 
-1. **SEC-01：** 强制本机信任边界，关闭无认证的 Secret/任意配置/进程执行链。
-2. **DATA-01：** 停止在普通启动/reload 中进行无保护的 destructive Schema 重建。
-3. **BIZ-01：** 投递成功必须可证明，重复/延迟回调不得覆盖合法终态。
+**当前无未关闭 P0。** 原 SEC-01、DATA-01、BIZ-01 已通过 P0.1–P0.3 关闭，并有回归测试。若确认真实数据库的非预期变化由本轮工具造成，则必须立即重新打开 DATA P0；当前证据只能确认变化发生在最终 Operator 验证之前，不能擅自归因。
 
-### P1 — 稳定 V1 的门槛
+### P1 — 发布前门槛
 
-- 持久化 AI 任务与重启恢复；
-- AI 写入原子性、超时、429/5xx 和成本边界；
-- Profile 数据隔离与数据库约束；
-- 招聘域名白名单、静态资源边界；
-- 真实 readiness；
-- 扩展提交与回调幂等；
-- Playwright context 串行化与恢复；
-- Next.js critical/high 安全补丁与独立回归。
+- **REAL-01：** 在用户确认后完成历史数据库副本迁移演练和四平台各一次受控 smoke；
+- 确认 `db/getjobs.db` 当前指纹变化是否为用户预期运行产生，未确认前不对真实库执行 V8；
+- 真实验证只收集明确证据，不把“点击过”当成功，也不调用额外计费 Provider。
 
 ### P2 — 可持续开发
 
 - 在特征测试保护下拆 God Component；
 - 明确并逐步收敛双执行链；
 - SQL 下推和索引；
-- 补核心集成/E2E；
-- 统一错误/部分成功契约；
-- 修正 CI、启动与发布契约。
+- 补前端 component、离线 DOM fixture 与受控 E2E；
+- 分诊 Sonar 中持锁等待、中断、nullable、临时目录和动态 SQL；
+- 为其余历史表逐主题补约束；
+- 增加 correlation id、有限状态指标与真实平台回执遥测。
 
 ### P3 — 低 ROI 清理
 
@@ -400,16 +433,16 @@ flowchart TD
 
 | 排名 | 技术债 | 为什么排在这里 |
 |---:|---|---|
-| 1 | 无认证敏感配置/Cookie/进程执行链 | 一旦服务离开严格 loopback，影响从本机隐私直接升级为账号接管/执行程序；小范围边界修复收益极高 |
-| 2 | 投递成功语义不可信 | 直接伤害产品核心承诺；错误“已投递”比明确失败更危险 |
-| 3 | Schema 多轨与在线 destructive migration | 低频但后果可能是数据损坏；任何后续数据整改都依赖先解决它 |
-| 4 | AI 任务无持久化恢复 | 普通重启即可遗失任务和卡状态，是从“能跑”到“稳定”的关键缺口 |
-| 5 | Profile 隔离/唯一约束/原子 upsert 缺失 | 数据增长、多档案或并发后会累积重复与孤儿，越晚改迁移成本越高 |
-| 6 | Provider 无总超时、正确重试和计费边界 | 会占满队列、产生重复模型费用，并把外部故障扩大到本地工作流 |
-| 7 | Chrome 提交/回调无幂等与对账 | 网络不确定时产生重复 AI 调用和半成功，且当前 UI 无法准确呈现 |
-| 8 | 前端 critical/high 依赖漏洞 | 当前静态导出降低部分攻击面，但 Next 开发/构建/未来部署仍受影响；应小步升级并回归 |
-| 9 | Playwright 共享 context 与旧 Worker 假成功 | 猎聘/51job 当前仍依赖它；不能简单删除，但必须先保护并发与状态 |
-| 10 | 核心失败路径没有自动化测试 | 每个整改都可能破坏现有 fallback；没有特征测试就无法低风险演进 |
+| 1 | 真实平台/历史数据库尚未做受控验收 | 这是从“工程上稳定”到“用户真实可用”的最后证据缺口，不能用 mock 或构造库替代 |
+| 2 | Boss/智联扩展 God Script | 最高认知复杂度 839/633，协议、状态、DOM 与回写混合，是未来站点变更的最大维护成本 |
+| 3 | Chrome 与 Playwright 双执行链 | 双链保住了兼容性，也持续制造状态、错误和成功语义漂移；删除前又必须有真实运行证据 |
+| 4 | 旧 Playwright context、持锁等待与恢复 | Sonar Blocker 与人工 Review 重合；仍承载猎聘/51job，发生时会阻塞或扩大浏览器故障 |
+| 5 | 前端/扩展缺少有效覆盖与真实浏览器 E2E | Java 核心覆盖已提升，但 UI 与 VM 测试无法证明浏览器、页面和站点协议的组合行为 |
+| 6 | 其余历史表约束不完整 | Liepin/51job 已收口，其他旧表仍需要真实数据画像后小步补 FK/UNIQUE |
+| 7 | 四平台列表/统计整表读取 | 当前数据量可接受，但增长后内存和延迟线性放大；应以真实查询数据决定索引与 SQL 下推 |
+| 8 | Sonar 控制流与边界问题未清零 | 26 Bugs、64 Vulnerabilities 中有少量真实高价值项；应人工分诊，不能批量自动修 |
+| 9 | 缺少长期运行指标和平台回执关联 | readiness/attempt 能说明当前状态，但趋势、费用和平台变化仍主要靠日志人工判断 |
+| 10 | 多代文档、demo、旧入口和 Legacy Code | 不直接损坏业务，但持续抬高新维护者理解成本；必须在调用图/遥测证明后再清理 |
 
 ---
 
@@ -418,33 +451,33 @@ flowchart TD
 ### 9.1 已有设计
 
 - SQLite 适合本机 V1，部署与备份成本低；
-- 已有 4 个 Flyway migration；
+- 已有 V1–V8 共 8 个 Flyway migration；一次性迁移与投递/任务/Profile 约束均有版本化历史；
 - 多数表使用自增主键，主要状态和时间字段已经存在；
-- 部分查询已有索引；
-- Profile 已进入 Boss、智联、AI 等主链。
+- SQLite 连接初始化显式执行 `PRAGMA foreign_keys=ON`；
+- Profile 已进入 Boss、智联、猎聘、51job、AI、任务和投递 attempt 主链。
 
 ### 9.2 关键缺口
 
 | 主题 | 发现 |
 |---|---|
-| Schema 真相 | Flyway、`DatabaseSchemaService`、Boss/Liepin/51job Service 运行时 DDL 并存 |
-| 主外键 | 多数 `profile_id` 没有 FK；删除档案依赖手工表清单 |
-| 唯一性 | config key、cookie platform、平台 job key/profile 组合缺少统一唯一约束 |
-| 原子性 | 先查后写、统计/缓存分开写、全删再插选项没有事务 |
-| 状态字段 | 代码中有状态常量，但数据库未强制合法转换 |
+| Schema 真相 | 已收敛为 Flyway + 启动完整校验；旧运行时 DDL 不再作为普通启动的迁移真相 |
+| 主外键 | V8 已为猎聘/51job 配置与岗位建立 Profile FK；其余历史表仍需分主题收敛 |
+| 唯一性 | V8 强制 `(profile_id, job_id)` 与每 Profile 单配置；config/cookie 等全局语义仍需结合产品定义确认 |
+| 原子性 | 任务/投递终态使用数据库条件更新；部分旧统计/选项刷新仍有先查后写或全删再插 |
+| 状态字段 | AI 任务和 delivery attempt 有持久状态、租约、终态保护；平台展示字段仍保留兼容映射 |
 | 时间字段 | 多表时间语义不统一，无法完整重建任务时间线 |
-| 删除策略 | `ProfileService` 固定表清单遗漏 `job_analysis_task`，可能留孤儿 |
-| 回滚 | 运行时 DDL 出错只 warn，缺少启动阻断和自动恢复 |
-| 生产一致性 | 本轮未触碰真实数据库；必须先只读比较 `flyway_schema_history`、`sqlite_master` 与代码定义 |
+| 删除策略 | Profile force delete 已覆盖猎聘、51job、任务和 attempt；仍是显式清单，需要新表测试守护 |
+| 回滚 | 迁移失败阻止启动；V8 对无法唯一归属的历史数据 fail-closed，不做 `INSERT OR IGNORE` 静默丢弃 |
+| 真实库一致性 | 本轮不打开真实数据库。当前文件指纹与 2026-08-22 基准不同，必须先由用户确认来源，再对副本做只读画像/迁移演练 |
 
 ### 9.3 正确整改前置条件
 
-1. 停止写入或确认唯一写进程；
-2. 对 `.db` 连同活跃的 `-wal/-shm` 做一致性备份；
-3. 生成只读 Schema、索引、重复、孤儿、状态分布报告；
-4. 明确历史 Profile 归属；
-5. 每次只迁移一个数据主题，验证后再进入下一轮；
-6. 任何失败必须可从备份恢复，不能继续带病启动。
+1. 先确认当前真实 DB 指纹变化是否为预期用户运行，不覆盖、不回滚；
+2. 停止写入并确认唯一写进程；
+3. 对 `.db` 连同活跃的 `-wal/-shm` 做一致性备份；
+4. 只在副本生成 Schema、索引、重复、孤儿、状态分布报告；
+5. 明确历史猎聘/51job 数据 Profile 归属，无法唯一归属就保持 fail-closed；
+6. 在副本回放 V1–V8，核对行数、完整性和 FK；通过后再由用户决定是否迁移真实库。
 
 ---
 
@@ -452,20 +485,20 @@ flowchart TD
 
 | 故障 | 当前行为 | 可恢复性判断 |
 |---|---|---|
-| API 超时/断网 | 前端部分页面变 0、保留旧数据或只写 console；扩展 POST 可能无幂等重试 | 不明确 |
-| 第三方 500/429 | AI 通常直接失败；无 Retry-After；reasoning fallback 可能第二次请求 | 部分可恢复但可能重复计费 |
-| AI 长时间不返回 | 没有 request 总超时，可能占用分析线程 | 不可靠 |
-| AI 空内容/错误 JSON/Markdown | 有修复逻辑；无法修复时可能变默认 SKIP | 状态明确性不足 |
+| API 超时/断网 | 扩展投递结果未持久化时进入 UNKNOWN/待对账；request key 防止盲目重复执行 | 明确，可人工恢复 |
+| 第三方 500/429 | Provider 有总超时、Retry-After 与有界退避；不满足重试条件时进入失败态 | 明确且费用有界 |
+| AI 长时间不返回 | 请求总超时释放线程；持久任务保留 attempt/租约并由启动恢复 | 可恢复 |
+| AI 空内容/错误 JSON/Markdown | 允许有限修复；无法可靠解析时进入明确失败态，不再静默当业务 SKIP | 明确 |
 | 字段缺失/null | 多处 fallback 到标题/公司/正文；jobId 空时部分状态写回静默失败 | 可能生成不完整记录 |
 | 上传失败/文件损坏 | 有大小限制，但较大文件可一次载入内存；文件内容/压缩炸弹边界不足 | 有限 |
-| 数据库异常 | 多处 catch 后返回空统计或继续启动 | 不可靠，容易假健康 |
-| Worker 异常退出 | SSE/日志可见；任务状态不持久化 | 不可自动恢复 |
-| Task 中途失败 | AI 队列失败也进入短期 completed key；旧 Worker 可能仍发完成进度 | 不明确 |
-| 重复执行/请求 | 进程内去重有限；runId 变化、重启和 POST 重试会绕过 | 不可靠 |
-| 程序重启 | 排队任务丢失，`AI_ANALYZING` 可残留 | 不可自动恢复 |
-| 并发请求 | 多处先查后写；共享 BrowserContext 缺统一锁 | 有重复/竞态风险 |
+| 数据库异常/Schema 缺失 | readiness 返回 503；完整 Schema 校验失败阻止启动 | 明确，拒绝带病运行 |
+| Worker 异常退出 | AI 任务持久化并可启动对账；旧平台投递 attempt 保持 REQUESTED/UNKNOWN，可人工恢复 | 核心状态可恢复，真实页面动作仍需人工确认 |
+| Task 中途失败 | 租约、attempt 和失败状态保留；不把未确认结果写成成功 | 明确 |
+| 重复执行/请求 | 任务/投递 request key 与终态 CAS 阻止重复或乱序覆盖 | 核心链可靠；旧 DOM 动作仍需平台 smoke |
+| 程序重启 | 持久任务启动恢复；投递 REQUESTED/UNKNOWN 不被伪装为完成 | 可恢复 |
+| 并发请求 | 状态写入使用期望状态/Profile 条件；共享 Playwright BrowserContext 仍是剩余竞态热点 | 数据层可靠，浏览器层有限 |
 
-目标状态不是“永不失败”，而是任何失败都进入 `FAILED`、`PARTIAL` 或 `UNKNOWN_RECONCILE`，且能够通过持久化任务和幂等键安全重试。
+核心状态已经达到“失败可见、终态不可被乱序覆盖、未知可对账、重试需显式授权”。下一步重点不是再增加状态，而是用真实平台 smoke 验证外部动作与这些状态的一致性。
 
 ---
 
@@ -475,24 +508,25 @@ flowchart TD
 
 | 部署类型 | 当前判断 |
 |---|---|
-| 个人本地项目 | **勉强可用，但必须强制 loopback**；仍不应把 Secret 原文回传前端 |
-| 内部局域网项目 | **不合格**；缺认证授权、敏感接口和扩展身份边界 |
-| 对外 SaaS | **完全不合格**；还缺用户隔离、权限模型、CSRF/Rate Limit、加密和审计 |
+| 个人本地项目 | **达到稳定 V1**；默认 loopback、本地令牌、Secret 不回显、扩展/URL/静态资源边界已建立 |
+| 内部局域网项目 | **仍不合格**；当前本地令牌不等于用户认证、角色授权与终端治理 |
+| 对外 SaaS | **完全不合格**；还缺用户/租户隔离、权限模型、CSRF/Rate Limit、加密、审计与部署加固 |
 
 ### 11.2 逐项结果
 
 - API Key / Secret：`.env` 与数据库值未提交；当前跟踪文件未发现 AWS/OpenAI/GitHub token/私钥常见签名。轻量 Git 历史搜索只命中 `.env.example` 的 `API_KEY=`，**这不等于完整历史 Secret 扫描**；本机没有 gitleaks。
-- 前端泄漏：环境配置页会把原始 `API_KEY` 放入客户端 state/DOM；Cookie API 也返回原文。
-- Authentication / Authorization：未见 Spring Security；敏感和副作用接口无认证/角色检查。
-- 用户数据隔离：Boss/智联部分支持 Profile；猎聘/51job 不完整；不是多用户隔离模型。
-- Input Validation：平台/部分 DTO 有校验，但 URL host、配置 key、上传内容和任务状态转换不够严格。
+- 前端泄漏：敏感值采用只写/掩码语义，不再由读取接口把原始值回传到客户端；仍应避免浏览器日志与截图记录用户输入。
+- Authentication / Authorization：本机副作用接口使用本地令牌并限制 loopback；这不是局域网/互联网用户身份和角色系统。
+- 用户数据隔离：四平台、AI 任务和 delivery attempt 已按 Profile 隔离；仍不是多用户/多租户模型。
+- Input Validation：招聘 URL 强制 HTTPS 精确根/子域；配置 key、状态迁移和静态路径有白名单/边界；上传内容边界仍可加强。
 - SQL Injection：主要查询使用 MyBatis wrapper/参数，未发现高置信度直接 SQL 注入；运行时 DDL 的主要风险是 Schema 一致性而非用户拼接。
 - XSS：React 默认转义提供基础保护；本轮未发现高置信度持久化 XSS，但 AI/岗位文本仍应保持纯文本渲染并补安全测试。
-- CSRF：当前没有认证会话，传统 CSRF 不是主要模型；无认证写接口本身更严重，CORS 不能阻止非浏览器客户端。
-- 任意文件上传/Path Traversal：上传有大小限制，但类型/内容边界不足；静态 Resolver 有路径边界疑点，列为待动态验证的 P1。
-- 敏感日志：AI 错误可能记录完整 response body；应截断和脱敏。Token 值本轮未写入报告、代码或扫描配置。
-- CORS：本地前端 origin 明确；Chrome 相关接口接受任意 extension ID，范围过宽。
-- Rate Limit：未见对敏感配置、AI 调用、批量扫描的统一速率限制；本地单用户可简化，但至少要有并发/费用闸门。
+- CSRF：当前无互联网认证会话，传统 CSRF 不是主要模型；loopback + 本地令牌是当前边界，若改部署模式必须重新设计。
+- 任意文件上传/Path Traversal：静态资源使用标准边界校验与 canonical root containment；畸形 URI 返回 400。上传仍需内容/压缩炸弹限制。
+- 敏感日志：Provider 错误按结构化、截断和脱敏输出；Token 值未写入报告、代码或扫描配置。
+- CORS：只接受明确 localhost 前端 origin；移除任意 `chrome-extension://*`，扩展通过 manifest host permission 与本地令牌工作。
+- Rate Limit：AI 队列容量、并发槽位、总超时和有界重试形成费用闸门；本地配置接口未引入企业级网关，符合当前范围。
+- 工具环境：共享 SonarQube 仍使用默认管理员凭据，必须保持 loopback 并由机器维护者改密；它不是产品 API 漏洞，但属于本机工程环境风险。
 
 ---
 
@@ -506,8 +540,8 @@ flowchart TD
 | `confirmBatch` 可取 5,000，size 缺上限 | 大响应与长 UI 阻塞 | P2：服务端最大页和游标批处理 |
 | Boss/智联 content script 数千行且执行多级 DOM fallback | 页面 CPU、诊断和 selector 查询成本 | 先遥测每阶段耗时，不盲目重写 |
 | 30 MB 上传可能一次载入内存 | 并发上传时内存峰值 | 流式读取、内容上限和解析超时 |
-| AI reasoning fallback 重发完整上下文 | 额外 Token/费用 | P1：能力预检与请求幂等 |
-| runId 参与 AI 去重且 TTL 仅 30 分钟 | 同岗位重复模型调用 | P1：以 profile/platform/job/content hash 定义业务幂等 |
+| AI 请求/重试 | 已有总超时、Retry-After、有界重试和持久 task key | 已收口；后续只做真实费用遥测，不再新增隐式 fallback |
+| 持久任务与租约 | 重启可恢复，避免仅靠 runId/内存 TTL 去重 | 已收口；监控 lease 超时与 retry 次数即可 |
 | 旧 Worker 固定 sleep/轮询/滚动 | 慢且受页面变化影响 | 保留必要等待，逐步改为明确事件/状态；先加耗时日志 |
 
 没有证据支持引入 Redis、Kafka、Kubernetes 或微服务。一个持久化 SQLite 任务表、明确状态机和有限线程池足以满足当前规模。
@@ -589,7 +623,7 @@ flowchart TD
 
 |  | 低工作量 | 高工作量 |
 |---|---|---|
-| **高影响** | 强制 loopback；敏感字段不回显；招聘 host 精确白名单；Provider request timeout；CI 执行扩展测试；真实 readiness | Schema 单一迁移真相；投递状态机/幂等回调；持久化任务恢复；Profile 全链隔离；旧 Worker 可靠确认 |
+| **高影响** | **已完成：** loopback/Secret；host/静态边界；Provider timeout；扩展 CI；readiness | **已完成核心：** Flyway 迁移真相、投递状态/幂等、持久任务、四平台 Profile/UNKNOWN；**剩余：** 旧 Worker 真实平台确认与双链收敛 |
 | **低影响** | 文档 current/legacy 标记；过期健康端点删除前先 deprecated；低价值 Sonar smell | 全面重写四平台；微服务化；事件溯源/CQRS；统一所有 DOM adapter；仅为 Duplication 指标做大抽象 |
 
 ### 已经存在、应复用的能力
@@ -611,61 +645,61 @@ flowchart TD
 
 每轮都必须范围有限、可单独测试、可单独回滚。每轮开始前重新检查 dirty worktree；数据库轮次先备份。
 
-### P0.1 本机安全边界
+### P0.1 本机安全边界 — 已完成
 
 - 范围：`server.address`、敏感配置/Cookie API、Config key 白名单、Codex 可执行路径白名单、本地认证令牌。
 - 验收：非 loopback 无法连接；GET 不返回 Secret；未认证副作用请求被拒绝；正常本机配置/AI 流程仍可用。
 - 回滚：单独 commit；保留旧配置读取迁移 shim，但不恢复原文回显。
 
-### P0.2 数据一致性与迁移止血
+### P0.2 数据一致性与迁移止血 — 已完成
 
 - 范围：只读 Schema/数据画像、全库备份、禁止普通请求触发 destructive rebuild、迁移失败阻止启动。
 - 验收：旧库副本从每个已知版本升级；数据行数/hash 对账；中途故障可从备份恢复。
 - 回滚：恢复备份 DB + 回退该 migration commit。
 
-### P0.3 投递真实性
+### P0.3 投递真实性 — 已完成
 
 - 范围：先覆盖仍在用的 51job/猎聘，再统一 Boss/智联回调；新增 `REQUESTED/CONFIRMED/FAILED/UNKNOWN` 与幂等 key。
 - 验收：重复、延迟、乱序回调不能覆盖终态；没有平台确认时绝不显示已投递；部分成功逐条可见。
 - 回滚：保留旧字段只读映射，切回旧 UI 展示但不恢复假成功写入。
 
-### P1.1 AI 任务持久化与重启恢复
+### P1.1 AI 任务持久化与重启恢复 — 已完成
 
 - 范围：任务表、租约、attempt、next_retry_at、startup reconcile；线程池继续作为执行器。
 - 验收：在入队、请求中、写回前强杀进程，重启后任务进入可预期状态且不重复计费。
 - 回滚：停止新消费者，任务表保留审计记录；旧同步入口仍可工作。
 
-### P1.2 Provider 超时、重试与成本保护
+### P1.2 Provider 超时、重试与成本保护 — 已完成
 
 - 范围：总超时、Retry-After、有界退避、request id、响应日志脱敏、输出解析失败态。
 - 验收：模拟 timeout/429/500/空/Markdown/错误 JSON；每种错误的请求次数、费用风险和最终状态明确。
 - 回滚：按 Provider feature flag 回退，不改业务表结构。
 
-### P1.3 Profile 隔离与数据库约束
+### P1.3 Profile 隔离与数据库约束 — 已完成本轮范围
 
 - 范围：分两轮处理猎聘配置/数据、51job 配置/数据；再加 config/cookie/job 唯一约束与外键策略。
 - 验收：两个 Profile 的配置、岗位、分析、投递、删除互不污染；重复/孤儿报告为 0。
 - 回滚：每个平台独立 migration；保留备份和反向数据导出脚本。
 
-### P1.4 URL / 静态资源 / 扩展身份边界
+### P1.4 URL / 静态资源 / 扩展身份边界 — 已完成
 
 - 范围：精确 HTTPS host allowlist、标准 PathResourceResolver、固定允许的 extension ID 或本地令牌。
 - 验收：lookalike host、编码 traversal、未知扩展 ID 全部失败；正常 Boss/智联链通过。
 - 回滚：边界策略独立配置，不能回退到任意 host/路径。
 
-### P1.5 Readiness 与对账
+### P1.5 Readiness 与对账 — 已完成
 
 - 范围：DB/Schema/队列 readiness、未知投递待对账、stale/error UI、结构化错误码。
 - 验收：依赖故障时 readiness 非 200 或明确 degraded；首页不把错误显示为 0；未知任务可查询与重试。
 - 回滚：保留 liveness，readiness 可临时从部署门禁移除。
 
-### P1.6 Next.js 安全补丁
+### P1.6 Next.js 安全补丁 — 已完成
 
 - 范围：只升级 Next/React 同生态到已修复、互相兼容的稳定版本，不同时迁移 Tailwind major。
 - 验收：lint、typecheck、13 页面 build、静态导出、API 代理、Windows/Alter 启动和依赖审计；确认 critical advisory 消失。
 - 回滚：lockfile、`package.json` 与必要兼容改动单独一个 commit。
 
-### P2.1 核心特征与故障注入测试
+### P2.1 核心特征与故障注入测试 — 核心范围已完成
 
 - 范围：投递状态机、AI 队列重启、SQLite migration、Provider 错误矩阵、扩展幂等、前端 partial/error。
 - 验收：核心 8 条流程自动化；Coverage 增长只作为结果，不是目标。
@@ -698,19 +732,14 @@ flowchart TD
 ### 推荐执行顺序
 
 ```text
-P0.1 安全边界
-  → P0.2 数据止血
-  → P0.3 投递真实性
-  → P1.1 任务恢复
-  → P1.2 Provider 稳定性
-  → P1.3 Profile/约束
-  → P1.4 边界校验
-  → P1.5 Readiness/对账
-  → P1.6 Next 安全补丁
-  → P2.1 核心测试
-  → P2.2/P2.3 小步拆分与收敛
-  → P2.4 性能/依赖
-  → P3.1 清理
+已完成：P0.1 → P0.2 → P0.3 → P1.1 → P1.2
+       → P1.3 → P1.4 → P1.5 → P1.6 → P2.1
+
+发布前：确认真实 DB 指纹 → 旧库副本 V8 演练 → 四平台受控 smoke
+
+后续：P2.2/P2.3 小步拆分与双链收敛
+   → P2.4 查询/依赖
+   → P3.1 清理
 ```
 
 ---
@@ -735,7 +764,7 @@ flowchart TD
 
 ## 19. 依赖与工程现代化
 
-审计日查询显示多个依赖落后于最新版本，例如 Playwright 1.51→1.62、MyBatis Plus 3.5.9→3.5.17、sqlite-jdbc 3.45.1.0→3.53.2.1、Next 16.0.1→16.3.2、Tailwind 3→4。**这不等于应该立即升级。**
+审计日查询显示多个依赖仍落后于最新版本，例如 Playwright 1.51→1.62、MyBatis Plus 3.5.9→3.5.17、sqlite-jdbc 3.45.1.0→3.53.2.1、Tailwind 3→4。Next/React 已单独升级到 16.3.2/19.2.8。**其余落后不等于应该立即升级。**
 
 建议：
 
@@ -748,30 +777,27 @@ flowchart TD
 
 ---
 
-## 20. 尚未解决、需要用户在整改前确认的决策
+## 20. 尚需用户确认的发布决策
 
-1. 产品是否承诺**永远只在本机单用户运行**，还是未来可能进入局域网/云端？
-2. 猎聘/51job 是否仍是必须维护的平台，还是可以进入停止新增功能阶段？
-3. “点击按钮但平台无明确成功信号”应该显示 `UNKNOWN`、自动对账，还是要求用户人工确认？
-4. 历史猎聘/51job 数据应归属于哪个 Profile？
-5. AI Provider 的最大单次超时、重试次数和可接受重复费用是多少？
-6. 是否允许在整改轮次用真实数据库副本做 migration rehearsal？
-7. 已安装 Chrome 扩展能否统一升级，何时可以删除旧 `_V2`/兼容消息？
+1. 当前 `db/getjobs.db` 指纹变化是否来自用户在 2026-08-24 约 22:23（UTC+8）的正常运行？在确认前不迁移、不回滚、不打开该库。
+2. 是否允许先复制真实数据库，在副本上执行 V8 migration rehearsal 和行数/完整性对账？
+3. 猎聘/51job 是否仍是必须维护的平台；这决定旧 Playwright 链的保留期限。
+4. 是否安排四平台各一次受控 smoke；每次都应明确目标岗位、预期动作和成功证据。
+5. 项目是否永久限定本机单用户；若进入局域网/云端，当前 80 分与安全结论必须重新评估。
+6. 已安装 Chrome 扩展何时可以统一升级，从而删除旧 `_V2`/兼容消息。
 
-这些决策不阻塞本轮审计报告，但会改变 P0/P1 方案细节。
+这些决策不改变当前代码整改结果，但决定能否从“工程验证通过”进入“真实用户环境验收通过”。
 
 ---
 
 ## 21. 最终判断
 
-项目不是“完全混乱，也不该推倒重来”。它已经形成了真实 V1，并且本地单体、SQLite、Chrome 扩展和人工确认的总体方向符合当前规模。
+项目不需要推倒重来。P0.1–P1.6 与 P2.1 已把最危险的“隐式成功、不可恢复、跨 Profile 污染、迁移带病启动、无边界访问”收口为可验证的本地 V1 契约。
 
-真正的问题是：兼容层和 fallback 帮它跑起来后，没有同步补上“状态真实性、数据约束、失败恢复、安全边界、自动化验证”。因此：
+- **可靠的部分：** 本机安全边界、迁移启动阻断、任务/投递持久状态、终态保护、Provider 有界失败、四平台 Profile 隔离、readiness、UNKNOWN 对账和核心 CI；
+- **仍不可靠或未证明的部分：** 当天真实招聘页面、历史真实库升级、旧 Worker BrowserContext 并发、前端/扩展真实 E2E、长期运行遥测；
+- **值得下一步做：** 先确认真实 DB 指纹并在副本演练，再做受控平台 smoke；之后才进入 P2.2/P2.3；
+- **暂时不要碰：** 仍承载猎聘/51job 的旧 Worker、未经真实遥测证明无用的 fallback、为了 Sonar 分数制造的超级抽象；
+- **当前等级：** **80/100，稳定 V1（本机单用户、人工在环）**；不是生产级，也不应直接作为局域网/公网服务。
 
-- **可靠的部分：** 正常单用户主路径、基础构建、部分纯函数/Provider 路由、Chrome bridge 消息边界、Codex CLI 基础隔离；
-- **不可靠的部分：** 重启、并发、半成功、重复回调、旧库迁移、旧 Worker 发送确认、敏感 API 暴露；
-- **值得先改：** 安全边界、数据迁移、投递状态、任务恢复、Provider 超时；
-- **暂时不要碰：** 没有测试保护的 fallback、仍承载猎聘/51job 的旧 Worker、旧库兼容 DDL 的直接删除；
-- **最低风险路线：** 先加保护和状态，再补测试与对账，最后小步拆分和清理。
-
-本报告完成后应停止；下一步等待用户确认整改路线图，不自动进入整改。
+本轮六项整改到此停止，不继续进入 God Component 重构或 Dead Code 删除。

@@ -101,7 +101,7 @@
     try {
       const parsed = new URL(candidate, baseUrl);
       parsed.hash = "";
-      if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+      if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
       if (!parsed.pathname.includes("/job_detail/")) return "";
       return parsed.href;
     } catch {

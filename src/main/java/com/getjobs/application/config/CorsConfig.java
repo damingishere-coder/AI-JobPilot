@@ -32,7 +32,7 @@ public class CorsConfig {
 
         CorsConfiguration bossExtensionConfig = baseConfiguration();
         bossExtensionConfig.setAllowedOrigins(LOCAL_FRONTEND_ORIGINS);
-        bossExtensionConfig.addAllowedOriginPattern("chrome-extension://*");
+        // Chrome 扩展后台依靠 manifest host_permissions 访问本机 API；服务端不再信任任意扩展 ID。
 
         // 必须先注册更具体的扩展接口，再注册全局本地前端规则。
         for (String path : BOSS_EXTENSION_API_PATHS) {

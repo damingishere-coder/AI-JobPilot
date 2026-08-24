@@ -1,5 +1,7 @@
 package com.getjobs.application.service;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV7AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV8AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -27,13 +29,13 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='7'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='8'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
             assertThat(columns(connection, "boss_data"))
                     .contains("source_keyword", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
-            assertThat(columns(connection, "liepin_data")).contains("delivery_status");
-            assertThat(columns(connection, "job51_data")).contains("delivery_status");
+            assertThat(columns(connection, "liepin_data")).contains("id", "profile_id", "job_id", "delivery_status");
+            assertThat(columns(connection, "job51_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(tableExists(connection, "delivery_attempt")).isTrue();
             assertThat(columns(connection, "job_analysis_task"))
                     .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
@@ -99,6 +101,102 @@ class DatabaseMigrationTest {
                     .isEqualTo(1L);
             assertThat(scalar(connection, "SELECT COUNT(*) FROM job51_data WHERE delivery_status='未投递'"))
                     .isEqualTo(1L);
+        }
+    }
+
+    @Test
+    void v8ScopesLegacyRowsAndRemapsLegacyAttempts() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("legacy-profile-scope.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("7")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (11, 'legacy', 1)");
+            statement.execute("INSERT INTO liepin_data(job_id, delivered, delivery_status) VALUES (501, 0, '投递结果待确认')");
+            statement.execute("INSERT INTO job51_data(job_id, delivered, delivery_status) VALUES (601, 0, '投递确认中')");
+            statement.execute("INSERT INTO delivery_attempt " +
+                    "(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) VALUES " +
+                    "('liepin-legacy', 'liepin', NULL, '501', 501, 'UNKNOWN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), " +
+                    "('job51-legacy', '51job', NULL, '601', 601, 'REQUESTED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM liepin_data WHERE profile_id=11 AND job_id=501")).isEqualTo(1L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM job51_data WHERE profile_id=11 AND job_id=601")).isEqualTo(1L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=11")).isEqualTo(2L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM delivery_attempt a JOIN liepin_data d ON " +
+                    "a.platform='liepin' AND a.job_row_id=d.id AND a.profile_id=d.profile_id AND a.job_key=CAST(d.job_id AS TEXT)"))
+                    .isEqualTo(1L);
+
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (12, 'second', 0)");
+            statement.execute("INSERT INTO liepin_data(profile_id, job_id, delivery_status) VALUES (12, 501, '未投递')");
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM liepin_data WHERE job_id=501")).isEqualTo(2L);
+        }
+    }
+
+    @Test
+    void v8EnforcesProfileJobUniquenessAndForeignKeysWhenSqliteChecksAreEnabled() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("profile-constraints.db"));
+        flyway(url).migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA foreign_keys=ON");
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'one', 1), (2, 'two', 0)");
+            statement.execute("INSERT INTO job51_data(profile_id, job_id, delivery_status) VALUES (1, 800, '未投递')");
+            statement.execute("INSERT INTO job51_data(profile_id, job_id, delivery_status) VALUES (2, 800, '未投递')");
+
+            assertThatThrownBy(() -> statement.execute(
+                    "INSERT INTO job51_data(profile_id, job_id, delivery_status) VALUES (1, 800, '未投递')"))
+                    .hasMessageContaining("UNIQUE constraint failed");
+            assertThatThrownBy(() -> statement.execute(
+                    "INSERT INTO liepin_data(profile_id, job_id, delivery_status) VALUES (999, 801, '未投递')"))
+                    .hasMessageContaining("FOREIGN KEY constraint failed");
+        }
+    }
+
+    @Test
+    void fullMigrationWorksWithProductionForeignKeyConnectionInitialization() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("foreign-key-migration.db"));
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(url);
+        config.setDriverClassName("org.sqlite.JDBC");
+        config.setConnectionInitSql("PRAGMA foreign_keys=ON");
+        config.setMaximumPoolSize(1);
+
+        try (HikariDataSource dataSource = new HikariDataSource(config)) {
+            Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
+            try (Connection connection = dataSource.getConnection()) {
+                DatabaseSchemaService.validateSchema(connection);
+                assertThat(scalar(connection, "PRAGMA foreign_keys")).isEqualTo(1L);
+            }
+        }
+    }
+
+    @Test
+    void v8FailsClosedWhenLegacyRowsHaveAmbiguousProfileOwnership() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("ambiguous-profile-scope.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("7")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'one', 1), (2, 'two', 0)");
+            statement.execute("INSERT INTO liepin_data(job_id, delivered) VALUES (700, 0)");
+        }
+
+        assertThatThrownBy(() -> flyway(url).migrate())
+                .hasMessageContaining("Migration failed")
+                .hasStackTraceContaining("历史数据无法唯一归属 Profile");
+
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertThat(columns(connection, "liepin_data")).doesNotContain("profile_id");
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM liepin_data WHERE job_id=700")).isEqualTo(1L);
         }
     }
 

@@ -26,8 +26,13 @@ public class ProfileService {
             "resume_profile",
             "boss_config",
             "zhilian_config",
+            "liepin_config",
+            "job51_config",
+            "delivery_attempt",
             "boss_data",
             "zhilian_data",
+            "liepin_data",
+            "job51_data",
             "job_ai_analysis",
             "job_analysis_task",
             "priority_company"

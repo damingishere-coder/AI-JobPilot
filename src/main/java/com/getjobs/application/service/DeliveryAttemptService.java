@@ -29,6 +29,7 @@ public class DeliveryAttemptService {
     public static final String PLATFORM_ERROR = "PLATFORM_ERROR";
     public static final String PRE_ACTION_ERROR = "PRE_ACTION_ERROR";
     public static final String MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION";
+    public static final String RETRY_APPROVED = "RETRY_APPROVED";
 
     private static final Set<String> PLATFORMS = Set.of("boss", "zhilian", "liepin", "51job");
     private static final Set<String> CONFIRMATION_EVIDENCE = Set.of(
@@ -95,11 +96,17 @@ public class DeliveryAttemptService {
         if (!Set.of("liepin", "51job").contains(normalizedPlatform)) {
             return RequestResult.rejected("旧平台投递只支持 liepin/51job");
         }
+        long profileId = currentProfileId();
         String table = "liepin".equals(normalizedPlatform) ? "liepin_data" : "job51_data";
-        return request(normalizedPlatform, null, jobId, String.valueOf(jobId), () -> jdbcTemplate.update(
+        LegacyJobRow row = findLegacyJob(table, profileId, jobId);
+        if (row == null) {
+            return RequestResult.rejected("当前档案中不存在该岗位，已拒绝创建投递任务");
+        }
+        return request(normalizedPlatform, profileId, row.id(), String.valueOf(jobId), () -> jdbcTemplate.update(
                 "UPDATE " + table + " SET delivery_status=?, delivered=0, update_time=CURRENT_TIMESTAMP " +
-                        "WHERE job_id=? AND TRIM(COALESCE(delivery_status, '未投递'))=?",
-                DeliveryStatus.DELIVERY_REQUESTED, jobId, DeliveryStatus.NOT_DELIVERED));
+                        "WHERE id=? AND profile_id=? AND job_id=? " +
+                        "AND TRIM(COALESCE(delivery_status, '未投递'))=?",
+                DeliveryStatus.DELIVERY_REQUESTED, row.id(), profileId, jobId, DeliveryStatus.NOT_DELIVERED));
     }
 
     public RequestResult retryBoss(long rowId, long profileId, String jobKey) {
@@ -245,9 +252,106 @@ public class DeliveryAttemptService {
                                           long jobId,
                                           String requestKey,
                                           State target,
-                                          String evidence,
-                                          String message) {
-        return resolve(platform, null, jobId, requestKey, target, evidence, message, null, null);
+                                           String evidence,
+                                           String message) {
+        String normalizedPlatform = normalizePlatform(platform);
+        Attempt attempt = requestKey == null || requestKey.isBlank() ? null : findByRequestKey(requestKey);
+        long profileId = currentProfileId();
+        if (attempt == null
+                || !normalizedPlatform.equals(attempt.platform())
+                || !sameProfile(profileId, attempt.profileId())
+                || !sameJobKey(String.valueOf(jobId), attempt.jobKey())) {
+            return ResolutionResult.rejected("requestKey 与当前档案或岗位不匹配");
+        }
+        return resolve(normalizedPlatform, profileId, attempt.jobRowId(), requestKey,
+                target, evidence, message, null, null);
+    }
+
+    public ResolutionResult reconcileLatestLegacy(String platform,
+                                                   long jobId,
+                                                   State target,
+                                                   String message) {
+        String normalizedPlatform = normalizePlatform(platform);
+        if (!Set.of("liepin", "51job").contains(normalizedPlatform)) {
+            return ResolutionResult.rejected("旧平台对账只支持 liepin/51job");
+        }
+        long profileId = currentProfileId();
+        String table = "liepin".equals(normalizedPlatform) ? "liepin_data" : "job51_data";
+        LegacyJobRow row = findLegacyJob(table, profileId, jobId);
+        if (row == null) {
+            return ResolutionResult.rejected("当前档案中不存在该岗位");
+        }
+        return reconcileLatest(normalizedPlatform, profileId, row.id(), String.valueOf(jobId), target, message);
+    }
+
+    public RequestResult prepareLegacyRetry(String platform, long jobId) {
+        String normalizedPlatform = normalizePlatform(platform);
+        if (!Set.of("liepin", "51job").contains(normalizedPlatform)) {
+            return RequestResult.rejected("旧平台重试只支持 liepin/51job");
+        }
+        long profileId = currentProfileId();
+        String table = "liepin".equals(normalizedPlatform) ? "liepin_data" : "job51_data";
+        LegacyJobRow row = findLegacyJob(table, profileId, jobId);
+        if (row == null) {
+            return RequestResult.rejected("当前档案中不存在该岗位");
+        }
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        return transaction.execute(status -> {
+            Attempt latest = findLatest(normalizedPlatform, profileId, row.id());
+            if (latest == null || !sameJobKey(String.valueOf(jobId), latest.jobKey())) {
+                return RequestResult.rejected("没有可重试的同岗位投递记录");
+            }
+            if (RETRY_APPROVED.equals(latest.evidence())) {
+                return RequestResult.prepared("该岗位已经等待显式重试；下次启动平台任务时将创建新的 requestKey");
+            }
+            State previous = latest.stateEnum();
+            if (previous != State.UNKNOWN && previous != State.FAILED) {
+                return RequestResult.rejected("仅 UNKNOWN 或 FAILED 状态允许显式重试");
+            }
+            int jobChanged = jdbcTemplate.update("UPDATE " + table +
+                            " SET delivery_status=?, delivered=0, update_time=CURRENT_TIMESTAMP " +
+                            "WHERE id=? AND profile_id=? AND job_id=? AND delivery_status=?",
+                    DeliveryStatus.NOT_DELIVERED, row.id(), profileId, jobId, displayStatus(previous));
+            int attemptChanged = jdbcTemplate.update(
+                    "UPDATE delivery_attempt SET evidence=?, message=?, updated_at=CURRENT_TIMESTAMP " +
+                            "WHERE id=? AND state=?",
+                    RETRY_APPROVED, "用户已确认显式重试，等待下次平台任务执行", latest.id(), previous.name());
+            if (jobChanged != 1 || attemptChanged != 1) {
+                status.setRollbackOnly();
+                return RequestResult.rejected("岗位状态已变化，未准备重试");
+            }
+            return RequestResult.prepared("岗位已进入显式重试队列；下次启动该平台任务时才会创建新的 requestKey 并执行");
+        });
+    }
+
+    /**
+     * 仅返回当前 Profile 的最近投递事实，供人工对账确认使用。
+     */
+    public List<AttemptView> listRecentForCurrentProfile(String platform, int limit) {
+        String normalizedPlatform = normalizePlatform(platform);
+        long profileId = currentProfileId();
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return jdbcTemplate.query(
+                "SELECT request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, " +
+                        "failure_type, failure_reason, requested_at, resolved_at, updated_at " +
+                        "FROM delivery_attempt WHERE platform=? AND profile_id=? ORDER BY id DESC LIMIT ?",
+                (resultSet, rowNum) -> new AttemptView(
+                        resultSet.getString("request_key"),
+                        resultSet.getString("platform"),
+                        resultSet.getLong("profile_id"),
+                        resultSet.getString("job_key"),
+                        resultSet.getLong("job_row_id"),
+                        resultSet.getString("state"),
+                        resultSet.getString("evidence"),
+                        resultSet.getString("message"),
+                        resultSet.getString("failure_type"),
+                        resultSet.getString("failure_reason"),
+                        resultSet.getString("requested_at"),
+                        resultSet.getString("resolved_at"),
+                        resultSet.getString("updated_at")
+                ),
+                normalizedPlatform, profileId, safeLimit
+        );
     }
 
     private RequestResult request(String platform,
@@ -270,7 +374,9 @@ public class DeliveryAttemptService {
                 if (latestState == State.REQUESTED) {
                     return RequestResult.existing(latest.requestKey(), latestState, "投递请求已存在，请勿重复执行");
                 }
-                return RequestResult.rejected("该岗位已有 " + latestState + " 投递记录，需先人工对账或显式重试");
+                if (!RETRY_APPROVED.equals(latest.evidence())) {
+                    return RequestResult.rejected("该岗位已有 " + latestState + " 投递记录，需先人工对账或显式重试");
+                }
             }
 
             int reserved = writer.markRequested();
@@ -368,13 +474,15 @@ public class DeliveryAttemptService {
         }
         String table = "liepin".equals(platform) ? "liepin_data" : "job51_data";
         return jdbcTemplate.update("UPDATE " + table + " SET delivery_status=?, delivered=?, update_time=CURRENT_TIMESTAMP " +
-                        "WHERE job_id=? AND delivery_status=?",
-                displayStatus, target == State.CONFIRMED ? 1 : 0, rowId, expectedStatus);
+                        "WHERE id=? AND profile_id=? AND job_id=? AND delivery_status=?",
+                displayStatus, target == State.CONFIRMED ? 1 : 0,
+                rowId, profileId, Long.parseLong(jobKey), expectedStatus);
     }
 
     private Attempt findByRequestKey(String requestKey) {
         List<Attempt> attempts = jdbcTemplate.query(
-                "SELECT id, request_key, platform, profile_id, job_key, job_row_id, state FROM delivery_attempt WHERE request_key=?",
+                "SELECT id, request_key, platform, profile_id, job_key, job_row_id, state, evidence " +
+                        "FROM delivery_attempt WHERE request_key=?",
                 (resultSet, rowNum) -> new Attempt(
                         resultSet.getLong("id"),
                         resultSet.getString("request_key"),
@@ -382,7 +490,8 @@ public class DeliveryAttemptService {
                         nullableLong(resultSet, "profile_id"),
                         resultSet.getString("job_key"),
                         resultSet.getLong("job_row_id"),
-                        resultSet.getString("state")
+                        resultSet.getString("state"),
+                        resultSet.getString("evidence")
                 ),
                 requestKey.trim()
         );
@@ -391,7 +500,7 @@ public class DeliveryAttemptService {
 
     private Attempt findLatest(String platform, Long profileId, long rowId) {
         String profilePredicate = profileId == null ? "profile_id IS NULL" : "profile_id=?";
-        String sql = "SELECT id, request_key, platform, profile_id, job_key, job_row_id, state " +
+        String sql = "SELECT id, request_key, platform, profile_id, job_key, job_row_id, state, evidence " +
                 "FROM delivery_attempt WHERE platform=? AND job_row_id=? AND " + profilePredicate +
                 " ORDER BY id DESC LIMIT 1";
         Object[] args = profileId == null
@@ -406,7 +515,8 @@ public class DeliveryAttemptService {
                         nullableLong(resultSet, "profile_id"),
                         resultSet.getString("job_key"),
                         resultSet.getLong("job_row_id"),
-                        resultSet.getString("state")
+                        resultSet.getString("state"),
+                        resultSet.getString("evidence")
                 ),
                 args
         );
@@ -416,6 +526,35 @@ public class DeliveryAttemptService {
     private Long nullableLong(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
         long value = resultSet.getLong(column);
         return resultSet.wasNull() ? null : value;
+    }
+
+    private long currentProfileId() {
+        List<Long> active = jdbcTemplate.query(
+                "SELECT id FROM profile WHERE is_active=1 ORDER BY id LIMIT 1",
+                (resultSet, rowNum) -> resultSet.getLong(1));
+        if (!active.isEmpty()) return active.getFirst();
+        List<Long> first = jdbcTemplate.query(
+                "SELECT id FROM profile ORDER BY id LIMIT 1",
+                (resultSet, rowNum) -> resultSet.getLong(1));
+        if (first.isEmpty()) {
+            throw new IllegalStateException("请先创建候选人档案");
+        }
+        return first.getFirst();
+    }
+
+    private LegacyJobRow findLegacyJob(String table, long profileId, long jobId) {
+        List<LegacyJobRow> rows = jdbcTemplate.query(
+                "SELECT id, profile_id, job_id FROM " + table +
+                        " WHERE profile_id=? AND job_id=? ORDER BY id LIMIT 2",
+                (resultSet, rowNum) -> new LegacyJobRow(
+                        resultSet.getLong("id"),
+                        resultSet.getLong("profile_id"),
+                        resultSet.getLong("job_id")),
+                profileId, jobId);
+        if (rows.size() > 1) {
+            throw new IllegalStateException(table + " 中同一档案存在重复 job_id，已阻止投递");
+        }
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     private String normalizePlatform(String platform) {
@@ -493,9 +632,16 @@ public class DeliveryAttemptService {
             return new RequestResult(true, false, requestKey, state, message);
         }
 
+        static RequestResult prepared(String message) {
+            return new RequestResult(true, false, null, null, message);
+        }
+
         static RequestResult rejected(String message) {
             return new RequestResult(false, false, null, null, message);
         }
+    }
+
+    private record LegacyJobRow(long id, long profileId, long jobId) {
     }
 
     public record ResolutionResult(boolean accepted,
@@ -515,13 +661,29 @@ public class DeliveryAttemptService {
         }
     }
 
+    public record AttemptView(String requestKey,
+                              String platform,
+                              long profileId,
+                              String jobKey,
+                              long jobRowId,
+                              String state,
+                              String evidence,
+                              String message,
+                              String failureType,
+                              String failureReason,
+                              String requestedAt,
+                              String resolvedAt,
+                              String updatedAt) {
+    }
+
     private record Attempt(long id,
                            String requestKey,
                            String platform,
                            Long profileId,
                            String jobKey,
                            long jobRowId,
-                           String state) {
+                           String state,
+                           String evidence) {
         State stateEnum() {
             return State.valueOf(state);
         }

@@ -2086,7 +2086,7 @@
   function isZhilianTaskPage(task) {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhaopin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhaopin\.com$/i.test(current.hostname)) return false;
 
       const phase = String(task.phase || "");
       if (phase === "detail") {
@@ -2249,7 +2249,7 @@
   function isCurrentSearchPage(keyword, config, pageNumber = 1) {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhaopin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhaopin\.com$/i.test(current.hostname)) return false;
       if (!current.pathname.startsWith("/sou")) return false;
 
       const expectedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
@@ -2719,9 +2719,7 @@
   function normalizeZhilianJobUrl(rawUrl) {
     try {
       const parsed = new URL(rawUrl || "", window.location.origin);
-      if (parsed.hostname.endsWith("zhaopin.com") && parsed.protocol === "http:") {
-        parsed.protocol = "https:";
-      }
+      if (parsed.protocol !== "https:" || !/(^|\.)zhaopin\.com$/i.test(parsed.hostname)) return "";
       parsed.hash = "";
       return parsed.href;
     } catch {
@@ -2745,7 +2743,7 @@
       const host = parsed.hostname.toLowerCase();
       const path = parsed.pathname.toLowerCase();
       const text = `${host}${path}${parsed.search.toLowerCase()}`;
-      if (!host.endsWith("zhaopin.com")) return false;
+      if (!(host === "zhaopin.com" || host.endsWith(".zhaopin.com"))) return false;
       if (/company|gongsi|qiye|enterprise|firm|business|corp/.test(`${host}${path}`)) return false;
       if (isZhilianSearchPath(path) || /\/search\/|\/company\/|\/gongsi\/|\/qiye\//.test(path)) return false;
       return host.startsWith("jobs.")

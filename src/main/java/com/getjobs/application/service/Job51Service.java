@@ -28,10 +28,13 @@ public class Job51Service {
     private final Job51OptionMapper job51OptionMapper;
     private final Job51Mapper job51Mapper;
     private final DataSource dataSource;
+    private final ProfileService profileService;
 
     /** 获取第一条配置（通常只有一条） */
     public Job51ConfigEntity getFirstConfig() {
         QueryWrapper<Job51ConfigEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.orderByAsc("id");
         wrapper.last("LIMIT 1");
         return job51ConfigMapper.selectOne(wrapper);
     }
@@ -166,12 +169,6 @@ public class Job51Service {
      */
     public Job51ConfigEntity updateConfig(Job51ConfigEntity config) {
         if (config == null) return null;
-        if (config.getId() != null) {
-            // 设置更新时间
-            config.setUpdatedAt(java.time.LocalDateTime.now());
-            job51ConfigMapper.updateById(config);
-            return job51ConfigMapper.selectById(config.getId());
-        }
         return saveOrUpdateFirstSelective(config);
     }
 
@@ -183,6 +180,7 @@ public class Job51Service {
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
         if (first == null) {
             Job51ConfigEntity toInsert = new Job51ConfigEntity();
+            toInsert.setProfileId(profileService.getCurrentProfileId());
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setJobArea(incoming.getJobArea());
             toInsert.setSalary(incoming.getSalary());
@@ -193,6 +191,7 @@ public class Job51Service {
         } else {
             Job51ConfigEntity toUpdate = new Job51ConfigEntity();
             toUpdate.setId(first.getId());
+            toUpdate.setProfileId(first.getProfileId());
             // 仅覆盖非空字段
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getJobArea() != null) toUpdate.setJobArea(incoming.getJobArea());
@@ -209,6 +208,7 @@ public class Job51Service {
     /** 批量插入（仅不存在时），默认 delivered=0 */
     public void batchInsertIfNotExists(List<Job51Entity> entities) {
         if (entities == null || entities.isEmpty()) return;
+        Long profileId = profileService.getCurrentProfileId();
 
         java.util.Set<Long> ids = new java.util.HashSet<>();
         for (Job51Entity e : entities) {
@@ -218,7 +218,9 @@ public class Job51Service {
 
         java.util.List<Long> idList = new java.util.ArrayList<>(ids);
         java.util.List<Job51Entity> existing = job51Mapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity>().in("job_id", idList)
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity>()
+                        .eq("profile_id", profileId)
+                        .in("job_id", idList)
         );
         java.util.Set<Long> existingIds = new java.util.HashSet<>();
         if (existing != null) {
@@ -232,7 +234,10 @@ public class Job51Service {
         String nowIso = now.toString();
         for (Job51Entity e : entities) {
             if (e == null || e.getJobId() == null) continue;
-            if (existingIds.contains(e.getJobId())) continue;
+            // 同一批次也可能重复返回相同岗位；先占位，避免触发 V8 复合唯一约束后整批回滚。
+            if (!existingIds.add(e.getJobId())) continue;
+            e.setId(null);
+            e.setProfileId(profileId);
             if (e.getCreateTime() == null) e.setCreateTime(nowIso);
             e.setUpdateTime(nowIso);
             if (e.getDelivered() == null) e.setDelivered(0);
@@ -241,31 +246,33 @@ public class Job51Service {
         if (toInsert.isEmpty()) return;
 
         String sql = "INSERT INTO job51_data (" +
-                "job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
+                "profile_id, job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
                 "comp_id, comp_name, comp_industry, comp_scale, " +
-                "hr_id, hr_name, hr_title, delivered, create_time, update_time" +
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                "hr_id, hr_name, hr_title, delivered, delivery_status, create_time, update_time" +
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         try (Connection conn = dataSource.getConnection(); java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
             conn.setAutoCommit(false);
             for (Job51Entity e : toInsert) {
-                if (e.getJobId() == null) ps.setNull(1, java.sql.Types.BIGINT); else ps.setLong(1, e.getJobId());
-                if (e.getJobTitle() == null) ps.setNull(2, java.sql.Types.VARCHAR); else ps.setString(2, e.getJobTitle());
-                if (e.getJobLink() == null) ps.setNull(3, java.sql.Types.VARCHAR); else ps.setString(3, e.getJobLink());
-                if (e.getJobSalaryText() == null) ps.setNull(4, java.sql.Types.VARCHAR); else ps.setString(4, e.getJobSalaryText());
-                if (e.getJobArea() == null) ps.setNull(5, java.sql.Types.VARCHAR); else ps.setString(5, e.getJobArea());
-                if (e.getJobEduReq() == null) ps.setNull(6, java.sql.Types.VARCHAR); else ps.setString(6, e.getJobEduReq());
-                if (e.getJobExpReq() == null) ps.setNull(7, java.sql.Types.VARCHAR); else ps.setString(7, e.getJobExpReq());
-                if (e.getJobPublishTime() == null) ps.setNull(8, java.sql.Types.VARCHAR); else ps.setString(8, e.getJobPublishTime());
-                if (e.getCompId() == null) ps.setNull(9, java.sql.Types.BIGINT); else ps.setLong(9, e.getCompId());
-                if (e.getCompName() == null) ps.setNull(10, java.sql.Types.VARCHAR); else ps.setString(10, e.getCompName());
-                if (e.getCompIndustry() == null) ps.setNull(11, java.sql.Types.VARCHAR); else ps.setString(11, e.getCompIndustry());
-                if (e.getCompScale() == null) ps.setNull(12, java.sql.Types.VARCHAR); else ps.setString(12, e.getCompScale());
-                if (e.getHrId() == null) ps.setNull(13, java.sql.Types.VARCHAR); else ps.setString(13, e.getHrId());
-                if (e.getHrName() == null) ps.setNull(14, java.sql.Types.VARCHAR); else ps.setString(14, e.getHrName());
-                if (e.getHrTitle() == null) ps.setNull(15, java.sql.Types.VARCHAR); else ps.setString(15, e.getHrTitle());
-                if (e.getDelivered() == null) ps.setNull(16, java.sql.Types.INTEGER); else ps.setInt(16, e.getDelivered());
-                if (e.getCreateTime() == null) ps.setNull(17, java.sql.Types.VARCHAR); else ps.setString(17, e.getCreateTime());
-                if (e.getUpdateTime() == null) ps.setNull(18, java.sql.Types.VARCHAR); else ps.setString(18, e.getUpdateTime());
+                ps.setLong(1, profileId);
+                if (e.getJobId() == null) ps.setNull(2, java.sql.Types.BIGINT); else ps.setLong(2, e.getJobId());
+                if (e.getJobTitle() == null) ps.setNull(3, java.sql.Types.VARCHAR); else ps.setString(3, e.getJobTitle());
+                if (e.getJobLink() == null) ps.setNull(4, java.sql.Types.VARCHAR); else ps.setString(4, e.getJobLink());
+                if (e.getJobSalaryText() == null) ps.setNull(5, java.sql.Types.VARCHAR); else ps.setString(5, e.getJobSalaryText());
+                if (e.getJobArea() == null) ps.setNull(6, java.sql.Types.VARCHAR); else ps.setString(6, e.getJobArea());
+                if (e.getJobEduReq() == null) ps.setNull(7, java.sql.Types.VARCHAR); else ps.setString(7, e.getJobEduReq());
+                if (e.getJobExpReq() == null) ps.setNull(8, java.sql.Types.VARCHAR); else ps.setString(8, e.getJobExpReq());
+                if (e.getJobPublishTime() == null) ps.setNull(9, java.sql.Types.VARCHAR); else ps.setString(9, e.getJobPublishTime());
+                if (e.getCompId() == null) ps.setNull(10, java.sql.Types.BIGINT); else ps.setLong(10, e.getCompId());
+                if (e.getCompName() == null) ps.setNull(11, java.sql.Types.VARCHAR); else ps.setString(11, e.getCompName());
+                if (e.getCompIndustry() == null) ps.setNull(12, java.sql.Types.VARCHAR); else ps.setString(12, e.getCompIndustry());
+                if (e.getCompScale() == null) ps.setNull(13, java.sql.Types.VARCHAR); else ps.setString(13, e.getCompScale());
+                if (e.getHrId() == null) ps.setNull(14, java.sql.Types.VARCHAR); else ps.setString(14, e.getHrId());
+                if (e.getHrName() == null) ps.setNull(15, java.sql.Types.VARCHAR); else ps.setString(15, e.getHrName());
+                if (e.getHrTitle() == null) ps.setNull(16, java.sql.Types.VARCHAR); else ps.setString(16, e.getHrTitle());
+                if (e.getDelivered() == null) ps.setNull(17, java.sql.Types.INTEGER); else ps.setInt(17, e.getDelivered());
+                ps.setString(18, firstNonBlank(e.getDeliveryStatus(), DeliveryStatus.NOT_DELIVERED));
+                if (e.getCreateTime() == null) ps.setNull(19, java.sql.Types.VARCHAR); else ps.setString(19, e.getCreateTime());
+                if (e.getUpdateTime() == null) ps.setNull(20, java.sql.Types.VARCHAR); else ps.setString(20, e.getUpdateTime());
                 ps.addBatch();
             }
             ps.executeBatch();
@@ -448,6 +455,7 @@ public class Job51Service {
 
         try {
             com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+            wrapper.eq("profile_id", profileService.getCurrentProfileId());
             if (statuses != null && !statuses.isEmpty()) {
                 java.util.Set<String> normalizedStatuses = statuses.stream()
                         .filter(java.util.Objects::nonNull)
@@ -575,6 +583,7 @@ public class Job51Service {
         if (size <= 0) size = 20;
 
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         if (statuses != null && !statuses.isEmpty()) {
             java.util.Set<String> normalizedStatuses = statuses.stream()
                     .filter(java.util.Objects::nonNull)
@@ -691,7 +700,8 @@ public class Job51Service {
         Connection conn = null;
         try {
             conn = dataSource.getConnection();
-            long total = scalarCount(conn, "SELECT COUNT(*) FROM job51_data");
+            long total = scalarCount(conn, "SELECT COUNT(*) FROM job51_data WHERE profile_id=" +
+                    profileService.getCurrentProfileId());
             resp.put("success", true);
             resp.put("message", "刷新完成");
             resp.put("total", total);
@@ -706,5 +716,16 @@ public class Job51Service {
         try (java.sql.Statement st = conn.createStatement(); java.sql.ResultSet rs = st.executeQuery(sql)) {
             return rs.next() ? rs.getLong(1) : 0L;
         }
+    }
+
+    public Job51Entity findByProfileAndJobId(Long profileId, Long jobId) {
+        if (profileId == null || jobId == null) return null;
+        QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
+        return job51Mapper.selectOne(wrapper);
+    }
+
+    private String firstNonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 }

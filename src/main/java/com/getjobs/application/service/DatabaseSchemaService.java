@@ -596,13 +596,13 @@ public class DatabaseSchemaService {
     }
 
     private static void validateSchema(Connection conn, boolean requireV7TaskSchema) throws SQLException {
-        List<String> requiredTables = List.of(
+        List<String> requiredTables = new ArrayList<>(List.of(
                 "profile", "config", "cookie", "ai", "resume_profile", "priority_company",
                 "job_ai_analysis", "job_analysis_task", "boss_config", "boss_data",
                 "boss_blacklist", "boss_option", "boss_industry", "zhilian_config",
                 "zhilian_data", "zhilian_option", "liepin_config", "liepin_data",
                 "liepin_option", "job51_config", "job51_data", "job51_option"
-        );
+        ));
         Map<String, Set<String>> requiredColumns = new LinkedHashMap<>();
         requiredColumns.put("profile", Set.of("id", "is_active"));
         requiredColumns.put("config", Set.of("config_key", "config_value"));
@@ -617,6 +617,16 @@ public class DatabaseSchemaService {
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));
         requiredColumns.put("liepin_data", Set.of("job_id", "delivered"));
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
+        if (requireV7TaskSchema) {
+            requiredTables.add("delivery_attempt");
+            requiredColumns.put("liepin_config", Set.of("id", "profile_id"));
+            requiredColumns.put("job51_config", Set.of("id", "profile_id"));
+            requiredColumns.put("liepin_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
+            requiredColumns.put("job51_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
+            requiredColumns.put("delivery_attempt", Set.of(
+                    "request_key", "platform", "profile_id", "job_key", "job_row_id", "state",
+                    "evidence", "message", "requested_at", "resolved_at", "updated_at"));
+        }
         requiredColumns.put("job_analysis_task", requireV7TaskSchema
                 ? Set.of(
                 "profile_id", "platform", "status", "scan_run_id", "task_key", "job_key",
@@ -638,14 +648,19 @@ public class DatabaseSchemaService {
                 "idx_liepin_data_company_job",
                 "idx_job51_data_company_job",
                 "idx_job_analysis_task_profile_platform_status",
-                "idx_job_analysis_task_scan_run"
+                 "idx_job_analysis_task_scan_run"
         ));
         if (requireV7TaskSchema) {
             requiredIndexes.addAll(List.of(
                     "idx_job_analysis_task_task_key",
                     "idx_job_analysis_task_active_job",
                     "idx_job_analysis_task_dispatch",
-                    "idx_job_analysis_task_lease"
+                    "idx_job_analysis_task_lease",
+                    "idx_liepin_data_profile_company_job",
+                    "idx_job51_data_profile_company_job",
+                    "idx_liepin_data_profile_status",
+                    "idx_job51_data_profile_status",
+                    "idx_delivery_attempt_profile_state"
             ));
         }
 
@@ -666,6 +681,12 @@ public class DatabaseSchemaService {
                 if (!indexExists(stmt, index)) {
                     throw new SQLException("缺少必要索引: " + index);
                 }
+            }
+            if (requireV7TaskSchema) {
+                requireProfileConstraint(conn, "liepin_config", List.of("profile_id"));
+                requireProfileConstraint(conn, "job51_config", List.of("profile_id"));
+                requireProfileConstraint(conn, "liepin_data", List.of("profile_id", "job_id"));
+                requireProfileConstraint(conn, "job51_data", List.of("profile_id", "job_id"));
             }
         } catch (SQLException e) {
             throw e;
@@ -693,6 +714,52 @@ public class DatabaseSchemaService {
                 if (column.equalsIgnoreCase(rs.getString("name"))) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    private static void requireProfileConstraint(Connection connection,
+                                                 String table,
+                                                 List<String> uniqueColumns) throws SQLException {
+        if (!hasUniqueIndex(connection, table, uniqueColumns)) {
+            throw new SQLException("缺少必要唯一约束: " + table + uniqueColumns);
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("PRAGMA foreign_key_list('" + table + "')")) {
+            while (resultSet.next()) {
+                if ("profile".equalsIgnoreCase(resultSet.getString("table"))
+                        && "profile_id".equalsIgnoreCase(resultSet.getString("from"))) {
+                    return;
+                }
+            }
+        }
+        throw new SQLException("缺少必要外键: " + table + ".profile_id -> profile.id");
+    }
+
+    private static boolean hasUniqueIndex(Connection connection,
+                                          String table,
+                                          List<String> expectedColumns) throws SQLException {
+        List<String> indexNames = new ArrayList<>();
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("PRAGMA index_list('" + table + "')")) {
+            while (resultSet.next()) {
+                if (resultSet.getInt("unique") == 1) {
+                    indexNames.add(resultSet.getString("name"));
+                }
+            }
+        }
+        for (String indexName : indexNames) {
+            List<String> columns = new ArrayList<>();
+            try (Statement statement = connection.createStatement();
+                 ResultSet resultSet = statement.executeQuery(
+                         "PRAGMA index_info('" + indexName.replace("'", "''") + "')")) {
+                while (resultSet.next()) {
+                    columns.add(resultSet.getString("name"));
+                }
+            }
+            if (columns.equals(expectedColumns)) {
+                return true;
             }
         }
         return false;

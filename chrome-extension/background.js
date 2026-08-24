@@ -1338,7 +1338,7 @@ async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
   const tabs = await chrome.tabs.query({});
   const found = tabs
     .filter((tab) => !excludedTabIds.has(tab.id))
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (found) return found;
   return await chrome.tabs.create({ url: startUrl || config.home, active: options.active !== false });
@@ -1348,14 +1348,14 @@ async function findPlatformTab(platform) {
   const config = PLATFORM_CONFIG[platform];
   const tabs = await chrome.tabs.query({});
   return tabs
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
 async function findRunningPlatformTab(platform, requestedRunId = "") {
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config));
 
   for (const tab of tabs) {
     if (!tab.id) continue;
@@ -1650,7 +1650,19 @@ function isZhilianVersionedContentMessage(type) {
 }
 
 function isSupportedUrl(url, config) {
-  return /^https?:\/\//.test(url) && config.hosts.some((host) => url.includes(host));
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "https:"
+      && config.hosts.some((host) => isExactOrSubdomain(parsed.hostname, host));
+  } catch {
+    return false;
+  }
+}
+
+function isExactOrSubdomain(hostname, rootDomain) {
+  const host = String(hostname || "").toLowerCase();
+  const root = String(rootDomain || "").toLowerCase();
+  return Boolean(root && (host === root || host.endsWith(`.${root}`)));
 }
 
 function platformDisplayNameByConfig(config) {
@@ -1687,7 +1699,7 @@ function isBossSearchUrl(url) {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
-      && parsed.hostname.endsWith("zhipin.com")
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
   } catch {
     return false;
@@ -1697,11 +1709,8 @@ function isBossSearchUrl(url) {
 function normalizeBossUrl(url) {
   try {
     const parsed = new URL(String(url || ""), "https://www.zhipin.com");
-    if (parsed.hostname.endsWith("zhipin.com") && parsed.protocol === "http:") {
-      parsed.protocol = "https:";
-    }
     parsed.hash = "";
-    if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+    if (parsed.protocol !== "https:" || !isExactOrSubdomain(parsed.hostname, "zhipin.com")) return "";
     return parsed.href;
   } catch {
     return "";
@@ -1712,7 +1721,7 @@ function isBossJobDetailUrl(url) {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
-      && parsed.hostname.endsWith("zhipin.com")
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
       && parsed.pathname.includes("/job_detail/")
       && Boolean(extractBossJobId(parsed.href));
   } catch {
@@ -1723,7 +1732,7 @@ function isBossJobDetailUrl(url) {
 function isBossUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && parsed.hostname.endsWith("zhipin.com");
+    return parsed.protocol === "https:" && isExactOrSubdomain(parsed.hostname, "zhipin.com");
   } catch {
     return false;
   }
@@ -1750,17 +1759,14 @@ function isZhilianSearchUrl(url) {
 }
 
 function isZhilianHost(hostname) {
-  const host = String(hostname || "").toLowerCase();
-  return host === "zhaopin.com" || host.endsWith(".zhaopin.com");
+  return isExactOrSubdomain(hostname, "zhaopin.com");
 }
 
 function normalizeZhilianUrl(url) {
   try {
     const parsed = new URL(String(url || ""));
-    if (isZhilianHost(parsed.hostname) && parsed.protocol === "http:") {
-      parsed.protocol = "https:";
-    }
     parsed.hash = "";
+    if (parsed.protocol !== "https:" || !isZhilianHost(parsed.hostname)) return "";
     return parsed.href;
   } catch {
     return "";
@@ -1788,7 +1794,9 @@ function isZhilianJobDetailUrl(url) {
 function isBossChatUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.hostname.endsWith("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+    return parsed.protocol === "https:"
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
+      && /chat|im|message/.test(parsed.pathname);
   } catch {
     return false;
   }

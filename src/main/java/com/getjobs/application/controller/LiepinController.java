@@ -4,7 +4,9 @@ import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.LiepinConfigEntity;
 import com.getjobs.application.entity.LiepinOptionEntity;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.LiepinService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import com.getjobs.worker.service.LiepinJobService;
@@ -41,6 +43,9 @@ public class LiepinController {
 
     @Autowired
     private LiepinService liepinService;
+
+    @Autowired
+    private DeliveryAttemptService deliveryAttemptService;
 
     @Autowired
     @Qualifier("jobTaskExecutor")
@@ -270,6 +275,32 @@ public class LiepinController {
                     .collect(java.util.stream.Collectors.toList());
         }
         return liepinService.listLiepinJobs(statusList, location, experience, degree, minK, maxK, keyword, page, size);
+    }
+
+    @PostMapping("/jobs/{jobId}/delivery-reconcile")
+    public Map<String, Object> reconcileDelivery(@PathVariable("jobId") Long jobId,
+                                                 @RequestBody DeliveryResultRequest request) {
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatestLegacy(
+                "liepin", jobId, target, request == null ? null : request.getMessage());
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/jobs/{jobId}/delivery-retry")
+    public Map<String, Object> prepareDeliveryRetry(@PathVariable("jobId") Long jobId) {
+        DeliveryAttemptService.RequestResult result = deliveryAttemptService.prepareLegacyRetry("liepin", jobId);
+        return Map.of(
+                "success", result.accepted(),
+                "prepared", result.accepted(),
+                "message", result.message()
+        );
     }
 
     /**

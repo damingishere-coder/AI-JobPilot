@@ -3,6 +3,7 @@ import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
     java
+    jacoco
     id("org.springframework.boot") version "3.5.7"
     // 使用 BOM(platform) 管理版本，不需要 dependency-management 插件
     // id("io.spring.dependency-management") version "1.1.6"
@@ -56,6 +57,16 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
 }
 
 // 显示已过时 API 的详细告警，便于定位并修复

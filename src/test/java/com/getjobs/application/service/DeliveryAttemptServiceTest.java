@@ -185,6 +185,43 @@ class DeliveryAttemptServiceTest {
         assertThat(status("boss_data", 60)).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
     }
 
+    @Test
+    void legacyDeliveryIsScopedToCurrentProfileAndCanRecoverFromUnknown() {
+        jdbcTemplate.update("INSERT INTO profile(id, name, is_active) VALUES (2, 'other', 0)");
+        jdbcTemplate.update("INSERT INTO liepin_data(profile_id, job_id, delivery_status) VALUES (1, 900, ?)",
+                DeliveryStatus.NOT_DELIVERED);
+        jdbcTemplate.update("INSERT INTO liepin_data(profile_id, job_id, delivery_status) VALUES (2, 900, ?)",
+                DeliveryStatus.NOT_DELIVERED);
+
+        DeliveryAttemptService.RequestResult requested = service.requestLegacy("liepin", 900);
+        assertThat(requested.created()).isTrue();
+        assertThat(service.resolveLegacy(
+                "liepin", 900, requested.requestKey(), DeliveryAttemptService.State.UNKNOWN,
+                DeliveryAttemptService.NO_CONFIRMATION, "平台结果未落库").accepted()).isTrue();
+        assertThat(service.listRecentForCurrentProfile("liepin", 10)).hasSize(1);
+        assertThat(service.prepareLegacyRetry("liepin", 900).accepted()).isTrue();
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT delivery_status FROM liepin_data WHERE profile_id=1 AND job_id=900", String.class))
+                .isEqualTo(DeliveryStatus.NOT_DELIVERED);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT delivery_status FROM liepin_data WHERE profile_id=2 AND job_id=900", String.class))
+                .isEqualTo(DeliveryStatus.NOT_DELIVERED);
+
+        DeliveryAttemptService.RequestResult retried = service.requestLegacy("liepin", 900);
+        assertThat(retried.created()).isTrue();
+        assertThat(retried.requestKey()).isNotEqualTo(requested.requestKey());
+        assertThat(service.resolveLegacy(
+                "liepin", 900, retried.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "平台明确显示已投递").accepted()).isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT delivery_status FROM liepin_data WHERE profile_id=1 AND job_id=900", String.class))
+                .isEqualTo(DeliveryStatus.DELIVERED);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT delivery_status FROM liepin_data WHERE profile_id=2 AND job_id=900", String.class))
+                .isEqualTo(DeliveryStatus.NOT_DELIVERED);
+    }
+
     private void insertBoss(long id, String status) {
         jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status, created_at, updated_at) " +
                 "VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", id, "boss-" + id, status);

@@ -108,6 +108,20 @@ public class ChromeJobAnalysisQueueService {
         return taskStore.outstandingCount(profileId);
     }
 
+    /**
+     * Readiness 只读取本地执行器和持久任务计数，不调用任何 AI Provider。
+     */
+    public QueueHealth healthSnapshot() {
+        return new QueueHealth(
+                !stopping && !executor.isShutdown(),
+                stopping,
+                taskStore.outstandingCount(),
+                executor.getActiveCount(),
+                executor.getQueue().size(),
+                executor.getQueue().remainingCapacity()
+        );
+    }
+
     public java.util.List<JobAnalysisTaskStore.TaskView> listTasks(long profileId, int limit) {
         return taskStore.listRecent(profileId, limit);
     }
@@ -413,6 +427,14 @@ public class ChromeJobAnalysisQueueService {
         public static EnqueueResult rejected(String message) {
             return EnqueueResult.of(false, true, message, 0);
         }
+    }
+
+    public record QueueHealth(boolean accepting,
+                              boolean stopping,
+                              int outstandingTasks,
+                              int activeWorkers,
+                              int localQueueSize,
+                              int remainingLocalCapacity) {
     }
 
     private static class NamedThreadFactory implements ThreadFactory {

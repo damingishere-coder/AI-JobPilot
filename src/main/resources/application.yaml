@@ -17,6 +17,7 @@ spring:
     hikari:
       maximum-pool-size: 5
       connection-test-query: SELECT 1
+      connection-init-sql: PRAGMA foreign_keys=ON
   sql:
     init:
       mode: never  # 数据库文件已存在，不需要自动初始化

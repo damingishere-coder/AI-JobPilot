@@ -501,10 +501,42 @@ test("Boss content navigation allows job detail pages and rejects external pages
   const externalResponse = await context.handleBossContentNavigation({
     url: "https://example.com/job_detail/demo.html"
   }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
+  const lookalikeResponse = await context.handleBossContentNavigation({
+    url: "https://evilzhipin.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
+  const insecureResponse = await context.handleBossContentNavigation({
+    url: "http://www.zhipin.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
 
   assert.equal(detailResponse.success, true);
   assert.equal(tabList[0].url, "https://www.zhipin.com/job_detail/demo.html");
   assert.equal(externalResponse.success, false);
+  assert.equal(lookalikeResponse.success, false);
+  assert.equal(insecureResponse.success, false);
+});
+
+test("rejects forged Boss senders before any local API request", async () => {
+  let fetchCalls = 0;
+  const { runtimeMessageListener } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("forged sender must not reach fetch");
+    }
+  });
+
+  const response = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_BOSS_CONTENT",
+    type: "BOSS_LOCAL_API",
+    operation: "chrome-jobs",
+    body: {}
+  }, {
+    tab: { id: 10, url: "https://zhipin.com.example.com/job_detail/demo.html" }
+  });
+
+  assert.equal(response.success, false);
+  assert.match(response.message, /拒绝非 Boss 页面/);
+  assert.equal(fetchCalls, 0);
 });
 
 test("Boss stop clears registered scan session and shared checkpoint", async () => {

@@ -233,6 +233,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [keyword, setKeyword] = useState<string>("")
   const [loadingList, setLoadingList] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [recoveringJobId, setRecoveringJobId] = useState<number | null>(null)
   const [detailJob, setDetailJob] = useState<LiepinJob | null>(null)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
 
@@ -377,6 +378,39 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       alert("导出失败，请稍后重试")
     } finally {
       setExporting(false)
+    }
+  }
+
+  const recoverDelivery = async (jobId: number, action: "confirmed" | "failed" | "retry") => {
+    const prompt = action === "confirmed"
+      ? "请先到猎聘平台核对：这个岗位确实已经投递成功。确认写入已投递吗？"
+      : action === "failed"
+        ? "请先到猎聘平台核对：这个岗位确实没有投递成功。确认写入失败吗？"
+        : "确认允许这个岗位在下一次猎聘任务中重新投递吗？这不会立即打开浏览器。"
+    if (!window.confirm(prompt)) return
+    const path = action === "retry" ? "delivery-retry" : "delivery-reconcile"
+    const init: RequestInit = action === "retry"
+      ? { method: "POST" }
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            outcome: action === "confirmed" ? "CONFIRMED" : "FAILED",
+            message: "用户在猎聘页面人工核对",
+          }),
+        }
+    try {
+      setRecoveringJobId(jobId)
+      const response = await fetch(`${API_BASE}/api/liepin/jobs/${jobId}/${path}`, init)
+      const data = await response.json()
+      if (!response.ok || !data.success) throw new Error(data.message || `HTTP ${response.status}`)
+      window.alert(data.message || "处理完成")
+      await loadList(page, size)
+      await loadStats()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "恢复操作失败")
+    } finally {
+      setRecoveringJobId(null)
     }
   }
 
@@ -783,6 +817,18 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                     <td className="py-2 px-3 whitespace-nowrap">{it.hrName || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       <span className={badgeClass("delivery", deliveryStatusOf(it))}>{deliveryStatusOf(it)}</span>
+                      {deliveryStatusOf(it) === "投递结果待确认" && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <Button size="sm" variant="outline" disabled={recoveringJobId === it.jobId} onClick={() => recoverDelivery(it.jobId, "confirmed")}>核对已投递</Button>
+                          <Button size="sm" variant="outline" disabled={recoveringJobId === it.jobId} onClick={() => recoverDelivery(it.jobId, "failed")}>核对失败</Button>
+                          <Button size="sm" variant="outline" disabled={recoveringJobId === it.jobId} onClick={() => recoverDelivery(it.jobId, "retry")}>允许重试</Button>
+                        </div>
+                      )}
+                      {deliveryStatusOf(it) === "投递失败" && (
+                        <div className="mt-2">
+                          <Button size="sm" variant="outline" disabled={recoveringJobId === it.jobId} onClick={() => recoverDelivery(it.jobId, "retry")}>允许重试</Button>
+                        </div>
+                      )}
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       {it.jobLink ? (

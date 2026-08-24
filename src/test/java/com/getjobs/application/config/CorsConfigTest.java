@@ -13,27 +13,23 @@ class CorsConfigTest {
     private final CorsFilter corsFilter = new CorsConfig().corsFilter();
 
     @Test
-    void allowsChromeExtensionForBossCollectionEndpoint() throws Exception {
+    void rejectsUnknownChromeExtensionForBossCollectionEndpoint() throws Exception {
         MockHttpServletResponse response = preflight(
                 "/api/boss/chrome/jobs",
                 "chrome-extension://abcdefghijklmnop"
         );
 
-        assertThat(response.getStatus()).isEqualTo(200);
-        assertThat(response.getHeader("Access-Control-Allow-Origin"))
-                .isEqualTo("chrome-extension://abcdefghijklmnop");
+        assertThat(response.getStatus()).isEqualTo(403);
     }
 
     @Test
-    void allowsChromeExtensionForBossDeliveryResultEndpoint() throws Exception {
+    void rejectsUnknownChromeExtensionForBossDeliveryResultEndpoint() throws Exception {
         MockHttpServletResponse response = preflight(
                 "/api/boss/jobs/123/delivery-result",
                 "chrome-extension://abcdefghijklmnop"
         );
 
-        assertThat(response.getStatus()).isEqualTo(200);
-        assertThat(response.getHeader("Access-Control-Allow-Origin"))
-                .isEqualTo("chrome-extension://abcdefghijklmnop");
+        assertThat(response.getStatus()).isEqualTo(403);
     }
 
     @Test

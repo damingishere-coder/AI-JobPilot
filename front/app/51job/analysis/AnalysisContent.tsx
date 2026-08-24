@@ -110,6 +110,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
   const [loadingList,setLoadingList]=useState(false)
   const [reloading,setReloading]=useState(false)
   const [exporting,setExporting]=useState(false)
+  const [recoveringJobId,setRecoveringJobId]=useState<number|null>(null)
 
   const statusOptions = ["未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
 
@@ -149,6 +150,32 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
 
   const onReload = async ()=>{
     try{ setReloading(true); const res=await fetch(`${API_BASE}/api/51job/reload`); const data=await res.json(); console.log("reload",data); await loadList(1,size); await loadStats() }catch(e){ console.error("reload failed",e) } finally { setReloading(false) }
+  }
+
+  const recoverDelivery = async (jobId:number, action:"confirmed"|"failed"|"retry")=>{
+    const prompt = action === "confirmed"
+      ? "请先到 51job 平台核对：这个岗位确实已经投递成功。确认写入已投递吗？"
+      : action === "failed"
+        ? "请先到 51job 平台核对：这个岗位确实没有投递成功。确认写入失败吗？"
+        : "确认允许这个岗位在下一次 51job 任务中重新投递吗？这不会立即打开浏览器。"
+    if (!window.confirm(prompt)) return
+    const path = action === "retry" ? "delivery-retry" : "delivery-reconcile"
+    const init: RequestInit = action === "retry"
+      ? { method:"POST" }
+      : { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ outcome:action === "confirmed" ? "CONFIRMED" : "FAILED", message:"用户在 51job 页面人工核对" }) }
+    try {
+      setRecoveringJobId(jobId)
+      const response = await fetch(`${API_BASE}/api/51job/jobs/${jobId}/${path}`, init)
+      const data = await response.json()
+      if (!response.ok || !data.success) throw new Error(data.message || `HTTP ${response.status}`)
+      window.alert(data.message || "处理完成")
+      await loadList(page,size)
+      await loadStats()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "恢复操作失败")
+    } finally {
+      setRecoveringJobId(null)
+    }
   }
 
   const exportCSV = async ()=>{
@@ -274,7 +301,19 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
                       <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top"><div className="truncate" title={it.experience||'-'}>{it.experience||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top"><div className="truncate" title={it.degree||'-'}>{it.degree||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 align-top"><div className="truncate" title={it.hrName||'-'}>{it.hrName||'-'}</div></td>
-                      <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top"><span className={`px-2 py-1 rounded-full text-xs ${ (it.deliveryStatus||'').includes('已投递') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300' }`}>{it.deliveryStatus||'-'}</span></td>
+                      <td className="px-4 py-3 text-sm leading-6 align-top">
+                        <span className={`whitespace-nowrap px-2 py-1 rounded-full text-xs ${ (it.deliveryStatus||'').includes('已投递') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300' }`}>{it.deliveryStatus||'-'}</span>
+                        {it.deliveryStatus === "投递结果待确认" && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            <Button size="sm" variant="outline" disabled={recoveringJobId===it.jobId} onClick={()=>recoverDelivery(it.jobId,"confirmed")}>核对已投递</Button>
+                            <Button size="sm" variant="outline" disabled={recoveringJobId===it.jobId} onClick={()=>recoverDelivery(it.jobId,"failed")}>核对失败</Button>
+                            <Button size="sm" variant="outline" disabled={recoveringJobId===it.jobId} onClick={()=>recoverDelivery(it.jobId,"retry")}>允许重试</Button>
+                          </div>
+                        )}
+                        {it.deliveryStatus === "投递失败" && (
+                          <div className="mt-2"><Button size="sm" variant="outline" disabled={recoveringJobId===it.jobId} onClick={()=>recoverDelivery(it.jobId,"retry")}>允许重试</Button></div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top">{it.jobUrl? (<a href={it.jobUrl} className="text-primary underline" target="_blank" rel="noreferrer">链接</a>):('-')}</td>
                       <td className="px-4 py-3 text-sm leading-6 align-top"><div className="truncate" title={it.industry||'-'}>{it.industry||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 align-top"><div className="truncate" title={it.companyScale||'-'}>{it.companyScale||'-'}</div></td>

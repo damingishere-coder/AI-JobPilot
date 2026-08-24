@@ -570,7 +570,9 @@
   function isBossSearchPathSafe(url) {
     try {
       const parsed = new URL(url);
-      return parsed.hostname.includes("zhipin.com") && isBossSearchPath(parsed.pathname);
+      return parsed.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
+        && isBossSearchPath(parsed.pathname);
     } catch {
       return false;
     }
@@ -1902,7 +1904,7 @@
     try {
       const parsed = new URL(candidate, window.location.origin);
       parsed.hash = "";
-      if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+      if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
       if (!parsed.pathname.includes("/job_detail/")) return "";
       return parsed.href;
     } catch {
@@ -1926,7 +1928,7 @@
     try {
       const parsed = new URL(url || window.location.href, window.location.origin);
       return parsed.protocol === "https:"
-        && parsed.hostname.endsWith("zhipin.com")
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
         && parsed.pathname.includes("/job_detail/")
         && Boolean(extractBossId(parsed.href));
     } catch {
@@ -3388,7 +3390,8 @@
 
   function isBossUrl(url) {
     try {
-      return new URL(url).hostname.includes("zhipin.com");
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(parsed.hostname);
     } catch {
       return false;
     }
@@ -3397,7 +3400,7 @@
   function isBossTaskPage(task) {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhipin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(current.hostname)) return false;
 
       const phase = String(task.phase || "");
       const diagnostics = buildPageBlockDiagnostics();
@@ -3563,7 +3566,7 @@
 
   function buildBossPageStatus() {
     const diagnostics = buildPageBlockDiagnostics();
-    const onBossPage = location.hostname.includes("zhipin.com");
+    const onBossPage = location.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(location.hostname);
     const searchLike = isBossSearchPath(location.pathname) || document.querySelectorAll("a[href*='/job_detail/']").length > 0;
     const detailLike = /\/job_detail\//.test(location.pathname) || Boolean(textOf(document, [".job-title", ".job-name", ".job-banner"]));
     const deliveryStatus = detectBossDeliveryStatus(document);
@@ -3712,7 +3715,9 @@
   function isBossChatPage(url) {
     try {
       const parsed = new URL(url, window.location.origin);
-      return parsed.hostname.includes("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+      return parsed.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
+        && /chat|im|message/.test(parsed.pathname);
     } catch {
       return false;
     }
@@ -3884,7 +3889,7 @@
   function isCurrentSearchPage(keyword, city, expectedUrl = "") {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhipin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(current.hostname)) return false;
       if (!isBossSearchPath(current.pathname)) return false;
       if (expectedUrl) return isSameSearchUrl(current.href, expectedUrl);
       const query = current.searchParams.get("query") || "";
@@ -4416,7 +4421,7 @@
     const addUrl = (value) => {
       try {
         const parsed = new URL(value, window.location.origin);
-        if (parsed.hostname.includes("zhipin.com") && parsed.pathname.includes("/wapi/zpgeek/job/detail.json")) {
+        if (parsed.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(parsed.hostname) && parsed.pathname.includes("/wapi/zpgeek/job/detail.json")) {
           urls.push(parsed.href);
         }
       } catch {
@@ -4433,7 +4438,7 @@
     [window.location.href, job?.url].forEach((value) => {
       try {
         const parsed = new URL(value, window.location.origin);
-        if (!parsed.hostname.includes("zhipin.com")) return;
+        if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return;
         if (!parsed.pathname.includes("/job_detail/")) return;
         const query = parsed.search || "";
         if (query) addUrl(`${parsed.origin}/wapi/zpgeek/job/detail.json${query}`);

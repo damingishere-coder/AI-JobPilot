@@ -34,20 +34,24 @@ public class LiepinService {
     // 记录持久化相关依赖（整合自 LiepinRecordService）
     private final LiepinMapper liepinMapper;
     private final DataSource dataSource;
+    private final ProfileService profileService;
 
     // 表结构只由 Flyway 管理；Service 运行时不再执行 DDL。
 
     /**
-     * 保存或更新一条岗位快照（以 job_id 作为主键）
+     * 保存或更新当前 Profile 的一条岗位快照。
      */
     public void saveOrUpdateSnapshot(LiepinEntity entity) {
         if (entity == null || entity.getJobId() == null) {
             return;
         }
         try {
-            LiepinEntity existing = liepinMapper.selectById(entity.getJobId());
+            Long profileId = profileService.getCurrentProfileId();
+            LiepinEntity existing = findByProfileAndJobId(profileId, entity.getJobId());
             LocalDateTime now = LocalDateTime.now();
             if (existing == null) {
+                entity.setId(null);
+                entity.setProfileId(profileId);
                 entity.setCreateTime(now);
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(0);
@@ -55,6 +59,8 @@ public class LiepinService {
                 liepinMapper.insert(entity);
             } else {
                 // 保留 create_time，更新其他字段与 update_time
+                entity.setId(existing.getId());
+                entity.setProfileId(profileId);
                 entity.setCreateTime(existing.getCreateTime());
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(existing.getDelivered());
@@ -74,9 +80,12 @@ public class LiepinService {
             return;
         }
         try {
-            LiepinEntity existing = liepinMapper.selectById(entity.getJobId());
+            Long profileId = profileService.getCurrentProfileId();
+            LiepinEntity existing = findByProfileAndJobId(profileId, entity.getJobId());
             if (existing == null) {
                 LocalDateTime now = LocalDateTime.now();
+                entity.setId(null);
+                entity.setProfileId(profileId);
                 entity.setCreateTime(now);
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(0);
@@ -103,6 +112,7 @@ public class LiepinService {
      */
     public void insertSnapshotsIfNotExistsBatch(java.util.List<LiepinEntity> entities) {
         if (entities == null || entities.isEmpty()) return;
+        Long profileId = profileService.getCurrentProfileId();
 
         // 收集待处理的 jobId
         java.util.Set<Long> ids = new java.util.HashSet<>();
@@ -115,6 +125,7 @@ public class LiepinService {
         java.util.List<Long> idList = new java.util.ArrayList<>(ids);
         java.util.List<LiepinEntity> existing = liepinMapper.selectList(
                 new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<LiepinEntity>()
+                        .eq("profile_id", profileId)
                         .in("job_id", idList)
         );
         java.util.Set<Long> existingIds = new java.util.HashSet<>();
@@ -129,7 +140,10 @@ public class LiepinService {
         LocalDateTime now = LocalDateTime.now();
         for (LiepinEntity e : entities) {
             if (e == null || e.getJobId() == null) continue;
-            if (existingIds.contains(e.getJobId())) continue;
+            // 同一批次也可能重复返回相同岗位；先占位，避免触发 V8 复合唯一约束后整批回滚。
+            if (!existingIds.add(e.getJobId())) continue;
+            e.setId(null);
+            e.setProfileId(profileId);
             if (e.getCreateTime() == null) e.setCreateTime(now);
             e.setUpdateTime(now);
             if (e.getDelivered() == null) e.setDelivered(0);
@@ -139,51 +153,34 @@ public class LiepinService {
 
         // 使用JDBC批量插入以提升性能
         String sql = "INSERT INTO liepin_data (" +
-                "job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
+                "profile_id, job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
                 "comp_id, comp_name, comp_industry, comp_scale, " +
-                "hr_id, hr_name, hr_title, hr_im_id, delivered, create_time, update_time) " +
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                "hr_id, hr_name, hr_title, hr_im_id, delivered, delivery_status, create_time, update_time) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         try (Connection conn = dataSource.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             conn.setAutoCommit(false);
             for (LiepinEntity e : toInsert) {
-                // 1 job_id
-                if (e.getJobId() == null) ps.setNull(1, Types.BIGINT); else ps.setLong(1, e.getJobId());
-                // 2 job_title
-                if (e.getJobTitle() == null) ps.setNull(2, Types.VARCHAR); else ps.setString(2, e.getJobTitle());
-                // 3 job_link
-                if (e.getJobLink() == null) ps.setNull(3, Types.VARCHAR); else ps.setString(3, e.getJobLink());
-                // 4 job_salary_text
-                if (e.getJobSalaryText() == null) ps.setNull(4, Types.VARCHAR); else ps.setString(4, e.getJobSalaryText());
-                // 5 job_area
-                if (e.getJobArea() == null) ps.setNull(5, Types.VARCHAR); else ps.setString(5, e.getJobArea());
-                // 6 job_edu_req
-                if (e.getJobEduReq() == null) ps.setNull(6, Types.VARCHAR); else ps.setString(6, e.getJobEduReq());
-                // 7 job_exp_req
-                if (e.getJobExpReq() == null) ps.setNull(7, Types.VARCHAR); else ps.setString(7, e.getJobExpReq());
-                // 8 job_publish_time
-                if (e.getJobPublishTime() == null) ps.setNull(8, Types.VARCHAR); else ps.setString(8, e.getJobPublishTime());
-                // 9 comp_id
-                if (e.getCompId() == null) ps.setNull(9, Types.BIGINT); else ps.setLong(9, e.getCompId());
-                // 10 comp_name
-                if (e.getCompName() == null) ps.setNull(10, Types.VARCHAR); else ps.setString(10, e.getCompName());
-                // 11 comp_industry
-                if (e.getCompIndustry() == null) ps.setNull(11, Types.VARCHAR); else ps.setString(11, e.getCompIndustry());
-                // 12 comp_scale
-                if (e.getCompScale() == null) ps.setNull(12, Types.VARCHAR); else ps.setString(12, e.getCompScale());
-                // 13 hr_id
-                if (e.getHrId() == null) ps.setNull(13, Types.VARCHAR); else ps.setString(13, e.getHrId());
-                // 14 hr_name
-                if (e.getHrName() == null) ps.setNull(14, Types.VARCHAR); else ps.setString(14, e.getHrName());
-                // 15 hr_title
-                if (e.getHrTitle() == null) ps.setNull(15, Types.VARCHAR); else ps.setString(15, e.getHrTitle());
-                // 16 hr_im_id
-                if (e.getHrImId() == null) ps.setNull(16, Types.VARCHAR); else ps.setString(16, e.getHrImId());
-                // 17 delivered
-                if (e.getDelivered() == null) ps.setNull(17, Types.INTEGER); else ps.setInt(17, e.getDelivered());
-                // 18 create_time
-                if (e.getCreateTime() == null) ps.setNull(18, Types.TIMESTAMP); else ps.setTimestamp(18, Timestamp.valueOf(e.getCreateTime()));
-                // 19 update_time
-                if (e.getUpdateTime() == null) ps.setNull(19, Types.TIMESTAMP); else ps.setTimestamp(19, Timestamp.valueOf(e.getUpdateTime()));
+                ps.setLong(1, profileId);
+                if (e.getJobId() == null) ps.setNull(2, Types.BIGINT); else ps.setLong(2, e.getJobId());
+                if (e.getJobTitle() == null) ps.setNull(3, Types.VARCHAR); else ps.setString(3, e.getJobTitle());
+                if (e.getJobLink() == null) ps.setNull(4, Types.VARCHAR); else ps.setString(4, e.getJobLink());
+                if (e.getJobSalaryText() == null) ps.setNull(5, Types.VARCHAR); else ps.setString(5, e.getJobSalaryText());
+                if (e.getJobArea() == null) ps.setNull(6, Types.VARCHAR); else ps.setString(6, e.getJobArea());
+                if (e.getJobEduReq() == null) ps.setNull(7, Types.VARCHAR); else ps.setString(7, e.getJobEduReq());
+                if (e.getJobExpReq() == null) ps.setNull(8, Types.VARCHAR); else ps.setString(8, e.getJobExpReq());
+                if (e.getJobPublishTime() == null) ps.setNull(9, Types.VARCHAR); else ps.setString(9, e.getJobPublishTime());
+                if (e.getCompId() == null) ps.setNull(10, Types.BIGINT); else ps.setLong(10, e.getCompId());
+                if (e.getCompName() == null) ps.setNull(11, Types.VARCHAR); else ps.setString(11, e.getCompName());
+                if (e.getCompIndustry() == null) ps.setNull(12, Types.VARCHAR); else ps.setString(12, e.getCompIndustry());
+                if (e.getCompScale() == null) ps.setNull(13, Types.VARCHAR); else ps.setString(13, e.getCompScale());
+                if (e.getHrId() == null) ps.setNull(14, Types.VARCHAR); else ps.setString(14, e.getHrId());
+                if (e.getHrName() == null) ps.setNull(15, Types.VARCHAR); else ps.setString(15, e.getHrName());
+                if (e.getHrTitle() == null) ps.setNull(16, Types.VARCHAR); else ps.setString(16, e.getHrTitle());
+                if (e.getHrImId() == null) ps.setNull(17, Types.VARCHAR); else ps.setString(17, e.getHrImId());
+                if (e.getDelivered() == null) ps.setNull(18, Types.INTEGER); else ps.setInt(18, e.getDelivered());
+                ps.setString(19, firstNonBlank(e.getDeliveryStatus(), DeliveryStatus.NOT_DELIVERED));
+                if (e.getCreateTime() == null) ps.setNull(20, Types.TIMESTAMP); else ps.setTimestamp(20, Timestamp.valueOf(e.getCreateTime()));
+                if (e.getUpdateTime() == null) ps.setNull(21, Types.TIMESTAMP); else ps.setTimestamp(21, Timestamp.valueOf(e.getUpdateTime()));
 
                 ps.addBatch();
             }
@@ -201,6 +198,7 @@ public class LiepinService {
      */
     public LiepinConfigEntity getFirstConfig() {
         QueryWrapper<LiepinConfigEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         wrapper.orderByAsc("id");
         wrapper.last("LIMIT 1");
         return liepinConfigMapper.selectOne(wrapper);
@@ -210,9 +208,7 @@ public class LiepinService {
      * 更新配置
      */
     public LiepinConfigEntity updateConfig(LiepinConfigEntity config) {
-        config.setUpdatedAt(LocalDateTime.now());
-        liepinConfigMapper.updateById(config);
-        return config;
+        return saveOrUpdateFirstSelective(config);
     }
 
     /**
@@ -223,6 +219,8 @@ public class LiepinService {
         LiepinConfigEntity existing = getFirstConfig();
         if (existing == null) {
             // 不存在记录，插入新配置
+            config.setId(null);
+            config.setProfileId(profileService.getCurrentProfileId());
             config.setCreatedAt(LocalDateTime.now());
             config.setUpdatedAt(LocalDateTime.now());
             liepinConfigMapper.insert(config);
@@ -230,6 +228,7 @@ public class LiepinService {
         }
         // 存在记录，选择性更新非null字段
         config.setId(existing.getId());
+        config.setProfileId(existing.getProfileId());
         if (config.getKeywords() != null) {
             existing.setKeywords(config.getKeywords());
         }
@@ -412,6 +411,7 @@ public class LiepinService {
 
         try {
             com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<LiepinEntity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+            wrapper.eq("profile_id", profileService.getCurrentProfileId());
 
             // 投递状态以 V6 delivery_status 兼容读模型为准。
             if (statuses != null && !statuses.isEmpty()) {
@@ -569,6 +569,7 @@ public class LiepinService {
         if (size <= 0) size = 20;
 
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<LiepinEntity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
 
         if (statuses != null && !statuses.isEmpty()) {
             Set<String> normalizedStatuses = statuses.stream()
@@ -623,5 +624,16 @@ public class LiepinService {
             return entity.getDeliveryStatus().trim();
         }
         return Objects.equals(entity.getDelivered(), 1) ? DeliveryStatus.DELIVERED : DeliveryStatus.NOT_DELIVERED;
+    }
+
+    public LiepinEntity findByProfileAndJobId(Long profileId, Long jobId) {
+        if (profileId == null || jobId == null) return null;
+        QueryWrapper<LiepinEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
+        return liepinMapper.selectOne(wrapper);
+    }
+
+    private String firstNonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 }

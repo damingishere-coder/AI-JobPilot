@@ -1,5 +1,7 @@
 package com.getjobs.application.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -13,8 +15,13 @@ import java.time.LocalDateTime;
 @Data
 @TableName("liepin_data")
 public class LiepinEntity {
+    @TableId(type = IdType.AUTO)
+    private Long id;
+
+    @TableField("profile_id")
+    private Long profileId;
+
     // ========== 岗位字段 ==========
-    @TableId
     private Long jobId;           // job.jobId
     private String jobTitle;      // job.title
     private String jobLink;       // job.link

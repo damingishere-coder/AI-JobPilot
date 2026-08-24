@@ -1,5 +1,6 @@
 package com.getjobs.application.controller;
 
+import com.getjobs.application.service.ApplicationReadinessService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +19,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class HealthController {
     private final PlaywrightManager playwrightManager;
+    private final ApplicationReadinessService readinessService;
 
     /**
      * 健康检查接口
@@ -48,6 +50,21 @@ public class HealthController {
         response.put("service", "GetJobs");
         response.put("browserAutomation", browserAutomation);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Readiness 表示数据库、Schema 与持久任务执行器已经可以安全接收新任务。
+     */
+    @GetMapping("/ready")
+    public ResponseEntity<Map<String, Object>> ready() {
+        ApplicationReadinessService.ReadinessReport report = readinessService.check();
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", report.status());
+        response.put("ready", report.ready());
+        response.put("timestamp", System.currentTimeMillis());
+        response.put("service", "GetJobs");
+        response.put("checks", report.checks());
+        return ResponseEntity.status(report.ready() ? 200 : 503).body(response);
     }
 
     private String browserMessage(boolean initialized, boolean initializing, String initializationError) {
