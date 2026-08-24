@@ -317,6 +317,81 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
   assert.equal(urls.length, 1);
 });
 
+test("treats HTTP 200 business rejection as a failed local API request", async () => {
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() { return JSON.stringify({ success: false, message: "状态已变化" }); }
+    })
+  });
+
+  const result = await context.requestLocalApi("/api/boss/jobs/1/delivery-result", {
+    operation: "delivery-result",
+    method: "POST",
+    body: { requestKey: "request-1", outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT" }
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorType, "BUSINESS_REJECTED");
+  assert.equal(result.message, "状态已变化");
+});
+
+test("records an empty Boss chat-page response as unknown instead of confirmed", async () => {
+  const requests = [];
+  const { context } = loadBackground({
+    tabs: [{ id: 7, windowId: 1, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, status: 200, async text() { return '{"success":true}'; } };
+    }
+  });
+
+  const result = await context.inferBossDeliveryAfterEmptyResponse(7, {
+    id: 99,
+    requestKey: "request-99"
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.outcome, "UNKNOWN");
+  assert.equal(result.persisted, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.requestKey, "request-99");
+  assert.equal(requests[0].body.outcome, "UNKNOWN");
+  assert.equal(requests[0].body.evidence, "CHAT_SURFACE_ONLY");
+});
+
+test("does not upgrade legacy success booleans to confirmed without explicit evidence", () => {
+  const { context } = loadBackground({ tabs: [] });
+
+  assert.equal(context.deliveryOutcomeOf({ success: true }), "UNKNOWN");
+  assert.equal(context.deliveryOutcomeOf({ outcome: "CONFIRMED" }), "UNKNOWN");
+  assert.equal(context.deliveryOutcomeOf({
+    outcome: "CONFIRMED",
+    evidence: "PLATFORM_STATUS_TEXT"
+  }), "CONFIRMED");
+});
+
+test("surfaces delivery-result persistence failure instead of reporting a stored outcome", async () => {
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      async text() { return JSON.stringify({ success: false, message: "database unavailable" }); }
+    })
+  });
+
+  await assert.rejects(
+    context.recordBossDeliveryResponse(
+      { id: 77, requestKey: "request-77" },
+      { outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: "result uncertain" }
+    ),
+    /database unavailable/
+  );
+});
+
 test("rejects forged Zhilian senders before any local API request", async () => {
   let fetchCalls = 0;
   const { runtimeMessageListener } = loadBackground({

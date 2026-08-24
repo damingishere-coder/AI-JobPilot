@@ -19,6 +19,8 @@ type StatsResponse = {
     total: number
     delivered: number
     pending: number
+    requested: number
+    unknown: number
     filtered: number
     failed: number
     avgMonthlyK?: number | null
@@ -51,7 +53,14 @@ type LiepinJob = {
   hrName?: string
   hrTitle?: string
   delivered?: number
+  deliveryStatus?: string
   createTime?: string
+}
+
+function deliveryStatusOf(job: LiepinJob) {
+  const status = job.deliveryStatus?.trim()
+  if (status) return status
+  return job.delivered === 1 ? "已投递" : "未投递"
 }
 
 type PagedResult = {
@@ -227,7 +236,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [detailJob, setDetailJob] = useState<LiepinJob | null>(null)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
 
-  const statusOptions = ["未投递", "已投递"]
+  const statusOptions = ["未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
 
   useEffect(() => {
     loadStats()
@@ -349,7 +358,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         it.jobExpReq || "",
         it.jobEduReq || "",
         it.hrName || "",
-        (it.delivered === 1 ? "已投递" : "未投递"),
+        deliveryStatusOf(it),
         it.jobLink || "",
         it.createTime || "",
       ])
@@ -466,6 +475,8 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
       { title: "已投递", value: k?.delivered ?? 0 },
+      { title: "投递确认中", value: k?.requested ?? 0 },
+      { title: "结果待确认", value: k?.unknown ?? 0 },
       { title: "未投递", value: k?.pending ?? 0 },
       { title: "平均月薪(K)", value: (k?.avgMonthlyK ?? avgMonthlyKFromItems ?? 0) },
     ]
@@ -771,7 +782,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                     <td className="py-2 px-3 whitespace-nowrap">{it.jobEduReq || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.hrName || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.delivered === 1 ? "已投递" : "未投递")}>{it.delivered === 1 ? "已投递" : "未投递"}</span>
+                      <span className={badgeClass("delivery", deliveryStatusOf(it))}>{deliveryStatusOf(it)}</span>
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       {it.jobLink ? (
@@ -804,7 +815,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                   <div><span className="text-muted-foreground">经验：</span>{detailJob.jobExpReq || ""}</div>
                   <div><span className="text-muted-foreground">学历：</span>{detailJob.jobEduReq || ""}</div>
                   <div><span className="text-muted-foreground">HR：</span>{detailJob.hrName || ""}</div>
-                  <div><span className="text-muted-foreground">状态：</span>{detailJob.delivered === 1 ? "已投递" : "未投递"}</div>
+                  <div><span className="text-muted-foreground">状态：</span>{deliveryStatusOf(detailJob)}</div>
                   <div><span className="text-muted-foreground">创建时间：</span>{formatDateOnly(detailJob.createTime)}</div>
                 </div>
                 <div className="mt-4">

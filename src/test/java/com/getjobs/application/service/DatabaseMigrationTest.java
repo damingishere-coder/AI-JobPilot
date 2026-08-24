@@ -18,7 +18,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV5AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV6AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -27,11 +27,49 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='5'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='6'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
             assertThat(columns(connection, "boss_data"))
                     .contains("source_keyword", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
+            assertThat(columns(connection, "liepin_data")).contains("delivery_status");
+            assertThat(columns(connection, "job51_data")).contains("delivery_status");
+            assertThat(tableExists(connection, "delivery_attempt")).isTrue();
+        }
+    }
+
+    @Test
+    void v6ImportsLegacyDeliveryFactsWithoutInventingNewConfirmations() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("legacy-delivery.db"));
+        Flyway flyway = Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("5")
+                .load();
+        flyway.migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status, created_at) " +
+                    "VALUES (10, 1, 'boss-key', '已投递', CURRENT_TIMESTAMP)");
+            statement.execute("INSERT INTO zhilian_data(id, profile_id, job_id, delivery_status, create_time) " +
+                    "VALUES (20, 1, 'zhilian-key', '投递失败', CURRENT_TIMESTAMP)");
+            statement.execute("INSERT INTO liepin_data(job_id, delivered, create_time) VALUES (30, 1, CURRENT_TIMESTAMP)");
+            statement.execute("INSERT INTO job51_data(job_id, delivered, create_time) VALUES (40, 0, CURRENT_TIMESTAMP)");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM delivery_attempt WHERE state='CONFIRMED'"))
+                    .isEqualTo(2L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM delivery_attempt WHERE state='FAILED'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM delivery_attempt WHERE platform='51job'"))
+                    .isZero();
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM liepin_data WHERE delivery_status='已投递'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM job51_data WHERE delivery_status='未投递'"))
+                    .isEqualTo(1L);
         }
     }
 

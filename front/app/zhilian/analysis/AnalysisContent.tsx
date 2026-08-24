@@ -93,6 +93,76 @@ type PagedResult = {
   size: number
 }
 
+async function markZhilianUnknownReservations(
+  tasks: Array<{ id?: number; requestKey?: string }>,
+  reason: string,
+) {
+  const results = await Promise.allSettled(tasks.map(async (task) => {
+    if (!task.id || !task.requestKey) return
+    const response = await fetch(`${API_BASE}/api/zhilian/jobs/${task.id}/delivery-result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestKey: task.requestKey,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        message: reason,
+      }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.success === false) {
+      throw new Error(data.message || "智联 UNKNOWN 状态回写失败")
+    }
+  }))
+  const failed = results.filter((result) => result.status === "rejected")
+  if (failed.length > 0) console.error("智联 UNKNOWN 状态回写失败", failed)
+}
+
+async function postZhilianJsonWithRetry(url: string, body?: unknown) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      return await response.json()
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("智联投递请求未收到响应")
+}
+
+function unresolvedZhilianReservations(
+  tasks: Array<{ id?: number; requestKey?: string }>,
+  result: Record<string, unknown>,
+) {
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return tasks
+  const persistedKeys = new Set(rows.map((row) => {
+    if (!row || typeof row !== "object") return ""
+    const item = row as { requestKey?: unknown; persisted?: unknown }
+    return item.persisted === true ? String(item.requestKey || "") : ""
+  }))
+  return tasks.filter((task) => !task.requestKey || !persistedKeys.has(task.requestKey))
+}
+
+function formatZhilianBatchResult(result: Record<string, unknown>) {
+  const summary = String(result.message || "批量投递任务已结束。")
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return summary
+  const details = rows.slice(0, 50).map((row, index) => {
+    const item = row && typeof row === "object"
+      ? row as { id?: unknown; outcome?: unknown; evidence?: unknown; persisted?: unknown; message?: unknown }
+      : {}
+    const persisted = item.persisted === true ? "已落库" : "待补偿"
+    return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
+  })
+  return `${summary}\n\n逐条结果：\n${details.join("\n")}`
+}
+
 type ChartRef = { destroy: () => void }
 
 const CATEGORY_COLORS = [
@@ -528,7 +598,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
   const activeScanRunId = ""
 
-	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
+	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
 
   const loadList = async (toPage = page, toSize = size) => {
     try {
@@ -785,58 +855,121 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       alert("该智联岗位缺少内部ID，无法确认投递。")
       return
     }
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingJobId(job.id)
-      const res = await fetch(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { method: "POST" })
-      const data = await res.json()
+      const ok = window.confirm(`将通过 Chrome 真实申请智联岗位：${job.companyName || ""} / ${job.jobTitle || ""}。确认继续？`)
+      if (!ok) return
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`)
       if (!data.success) {
         alert(data.message || "该智联岗位暂不能投递。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实申请智联岗位：${job.companyName || ""} / ${job.jobTitle || ""}。确认继续？`)
-      if (!ok) return
+      reservedTasks = [data.task]
       const result = await sendChromeBridgeMessage({
         type: "ZHILIAN_DELIVER_ONE",
         platform: "zhilian",
         task: data.task,
       }, 120000)
+      if (result.persisted !== true) {
+        await markZhilianUnknownReservations(reservedTasks, result.message || "Chrome Bridge 未返回岗位结果")
+      }
       alert(result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
       await loadStats()
       await loadDashboardStats()
     } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 投递执行结果")
       alert("确认投递失败：网络或服务异常。")
     } finally {
       setActingJobId(null)
     }
   }
 
+  const handleReconcileJob = async (job: ZhilianJob) => {
+    if (!job.id) return
+    const answer = window.prompt(
+      "请先在智联平台核对该岗位。输入“已投递”确认成功，输入“未投递”确认失败；其他内容不会修改状态。",
+    )?.trim()
+    if (answer !== "已投递" && answer !== "未投递") return
+    try {
+      setActingJobId(job.id)
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-reconcile`, {
+        outcome: answer === "已投递" ? "CONFIRMED" : "FAILED",
+        message: `用户在智联平台人工核对：${answer}`,
+      })
+      alert(data.message || (data.success ? "人工对账已保存。" : "人工对账失败。"))
+      await loadList(page, size)
+      await loadStats()
+      await loadDashboardStats()
+    } catch {
+      alert("人工对账失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
+  const handleRetryJob = async (job: ZhilianJob) => {
+    if (!job.id) return
+    const ok = window.confirm("这会创建新的投递 attempt，并可能再次申请该智联岗位。确认显式重试？")
+    if (!ok) return
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
+    try {
+      setActingJobId(job.id)
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`)
+      if (!data.success || !data.task) {
+        alert(data.message || "当前岗位不能重试。")
+        return
+      }
+      reservedTasks = [data.task]
+      const result = await sendChromeBridgeMessage({
+        type: "ZHILIAN_DELIVER_ONE",
+        platform: "zhilian",
+        task: data.task,
+      }, 120000)
+      if (result.persisted !== true) {
+        await markZhilianUnknownReservations(reservedTasks, result.message || "Chrome 重试结果未确认写入")
+      }
+      alert(result.message || "重试任务已结束。")
+      await loadList(page, size)
+      await loadStats()
+      await loadDashboardStats()
+    } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 重试执行结果")
+      alert("重试失败：网络或服务异常，已保守标记待对账。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
   const handleConfirmBatch = async () => {
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingBatch(true)
-      const res = await fetch(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentBatchFilters()),
-      })
-      const data = await res.json()
+      const ok = window.confirm("将通过 Chrome 真实申请当前筛选范围内的智联待确认岗位。确认继续？")
+      if (!ok) return
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch`, currentBatchFilters())
       const tasks = data.tasks || []
+      reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
         alert(data.message || "当前筛选条件下没有智联待确认岗位。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实申请 ${tasks.length} 个智联待确认岗位。确认继续？`)
-      if (!ok) return
       const result = await sendChromeBridgeMessage({
         type: "ZHILIAN_DELIVER_BATCH",
         platform: "zhilian",
         tasks,
       }, Math.max(120000, tasks.length * 30000))
-      alert(result.message || "批量投递任务已结束。")
+      const unresolved = unresolvedZhilianReservations(reservedTasks, result)
+      if (unresolved.length > 0) {
+        await markZhilianUnknownReservations(unresolved, result.message || "Chrome Bridge 未确认写入完整批量结果")
+      }
+      alert(formatZhilianBatchResult(result))
       await loadList(page, size)
       await loadStats()
       await loadDashboardStats()
     } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 批量投递执行结果")
       alert("批量投递失败：网络或服务异常。")
     } finally {
       setActingBatch(false)
@@ -1180,14 +1313,27 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                     }`}
                   >
                     <td className="py-2 px-3 whitespace-nowrap">
-                      {it.deliveryStatus === "待确认" ? (
+                      {it.deliveryStatus === "待确认" || it.deliveryStatus === "投递确认中" ? (
                         <Button
                           size="sm"
                           disabled={actingJobId === it.id}
                           onClick={() => handleConfirmJob(it)}
                           className="h-7 rounded-lg px-3 text-xs"
                         >
-                          Chrome投递
+                          {it.deliveryStatus === "投递确认中" ? "恢复投递" : "Chrome投递"}
+                        </Button>
+                      ) : it.deliveryStatus === "投递结果待确认" ? (
+                        <div className="flex flex-col gap-2">
+                          <Button size="sm" disabled={actingJobId === it.id} onClick={() => handleReconcileJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            对账
+                          </Button>
+                          <Button size="sm" variant="outline" disabled={actingJobId === it.id} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            重试
+                          </Button>
+                        </div>
+                      ) : it.deliveryStatus === "投递失败" ? (
+                        <Button size="sm" variant="outline" disabled={actingJobId === it.id} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                          重试
                         </Button>
                       ) : (it.deliveryStatus || "").trim() === "已投递" ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">

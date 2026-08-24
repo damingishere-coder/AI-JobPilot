@@ -35,6 +35,7 @@ public class Job51Entity {
 
     // 状态与时间戳
     private Integer delivered; // 0=未投递 1=已投递
+    private String deliveryStatus;
     private String createTime;
     private String updateTime;
 }

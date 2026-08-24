@@ -58,7 +58,10 @@ class DatabaseMigrationRehearsalTest {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalarText(connection, "PRAGMA integrity_check")).isEqualTo("ok");
             assertThat(scalarLong(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='5'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='6'"))
+                    .isEqualTo(1L);
+            assertThat(scalarLong(connection,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_attempt'"))
                     .isEqualTo(1L);
         }
         assertThat(tableCounts(rehearsalUrl)).containsAllEntriesOf(countsBefore);

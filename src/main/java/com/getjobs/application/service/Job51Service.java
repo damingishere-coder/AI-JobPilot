@@ -372,49 +372,16 @@ public class Job51Service {
     // ==================== 投递状态写回 ====================
 
     /** 将指定 jobId 标记为已投递 */
+    @Deprecated(forRemoval = false)
     public void markDelivered(Long jobId) {
-        if (jobId == null) return;
-        try (Connection conn = dataSource.getConnection();
-             java.sql.PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE job51_data SET delivered=1, update_time=? WHERE job_id=?")) {
-            java.time.LocalDateTime now = java.time.LocalDateTime.now();
-            ps.setString(1, now.toString());
-            ps.setLong(2, jobId);
-            ps.executeUpdate();
-        } catch (Exception e) {
-            log.warn("标记 51job 已投递失败 job_id={}: {}", jobId, e.getMessage());
-        }
+        log.warn("已拒绝无 requestKey 的 51job 已投递写入 job_id={}，请使用 DeliveryAttemptService", jobId);
     }
 
     /** 批量标记为已投递 */
+    @Deprecated(forRemoval = false)
     public void markDeliveredBatch(java.util.Collection<Long> jobIds) {
-        if (jobIds == null || jobIds.isEmpty()) return;
-        try (Connection conn = dataSource.getConnection();
-             java.sql.PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE job51_data SET delivered=1, update_time=? WHERE job_id=?")) {
-            conn.setAutoCommit(false);
-            java.time.LocalDateTime now = java.time.LocalDateTime.now();
-            for (Long id : jobIds) {
-                if (id == null) continue;
-                ps.setString(1, now.toString());
-                ps.setLong(2, id);
-                ps.addBatch();
-            }
-            int[] counts = ps.executeBatch();
-            conn.commit();
-            try {
-                int updated = 0;
-                if (counts != null) {
-                    for (int c : counts) {
-                        if (c > 0) updated += c;
-                    }
-                }
-                String sample = jobIds.stream().filter(java.util.Objects::nonNull).limit(5).map(String::valueOf).collect(java.util.stream.Collectors.joining(", "));
-                log.info("[51job] 批量标记已投递完成，入参 {} 条，成功更新 {} 条，示例ID: {}", jobIds.size(), updated, sample);
-            } catch (Exception ignored) {}
-        } catch (Exception e) {
-            log.warn("批量标记 51job 已投递失败: {}", e.getMessage());
-        }
+        log.warn("已拒绝无 requestKey 的 51job 批量已投递写入，入参 {} 条，请使用 DeliveryAttemptService",
+                jobIds == null ? 0 : jobIds.size());
     }
 
     // ==================== 投递分析与列表 ====================
@@ -431,7 +398,7 @@ public class Job51Service {
         public java.util.List<BucketValue> salaryBuckets;
         public java.util.List<NameValue> dailyTrend; // date as name
     }
-    public static class Kpi { public long total; public long delivered; public long pending; public long filtered; public long failed; public Double avgMonthlyK; }
+    public static class Kpi { public long total; public long delivered; public long pending; public long requested; public long unknown; public long filtered; public long failed; public Double avgMonthlyK; }
     public static class StatsResponse { public Kpi kpi; public Charts charts; }
 
     public static class Job51Row {
@@ -482,10 +449,12 @@ public class Job51Service {
         try {
             com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
             if (statuses != null && !statuses.isEmpty()) {
-                java.util.List<Integer> deliveredVals = new java.util.ArrayList<>();
-                if (statuses.contains("已投递")) deliveredVals.add(1);
-                if (statuses.contains("未投递")) deliveredVals.add(0);
-                if (!deliveredVals.isEmpty()) wrapper.in("delivered", deliveredVals);
+                java.util.Set<String> normalizedStatuses = statuses.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .map(String::trim)
+                        .filter(value -> !value.isEmpty())
+                        .collect(java.util.stream.Collectors.toSet());
+                if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
             }
             if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
             if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -523,15 +492,17 @@ public class Job51Service {
 
             // KPI
             resp.kpi.total = filtered.size();
-            resp.kpi.delivered = filtered.stream().filter(e -> e.getDelivered() != null && e.getDelivered() == 1).count();
-            resp.kpi.pending = filtered.stream().filter(e -> e.getDelivered() == null || e.getDelivered() == 0).count();
+            resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.requested = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_REQUESTED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.unknown = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_UNKNOWN.equals(deliveryStatusOf(e))).count();
             resp.kpi.filtered = 0; // 51 无明确“已过滤”
-            resp.kpi.failed = 0;   // 51 无明确“投递失败”
+            resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_FAILED.equals(deliveryStatusOf(e))).count();
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // Charts
             java.util.Map<String, Long> byStatus = filtered.stream()
-                    .collect(java.util.stream.Collectors.groupingBy(e -> (e.getDelivered()!=null && e.getDelivered()==1) ? "已投递" : "未投递", java.util.stream.Collectors.counting()));
+                    .collect(java.util.stream.Collectors.groupingBy(this::deliveryStatusOf, java.util.stream.Collectors.counting()));
             byStatus.forEach((k,v) -> charts.byStatus.add(new NameValue(nullSafe(k), v)));
 
             java.util.Map<String, Long> byCity = filtered.stream()
@@ -605,10 +576,12 @@ public class Job51Service {
 
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
         if (statuses != null && !statuses.isEmpty()) {
-            java.util.List<Integer> deliveredVals = new java.util.ArrayList<>();
-            if (statuses.contains("已投递")) deliveredVals.add(1);
-            if (statuses.contains("未投递")) deliveredVals.add(0);
-            if (!deliveredVals.isEmpty()) wrapper.in("delivered", deliveredVals);
+            java.util.Set<String> normalizedStatuses = statuses.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
         }
         if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
         if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -650,7 +623,7 @@ public class Job51Service {
             r.experience = e.getJobExpReq();
             r.degree = e.getJobEduReq();
             r.hrName = e.getHrName();
-            r.deliveryStatus = (e.getDelivered()!=null && e.getDelivered()==1) ? "已投递" : "未投递";
+            r.deliveryStatus = deliveryStatusOf(e);
             r.jobUrl = e.getJobLink();
             r.publishTime = e.getJobPublishTime();
             r.createdAt = e.getCreateTime();
@@ -665,6 +638,15 @@ public class Job51Service {
         result.page = page;
         result.size = size;
         return result;
+    }
+
+    private String deliveryStatusOf(Job51Entity entity) {
+        if (entity.getDeliveryStatus() != null && !entity.getDeliveryStatus().isBlank()) {
+            return entity.getDeliveryStatus().trim();
+        }
+        return entity.getDelivered() != null && entity.getDelivered() == 1
+                ? DeliveryStatus.DELIVERED
+                : DeliveryStatus.NOT_DELIVERED;
     }
 
     // ==================== 薪资解析 ====================

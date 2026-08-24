@@ -1,6 +1,7 @@
 package com.getjobs.worker.job51;
 
 import com.getjobs.application.service.Job51Service;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.worker.utils.JobUtils;
 import com.getjobs.worker.utils.PlaywrightUtil;
 import com.microsoft.playwright.Locator;
@@ -35,6 +36,7 @@ public class Job51 {
 
     private final List<String> resultList = new ArrayList<>();
     private final Job51Service job51Service;
+    private final DeliveryAttemptService deliveryAttemptService;
     private boolean networkHooked = false;
     private boolean reachedDailyLimit = false;
     private final java.util.Set<String> processedRequestIds = new java.util.HashSet<>();
@@ -95,6 +97,7 @@ public class Job51 {
         } catch (Exception e) {
             log.error("51job投递过程出现异常", e);
             sendProgress("投递出现异常: " + e.getMessage(), null, null);
+            throw new IllegalStateException("51job投递过程异常", e);
         }
 
         return resultList.size();
@@ -229,13 +232,20 @@ public class Job51 {
             }
 
             // 关键词完成不输出日志
-        } catch (Exception e) { /* 静默 */ }
+        } catch (Exception e) {
+            log.error("51job关键词投递流程失败，已停止后续页面", e);
+            throw e instanceof RuntimeException runtimeException
+                    ? runtimeException
+                    : new IllegalStateException("51job关键词投递流程失败", e);
+        }
     }
 
     /**
      * 投递当前页面的所有职位
      */
     private void deliverCurrentPage() {
+        java.util.Map<Long, String> selectedAttempts = new java.util.LinkedHashMap<>();
+        boolean platformActionStarted = false;
         try {
             PlaywrightUtil.sleep(1);
 
@@ -248,24 +258,78 @@ public class Job51 {
             Locator companies = page.locator("[class*='cname text-cut']");
 
             int jobCount = checkboxes.count();
+            List<Long> jobIdsByIndex = new ArrayList<>();
+            java.util.Set<Long> uniqueJobIds = new java.util.LinkedHashSet<>();
+            for (int i = 0; i < jobCount; i++) {
+                Long jobId = collectJobIdForCheckbox(checkboxes.nth(i));
+                if (jobId == null || !uniqueJobIds.add(jobId)) {
+                    sendProgress("51job岗位与 jobId 无法一一对应，本页已停止且未执行真实投递", null, null);
+                    return;
+                }
+                jobIdsByIndex.add(jobId);
+            }
 
             // 选中所有职位
             for (int i = 0; i < jobCount; i++) {
                 if (shouldStop()) {
+                    resolveJob51Attempts(selectedAttempts, DeliveryAttemptService.State.FAILED,
+                            DeliveryAttemptService.PRE_ACTION_ERROR, "用户在批量投递前取消操作");
                     return;
                 }
 
+                Long selectedJobId = jobIdsByIndex.get(i);
+                DeliveryAttemptService.RequestResult attempt = null;
                 try {
                     Locator checkbox = checkboxes.nth(i);
+                    attempt = deliveryAttemptService.requestLegacy("51job", selectedJobId);
+                    if (!attempt.created()) {
+                        if (attempt.accepted() && attempt.state() == DeliveryAttemptService.State.REQUESTED) {
+                            DeliveryAttemptService.ResolutionResult recovered = deliveryAttemptService.resolveLegacy(
+                                    "51job", selectedJobId, attempt.requestKey(),
+                                    DeliveryAttemptService.State.UNKNOWN,
+                                    DeliveryAttemptService.NO_CONFIRMATION,
+                                    "检测到上次 51job 投递流程中断，已转为人工待对账"
+                            );
+                            if (!recovered.accepted()) {
+                                throw new IllegalStateException("51job 中断 attempt 无法恢复: " + recovered.message());
+                            }
+                            sendProgress("51job检测到上次中断的投递记录，已转为待对账且未重复点击平台", null, null);
+                        } else {
+                            log.info("跳过 51job 非首次投递请求 jobId={}: {}", selectedJobId, attempt.message());
+                        }
+                        continue;
+                    }
                     // 使用JavaScript点击，避免元素被遮挡
                     checkbox.evaluate("el => el.click()");
+                    selectedAttempts.put(selectedJobId, attempt.requestKey());
 
                     String title = i < titles.count() ? titles.nth(i).textContent() : "未知职位";
                     String company = i < companies.count() ? companies.nth(i).textContent() : "未知公司";
                     String jobInfo = company + " | " + title;
                     resultList.add(jobInfo);
 //                    log.info("选中: {}", jobInfo);
-                } catch (Exception e) { /* 静默 */ }
+                } catch (Exception e) {
+                    log.warn("51job岗位预留或勾选失败，未把该岗位纳入批量动作: {}", e.getMessage());
+                    if (attempt != null && !attempt.created()) {
+                        throw new IllegalStateException("51job历史投递记录恢复失败", e);
+                    }
+                    if (attempt != null && attempt.created()) {
+                        DeliveryAttemptService.ResolutionResult failed = deliveryAttemptService.resolveLegacy(
+                                "51job", selectedJobId, attempt.requestKey(),
+                                DeliveryAttemptService.State.FAILED,
+                                DeliveryAttemptService.PRE_ACTION_ERROR,
+                                "51job岗位勾选失败，未执行批量投递"
+                        );
+                        if (!failed.accepted()) {
+                            throw new IllegalStateException("51job岗位勾选失败状态无法落库: " + failed.message(), e);
+                        }
+                    }
+                }
+            }
+
+            if (selectedAttempts.isEmpty()) {
+                sendProgress("51job本页没有可安全追踪的投递岗位，未执行批量投递", null, null);
+                return;
             }
 
             PlaywrightUtil.sleep(1);
@@ -275,7 +339,14 @@ public class Job51 {
             PlaywrightUtil.sleep(1);
 
             // 点击批量投递按钮
-            clickBatchDeliverButton();
+            boolean clicked = clickBatchDeliverButton();
+            if (!clicked) {
+                resolveJob51Attempts(selectedAttempts, DeliveryAttemptService.State.UNKNOWN,
+                        DeliveryAttemptService.NO_CONFIRMATION, "51job批量投递按钮点击结果不明确");
+                sendProgress("51job批量投递按钮点击结果不明确，本页岗位已标记待对账", null, null);
+                return;
+            }
+            platformActionStarted = true;
 
             PlaywrightUtil.sleep(3);
 
@@ -285,30 +356,95 @@ public class Job51 {
             // 处理单独投递申请弹窗
             handleSeparateDeliveryDialog();
 
-            // 投递状态写回：采集当前页 jobId 并标记 delivered=1
+            // 51job 弹窗无法证明每个岗位的逐条结果；本页只记录 UNKNOWN，绝不批量写 confirmed。
             try {
-                List<Long> deliveredIds = collectJobIdsOnPage();
-                if (!deliveredIds.isEmpty()) {
-                    job51Service.markDeliveredBatch(deliveredIds);
-                }
-            } catch (Exception e) { /* 静默 */ }
+                resolveJob51Attempts(selectedAttempts, DeliveryAttemptService.State.UNKNOWN,
+                        DeliveryAttemptService.NO_CONFIRMATION,
+                        "51job已点击批量投递，但平台未返回可映射到逐条岗位的确认回执");
+            } catch (Exception e) {
+                log.error("记录 51job 待对账状态失败，任务将以失败结束并在下次运行恢复", e);
+                throw e;
+            }
 
         } catch (Exception e) {
             log.error("投递当前页面失败", e);
+            if (!selectedAttempts.isEmpty()) {
+                try {
+                    resolveJob51Attempts(
+                            selectedAttempts,
+                            platformActionStarted ? DeliveryAttemptService.State.UNKNOWN : DeliveryAttemptService.State.FAILED,
+                            platformActionStarted ? DeliveryAttemptService.NO_CONFIRMATION : DeliveryAttemptService.PRE_ACTION_ERROR,
+                            platformActionStarted ? "51job批量动作后流程异常，平台结果未知" : "51job批量动作前流程异常"
+                    );
+                } catch (Exception recoveryError) {
+                    log.error("51job投递 attempt 补偿写入失败，需要人工检查 REQUESTED 记录", recoveryError);
+                    sendProgress("严重告警：51job平台动作后的待对账记录写入失败，请停止重试并人工检查", null, null);
+                }
+            }
+            throw e instanceof RuntimeException runtimeException
+                    ? runtimeException
+                    : new IllegalStateException("51job当前页面投递失败", e);
+        }
+    }
+
+    private void resolveJob51Attempts(java.util.Map<Long, String> attempts,
+                                      DeliveryAttemptService.State state,
+                                      String evidence,
+                                      String message) {
+        List<Long> failedJobIds = new ArrayList<>();
+        attempts.forEach((jobId, requestKey) -> {
+            boolean resolved = false;
+            for (int attempt = 0; attempt < 2 && !resolved; attempt++) {
+                try {
+                    DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolveLegacy(
+                            "51job", jobId, requestKey, state, evidence, message);
+                    resolved = result.accepted();
+                    if (!resolved) log.warn("51job投递 attempt 被拒绝 jobId={}: {}", jobId, result.message());
+                } catch (Exception e) {
+                    log.warn("51job投递 attempt 第{}次回写失败 jobId={}: {}", attempt + 1, jobId, e.getMessage());
+                }
+            }
+            if (!resolved) failedJobIds.add(jobId);
+        });
+        if (!failedJobIds.isEmpty()) {
+            throw new IllegalStateException("51job投递 attempt 回写失败 jobIds=" + failedJobIds);
+        }
+    }
+
+    private Long collectJobIdForCheckbox(Locator checkbox) {
+        try {
+            Object raw = checkbox.evaluate("""
+                    el => {
+                      const root = el.closest('[data-jobid], [data-analysis-jobid], [data-job-id], li, [class*="job"]');
+                      if (!root) return '';
+                      const direct = root.getAttribute('data-jobid')
+                        || root.getAttribute('data-analysis-jobid')
+                        || root.getAttribute('data-job-id');
+                      if (direct) return direct;
+                      const anchor = root.querySelector("a[href*='/pc/jobdetail'], a[href*='jobs.51job.com'], a.jname[href]");
+                      return anchor ? (anchor.getAttribute('href') || '') : '';
+                    }
+                    """);
+            String value = raw == null ? "" : String.valueOf(raw).trim();
+            if (value.matches("\\d+")) return Long.parseLong(value);
+            return parseJobIdFromHref(value);
+        } catch (Exception e) {
+            log.debug("51job 已选岗位无法解析 jobId，不写入投递状态: {}", e.getMessage());
+            return null;
         }
     }
 
     /**
      * 点击批量投递按钮
      */
-    private void clickBatchDeliverButton() {
+    private boolean clickBatchDeliverButton() {
         int retryCount = 0;
         boolean success = false;
 
         while (!success && retryCount < 5) {
             try {
                 if (shouldStop()) {
-                    return;
+                    return false;
                 }
 
                 // 查找批量投递按钮
@@ -327,6 +463,7 @@ public class Job51 {
                 PlaywrightUtil.sleep(1);
             }
         }
+        return success;
     }
 
     /**
@@ -740,11 +877,6 @@ public class Job51 {
             java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("/(\\d+)\\.html").matcher(href);
             if (m2.find()) {
                 return Long.parseLong(m2.group(1));
-            }
-            // 兜底：从路径段中找较长数字片段
-            java.util.regex.Matcher m3 = java.util.regex.Pattern.compile("(\\d{5,})").matcher(href);
-            if (m3.find()) {
-                return Long.parseLong(m3.group(1));
             }
         } catch (Exception ignored) {}
         return null;

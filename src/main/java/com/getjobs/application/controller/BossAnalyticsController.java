@@ -5,6 +5,7 @@ import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.service.DeliveryStatus;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.BossService;
 import com.getjobs.application.service.BossStatsService;
 import org.springframework.web.bind.annotation.*;
@@ -23,10 +24,14 @@ public class BossAnalyticsController {
 
     private final BossService bossService;
     private final BossStatsService bossStatsService;
+    private final DeliveryAttemptService deliveryAttemptService;
 
-    public BossAnalyticsController(BossService bossService, BossStatsService bossStatsService) {
+    public BossAnalyticsController(BossService bossService,
+                                   BossStatsService bossStatsService,
+                                   DeliveryAttemptService deliveryAttemptService) {
         this.bossService = bossService;
         this.bossStatsService = bossStatsService;
+        this.deliveryAttemptService = deliveryAttemptService;
     }
 
     /**
@@ -128,10 +133,16 @@ public class BossAnalyticsController {
         BossJobDataEntity job = bossService.getBossJobById(id);
         Map<String, Object> error = validateDeliverable(job);
         if (error != null) return error;
+        DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestBoss(
+                job.getId(), job.getProfileId(), firstNonBlank(job.getEncryptId(), String.valueOf(job.getId())), false);
+        if (!attempt.accepted()) {
+            return Map.of("success", false, "message", attempt.message(), "status", Objects.toString(job.getDeliveryStatus(), ""));
+        }
         return Map.of(
                 "success", true,
-                "message", "请在 Chrome 中确认投递该岗位",
-                "task", toDeliveryTask(job)
+                "resumed", !attempt.created(),
+                "message", attempt.created() ? "投递请求已创建，请在 Chrome 中等待平台确认" : "已恢复原投递请求，请勿重复创建",
+                "task", toDeliveryTask(job, attempt.requestKey())
         );
     }
 
@@ -170,7 +181,7 @@ public class BossAnalyticsController {
             }
         } else if (aiRecommendedOnly) {
             BossService.PagedResult page = bossService.listBossJobs(
-                    List.of(DeliveryStatus.WAITING_CONFIRM),
+                    List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
                     null,
                     null,
                     null,
@@ -190,7 +201,7 @@ public class BossAnalyticsController {
             }
         } else {
             BossService.PagedResult page = bossService.listBossJobs(
-                    List.of(DeliveryStatus.WAITING_CONFIRM),
+                    List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
                     request == null ? null : request.getLocation(),
                     request == null ? null : request.getExperience(),
                     request == null ? null : request.getDegree(),
@@ -206,14 +217,27 @@ public class BossAnalyticsController {
             if (page != null && page.items != null) candidates.addAll(page.items);
         }
 
-        List<Map<String, Object>> tasks = candidates.stream()
+        List<BossJobDataEntity> deliverableJobs = candidates.stream()
                 .filter(job -> manualOverrideAiNotMatch
                         ? DeliveryStatus.AI_NOT_MATCH.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
-                        : DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()))
+                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
+                        : DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
+                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim()))
                 .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
                 .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
-                .map(this::toDeliveryTask)
                 .collect(Collectors.toList());
+        List<Map<String, Object>> tasks = new ArrayList<>();
+        for (BossJobDataEntity job : deliverableJobs) {
+            DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestBoss(
+                    job.getId(),
+                    job.getProfileId(),
+                    firstNonBlank(job.getEncryptId(), String.valueOf(job.getId())),
+                    manualOverrideAiNotMatch
+            );
+            if (attempt.accepted()) {
+                tasks.add(toDeliveryTask(job, attempt.requestKey()));
+            }
+        }
         if (manualOverrideAiNotMatch && tasks.isEmpty()) {
             return Map.of(
                     "success", false,
@@ -239,19 +263,87 @@ public class BossAnalyticsController {
     public Map<String, Object> updateDeliveryResult(@PathVariable("id") Long id, @RequestBody DeliveryResultRequest request) {
         BossJobDataEntity job = bossService.getBossJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
-        String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? DeliveryStatus.DELIVERED : DeliveryStatus.DELIVERY_FAILED;
-        String message = request == null ? null : request.getMessage();
-        String failureReason = request == null ? null : request.getFailureReason();
-        BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, status, request == null ? null : request.getFailureType(), firstNonBlank(failureReason, message));
+        if (request == null) return Map.of("success", false, "message", "投递结果不能为空");
+        DeliveryAttemptService.State outcome = DeliveryAttemptService.State.parse(request.getOutcome());
+        if (outcome == null && request.getSuccess() != null) {
+            outcome = Boolean.TRUE.equals(request.getSuccess())
+                    ? DeliveryAttemptService.State.CONFIRMED
+                    : DeliveryAttemptService.State.FAILED;
+        }
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolve(
+                "boss",
+                job.getProfileId(),
+                job.getId(),
+                request.getRequestKey(),
+                outcome,
+                request.getEvidence(),
+                request.getMessage(),
+                request.getFailureType(),
+                firstNonBlank(request.getFailureReason(), request.getMessage())
+        );
+        BossJobDataEntity updated = bossService.getBossJobById(id);
+        return Map.of(
+                "success", result.accepted(),
+                "accepted", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name(),
+                "status", updated == null ? "" : Objects.toString(updated.getDeliveryStatus(), "")
+        );
+    }
+
+    @PostMapping("/jobs/{id}/delivery-reconcile")
+    public Map<String, Object> reconcileDeliveryResult(@PathVariable("id") Long id,
+                                                       @RequestBody DeliveryResultRequest request) {
+        BossJobDataEntity job = bossService.getBossJobById(id);
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatest(
+                "boss",
+                job.getProfileId(),
+                job.getId(),
+                firstNonBlank(job.getEncryptId(), String.valueOf(job.getId())),
+                target,
+                request == null ? null : request.getMessage()
+        );
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/jobs/{id}/delivery-retry")
+    public Map<String, Object> retryDelivery(@PathVariable("id") Long id) {
+        BossJobDataEntity job = bossService.getBossJobById(id);
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.retryBoss(
+                job.getId(),
+                job.getProfileId(),
+                firstNonBlank(job.getEncryptId(), String.valueOf(job.getId()))
+        );
+        if (!attempt.accepted()) {
+            return Map.of("success", false, "message", attempt.message());
+        }
         return Map.of(
                 "success", true,
-                "message", message == null ? "投递状态已更新" : message,
-                "status", updated.getDeliveryStatus()
+                "resumed", !attempt.created(),
+                "message", attempt.created()
+                        ? "已创建新的显式重试任务，请再次核对平台结果"
+                        : "已恢复原重试任务，未创建重复 attempt",
+                "task", toDeliveryTask(job, attempt.requestKey())
         );
     }
 
     @PostMapping("/jobs/{id}/skip")
     public Map<String, Object> skipPendingJob(@PathVariable("id") Long id) {
+        BossJobDataEntity current = bossService.getBossJobById(id);
+        if (current != null && DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())) {
+            return Map.of("success", false, "message", "投递已进入请求或结果状态，不能再跳过", "status", current.getDeliveryStatus());
+        }
         BossJobDataEntity updated = bossService.updateDeliveryStatusById(id, DeliveryStatus.SKIPPED);
         if (updated == null) {
             return Map.of("success", false, "message", "岗位不存在");
@@ -263,7 +355,8 @@ public class BossAnalyticsController {
         if (job == null) {
             return Map.of("success", false, "message", "岗位不存在");
         }
-        if (!DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())) {
+        if (!DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
+                && !DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim())) {
             return Map.of("success", false, "message", "只有待确认岗位可以确认投递", "status", job.getDeliveryStatus() == null ? "" : job.getDeliveryStatus());
         }
         if (job.getJobUrl() == null || job.getJobUrl().isBlank()) {
@@ -272,7 +365,7 @@ public class BossAnalyticsController {
         return null;
     }
 
-    private Map<String, Object> toDeliveryTask(BossJobDataEntity job) {
+    private Map<String, Object> toDeliveryTask(BossJobDataEntity job, String requestKey) {
         Map<String, Object> task = new HashMap<>();
         task.put("id", job.getId());
         task.put("platform", "boss");
@@ -281,6 +374,7 @@ public class BossAnalyticsController {
         task.put("jobName", Objects.toString(job.getJobName(), ""));
         task.put("salary", Objects.toString(job.getSalary(), ""));
         task.put("greeting", bossSayHi());
+        task.put("requestKey", requestKey);
         return task;
     }
 
