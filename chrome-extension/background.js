@@ -448,6 +448,17 @@ async function requestLocalApi(path, options = {}) {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
         const data = await parseLocalApiResponse(response);
         if (response.ok) {
+          if (data && data.success === false) {
+            return {
+              success: false,
+              httpStatus: response.status,
+              data,
+              message: data.message || "本地接口拒绝了本次请求",
+              errorType: "BUSINESS_REJECTED",
+              attempt,
+              baseUrl
+            };
+          }
           return { success: true, httpStatus: response.status, data, attempt, baseUrl };
         }
         lastError = new Error(data?.message || `本地接口返回 HTTP ${response.status}`);
@@ -721,9 +732,15 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   if (message.type === "BOSS_DELIVER_ONE") {
     const result = await deliverBossTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(message.task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(message.task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyDeliveryFailure(errorMessage).failureType
       };
@@ -738,35 +755,52 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
 
   let success = 0;
   let failed = 0;
+  let unknown = 0;
+  const results = [];
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyDeliveryFailure(errorMessage).failureType
       };
     });
-    if (result?.success) success += 1;
+    const outcome = deliveryOutcomeOf(result);
+    if (outcome === "CONFIRMED") success += 1;
+    else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
   }
 
   return {
-    success: true,
-    message: `Boss批量投递完成：成功${success}，失败${failed}`,
+    success: failed === 0 && unknown === 0,
+    partial: success > 0 && (failed > 0 || unknown > 0),
+    message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
     successCount: success,
-    failedCount: failed
+    unknownCount: unknown,
+    failedCount: failed,
+    results
   };
 }
 
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
+    let persisted = false;
     if (task?.id) {
-      await postBossDeliveryResult(task, false, classifyDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
+      await postBossDeliveryResult(task, false, classifyDeliveryFailure("投递任务缺少岗位链接或ID"), "PRE_ACTION_ERROR")
+        .then(() => { persisted = true; })
+        .catch(() => {});
     }
-    return { success: false, message: "投递任务缺少岗位链接或ID" };
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: "投递任务缺少岗位链接或ID" };
   }
 
   postPlatformProgress(pageTabId, {
@@ -792,9 +826,15 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
     const failure = classifyDeliveryFailure(errorMessage);
-    await postBossDeliveryResult(task, false, failure).catch(() => {});
+    let persisted = false;
+    await postBossDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+      .then(() => { persisted = true; })
+      .catch(() => {});
     return {
       success: false,
+      outcome: "UNKNOWN",
+      evidence: "NO_CONFIRMATION",
+      persisted,
       message: failure.failureReason,
       failureType: failure.failureType
     };
@@ -814,9 +854,12 @@ async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, to
         deliveryIndex: index,
         deliveryTotal: total
       });
-      if (response) return response;
+      if (response) {
+        const recorded = await recordBossDeliveryResponse(task, response);
+        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
+      }
       const fallback = await inferBossDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success) return fallback;
+      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
     } catch (error) {
       lastError = error;
       await sleep(500);
@@ -829,9 +872,15 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
   if (message.type === "ZHILIAN_DELIVER_ONE") {
     const result = await deliverZhilianTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postZhilianDeliveryResult(message.task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postZhilianDeliveryResult(message.task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
       };
@@ -846,42 +895,62 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
 
   let success = 0;
   let failed = 0;
+  let unknown = 0;
+  const results = [];
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverZhilianTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postZhilianDeliveryResult(task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
       };
     });
-    if (result?.success) success += 1;
+    const outcome = deliveryOutcomeOf(result);
+    if (outcome === "CONFIRMED") success += 1;
+    else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
   }
 
   return {
-    success: true,
-    message: `智联批量投递完成：成功${success}，失败${failed}`,
+    success: failed === 0 && unknown === 0,
+    partial: success > 0 && (failed > 0 || unknown > 0),
+    message: `智联批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
     successCount: success,
-    failedCount: failed
+    unknownCount: unknown,
+    failedCount: failed,
+    results
   };
 }
 
 async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
+    let persisted = false;
     if (task?.id) {
-      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
+      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure("投递任务缺少岗位链接或ID"), "PRE_ACTION_ERROR")
+        .then(() => { persisted = true; })
+        .catch(() => {});
     }
-    return { success: false, message: "投递任务缺少岗位链接或ID" };
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: "投递任务缺少岗位链接或ID" };
   }
 
   const targetUrl = normalizeZhilianUrl(task.url);
   if (!targetUrl || !isZhilianJobDetailUrl(targetUrl)) {
     const failure = classifyZhilianDeliveryFailure(`拒绝打开非智联岗位详情页：${task.url || ""}`);
-    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
-    return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    let persisted = false;
+    await postZhilianDeliveryResult(task, false, failure, "PRE_ACTION_ERROR")
+      .then(() => { persisted = true; })
+      .catch(() => {});
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: failure.failureReason, failureType: failure.failureType };
   }
 
   postPlatformProgress(pageTabId, {
@@ -906,9 +975,15 @@ async function deliverZhilianTask(tab, config, task, message, pageTabId, index, 
   } catch (error) {
     const errorMessage = buildContentScriptError("zhilian", error, "投递");
     const failure = classifyZhilianDeliveryFailure(errorMessage);
-    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
+    let persisted = false;
+    await postZhilianDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+      .then(() => { persisted = true; })
+      .catch(() => {});
     return {
       success: false,
+      outcome: "UNKNOWN",
+      evidence: "NO_CONFIRMATION",
+      persisted,
       message: failure.failureReason,
       failureType: failure.failureType
     };
@@ -928,9 +1003,12 @@ async function sendZhilianDeliverCurrent(tabId, message, task, pageTabId, index,
         deliveryIndex: index,
         deliveryTotal: total
       });
-      if (response) return response;
+      if (response) {
+        const recorded = await recordZhilianDeliveryResponse(task, response);
+        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
+      }
       const fallback = await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success) return fallback;
+      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
     } catch (error) {
       lastError = error;
       await sleep(500);
@@ -944,8 +1022,15 @@ async function inferZhilianDeliveryAfterEmptyResponse(tabId, task) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.url || tab.pendingUrl || "";
     if (isZhilianUrl(currentUrl)) {
+      let persisted = false;
+      await postZhilianDeliveryResult(task, null, "智联投递未返回明确平台结果", "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: "智联投递未返回结果，请在详情页确认是否出现投递成功状态。"
       };
     }
@@ -960,10 +1045,16 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.url || tab.pendingUrl || "";
     if (isBossChatUrl(currentUrl)) {
-      await postBossDeliveryResult(task, true, "Boss已进入沟通页").catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(task, null, "Boss已进入沟通页，但未收到明确平台成功状态", "CHAT_SURFACE_ONLY")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
-        success: true,
-        message: "Boss已进入沟通页，按成功处理。"
+        success: false,
+        outcome: "UNKNOWN",
+        evidence: "CHAT_SURFACE_ONLY",
+        persisted,
+        message: "Boss已进入沟通页，但未收到明确成功状态，已标记待确认。"
       };
     }
     return { success: false, message: "Boss投递未返回结果，未确认进入沟通页。" };
@@ -972,34 +1063,80 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
   }
 }
 
-async function postBossDeliveryResult(task, success, message) {
+async function postBossDeliveryResult(task, success, message, evidence) {
   if (!task?.id) return;
-  const failure = success ? null : normalizeFailurePayload(message);
-  await fetch(`http://localhost:6866/api/boss/jobs/${task.id}/delivery-result`, {
+  const failure = success === false ? normalizeFailurePayload(message) : null;
+  const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
+  const result = await requestLocalApi(`/api/boss/jobs/${task.id}/delivery-result`, {
+    operation: "delivery-result",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: {
+      requestKey: task.requestKey,
+      outcome,
+      evidence: evidence || (outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
       success,
-      message: success ? message : failure.failureReason,
+      message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
       failureReason: failure?.failureReason
-    })
+    },
+    platform: "boss"
   });
+  if (!result.success) throw new Error(result.message || "Boss投递结果写入失败");
+  return result;
 }
 
-async function postZhilianDeliveryResult(task, success, message) {
+async function recordBossDeliveryResponse(task, response) {
+  const outcome = deliveryOutcomeOf(response);
+  const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
+  const evidence = response?.evidence
+    || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  await postBossDeliveryResult(task, success, response?.message || "Boss投递结果回写", evidence);
+  return { outcome, evidence, persisted: true };
+}
+
+async function postZhilianDeliveryResult(task, success, message, evidence) {
   if (!task?.id) return;
-  const failure = success ? null : normalizeZhilianFailurePayload(message);
-  await fetch(`http://localhost:6866/api/zhilian/jobs/${task.id}/delivery-result`, {
+  const failure = success === false ? normalizeZhilianFailurePayload(message) : null;
+  const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
+  const result = await requestLocalApi(`/api/zhilian/jobs/${task.id}/delivery-result`, {
+    operation: "delivery-result",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: {
+      requestKey: task.requestKey,
+      outcome,
+      evidence: evidence || (outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
       success,
-      message: success ? message : failure.failureReason,
+      message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
       failureReason: failure?.failureReason
-    })
+    },
+    platform: "zhilian"
   });
+  if (!result.success) throw new Error(result.message || "智联投递结果写入失败");
+  return result;
+}
+
+async function recordZhilianDeliveryResponse(task, response) {
+  const outcome = deliveryOutcomeOf(response);
+  const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
+  const evidence = response?.evidence
+    || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  await postZhilianDeliveryResult(task, success, response?.message || "智联投递结果回写", evidence);
+  return { outcome, evidence, persisted: true };
+}
+
+function deliveryOutcomeOf(result) {
+  const outcome = String(result?.outcome || "").toUpperCase();
+  if (outcome === "CONFIRMED") {
+    return isExplicitConfirmationEvidence(result?.evidence) ? "CONFIRMED" : "UNKNOWN";
+  }
+  if (outcome === "FAILED" || outcome === "UNKNOWN") return outcome;
+  return "UNKNOWN";
+}
+
+function isExplicitConfirmationEvidence(evidence) {
+  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION"]
+    .includes(String(evidence || "").toUpperCase());
 }
 
 function classifyDeliveryFailure(message) {

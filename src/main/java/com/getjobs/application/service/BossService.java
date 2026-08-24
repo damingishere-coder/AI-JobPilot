@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
@@ -729,6 +730,10 @@ public class BossService {
      */
     public void updateDeliveryStatus(String encryptId, String encryptUserId, String status) {
         if (encryptId == null || status == null) return;
+        if (DeliveryStatus.isDelivered(status) || DeliveryStatus.isDeliveryFailed(status)) {
+            log.warn("旧 Boss Worker 无 requestKey，拒绝写入投递终态: encryptId={}, status={}", encryptId, status);
+            return;
+        }
         Long profileId = profileService.getCurrentProfileIdOrNull();
         if (profileId == null) return;
         BossJobDataEntity update = new BossJobDataEntity();
@@ -744,6 +749,12 @@ public class BossService {
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("encrypt_id", encryptId);
+        uw.notIn("delivery_status", List.of(
+                DeliveryStatus.DELIVERY_REQUESTED,
+                DeliveryStatus.DELIVERY_UNKNOWN,
+                DeliveryStatus.DELIVERED,
+                DeliveryStatus.DELIVERY_FAILED
+        ));
         if (encryptUserId != null) {
             uw.eq("encrypt_user_id", encryptUserId);
         }
@@ -914,6 +925,10 @@ public class BossService {
         }
         BossJobDataEntity current = getBossJobById(id);
         if (current == null) return null;
+        if (DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())
+                && !Objects.equals(current.getDeliveryStatus(), status)) {
+            return current;
+        }
         BossJobDataEntity update = new BossJobDataEntity();
         update.setId(id);
         update.setDeliveryStatus(status);
@@ -1677,7 +1692,6 @@ public class BossService {
                 Long profileId = profileService.getCurrentProfileId();
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM boss_data WHERE profile_id=" + profileId);
-                try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='boss_data'"); } catch (Exception ignore) {}
             }
 
             conn.commit();

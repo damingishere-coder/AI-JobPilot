@@ -361,7 +361,7 @@ public class ZhilianService {
     }
 
     public void markDeliveredByJobId(String jobId) {
-        updateDeliveryStatusByJobId(jobId, DeliveryStatus.DELIVERED);
+        log.warn("旧智联 Worker 无 requestKey，拒绝按 jobId 写入已投递状态: jobId={}", jobId);
     }
 
     public void markWaitingConfirmByJobId(String jobId) {
@@ -396,6 +396,12 @@ public class ZhilianService {
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("job_id", jobId);
+        uw.notIn("delivery_status", List.of(
+                DeliveryStatus.DELIVERY_REQUESTED,
+                DeliveryStatus.DELIVERY_UNKNOWN,
+                DeliveryStatus.DELIVERED,
+                DeliveryStatus.DELIVERY_FAILED
+        ));
         zhilianJobDataMapper.update(upd, uw);
     }
 
@@ -405,7 +411,7 @@ public class ZhilianService {
     }
 
     public void markDeliveredByTitleAndCompany(String jobTitle, String companyName) {
-        updateDeliveryStatusByTitleAndCompany(jobTitle, companyName, DeliveryStatus.DELIVERED);
+        log.warn("旧智联 Worker 无 requestKey，拒绝按岗位名称写入已投递状态: company={}, title={}", companyName, jobTitle);
     }
 
     public void markWaitingConfirmByTitleAndCompany(String jobTitle, String companyName) {
@@ -429,6 +435,12 @@ public class ZhilianService {
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ZhilianJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("job_title", jobTitle).eq("company_name", companyName);
+        uw.notIn("delivery_status", List.of(
+                DeliveryStatus.DELIVERY_REQUESTED,
+                DeliveryStatus.DELIVERY_UNKNOWN,
+                DeliveryStatus.DELIVERED,
+                DeliveryStatus.DELIVERY_FAILED
+        ));
         zhilianJobDataMapper.update(upd, uw);
     }
 
@@ -442,6 +454,10 @@ public class ZhilianService {
         }
         ZhilianJobDataEntity current = getZhilianJobById(id);
         if (current == null) return null;
+        if (DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())
+                && !Objects.equals(current.getDeliveryStatus(), status)) {
+            return current;
+        }
         ZhilianJobDataEntity update = new ZhilianJobDataEntity();
         update.setId(id);
         update.setDeliveryStatus(status);
@@ -810,7 +826,6 @@ public class ZhilianService {
                 Long profileId = profileService.getCurrentProfileId();
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data WHERE profile_id=" + profileId);
-                try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='zhilian_data'"); } catch (Exception ignore) {}
             }
 
             conn.commit();

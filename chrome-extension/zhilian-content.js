@@ -77,6 +77,7 @@
   ];
   let stopRequested = false;
   let activeScanPromise = null;
+  const deliveryExecutions = new Map();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
@@ -111,7 +112,7 @@
       return true;
     }
     if (messageType === "ZHILIAN_DELIVER_ONE") {
-      deliverOne(message.task, message).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
+      executeDeliveryOnce(message.task, () => deliverOne(message.task, message)).then(sendResponse).catch((error) => sendResponse({ success: false, message: error.message || String(error) }));
       return true;
     }
     if (messageType === "ZHILIAN_DELIVER_BATCH") {
@@ -1385,8 +1386,8 @@
     await waitForPage();
     if (!isCurrentZhilianJobDetailPage(task.url) && !isSameUrl(window.location.href, task.url)) {
       const failure = classifyDeliveryFailure("当前智联页面不是目标岗位详情页，已取消投递。");
-      await postDeliveryResult(task, false, failure);
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
     return deliverOnCurrentPage(task, message);
   }
@@ -1403,26 +1404,26 @@
       }
     };
 
-    deliverOnCurrentPage(message.task, message, respondOnce).then((result) => {
-      respondOnce(result);
+    executeDeliveryOnce(message.task, () => deliverOnCurrentPage(message.task, message)).then((result) => {
+      respondOnce({ ...result, persisted: true });
     }).catch((error) => {
       postProgress(message, "error", error.message || String(error), {
         operation: "deliver",
         stage: "error"
       });
-      respondOnce({ success: false, message: error.message || String(error) });
+      respondOnce({ success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted: false, message: error.message || String(error) });
     });
   }
 
   async function deliverOnCurrentPage(task, message = {}, earlyRespond) {
     if (!task?.url || !task?.id) {
-      return { success: false, message: "投递任务缺少岗位链接或ID" };
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: "投递任务缺少岗位链接或ID" };
     }
     await waitForPage();
     if (!isCurrentZhilianJobDetailPage(task.url) && !isSameUrl(window.location.href, task.url)) {
       const failure = classifyDeliveryFailure("当前智联页面不是目标岗位详情页，已取消投递。");
-      await postDeliveryResult(task, false, failure);
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
     await sleep(1500);
@@ -1436,25 +1437,25 @@
 
     if (detectZhilianDeliveryStatus(document)) {
       const successMessage = "智联岗位已是已投递状态";
-      await postDeliveryResult(task, true, successMessage);
-      earlyRespond?.({ success: true, message: successMessage, early: true });
+      await postDeliveryResult(task, true, successMessage, "PLATFORM_STATUS_TEXT");
+      earlyRespond?.({ success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage, early: true });
       postProgress(message, "success", successMessage, {
         operation: "deliver",
         stage: "complete",
         saved: 1
       });
-      return { success: true, message: successMessage };
+      return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage };
     }
 
     const pageFailure = detectZhilianDeliveryFailure("");
     if (pageFailure) {
       const failure = classifyDeliveryFailure(pageFailure);
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
       postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
     const favoriteButton = findZhilianActionButton(["收藏"], ["已收藏", "取消收藏"]);
@@ -1473,12 +1474,12 @@
     }
     if (!applyButton) {
       const failure = classifyDeliveryFailure("未找到智联投递按钮");
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
       postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
     postProgress(message, "info", "智联 Chrome已找到投递入口，准备点击立即投递。", {
@@ -1490,25 +1491,25 @@
 
     if (detectZhilianDeliveryStatus(document)) {
       const successMessage = favoriteButton ? "智联岗位已收藏并投递" : "智联岗位已投递";
-      await postDeliveryResult(task, true, successMessage);
-      earlyRespond?.({ success: true, message: successMessage, early: true });
+      await postDeliveryResult(task, true, successMessage, "PLATFORM_STATUS_TEXT");
+      earlyRespond?.({ success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage, early: true });
       postProgress(message, "success", `智联 Chrome投递完成：${successMessage}。`, {
         operation: "deliver",
         stage: "complete",
         saved: 1
       });
-      return { success: true, message: successMessage };
+      return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage };
     }
 
     const clickedFailure = detectZhilianDeliveryFailure("");
     if (clickedFailure) {
       const failure = classifyDeliveryFailure(clickedFailure);
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, "PLATFORM_ERROR");
       postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
     const confirm = await waitForZhilianActionButton(["确认投递", "确定", "继续投递"], ["取消"], 2500);
@@ -1517,50 +1518,86 @@
       await sleep(1200);
     }
 
+    if (detectZhilianDeliveryStatus(document)) {
+      const successMessage = favoriteButton ? "智联岗位已收藏并投递" : "智联岗位已投递";
+      await postDeliveryResult(task, true, successMessage, "PLATFORM_STATUS_TEXT");
+      earlyRespond?.({ success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage, early: true });
+      postProgress(message, "success", `智联 Chrome投递完成：${successMessage}。`, {
+        operation: "deliver",
+        stage: "complete",
+        saved: 1
+      });
+      return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage };
+    }
+
     const finalFailure = detectZhilianDeliveryFailure("");
     if (finalFailure && !detectZhilianDeliveryStatus(document)) {
       const failure = classifyDeliveryFailure(finalFailure);
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, "PLATFORM_ERROR");
       postProgress(message, "warning", `智联 Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
-    const successMessage = favoriteButton ? "智联岗位已收藏并在Chrome中投递" : "智联岗位已在Chrome中投递";
-    await postDeliveryResult(task, true, successMessage);
-    earlyRespond?.({ success: true, message: successMessage, early: true });
-    postProgress(message, "success", `智联 Chrome投递完成：${successMessage}。`, {
+    const unknownMessage = favoriteButton
+      ? "智联已完成收藏和投递点击，但未检测到明确平台成功状态"
+      : "智联已完成投递点击，但未检测到明确平台成功状态";
+    await postDeliveryResult(task, null, unknownMessage, "NO_CONFIRMATION");
+    earlyRespond?.({ success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: unknownMessage, early: true });
+    postProgress(message, "warning", `智联 Chrome投递结果待确认：${unknownMessage}。`, {
       operation: "deliver",
       stage: "complete",
-      saved: 1
+      saved: 0
     });
-    return { success: true, message: successMessage };
+    return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: unknownMessage };
   }
 
   async function deliverBatch(tasks, message = {}) {
     let success = 0;
     let failed = 0;
+    let unknown = 0;
+    const results = [];
     for (const task of tasks) {
-      const result = await deliverOne(task, message).catch(async (error) => {
+      const result = await executeDeliveryOnce(task, () => deliverOne(task, message))
+        .then((value) => ({ ...value, persisted: true }))
+        .catch(async (error) => {
         const failure = classifyDeliveryFailure(error.message || String(error));
-        await postDeliveryResult(task, false, failure).catch(() => {});
-        return { success: false, message: failure.failureReason, failureType: failure.failureType };
+        let persisted = false;
+        await postDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+          .then(() => { persisted = true; })
+          .catch(() => {});
+        return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted, message: failure.failureReason, failureType: failure.failureType };
       });
-      if (result.success) success += 1;
+      const outcome = result?.outcome || (result?.success ? "CONFIRMED" : "FAILED");
+      if (outcome === "CONFIRMED") success += 1;
+      else if (outcome === "UNKNOWN") unknown += 1;
       else failed += 1;
+      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
     }
-    return { success: true, message: `智联批量投递完成：成功${success}，失败${failed}`, successCount: success, failedCount: failed };
+    return {
+      success: failed === 0 && unknown === 0,
+      partial: success > 0 && (failed > 0 || unknown > 0),
+      message: `智联批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+      successCount: success,
+      unknownCount: unknown,
+      failedCount: failed,
+      results
+    };
   }
 
-  async function postDeliveryResult(task, success, message) {
-    const failure = success ? null : normalizeFailurePayload(message);
+  async function postDeliveryResult(task, success, message, evidence) {
+    const failure = success === false ? normalizeFailurePayload(message) : null;
+    const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await requestZhilianLocalApi("delivery-result", {
       params: { id: task.id },
       body: {
+        requestKey: task.requestKey,
+        outcome,
+        evidence: evidence || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
         success,
-        message: success ? message : failure.failureReason,
+        message: success === true ? message : failure?.failureReason || String(message || ""),
         failureType: failure?.failureType,
         failureReason: failure?.failureReason
       },
@@ -1607,6 +1644,21 @@
         ...meta
       }
     });
+  }
+
+  function executeDeliveryOnce(task, action) {
+    const requestKey = compact(task?.requestKey || "");
+    if (!requestKey) {
+      return Promise.resolve({ success: false, outcome: "FAILED", message: "投递任务缺少 requestKey，已拒绝执行" });
+    }
+    const existing = deliveryExecutions.get(requestKey);
+    if (existing) return existing;
+    if (deliveryExecutions.size >= 200) {
+      deliveryExecutions.delete(deliveryExecutions.keys().next().value);
+    }
+    const execution = Promise.resolve().then(action);
+    deliveryExecutions.set(requestKey, execution);
+    return execution;
   }
 
   function findClickable(labels) {
@@ -1688,13 +1740,19 @@
   }
 
   function detectZhilianDeliveryStatus(root = document) {
-    const text = compact([
-      ...Array.from(root.querySelectorAll?.("button, a, [role='button'], div, span") || [])
-        .filter((el) => el.offsetParent !== null)
-        .map((el) => [el.innerText, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("title")].filter(Boolean).join(" ")),
-      root === document ? "" : root.innerText
-    ].filter(Boolean).join(" "));
-    if (/(已投递|已申请|投递成功|申请成功|继续沟通)/.test(text)) return "已投递";
+    const successLabels = ["已投递", "已申请", "投递成功", "申请成功", "继续沟通"];
+    const elements = Array.from(root.querySelectorAll?.("button, a, [role='button']") || [])
+      .filter((el) => el.offsetParent !== null);
+    const matched = elements.some((el) => {
+      const text = compact([
+        el.innerText,
+        el.textContent,
+        el.getAttribute?.("aria-label"),
+        el.getAttribute?.("title")
+      ].filter(Boolean).join(" "));
+      return successLabels.some((label) => text === label || (text.includes(label) && text.length <= label.length + 4));
+    });
+    if (matched) return "已投递";
     return "";
   }
 
@@ -1702,7 +1760,7 @@
     const text = compact(document.body?.innerText || "");
     if (isSecurityPrompt(text)) return "智联页面出现平台验证，请处理后重试";
     if (isStrongLoginPrompt(text, window.location.href)) return "智联登录状态失效，请在Chrome中重新登录后重试";
-    const reason = firstMatch(text, /(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|已投递|已申请|投递成功|申请成功|今日投递.*?已用完|投递上限|账号异常|操作过于频繁|请先完善简历|请上传简历|请先完成实名认证)/);
+    const reason = firstMatch(text, /(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|今日投递.*?已用完|投递上限|账号异常|操作过于频繁|请先完善简历|请上传简历|请先完成实名认证)/);
     return reason || fallback || "";
   }
 

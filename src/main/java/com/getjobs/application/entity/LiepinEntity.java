@@ -39,6 +39,8 @@ public class LiepinEntity {
     // ========== 投递状态 ==========
     // 是否已投递：0 未投递（默认），1 已投递
     private Integer delivered;
+    // 新投递状态真相的兼容读模型；只有 CONFIRMED 才会同时写 delivered=1
+    private String deliveryStatus;
 
     // ========== 系统字段 ==========
     private LocalDateTime createTime;

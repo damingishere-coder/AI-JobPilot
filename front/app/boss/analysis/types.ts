@@ -93,7 +93,7 @@ export type FilterState = {
   filterHeadhunter: boolean
 }
 
-export const DELIVERY_STATUS_OPTIONS = ["待确认", "LIST_COLLECTED", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
+export const DELIVERY_STATUS_OPTIONS = ["待确认", "投递确认中", "投递结果待确认", "LIST_COLLECTED", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
 export const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
 export const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
 

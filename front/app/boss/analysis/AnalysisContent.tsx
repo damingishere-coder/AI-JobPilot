@@ -102,6 +102,8 @@ export default function AnalysisContent({
     handleConfirmBatch,
     handleConfirmAiRecommendedBatch,
     handleConfirmManualBatch,
+    handleReconcileJob,
+    handleRetryJob,
     handleSkipJob,
     clearAnalysisData,
   } = useBossDeliveryActions({
@@ -287,6 +289,8 @@ export default function AnalysisContent({
             selectedManualJobIds={selectedManualJobIds}
             onOpenText={openTextDialog}
             onConfirmJob={handleConfirmJob}
+            onReconcileJob={handleReconcileJob}
+            onRetryJob={handleRetryJob}
             onSkipJob={handleSkipJob}
             onLoadList={loadList}
             onInputPageChange={setInputPage}

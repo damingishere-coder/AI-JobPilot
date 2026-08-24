@@ -478,7 +478,7 @@ public class JobAiAnalysisService {
             if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
                 update.setScanRunId(request.getScanRunId());
             }
-            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
+            if (!DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) {
                 update.setDeliveryStatus(nextStatus);
             }
             update.setUpdatedAt(LocalDateTime.now());
@@ -500,7 +500,7 @@ public class JobAiAnalysisService {
             if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
                 update.setJobDescription(request.getJobDescription());
             }
-            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
+            if (!DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) {
                 update.setDeliveryStatus(nextStatus);
             }
             update.setUpdateTime(LocalDateTime.now());
@@ -512,14 +512,14 @@ public class JobAiAnalysisService {
         if (request == null) return;
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
             BossJobDataEntity existing = findBossJobForAnalysis(request);
-            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return;
             BossJobDataEntity update = new BossJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdatedAt(LocalDateTime.now());
             bossJobDataMapper.update(update, bossUpdateWrapper(request));
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
-            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return;
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdateTime(LocalDateTime.now());

@@ -17,6 +17,8 @@ type StatsResponse = {
     total: number
     delivered: number
     pending: number
+    requested: number
+    unknown: number
     filtered: number
     failed: number
     avgMonthlyK?: number | null
@@ -109,7 +111,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
   const [reloading,setReloading]=useState(false)
   const [exporting,setExporting]=useState(false)
 
-  const statusOptions = ["未投递","已投递"]
+  const statusOptions = ["未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
 
   useEffect(()=>{ loadStats() },[])
   useEffect(()=>{ setInputPage(page) },[page])
@@ -172,7 +174,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     }catch(e){ console.error("export CSV failed",e); alert("导出失败，请稍后重试") } finally { setExporting(false) }
   }
 
-  const kpiCards = useMemo(()=>{ const k=stats?.kpi; return [ { title:"总岗位数", value:k?.total??0 }, { title:"已投递", value:k?.delivered??0 }, { title:"未投递", value:k?.pending??0 }, { title:"平均月薪(K)", value:k?.avgMonthlyK??0 } ] },[stats])
+  const kpiCards = useMemo(()=>{ const k=stats?.kpi; return [ { title:"总岗位数", value:k?.total??0 }, { title:"已投递", value:k?.delivered??0 }, { title:"投递确认中", value:k?.requested??0 }, { title:"结果待确认", value:k?.unknown??0 }, { title:"未投递", value:k?.pending??0 }, { title:"平均月薪(K)", value:k?.avgMonthlyK??0 } ] },[stats])
 
   return (
     <div className="space-y-8">

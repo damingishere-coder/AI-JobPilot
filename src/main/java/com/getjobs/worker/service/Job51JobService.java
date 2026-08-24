@@ -93,8 +93,8 @@ public class Job51JobService implements JobPlatformService {
 
             int deliveredCount = job51.execute();
 
-            progressCallback.accept(JobProgressMessage.success(PLATFORM,
-                String.format("投递任务完成，共投递%d个职位", deliveredCount)));
+            progressCallback.accept(JobProgressMessage.warning(PLATFORM,
+                String.format("51job已发起%d个候选动作；平台未提供逐条确认，结果已进入待对账状态", deliveredCount)));
         } catch (Exception e) {
             log.error("51job投递任务执行失败", e);
             progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));

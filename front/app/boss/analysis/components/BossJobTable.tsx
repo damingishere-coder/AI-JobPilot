@@ -23,6 +23,8 @@ export function BossJobTable({
   selectedManualJobIds,
   onOpenText,
   onConfirmJob,
+  onReconcileJob,
+  onRetryJob,
   onSkipJob,
   onLoadList,
   onInputPageChange,
@@ -44,6 +46,8 @@ export function BossJobTable({
   selectedManualJobIds: ReadonlySet<number>
   onOpenText: (title: string, content?: string) => void
   onConfirmJob: (job: BossJob) => void
+  onReconcileJob: (job: BossJob) => void
+  onRetryJob: (job: BossJob) => void
   onSkipJob: (job: BossJob) => void
   onLoadList: (page: number, size: number) => void
   onInputPageChange: (value: number | string) => void
@@ -190,15 +194,30 @@ export function BossJobTable({
                     {(page - 1) * size + idx + 1}
                   </td>
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
-                    {job.deliveryStatus === "待确认" ? (
+                    {job.deliveryStatus === "待确认" || job.deliveryStatus === "投递确认中" ? (
                       <div className="flex flex-col gap-2">
                         <Button size="sm" disabled={actingJobId === job.id} onClick={() => onConfirmJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
-                          发送
+                          {job.deliveryStatus === "投递确认中" ? "恢复" : "发送"}
                         </Button>
-                        <Button size="sm" variant="outline" disabled={actingJobId === job.id} onClick={() => onSkipJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
-                          跳过
+                        {job.deliveryStatus === "待确认" ? (
+                          <Button size="sm" variant="outline" disabled={actingJobId === job.id} onClick={() => onSkipJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                            跳过
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : job.deliveryStatus === "投递结果待确认" ? (
+                      <div className="flex flex-col gap-2">
+                        <Button size="sm" disabled={actingJobId === job.id} onClick={() => onReconcileJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                          对账
+                        </Button>
+                        <Button size="sm" variant="outline" disabled={actingJobId === job.id} onClick={() => onRetryJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                          重试
                         </Button>
                       </div>
+                    ) : job.deliveryStatus === "投递失败" ? (
+                      <Button size="sm" variant="outline" disabled={actingJobId === job.id} onClick={() => onRetryJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
+                        重试
+                      </Button>
                     ) : (job.deliveryStatus || "").includes("已投递") ? (
                       <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
                         <BiCheckCircle className="h-3.5 w-3.5" />

@@ -51,12 +51,14 @@ public class LiepinService {
                 entity.setCreateTime(now);
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(0);
+                if (entity.getDeliveryStatus() == null) entity.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
                 liepinMapper.insert(entity);
             } else {
                 // 保留 create_time，更新其他字段与 update_time
                 entity.setCreateTime(existing.getCreateTime());
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(existing.getDelivered());
+                if (entity.getDeliveryStatus() == null) entity.setDeliveryStatus(existing.getDeliveryStatus());
                 liepinMapper.updateById(entity);
             }
         } catch (Exception e) {
@@ -78,6 +80,7 @@ public class LiepinService {
                 entity.setCreateTime(now);
                 entity.setUpdateTime(now);
                 if (entity.getDelivered() == null) entity.setDelivered(0);
+                if (entity.getDeliveryStatus() == null) entity.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
                 liepinMapper.insert(entity);
             } else {
                 // already exists, skip
@@ -90,21 +93,9 @@ public class LiepinService {
     /**
      * 标记岗位为已投递（delivered=1），如存在该记录
      */
+    @Deprecated(forRemoval = false)
     public void markDelivered(Long jobId) {
-        if (jobId == null) return;
-        try {
-            LiepinEntity existing = liepinMapper.selectById(jobId);
-            if (existing != null) {
-                LiepinEntity update = new LiepinEntity();
-                update.setJobId(jobId);
-                update.setDelivered(1);
-                update.setCreateTime(existing.getCreateTime());
-                update.setUpdateTime(LocalDateTime.now());
-                liepinMapper.updateById(update);
-            }
-        } catch (Exception e) {
-            log.warn("更新投递状态失败 job_id={}: {}", jobId, e.getMessage());
-        }
+        log.warn("已拒绝无 requestKey 的猎聘已投递写入 job_id={}，请使用 DeliveryAttemptService", jobId);
     }
 
     /**
@@ -358,6 +349,8 @@ public class LiepinService {
         public long total;
         public long delivered;
         public long pending;
+        public long requested;
+        public long unknown;
         public long filtered; // 猎聘暂无，置0
         public long failed;   // 猎聘暂无，置0
         public Double avgMonthlyK; // 平均中位数K
@@ -420,19 +413,14 @@ public class LiepinService {
         try {
             com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<LiepinEntity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
 
-            // 状态：已投递/未投递 -> delivered 1/0
+            // 投递状态以 V6 delivery_status 兼容读模型为准。
             if (statuses != null && !statuses.isEmpty()) {
-                Set<Integer> deliveredSet = new HashSet<>();
-                for (String s : statuses) {
-                    if (s != null) {
-                        String t = s.trim();
-                        if ("已投递".equals(t)) deliveredSet.add(1);
-                        if ("未投递".equals(t)) deliveredSet.add(0);
-                    }
-                }
-                if (!deliveredSet.isEmpty()) {
-                    wrapper.in("delivered", deliveredSet);
-                }
+                Set<String> normalizedStatuses = statuses.stream()
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .filter(value -> !value.isEmpty())
+                        .collect(Collectors.toSet());
+                if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
             }
             if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
             if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -472,15 +460,17 @@ public class LiepinService {
 
             // KPI
             resp.kpi.total = filtered.size();
-            resp.kpi.delivered = filtered.stream().filter(e -> Objects.equals(e.getDelivered(), 1)).count();
-            resp.kpi.pending = filtered.stream().filter(e -> e.getDelivered() == null || Objects.equals(e.getDelivered(), 0)).count();
+            resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.requested = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_REQUESTED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.unknown = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_UNKNOWN.equals(deliveryStatusOf(e))).count();
             resp.kpi.filtered = 0;
-            resp.kpi.failed = 0;
+            resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_FAILED.equals(deliveryStatusOf(e))).count();
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // Charts 聚合
             Map<String, Long> byStatus = filtered.stream()
-                    .collect(Collectors.groupingBy(e -> Objects.equals(e.getDelivered(), 1) ? "已投递" : "未投递", Collectors.counting()));
+                    .collect(Collectors.groupingBy(this::deliveryStatusOf, Collectors.counting()));
             byStatus.forEach((k, v) -> charts.byStatus.add(new NameValue(k, v)));
 
             Map<String, Long> byCity = filtered.stream()
@@ -581,15 +571,12 @@ public class LiepinService {
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<LiepinEntity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
 
         if (statuses != null && !statuses.isEmpty()) {
-            Set<Integer> deliveredSet = new HashSet<>();
-            for (String s : statuses) {
-                if (s != null) {
-                    String t = s.trim();
-                    if ("已投递".equals(t)) deliveredSet.add(1);
-                    if ("未投递".equals(t)) deliveredSet.add(0);
-                }
-            }
-            if (!deliveredSet.isEmpty()) wrapper.in("delivered", deliveredSet);
+            Set<String> normalizedStatuses = statuses.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .collect(Collectors.toSet());
+            if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
         }
         if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
         if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -629,5 +616,12 @@ public class LiepinService {
         pr.page = page;
         pr.size = size;
         return pr;
+    }
+
+    private String deliveryStatusOf(LiepinEntity entity) {
+        if (entity.getDeliveryStatus() != null && !entity.getDeliveryStatus().isBlank()) {
+            return entity.getDeliveryStatus().trim();
+        }
+        return Objects.equals(entity.getDelivered(), 1) ? DeliveryStatus.DELIVERED : DeliveryStatus.NOT_DELIVERED;
     }
 }
