@@ -415,15 +415,11 @@ public class ZhilianController {
                     sendZhilianProgress(JobProgressMessage.warning("zhilian", message));
                     continue;
                 }
-                if (!isFinalZhilianStatus(currentStatus)) {
-                    zhilianService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.AI_ANALYZING);
-                    saved = zhilianService.getZhilianJobById(saved.getId());
-                }
-
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("zhilian");
                 analysisRequest.setJobKey(saved.getJobId());
+                analysisRequest.setJobRowId(saved.getId());
                 analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
                 analysisRequest.setCompanyName(saved.getCompanyName());
                 analysisRequest.setJobName(saved.getJobTitle());
@@ -444,7 +440,6 @@ public class ZhilianController {
 
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
-                    zhilianService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
                     Map<String, Object> response = zhilianChromeJobsResponse(
                             false, false, received, savedCount, queued, skipped, insufficient, restored, analyses
                     );

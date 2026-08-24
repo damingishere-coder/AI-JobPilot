@@ -205,11 +205,11 @@ public class BossController {
                     continue;
                 }
 
-                saved = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.AI_ANALYZING);
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("boss");
                 analysisRequest.setJobKey(saved.getEncryptId());
+                analysisRequest.setJobRowId(saved.getId());
                 analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
                 analysisRequest.setCompanyName(saved.getCompanyName());
                 analysisRequest.setJobName(saved.getJobName());
@@ -230,7 +230,6 @@ public class BossController {
 
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
-                    bossService.updateDeliveryStatusById(saved.getId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
                     Map<String, Object> response = decorateListCollectionResponse(
                             bossChromeJobsResponse(false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
                             listOnlyCollection, listCollected, collectionWarnings

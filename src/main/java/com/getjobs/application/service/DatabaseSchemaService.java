@@ -12,6 +12,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -587,6 +588,14 @@ public class DatabaseSchemaService {
     }
 
     public static void validateSchema(Connection conn) throws SQLException {
+        validateSchema(conn, true);
+    }
+
+    public static void validateSchemaBeforeV7(Connection conn) throws SQLException {
+        validateSchema(conn, false);
+    }
+
+    private static void validateSchema(Connection conn, boolean requireV7TaskSchema) throws SQLException {
         List<String> requiredTables = List.of(
                 "profile", "config", "cookie", "ai", "resume_profile", "priority_company",
                 "job_ai_analysis", "job_analysis_task", "boss_config", "boss_data",
@@ -608,8 +617,14 @@ public class DatabaseSchemaService {
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));
         requiredColumns.put("liepin_data", Set.of("job_id", "delivered"));
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
-        requiredColumns.put("job_analysis_task", Set.of("profile_id", "platform", "status", "scan_run_id"));
-        List<String> requiredIndexes = List.of(
+        requiredColumns.put("job_analysis_task", requireV7TaskSchema
+                ? Set.of(
+                "profile_id", "platform", "status", "scan_run_id", "task_key", "job_key",
+                "job_row_id", "request_json", "attempt_count", "next_retry_at", "lease_owner",
+                "lease_expires_at", "last_error", "started_at", "completed_at"
+        )
+                : Set.of("profile_id", "platform", "status", "scan_run_id"));
+        List<String> requiredIndexes = new ArrayList<>(List.of(
                 "idx_priority_company_profile_name",
                 "idx_boss_blacklist_type_value",
                 "idx_boss_option_type_code",
@@ -624,7 +639,15 @@ public class DatabaseSchemaService {
                 "idx_job51_data_company_job",
                 "idx_job_analysis_task_profile_platform_status",
                 "idx_job_analysis_task_scan_run"
-        );
+        ));
+        if (requireV7TaskSchema) {
+            requiredIndexes.addAll(List.of(
+                    "idx_job_analysis_task_task_key",
+                    "idx_job_analysis_task_active_job",
+                    "idx_job_analysis_task_dispatch",
+                    "idx_job_analysis_task_lease"
+            ));
+        }
 
         try (Statement stmt = conn.createStatement()) {
             for (String table : requiredTables) {

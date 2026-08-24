@@ -21,11 +21,14 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -107,6 +110,98 @@ class JobAiAnalysisServiceStatusTest {
         service.updatePlatformCache(bossRequest(), analysis("SKIP"));
 
         assertThat(lastBossUpdate().getDeliveryStatus()).isNull();
+    }
+
+    @Test
+    void restartInspectionRecognizesPersistedPlatformResult() {
+        BossJobDataEntity completed = bossJob(DeliveryStatus.WAITING_CONFIRM);
+        completed.setAiDecision("APPLY");
+        when(bossJobDataMapper.selectOne(any())).thenReturn(completed);
+
+        JobAiAnalysisService.PlatformAnalysisState state = service.inspectPlatformAnalysis(bossRequest());
+
+        assertThat(state.completed()).isTrue();
+        assertThat(state.failed()).isFalse();
+        assertThat(state.status()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+    }
+
+    @Test
+    void restartInspectionIgnoresStaleDecisionWhileTaskIsStillAnalyzing() {
+        BossJobDataEntity analyzing = bossJob(DeliveryStatus.AI_ANALYZING);
+        analyzing.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+        when(bossJobDataMapper.selectOne(any())).thenReturn(analyzing);
+
+        JobAiAnalysisService.PlatformAnalysisState state = service.inspectPlatformAnalysis(bossRequest());
+
+        assertThat(state.completed()).isFalse();
+        assertThat(state.failed()).isFalse();
+    }
+
+    @Test
+    void restartInspectionDoesNotTreatOldDecisionAsCompletedWithoutResultStatus() {
+        BossJobDataEntity pending = bossJob(DeliveryStatus.NOT_DELIVERED);
+        pending.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+        when(bossJobDataMapper.selectOne(any())).thenReturn(pending);
+
+        JobAiAnalysisService.PlatformAnalysisState state = service.inspectPlatformAnalysis(bossRequest());
+
+        assertThat(state.completed()).isFalse();
+        assertThat(state.failed()).isFalse();
+    }
+
+    @Test
+    void interruptedRecoveryOnlyWritesExplicitAiFailure() {
+        when(zhilianJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
+
+        boolean changed = service.markAnalysisInterrupted(zhilianRequest(), "租约过期，结果未知");
+
+        assertThat(changed).isTrue();
+        ZhilianJobDataEntity update = lastZhilianUpdate();
+        assertThat(update.getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        assertThat(update.getAiDecision()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        assertThat(update.getAiReason()).contains("结果未知");
+    }
+
+    @Test
+    void durableTaskDoesNotCallProviderWhenExactJobCannotBeReserved() {
+        JobAiAnalysisService.JobAnalysisRequest request = bossRequest();
+        request.setJobRowId(99L);
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(0);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(request);
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getSummary()).contains("未调用 AI Provider");
+        verify(aiService, never()).sendRequest(any());
+    }
+
+    @Test
+    void leaseTransactionRejectsLateProviderResultBeforeAnyResultWrite() {
+        JobAiAnalysisService.JobAnalysisRequest request = bossRequest();
+        request.setJobRowId(99L);
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendRequest(any())).thenReturn("""
+                {"score":90,"decision":"APPLY","summary":"旧租约结果","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+        AtomicInteger guardedWrites = new AtomicInteger();
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(
+                request,
+                () -> true,
+                action -> {
+                    if (guardedWrites.incrementAndGet() == 1) {
+                        action.run();
+                        return true;
+                    }
+                    return false;
+                }
+        );
+
+        assertThat(result.isStaleLease()).isTrue();
+        verify(aiService).sendRequest(any());
+        verify(jobAiAnalysisMapper, never()).insert(any(com.getjobs.application.entity.JobAiAnalysisEntity.class));
+        verify(bossJobDataMapper, times(1)).update(any(), any(UpdateWrapper.class));
     }
 
     @Test
