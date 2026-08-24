@@ -36,6 +36,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -205,19 +207,45 @@ public class JobAiAnalysisService {
     }
 
     public AnalysisResult analyzeJob(JobAnalysisRequest request) {
+        return analyzeJob(request, () -> true, action -> {
+            action.run();
+            return true;
+        });
+    }
+
+    public AnalysisResult analyzeJob(JobAnalysisRequest request,
+                                     BooleanSupplier leaseIsCurrent,
+                                     LeaseWriteGuard leaseWriteGuard) {
         if (request == null) throw new IllegalArgumentException("岗位分析请求不能为空");
+        if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
         Long profileId = resolveAnalysisProfileId(request);
         request.setProfileId(profileId);
-        markPlatformAnalysisStarted(request);
+        if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
+        AtomicBoolean platformReserved = new AtomicBoolean();
+        if (!executeLeaseWrite(leaseWriteGuard,
+                () -> platformReserved.set(markPlatformAnalysisStarted(request)))) {
+            return AnalysisResult.staleLease();
+        }
+        if (!platformReserved.get()) {
+            return AnalysisResult.failed(
+                    DeliveryStatus.AI_ANALYSIS_FAILED,
+                    "岗位状态已变化或岗位不存在，未调用 AI Provider"
+            );
+        }
         boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
         int threshold = resolveApplyThreshold(profileId, priority);
         ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
+            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
             AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
             result.setPriorityCompany(priority);
-            persistAnalysis(request, result, "{\"error\":\"missing resume\"}");
-            updatePlatformCache(request, result);
+            if (!executeLeaseWrite(leaseWriteGuard, () -> {
+                persistAnalysis(request, result, "{\"error\":\"missing resume\"}");
+                updatePlatformCache(request, result);
+            })) {
+                return AnalysisResult.staleLease();
+            }
             return result;
         }
 
@@ -238,17 +266,47 @@ public class JobAiAnalysisService {
             if ("APPLY".equalsIgnoreCase(result.getDecision()) && result.getScore() < threshold) {
                 result.setDecision("SKIP");
             }
-            persistAnalysis(request, result, raw);
-            updatePlatformCache(request, result);
+            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
+            if (!executeLeaseWrite(leaseWriteGuard, () -> {
+                persistAnalysis(request, result, raw);
+                updatePlatformCache(request, result);
+            })) {
+                return AnalysisResult.staleLease();
+            }
             return result;
         } catch (Exception e) {
             log.warn("AI岗位分析失败: {}", e.getMessage());
+            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
             AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, e.getMessage());
             result.setPriorityCompany(priority);
             result.setThreshold(threshold);
-            persistAnalysis(request, result, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-            updatePlatformCache(request, result);
+            if (!executeLeaseWrite(leaseWriteGuard, () -> {
+                persistAnalysis(request, result, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+                updatePlatformCache(request, result);
+            })) {
+                return AnalysisResult.staleLease();
+            }
             return result;
+        }
+    }
+
+    private boolean isLeaseCurrent(BooleanSupplier leaseIsCurrent) {
+        if (leaseIsCurrent == null) return false;
+        try {
+            return leaseIsCurrent.getAsBoolean();
+        } catch (RuntimeException e) {
+            log.warn("验证 AI 分析任务租约失败，保守停止结果写入: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean executeLeaseWrite(LeaseWriteGuard leaseWriteGuard, Runnable action) {
+        if (leaseWriteGuard == null || action == null) return false;
+        try {
+            return leaseWriteGuard.execute(action);
+        } catch (RuntimeException e) {
+            log.warn("AI 分析结果的租约事务失败，保守停止结果写入: {}", e.getMessage());
+            return false;
         }
     }
 
@@ -478,11 +536,13 @@ public class JobAiAnalysisService {
             if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
                 update.setScanRunId(request.getScanRunId());
             }
-            if (!DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) {
+            if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
                 update.setDeliveryStatus(nextStatus);
             }
             update.setUpdatedAt(LocalDateTime.now());
-            bossJobDataMapper.update(update, bossUpdateWrapper(request));
+            UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+            applyExpectedBossStatus(wrapper, existing);
+            bossJobDataMapper.update(update, wrapper);
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
             String nextStatus = DeliveryStatus.protectDelivered(
@@ -500,30 +560,145 @@ public class JobAiAnalysisService {
             if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
                 update.setJobDescription(request.getJobDescription());
             }
-            if (!DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) {
+            if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
                 update.setDeliveryStatus(nextStatus);
             }
             update.setUpdateTime(LocalDateTime.now());
-            zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
+            UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+            applyExpectedZhilianStatus(wrapper, existing);
+            zhilianJobDataMapper.update(update, wrapper);
         }
     }
 
-    private void markPlatformAnalysisStarted(JobAnalysisRequest request) {
-        if (request == null) return;
+    /**
+     * 只读取平台兼容状态，用于进程重启后判断过期租约是否已经完成结果写回。
+     */
+    public PlatformAnalysisState inspectPlatformAnalysis(JobAnalysisRequest request) {
+        if (request == null) return PlatformAnalysisState.incomplete("MISSING_REQUEST");
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
             BossJobDataEntity existing = findBossJobForAnalysis(request);
-            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        return PlatformAnalysisState.incomplete("UNSUPPORTED_PLATFORM");
+    }
+
+    /**
+     * 仅把仍停留在 AI_ANALYZING 的岗位转成明确失败；不会覆盖投递锁或已落库的 AI 结果。
+     */
+    public boolean markAnalysisInterrupted(JobAnalysisRequest request, String reason) {
+        if (request == null) return false;
+        String message = reason == null || reason.isBlank()
+                ? "AI 分析被中断，结果未知"
+                : reason.trim();
+        if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            BossJobDataEntity update = new BossJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdatedAt(LocalDateTime.now());
+            UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return bossJobDataMapper.update(update, wrapper) == 1;
+        }
+        if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return zhilianJobDataMapper.update(update, wrapper) == 1;
+        }
+        return false;
+    }
+
+    private PlatformAnalysisState platformAnalysisState(String status) {
+        String normalizedStatus = status == null ? "" : status.trim();
+        if (DeliveryStatus.AI_ANALYZING.equals(normalizedStatus)) {
+            return PlatformAnalysisState.incomplete(normalizedStatus);
+        }
+        boolean failed = DeliveryStatus.AI_ANALYSIS_FAILED.equals(normalizedStatus);
+        boolean completed = failed
+                || DeliveryStatus.WAITING_CONFIRM.equals(normalizedStatus)
+                || DeliveryStatus.AI_NOT_MATCH.equals(normalizedStatus);
+        return new PlatformAnalysisState(completed, failed,
+                normalizedStatus.isBlank() ? "NO_STATUS" : normalizedStatus);
+    }
+
+    private boolean markPlatformAnalysisStarted(JobAnalysisRequest request) {
+        if (request == null) return false;
+        if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            if (request.getJobRowId() != null) {
+                BossJobDataEntity update = new BossJobDataEntity();
+                update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+                update.setUpdatedAt(LocalDateTime.now());
+                UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+                wrapper.and(w -> w.in("delivery_status", List.of(
+                                DeliveryStatus.NOT_DELIVERED,
+                                DeliveryStatus.LIST_COLLECTED,
+                                DeliveryStatus.AI_ANALYSIS_FAILED
+                        ))
+                        .or()
+                        .isNull("delivery_status"));
+                return bossJobDataMapper.update(update, wrapper) == 1;
+            }
+            BossJobDataEntity existing = findBossJobForAnalysis(request);
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return false;
             BossJobDataEntity update = new BossJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdatedAt(LocalDateTime.now());
             bossJobDataMapper.update(update, bossUpdateWrapper(request));
+            return true;
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            if (request.getJobRowId() != null) {
+                ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+                update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+                update.setUpdateTime(LocalDateTime.now());
+                UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+                wrapper.and(w -> w.in("delivery_status", List.of(
+                                DeliveryStatus.NOT_DELIVERED,
+                                DeliveryStatus.LIST_COLLECTED,
+                                DeliveryStatus.AI_ANALYSIS_FAILED
+                        ))
+                        .or()
+                        .isNull("delivery_status"));
+                return zhilianJobDataMapper.update(update, wrapper) == 1;
+            }
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
-            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return false;
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdateTime(LocalDateTime.now());
             zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
+            return true;
+        }
+        return request.getJobRowId() == null;
+    }
+
+    private void applyExpectedBossStatus(UpdateWrapper<BossJobDataEntity> wrapper,
+                                         BossJobDataEntity existing) {
+        if (existing == null) return;
+        if (existing.getDeliveryStatus() == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existing.getDeliveryStatus());
+        }
+    }
+
+    private void applyExpectedZhilianStatus(UpdateWrapper<ZhilianJobDataEntity> wrapper,
+                                            ZhilianJobDataEntity existing) {
+        if (existing == null) return;
+        if (existing.getDeliveryStatus() == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existing.getDeliveryStatus());
         }
     }
 
@@ -532,12 +707,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             uw.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            uw.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             uw.eq("encrypt_id", request.getJobKey());
         } else {
             uw.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             uw.eq("scan_run_id", request.getScanRunId());
         }
         return uw;
@@ -548,12 +725,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             uw.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            uw.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             uw.eq("job_id", request.getJobKey());
         } else {
             uw.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             uw.eq("scan_run_id", request.getScanRunId());
         }
         return uw;
@@ -564,12 +743,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             wrapper.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("encrypt_id", request.getJobKey());
         } else {
             wrapper.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             wrapper.eq("scan_run_id", request.getScanRunId());
         }
         wrapper.last("LIMIT 1");
@@ -581,12 +762,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             wrapper.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("job_id", request.getJobKey());
         } else {
             wrapper.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             wrapper.eq("scan_run_id", request.getScanRunId());
         }
         wrapper.last("LIMIT 1");
@@ -631,6 +814,7 @@ public class JobAiAnalysisService {
         private Long profileId;
         private String platform;
         private String jobKey;
+        private Long jobRowId;
         private String keyword;
         private String companyName;
         private String jobName;
@@ -643,6 +827,17 @@ public class JobAiAnalysisService {
         private String scanRunId;
     }
 
+    public record PlatformAnalysisState(boolean completed, boolean failed, String status) {
+        public static PlatformAnalysisState incomplete(String status) {
+            return new PlatformAnalysisState(false, false, status);
+        }
+    }
+
+    @FunctionalInterface
+    public interface LeaseWriteGuard {
+        boolean execute(Runnable action);
+    }
+
     @Data
     public static class AnalysisResult {
         private Integer score;
@@ -653,6 +848,7 @@ public class JobAiAnalysisService {
         private String greeting;
         private Boolean priorityCompany;
         private Integer threshold;
+        private boolean staleLease;
 
         public boolean shouldApply() {
             return "APPLY".equalsIgnoreCase(decision);
@@ -677,6 +873,12 @@ public class JobAiAnalysisService {
             result.setDecision(decision);
             result.setSummary(message == null ? DeliveryStatus.AI_ANALYSIS_FAILED : message);
             result.setGreeting("");
+            return result;
+        }
+
+        public static AnalysisResult staleLease() {
+            AnalysisResult result = failed(DeliveryStatus.AI_ANALYSIS_FAILED, "AI 分析任务租约已失效，已丢弃旧执行结果");
+            result.setStaleLease(true);
             return result;
         }
     }

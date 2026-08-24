@@ -18,7 +18,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV6AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV7AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -27,7 +27,7 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='6'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='7'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
             assertThat(columns(connection, "boss_data"))
@@ -35,6 +35,35 @@ class DatabaseMigrationTest {
             assertThat(columns(connection, "liepin_data")).contains("delivery_status");
             assertThat(columns(connection, "job51_data")).contains("delivery_status");
             assertThat(tableExists(connection, "delivery_attempt")).isTrue();
+            assertThat(columns(connection, "job_analysis_task"))
+                    .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
+                            "lease_owner", "lease_expires_at", "last_error", "started_at", "completed_at");
+        }
+    }
+
+    @Test
+    void v7PreservesLegacyAggregateRowsAndLeavesThemUndispatchable() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("legacy-ai-task.db"));
+        Flyway beforeV7 = Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("6")
+                .load();
+        beforeV7.migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO job_analysis_task(platform, scan_run_id, status, total_count, created_at) " +
+                    "VALUES ('boss', 'legacy-run', 'SUCCEEDED', 12, CURRENT_TIMESTAMP)");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM job_analysis_task WHERE scan_run_id='legacy-run'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL"))
+                    .isZero();
+            assertThat(columns(connection, "job_analysis_task"))
+                    .contains("task_key", "request_json", "lease_expires_at");
         }
     }
 

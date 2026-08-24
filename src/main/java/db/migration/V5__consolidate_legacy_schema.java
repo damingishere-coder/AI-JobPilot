@@ -22,7 +22,7 @@ public class V5__consolidate_legacy_schema extends BaseJavaMigration {
         executeResource(context, "db/migration/V4__add_job_analysis_task.sql");
         DatabaseSchemaService.migrateLegacySchema(context.getConnection());
         executeResource(context, "db/migration/V2__add_indexes.sql");
-        DatabaseSchemaService.validateSchema(context.getConnection());
+        DatabaseSchemaService.validateSchemaBeforeV7(context.getConnection());
     }
 
     private void executeResource(Context context, String resourcePath) throws Exception {

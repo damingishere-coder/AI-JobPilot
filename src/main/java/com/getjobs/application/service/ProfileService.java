@@ -8,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -27,11 +29,13 @@ public class ProfileService {
             "boss_data",
             "zhilian_data",
             "job_ai_analysis",
+            "job_analysis_task",
             "priority_company"
     );
 
     private final ProfileMapper profileMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final PlatformTransactionManager transactionManager;
 
     @Transactional(readOnly = true)
     public List<ProfileEntity> listProfiles() {
@@ -103,8 +107,14 @@ public class ProfileService {
         return entity;
     }
 
-    @Transactional
     public DeleteProfileResult deleteProfile(Long id, boolean force) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        return transaction.execute(status -> deleteProfileInTransaction(id, force, status));
+    }
+
+    private DeleteProfileResult deleteProfileInTransaction(Long id,
+                                                           boolean force,
+                                                           org.springframework.transaction.TransactionStatus status) {
         ProfileEntity entity = requireProfile(id);
         Long count = profileMapper.selectCount(null);
         if (count == null || count <= 1) {
@@ -131,6 +141,22 @@ public class ProfileService {
 
         boolean wasActive = entity.getIsActive() != null && entity.getIsActive() == 1;
         if (force) {
+            jdbcTemplate.update("DELETE FROM job_analysis_task WHERE profile_id=? AND status<>'LEASED'", id);
+            Long leasedTasks = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND status='LEASED'",
+                    Long.class,
+                    id
+            );
+            if (leasedTasks != null && leasedTasks > 0) {
+                status.setRollbackOnly();
+                return new DeleteProfileResult(
+                        false,
+                        "该档案仍有 AI 分析正在执行，已阻止删除；请等待完成或进入 UNKNOWN 后再试。",
+                        impactCounts,
+                        getCurrentProfile(),
+                        true
+                );
+            }
             deleteProfileRelatedData(id);
         }
         profileMapper.deleteById(id);

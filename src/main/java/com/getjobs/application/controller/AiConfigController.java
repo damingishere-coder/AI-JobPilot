@@ -2,6 +2,8 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.service.AiService;
+import com.getjobs.application.service.ChromeJobAnalysisQueueService;
+import com.getjobs.application.service.JobAnalysisTaskStore;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.ProfileService;
 import lombok.Data;
@@ -33,6 +35,9 @@ public class AiConfigController {
 
     @Autowired
     private ProfileService profileService;
+
+    @Autowired
+    private ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
 
     /**
      * 获取AI配置
@@ -253,6 +258,50 @@ public class AiConfigController {
             log.error("AI岗位分析失败", e);
             response.put("success", false);
             response.put("message", "AI岗位分析失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @GetMapping("/job-analysis/tasks")
+    public ResponseEntity<Map<String, Object>> listJobAnalysisTasks(
+            @RequestParam(name = "limit", defaultValue = "50") int limit
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            long profileId = profileService.getCurrentProfileId();
+            response.put("success", true);
+            response.put("data", chromeJobAnalysisQueueService.listTasks(profileId, limit));
+            response.put("queueSize", chromeJobAnalysisQueueService.queueSize(profileId));
+            response.put("message", "AI 分析任务读取成功");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("读取 AI 分析任务失败", e);
+            response.put("success", false);
+            response.put("message", "读取 AI 分析任务失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PostMapping("/job-analysis/tasks/{taskId}/retry")
+    public ResponseEntity<Map<String, Object>> retryJobAnalysisTask(
+            @PathVariable long taskId,
+            @RequestParam(name = "confirmUnknown", defaultValue = "false") boolean confirmUnknown
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            long profileId = profileService.getCurrentProfileId();
+            JobAnalysisTaskStore.RetryResult result = chromeJobAnalysisQueueService.retry(
+                    taskId, profileId, confirmUnknown);
+            response.put("success", result.accepted());
+            response.put("data", result.task() == null ? null : result.task().toView());
+            response.put("message", result.message());
+            return result.accepted()
+                    ? ResponseEntity.ok(response)
+                    : ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            log.error("重试 AI 分析任务失败", e);
+            response.put("success", false);
+            response.put("message", "重试 AI 分析任务失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
     }

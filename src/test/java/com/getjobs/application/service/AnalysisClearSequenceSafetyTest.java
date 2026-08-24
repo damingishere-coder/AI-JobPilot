@@ -33,6 +33,10 @@ class AnalysisClearSequenceSafetyTest {
                         "(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
                         "VALUES ('boss-old-attempt', 'boss', 1, 'boss-old', 10, 'UNKNOWN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), " +
                         "('zhilian-old-attempt', 'zhilian', 1, 'zhilian-old', 20, 'UNKNOWN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+        jdbcTemplate.update("INSERT INTO job_analysis_task " +
+                        "(profile_id, platform, status, task_key, job_key, job_row_id, request_json, created_at, updated_at) " +
+                        "VALUES (1, 'boss', 'PENDING', 'boss-ai-old', 'boss-old', 10, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), " +
+                        "(1, 'zhilian', 'FAILED', 'zhilian-ai-old', 'zhilian-old', 20, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
 
         ProfileService profileService = mock(ProfileService.class);
         when(profileService.getCurrentProfileId()).thenReturn(1L);
@@ -50,5 +54,37 @@ class AnalysisClearSequenceSafetyTest {
                 .isGreaterThan(20L);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt", Integer.class))
                 .isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL", Integer.class))
+                .isZero();
+    }
+
+    @Test
+    void clearingAnalysisIsBlockedWhileAiTaskLeaseIsActive() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:sqlite:" + tempDir.resolve("clear-active-lease.db").toAbsolutePath());
+        Flyway.configure()
+                .dataSource(dataSource)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        jdbcTemplate.update("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+        jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status) " +
+                "VALUES (10, 1, 'boss-active', 'AI分析中')");
+        jdbcTemplate.update("INSERT INTO job_analysis_task " +
+                        "(profile_id, platform, status, task_key, job_key, job_row_id, request_json, " +
+                        "lease_owner, lease_expires_at, created_at, updated_at) " +
+                        "VALUES (1, 'boss', 'LEASED', 'boss-ai-active', 'boss-active', 10, '{}', " +
+                        "'lease', '2099-01-01 00:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+
+        ProfileService profileService = mock(ProfileService.class);
+        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        BossService bossService = new BossService(null, null, null, null, null, dataSource, profileService);
+
+        assertThat(bossService.clearBossAnalysisData())
+                .containsEntry("success", false);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM boss_data", Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE status='LEASED'", Integer.class))
+                .isEqualTo(1);
     }
 }
