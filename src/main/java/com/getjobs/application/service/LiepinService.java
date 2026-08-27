@@ -633,6 +633,13 @@ public class LiepinService {
         return liepinMapper.selectOne(wrapper);
     }
 
+    public LiepinEntity getLiepinJobById(Long id) {
+        if (id == null) return null;
+        QueryWrapper<LiepinEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId()).eq("id", id).last("LIMIT 1");
+        return liepinMapper.selectOne(wrapper);
+    }
+
     private String firstNonBlank(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim();
     }

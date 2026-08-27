@@ -51,6 +51,10 @@ public class DeliveryAttemptService {
                 "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='request_key'",
                 Integer.class
         );
+        Integer greetingSnapshotColumn = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_snapshot'",
+                Integer.class
+        );
         Integer jobIndex = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_delivery_attempt_job'",
                 Integer.class
@@ -61,10 +65,33 @@ public class DeliveryAttemptService {
         );
         if (tableCount == null || tableCount != 1
                 || requestKeyColumn == null || requestKeyColumn != 1
+                || greetingSnapshotColumn == null || greetingSnapshotColumn != 1
                 || jobIndex == null || jobIndex != 1
                 || stateIndex == null || stateIndex != 1) {
             throw new IllegalStateException("投递 attempt schema 不完整，已阻止应用继续启动");
         }
+    }
+
+    /**
+     * 把用户确认时看到的话术固定在 requestKey 上。恢复同一 attempt 时始终返回首次快照，
+     * 避免草稿后续变更导致重放任务与原确认内容不一致。
+     */
+    public String snapshotGreeting(String requestKey, String greeting) {
+        if (requestKey == null || requestKey.isBlank()) {
+            throw new IllegalArgumentException("requestKey 不能为空");
+        }
+        String normalized = greeting == null ? "" : greeting.trim();
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        return transaction.execute(status -> {
+            jdbcTemplate.update("UPDATE delivery_attempt SET greeting_snapshot=?, updated_at=CURRENT_TIMESTAMP " +
+                            "WHERE request_key=? AND TRIM(COALESCE(greeting_snapshot, ''))=''",
+                    normalized, requestKey.trim());
+            List<String> snapshots = jdbcTemplate.query(
+                    "SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
+                    (resultSet, rowNum) -> resultSet.getString(1), requestKey.trim());
+            if (snapshots.isEmpty()) throw new IllegalStateException("未找到投递 attempt，无法固定沟通话术");
+            return snapshots.getFirst() == null ? "" : snapshots.getFirst();
+        });
     }
 
     public RequestResult requestBoss(long rowId, long profileId, String jobKey, boolean allowAiNotMatch) {

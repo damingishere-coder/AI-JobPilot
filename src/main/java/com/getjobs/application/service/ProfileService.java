@@ -34,6 +34,7 @@ public class ProfileService {
             "liepin_data",
             "job51_data",
             "job_ai_analysis",
+            "job_greeting_draft",
             "job_analysis_task",
             "priority_company"
     );

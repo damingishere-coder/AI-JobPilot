@@ -21,8 +21,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { GreetingDraftDialog, type GreetingJob } from "@/components/communication/GreetingDraftDialog"
 import PageHeader from "@/app/components/PageHeader"
-import { API_BASE } from "@/lib/api"
+import { API_BASE, readApiResponse } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import {
   BiRefresh,
@@ -35,6 +36,7 @@ import {
   BiChevronDown,
   BiChevronUp,
   BiLinkExternal,
+  BiMessageDetail,
 } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
@@ -84,6 +86,11 @@ type ZhilianJob = {
   priorityCompany?: number
   scanRunId?: string
   createTime?: string
+  aiGreeting?: string
+  greetingDraft?: string
+  greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
+  greetingUpdatedAt?: string | null
+  finalGreeting?: string
 }
 
 type PagedResult = {
@@ -161,6 +168,23 @@ function formatZhilianBatchResult(result: Record<string, unknown>) {
     return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
   })
   return `${summary}\n\n逐条结果：\n${details.join("\n")}`
+}
+
+type ZhilianBatchPreviewItem = { id?: number; companyName?: string; jobName?: string; greeting?: string; greetingSource?: string; empty?: boolean }
+
+function zhilianGreetingSnapshots(items: ZhilianBatchPreviewItem[]) {
+  return Object.fromEntries(items
+    .filter((item): item is ZhilianBatchPreviewItem & { id: number; greeting: string } => (
+      typeof item.id === "number" && typeof item.greeting === "string"
+    ))
+    .map((item) => [String(item.id), item.greeting]))
+}
+
+function formatZhilianGreetingPreview(items: ZhilianBatchPreviewItem[]) {
+  return `智联批量投递预览\n\n将使用以下 ${items.length} 条沟通话术：\n\n${items.map((item, index) => (
+    `${index + 1}. ${item.companyName || "未知公司"} / ${item.jobName || "未命名岗位"}\n`
+    + `来源：${item.greetingSource || "EMPTY"}\n${item.greeting || "【空白】"}`
+  )).join("\n\n")}\n\n确认后才会创建投递任务并交给 Chrome。`
 }
 
 type ChartRef = { destroy: () => void }
@@ -491,10 +515,12 @@ function PendingJobCard({
   job,
   acting,
   onConfirm,
+  onEditGreeting,
 }: {
   job: ZhilianJob
   acting: boolean
   onConfirm: () => void
+  onEditGreeting: () => void
 }) {
   const jobTitle = job.jobTitle || "未命名岗位"
   const company = job.companyName || "未知公司"
@@ -548,6 +574,14 @@ function PendingJobCard({
           </div>
         </div>
 
+        <button type="button" className="w-full rounded-lg border border-cyan-200 bg-white/80 p-3 text-left text-sm dark:border-cyan-900/60 dark:bg-neutral-900/50" onClick={onEditGreeting}>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+            <span>最终沟通话术</span>
+            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "AI 原稿" : job.greetingSource === "PROFILE_DEFAULT" ? "档案默认" : "空白警告"}</span>
+          </div>
+          <div className="line-clamp-2 leading-6">{job.finalGreeting || "暂无可用话术，请先编辑后再确认"}</div>
+        </button>
+
         <div className="flex flex-wrap gap-2">
           {job.jobLink ? (
             <Button asChild size="sm" variant="outline">
@@ -562,6 +596,9 @@ function PendingJobCard({
           )}
           <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
             <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onEditGreeting}>
+            <BiMessageDetail className="mr-1" /> 编辑沟通语
           </Button>
         </div>
       </CardContent>
@@ -596,6 +633,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
+  const [greetingJob, setGreetingJob] = useState<ZhilianJob | null>(null)
+  const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
   const activeScanRunId = ""
 
 	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
@@ -850,7 +889,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     scanRunId: activeScanRunId || undefined,
   })
 
-  const handleConfirmJob = async (job: ZhilianJob) => {
+  const handleConfirmJob = async (job: ZhilianJob, greetingSnapshot: string) => {
     if (!job.id) {
       alert("该智联岗位缺少内部ID，无法确认投递。")
       return
@@ -858,9 +897,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingJobId(job.id)
-      const ok = window.confirm(`将通过 Chrome 真实申请智联岗位：${job.companyName || ""} / ${job.jobTitle || ""}。确认继续？`)
-      if (!ok) return
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`)
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { greetingSnapshot })
       if (!data.success) {
         alert(data.message || "该智联岗位暂不能投递。")
         return
@@ -911,12 +948,19 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
 
   const handleRetryJob = async (job: ZhilianJob) => {
     if (!job.id) return
-    const ok = window.confirm("这会创建新的投递 attempt，并可能再次申请该智联岗位。确认显式重试？")
-    if (!ok) return
     let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingJobId(job.id)
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`)
+      const greetingResponse = await fetch(`${API_BASE}/api/platforms/zhilian/jobs/${job.id}/greeting`)
+      const greetingResult = await readApiResponse<{ finalGreeting: string }>(greetingResponse, "读取最终沟通话术失败")
+      const finalGreeting = greetingResult.data?.finalGreeting || ""
+      if (!finalGreeting.trim()) {
+        alert("最终沟通话术为空，请先编辑后再重试。")
+        return
+      }
+      const ok = window.confirm(`这会创建新的投递 attempt，并可能再次申请该智联岗位。\n\n最终话术：\n${finalGreeting}\n\n确认显式重试？`)
+      if (!ok) return
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
       if (!data.success || !data.task) {
         alert(data.message || "当前岗位不能重试。")
         return
@@ -946,9 +990,23 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingBatch(true)
-      const ok = window.confirm("将通过 Chrome 真实申请当前筛选范围内的智联待确认岗位。确认继续？")
+      const body = currentBatchFilters()
+      const preview = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch/preview`, body)
+      const previewItems = Array.isArray(preview.items) ? preview.items as ZhilianBatchPreviewItem[] : []
+      if (preview.success === false || previewItems.length === 0) {
+        alert(preview.message || "当前筛选条件下没有智联待确认岗位。")
+        return
+      }
+      if (previewItems.some((item) => item.empty || !item.greeting?.trim())) {
+        alert("批量范围内存在空白沟通话术，请逐条编辑后再确认。")
+        return
+      }
+      const ok = window.confirm(formatZhilianGreetingPreview(previewItems))
       if (!ok) return
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch`, currentBatchFilters())
+      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
+        ...body,
+        greetingSnapshots: zhilianGreetingSnapshots(previewItems),
+      })
       const tasks = data.tasks || []
       reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
@@ -1019,6 +1077,26 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   const visiblePendingJobs = useMemo(() => (
     pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
   ), [pendingCardsExpanded, pendingJobs])
+
+  const openGreetingDialog = (job: ZhilianJob, confirmMode: boolean) => {
+    if (!job.id) {
+      alert("该智联岗位缺少内部 ID，无法编辑沟通草稿。")
+      return
+    }
+    setGreetingJob(job)
+    setGreetingConfirmMode(confirmMode)
+  }
+
+  const greetingDialogJob: GreetingJob | null = greetingJob?.id ? {
+    id: greetingJob.id,
+    companyName: greetingJob.companyName,
+    jobName: greetingJob.jobTitle,
+    aiGreeting: greetingJob.aiGreeting || "",
+    greetingDraft: greetingJob.greetingDraft || "",
+    greetingSource: greetingJob.greetingSource || "EMPTY",
+    greetingUpdatedAt: greetingJob.greetingUpdatedAt || null,
+    finalGreeting: greetingJob.finalGreeting || "",
+  } : null
 
   return (
     <div className="space-y-8">
@@ -1156,7 +1234,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                 key={job.id || job.jobId}
                 job={job}
                 acting={actingJobId === job.id}
-                onConfirm={() => handleConfirmJob(job)}
+                onConfirm={() => openGreetingDialog(job, true)}
+                onEditGreeting={() => openGreetingDialog(job, false)}
               />
             ))}
           </div>
@@ -1317,7 +1396,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                         <Button
                           size="sm"
                           disabled={actingJobId === it.id}
-                          onClick={() => handleConfirmJob(it)}
+                          onClick={() => openGreetingDialog(it, true)}
                           className="h-7 rounded-lg px-3 text-xs"
                         >
                           {it.deliveryStatus === "投递确认中" ? "恢复投递" : "Chrome投递"}
@@ -1414,6 +1493,22 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           </div>
         </CardContent>
       </Card>
+      <GreetingDraftDialog
+        open={Boolean(greetingJob)}
+        platform="zhilian"
+        job={greetingDialogJob}
+        confirmMode={greetingConfirmMode}
+        submitting={actingJobId === greetingJob?.id}
+        onClose={() => setGreetingJob(null)}
+        onSaved={async () => {
+          await loadList(page, size)
+        }}
+        onConfirm={async (reviewedJob) => {
+          if (!greetingJob) return
+          await handleConfirmJob(greetingJob, reviewedJob.finalGreeting)
+          setGreetingJob(null)
+        }}
+      />
     </div>
   )
 }

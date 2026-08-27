@@ -36,6 +36,7 @@ type StatsResponse = {
 }
 
 type Job51Item = {
+  id?: number
   jobId: number
   companyName?: string
   jobName?: string
@@ -50,6 +51,9 @@ type Job51Item = {
   createdAt?: string
   industry?: string
   companyScale?: string
+  aiScore?: number
+  aiDecision?: string
+  aiReason?: string
 }
 
 type PagedResult51 = {
@@ -111,8 +115,9 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
   const [reloading,setReloading]=useState(false)
   const [exporting,setExporting]=useState(false)
   const [recoveringJobId,setRecoveringJobId]=useState<number|null>(null)
+  const [analyzingJobId,setAnalyzingJobId]=useState<number|null>(null)
 
-  const statusOptions = ["未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
+  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
 
   useEffect(()=>{ loadStats() },[])
   useEffect(()=>{ setInputPage(page) },[page])
@@ -176,6 +181,19 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     } finally {
       setRecoveringJobId(null)
     }
+  }
+
+  const analyzeJob = async (job:Job51Item)=>{
+    if (!job.id){ alert("该 51job 岗位缺少内部 ID，无法加入统一 AI 分析队列。"); return }
+    try{
+      setAnalyzingJobId(job.id)
+      const response=await fetch(`${API_BASE}/api/platforms/51job/jobs/${job.id}/analyze`,{ method:"POST" })
+      const data=await response.json().catch(()=>({}))
+      if (!response.ok || data.success===false) throw new Error(data.message||"加入 AI 分析队列失败")
+      alert(data.queued ? "已加入统一 AI 分析队列。" : (data.message||"该岗位已有分析任务。"))
+      await loadList(page,size)
+    }catch(error){ alert(error instanceof Error ? error.message : "加入 AI 分析队列失败") }
+    finally{ setAnalyzingJobId(null) }
   }
 
   const exportCSV = async ()=>{
@@ -303,6 +321,10 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
                       <td className="px-4 py-3 text-sm leading-6 align-top"><div className="truncate" title={it.hrName||'-'}>{it.hrName||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 align-top">
                         <span className={`whitespace-nowrap px-2 py-1 rounded-full text-xs ${ (it.deliveryStatus||'').includes('已投递') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300' }`}>{it.deliveryStatus||'-'}</span>
+                        <div className="mt-1 text-xs text-muted-foreground">AI {it.aiScore??'-'} · {it.aiDecision||'未分析'}</div>
+                        {["未投递","AI分析失败","LIST_COLLECTED"].includes((it.deliveryStatus||"").trim()) && (
+                          <div className="mt-2"><Button size="sm" variant="outline" disabled={analyzingJobId===it.id} onClick={()=>analyzeJob(it)}>{analyzingJobId===it.id?"入队中...":"AI 分析"}</Button></div>
+                        )}
                         {it.deliveryStatus === "投递结果待确认" && (
                           <div className="mt-2 flex flex-wrap gap-1">
                             <Button size="sm" variant="outline" disabled={recoveringJobId===it.jobId} onClick={()=>recoverDelivery(it.jobId,"confirmed")}>核对已投递</Button>

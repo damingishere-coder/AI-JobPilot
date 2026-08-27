@@ -2,11 +2,20 @@
 
 import { useCallback, useState } from "react"
 
-import { API_BASE } from "@/lib/api"
+import { API_BASE, readApiResponse } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import type { BossJob, FilterState } from "../types"
 
 type ReservedTask = { id?: number; requestKey?: string }
+type BatchPreviewItem = { id?: number; companyName?: string; jobName?: string; greeting?: string; greetingSource?: string; empty?: boolean }
+
+function greetingSnapshots(items: BatchPreviewItem[]) {
+  return Object.fromEntries(items
+    .filter((item): item is BatchPreviewItem & { id: number; greeting: string } => (
+      typeof item.id === "number" && typeof item.greeting === "string"
+    ))
+    .map((item) => [String(item.id), item.greeting]))
+}
 
 async function postJsonWithRetry(url: string, body?: unknown) {
   let lastError: unknown
@@ -48,6 +57,23 @@ function formatBatchDeliveryResult(result: Record<string, unknown>) {
     return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
   })
   return `${summary}\n\n逐条结果：\n${details.join("\n")}`
+}
+
+function formatBatchGreetingPreview(items: BatchPreviewItem[], title: string) {
+  const lines = items.map((item, index) => (
+    `${index + 1}. ${item.companyName || "未知公司"} / ${item.jobName || "未命名岗位"}\n`
+    + `来源：${item.greetingSource || "EMPTY"}\n${item.greeting || "【空白】"}`
+  ))
+  return `${title}\n\n将使用以下 ${items.length} 条沟通话术：\n\n${lines.join("\n\n")}\n\n确认后才会创建投递任务并交给 Chrome。`
+}
+
+async function loadBatchPreview(body: unknown) {
+  const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch/preview`, body)
+  return {
+    success: data.success !== false,
+    message: String(data.message || ""),
+    items: Array.isArray(data.items) ? data.items as BatchPreviewItem[] : [],
+  }
 }
 
 async function markUnknownReservations(tasks: ReservedTask[], reason: string) {
@@ -122,13 +148,11 @@ export function useBossDeliveryActions({
     }
   }, [openTextDialog])
 
-  const handleConfirmJob = useCallback(async (job: BossJob) => {
+  const handleConfirmJob = useCallback(async (job: BossJob, greetingSnapshot: string) => {
     let reservedTasks: ReservedTask[] = []
     try {
       setActingJobId(job.id)
-      const ok = window.confirm(`将通过 Chrome 真实联系 Boss HR：${job.companyName || ""} / ${job.jobName || ""}。确认继续？`)
-      if (!ok) return
-      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/confirm`)
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/confirm`, { greetingSnapshot })
       if (!data.success) {
         openTextDialog("确认投递", data.message || "该岗位暂不能投递。")
         return
@@ -176,11 +200,18 @@ export function useBossDeliveryActions({
 
   const handleRetryJob = useCallback(async (job: BossJob) => {
     let reservedTasks: ReservedTask[] = []
-    const ok = window.confirm("这会创建新的投递 attempt，并可能再次联系该 Boss HR。确认显式重试？")
-    if (!ok) return
     try {
       setActingJobId(job.id)
-      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/delivery-retry`)
+      const greetingResponse = await fetch(`${API_BASE}/api/platforms/boss/jobs/${job.id}/greeting`)
+      const greetingResult = await readApiResponse<{ finalGreeting: string; greetingSource: string }>(greetingResponse, "读取最终沟通话术失败")
+      const finalGreeting = greetingResult.data?.finalGreeting || ""
+      if (!finalGreeting.trim()) {
+        openTextDialog("重试投递", "最终沟通话术为空，请先编辑后再重试。")
+        return
+      }
+      const ok = window.confirm(`这会创建新的投递 attempt，并可能再次联系该 Boss HR。\n\n最终话术：\n${finalGreeting}\n\n确认显式重试？`)
+      if (!ok) return
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
       if (!data.success || !data.task) {
         openTextDialog("重试投递", data.message || "当前岗位不能重试。")
         return
@@ -221,9 +252,22 @@ export function useBossDeliveryActions({
     let reservedTasks: ReservedTask[] = []
     try {
       setActingBatch(true)
-      const ok = window.confirm("将通过 Chrome 真实联系当前筛选范围内的 Boss 待确认岗位。确认继续？")
+      const body = currentBatchFilters()
+      const preview = await loadBatchPreview(body)
+      if (!preview.success || preview.items.length === 0) {
+        openTextDialog("批量投递预览", preview.message || "当前筛选条件下没有待确认岗位。")
+        return
+      }
+      if (preview.items.some((item) => item.empty || !item.greeting?.trim())) {
+        openTextDialog("批量投递预览", "批量范围内存在空白沟通话术，请逐条编辑后再确认。")
+        return
+      }
+      const ok = window.confirm(formatBatchGreetingPreview(preview.items, "Boss 批量投递预览"))
       if (!ok) return
-      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, currentBatchFilters())
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        ...body,
+        greetingSnapshots: greetingSnapshots(preview.items),
+      })
       const tasks = data.tasks || []
       reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
@@ -254,11 +298,24 @@ export function useBossDeliveryActions({
     let reservedTasks: ReservedTask[] = []
     try {
       setActingAiBatch(true)
-      const ok = window.confirm("将通过 Chrome 真实联系当前批次中 AI 推荐的 Boss 待确认岗位。确认继续？")
-      if (!ok) return
-      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+      const body = {
         aiRecommendedOnly: true,
         scanRunId: activeScanRunId || undefined,
+      }
+      const preview = await loadBatchPreview(body)
+      if (!preview.success || preview.items.length === 0) {
+        openTextDialog("AI推荐投递预览", preview.message || "当前没有 AI 推荐的待确认岗位。")
+        return
+      }
+      if (preview.items.some((item) => item.empty || !item.greeting?.trim())) {
+        openTextDialog("AI推荐投递预览", "推荐范围内存在空白沟通话术，请逐条编辑后再确认。")
+        return
+      }
+      const ok = window.confirm(formatBatchGreetingPreview(preview.items, "Boss AI 推荐投递预览"))
+      if (!ok) return
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        ...body,
+        greetingSnapshots: greetingSnapshots(preview.items),
       })
       const tasks = data.tasks || []
       reservedTasks = tasks
@@ -296,14 +353,21 @@ export function useBossDeliveryActions({
     let reservedTasks: ReservedTask[] = []
     try {
       setActingManualBatch(true)
-      const ok = window.confirm(
-        `AI 已将这些岗位判定为不匹配。你正在按人工判断强制投递 ${uniqueIds.length} 个岗位，`
-        + "将通过 Chrome 真实联系 Boss HR。确认继续？",
-      )
+      const body = { ids: uniqueIds, manualOverrideAiNotMatch: true }
+      const preview = await loadBatchPreview(body)
+      if (!preview.success || preview.items.length === 0) {
+        openTextDialog("人工投递预览", preview.message || "所选岗位中没有可人工投递的AI不匹配岗位。")
+        return false
+      }
+      if (preview.items.some((item) => item.empty || !item.greeting?.trim())) {
+        openTextDialog("人工投递预览", "所选岗位中存在空白沟通话术，请逐条编辑后再确认。")
+        return false
+      }
+      const ok = window.confirm(formatBatchGreetingPreview(preview.items, `人工覆盖 ${uniqueIds.length} 个 AI 不匹配岗位`))
       if (!ok) return false
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
-        ids: uniqueIds,
-        manualOverrideAiNotMatch: true,
+        ...body,
+        greetingSnapshots: greetingSnapshots(preview.items),
       })
       const tasks = data.tasks || []
       reservedTasks = tasks

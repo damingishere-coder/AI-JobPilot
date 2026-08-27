@@ -2,12 +2,15 @@ package com.getjobs.application.platform.boss;
 
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.platform.PlatformAdapter;
+import com.getjobs.application.platform.PlatformCapability;
+import com.getjobs.application.platform.PlatformAnalysisInput;
 import com.getjobs.application.platform.PlatformType;
 import com.getjobs.application.platform.dto.PlatformDeliveryRequest;
 import com.getjobs.application.platform.dto.PlatformDeliveryResult;
 import com.getjobs.application.platform.dto.PlatformJobItem;
 import com.getjobs.application.platform.dto.PlatformScanRequest;
 import com.getjobs.application.service.BossService;
+import com.getjobs.application.service.JobAiAnalysisService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +29,34 @@ public class BossPlatformAdapter implements PlatformAdapter {
     @Override
     public String platform() {
         return PlatformType.BOSS.code();
+    }
+
+    @Override
+    public PlatformCapability capability() {
+        return new PlatformCapability(platform(), "TIER_1", "CHROME_BRIDGE", true, true, "CHROME_BRIDGE");
+    }
+
+    @Override
+    public PlatformAnalysisInput toAnalysisInput(Long jobId, Long profileId) {
+        BossJobDataEntity job = bossService.getBossJobById(jobId);
+        if (job == null || !java.util.Objects.equals(profileId, job.getProfileId())) {
+            throw new IllegalArgumentException("当前档案下未找到 Boss 岗位");
+        }
+        JobAiAnalysisService.JobAnalysisRequest request = new JobAiAnalysisService.JobAnalysisRequest();
+        request.setProfileId(profileId);
+        request.setPlatform(platform());
+        request.setJobKey(normalizeJobKey(job.getEncryptId() == null ? job.getId() : job.getEncryptId()));
+        request.setJobRowId(job.getId());
+        request.setCompanyName(job.getCompanyName());
+        request.setJobName(job.getJobName());
+        request.setSalary(job.getSalary());
+        request.setLocation(job.getLocation());
+        request.setExperience(job.getExperience());
+        request.setDegree(job.getDegree());
+        request.setCompanyInfo(job.getIntroduce());
+        request.setJobDescription(job.getJobDescription());
+        request.setScanRunId(job.getScanRunId());
+        return new PlatformAnalysisInput(request, job.getDeliveryStatus());
     }
 
     @Override

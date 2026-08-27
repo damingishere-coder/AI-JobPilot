@@ -3,11 +3,12 @@ package com.getjobs.application.controller;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
-import com.getjobs.application.entity.BossConfigEntity;
+import com.getjobs.application.dto.GreetingConfirmationRequest;
 import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.BossService;
 import com.getjobs.application.service.BossStatsService;
+import com.getjobs.application.service.GreetingDraftService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
@@ -25,13 +26,16 @@ public class BossAnalyticsController {
     private final BossService bossService;
     private final BossStatsService bossStatsService;
     private final DeliveryAttemptService deliveryAttemptService;
+    private final GreetingDraftService greetingDraftService;
 
     public BossAnalyticsController(BossService bossService,
                                    BossStatsService bossStatsService,
-                                   DeliveryAttemptService deliveryAttemptService) {
+                                   DeliveryAttemptService deliveryAttemptService,
+                                   GreetingDraftService greetingDraftService) {
         this.bossService = bossService;
         this.bossStatsService = bossStatsService;
         this.deliveryAttemptService = deliveryAttemptService;
+        this.greetingDraftService = greetingDraftService;
     }
 
     /**
@@ -96,7 +100,7 @@ public class BossAnalyticsController {
                     .filter(s -> !s.isEmpty())
                     .collect(Collectors.toList());
         }
-        return bossService.listBossJobs(
+        BossService.PagedResult result = bossService.listBossJobs(
                 statusList,
                 location,
                 experience,
@@ -110,6 +114,8 @@ public class BossAnalyticsController {
                 scanRunId,
                 minAiScore
         );
+        enrichGreetings(result == null ? null : result.items);
+        return result;
     }
 
     /**
@@ -129,10 +135,19 @@ public class BossAnalyticsController {
     }
 
     @PostMapping("/jobs/{id}/confirm")
-    public Map<String, Object> confirmPendingJob(@PathVariable("id") Long id) {
+    public Map<String, Object> confirmPendingJob(
+            @PathVariable("id") Long id,
+            @RequestBody(required = false) GreetingConfirmationRequest request) {
         BossJobDataEntity job = bossService.getBossJobById(id);
         Map<String, Object> error = validateDeliverable(job);
         if (error != null) return error;
+        GreetingDraftService.GreetingView greeting = greetingDraftService.resolveForJob("boss", id);
+        if (greeting.finalGreeting().isBlank()) {
+            return Map.of("success", false, "message", "最终沟通话术为空，请先编辑或配置默认话术", "greetingSource", greeting.greetingSource());
+        }
+        Map<String, Object> greetingError = validateGreetingSnapshot(
+                request == null ? null : request.getGreetingSnapshot(), greeting);
+        if (greetingError != null) return greetingError;
         DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestBoss(
                 job.getId(), job.getProfileId(), firstNonBlank(job.getEncryptId(), String.valueOf(job.getId())), false);
         if (!attempt.accepted()) {
@@ -142,13 +157,12 @@ public class BossAnalyticsController {
                 "success", true,
                 "resumed", !attempt.created(),
                 "message", attempt.created() ? "投递请求已创建，请在 Chrome 中等待平台确认" : "已恢复原投递请求，请勿重复创建",
-                "task", toDeliveryTask(job, attempt.requestKey())
+                "task", toDeliveryTask(job, attempt.requestKey(), snapshotGreeting(attempt.requestKey(), greeting))
         );
     }
 
     @PostMapping("/jobs/confirm-batch")
     public Map<String, Object> confirmBatch(@RequestBody ConfirmBatchRequest request) {
-        List<BossJobDataEntity> candidates = new ArrayList<>();
         boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
         boolean manualOverrideAiNotMatch = request != null && Boolean.TRUE.equals(request.getManualOverrideAiNotMatch());
         if (aiRecommendedOnly && manualOverrideAiNotMatch) {
@@ -170,64 +184,26 @@ public class BossAnalyticsController {
 
         int requestedCount = 0;
         if (manualOverrideAiNotMatch) {
-            List<Long> requestedIds = request.getIds().stream()
-                    .filter(Objects::nonNull)
-                    .distinct()
-                    .toList();
-            requestedCount = requestedIds.size();
-            for (Long id : requestedIds) {
-                BossJobDataEntity job = bossService.getBossJobById(id);
-                if (job != null) candidates.add(job);
-            }
-        } else if (aiRecommendedOnly) {
-            BossService.PagedResult page = bossService.listBossJobs(
-                    List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    1,
-                    5000,
-                    false,
-                    request == null ? null : request.getScanRunId()
-            );
-            if (page != null && page.items != null) candidates.addAll(page.items);
-        } else if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
-            for (Long id : request.getIds().stream().filter(Objects::nonNull).distinct().toList()) {
-                BossJobDataEntity job = bossService.getBossJobById(id);
-                if (job != null) candidates.add(job);
-            }
-        } else {
-            BossService.PagedResult page = bossService.listBossJobs(
-                    List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
-                    request == null ? null : request.getLocation(),
-                    request == null ? null : request.getExperience(),
-                    request == null ? null : request.getDegree(),
-                    request == null ? null : request.getMinK(),
-                    request == null ? null : request.getMaxK(),
-                    request == null ? null : request.getKeyword(),
-                    1,
-                    500,
-                    request != null && Boolean.TRUE.equals(request.getFilterHeadhunter()),
-                    request == null ? null : request.getScanRunId(),
-                    request == null ? null : request.getMinAiScore()
-            );
-            if (page != null && page.items != null) candidates.addAll(page.items);
+            requestedCount = request.getIds().stream().filter(Objects::nonNull).distinct().toList().size();
         }
-
-        List<BossJobDataEntity> deliverableJobs = candidates.stream()
-                .filter(job -> manualOverrideAiNotMatch
-                        ? DeliveryStatus.AI_NOT_MATCH.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
-                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
-                        : DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
-                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim()))
-                .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
-                .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
-                .collect(Collectors.toList());
+        List<BossJobDataEntity> deliverableJobs = deliverableBossJobs(request);
+        List<GreetingDraftService.GreetingView> greetings = deliverableJobs.stream()
+                .map(job -> greetingDraftService.resolveForJob("boss", job.getId()))
+                .toList();
+        if (greetings.stream().anyMatch(greeting -> greeting.finalGreeting().isBlank())) {
+            return Map.of(
+                    "success", false,
+                    "message", "批量范围内存在空白沟通话术，请先在预览中逐条补全",
+                    "tasks", List.of(),
+                    "count", 0
+            );
+        }
+        Map<String, Object> greetingError = validateBatchGreetingSnapshots(request, deliverableJobs, greetings);
+        if (greetingError != null) return greetingError;
         List<Map<String, Object>> tasks = new ArrayList<>();
-        for (BossJobDataEntity job : deliverableJobs) {
+        for (int index = 0; index < deliverableJobs.size(); index++) {
+            BossJobDataEntity job = deliverableJobs.get(index);
+            GreetingDraftService.GreetingView greeting = greetings.get(index);
             DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestBoss(
                     job.getId(),
                     job.getProfileId(),
@@ -235,7 +211,7 @@ public class BossAnalyticsController {
                     manualOverrideAiNotMatch
             );
             if (attempt.accepted()) {
-                tasks.add(toDeliveryTask(job, attempt.requestKey()));
+                tasks.add(toDeliveryTask(job, attempt.requestKey(), snapshotGreeting(attempt.requestKey(), greeting)));
             }
         }
         if (manualOverrideAiNotMatch && tasks.isEmpty()) {
@@ -257,6 +233,22 @@ public class BossAnalyticsController {
                 "tasks", tasks,
                 "count", tasks.size()
         );
+    }
+
+    @PostMapping("/jobs/confirm-batch/preview")
+    public Map<String, Object> previewBatch(@RequestBody(required = false) ConfirmBatchRequest request) {
+        List<Map<String, Object>> items = deliverableBossJobs(request).stream().map(job -> {
+            GreetingDraftService.GreetingView greeting = greetingDraftService.resolveForJob("boss", job.getId());
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", job.getId());
+            item.put("companyName", Objects.toString(job.getCompanyName(), ""));
+            item.put("jobName", Objects.toString(job.getJobName(), ""));
+            item.put("greeting", greeting.finalGreeting());
+            item.put("greetingSource", greeting.greetingSource());
+            item.put("empty", greeting.finalGreeting().isBlank());
+            return item;
+        }).toList();
+        return Map.of("success", true, "items", items, "count", items.size());
     }
 
     @PostMapping("/jobs/{id}/delivery-result")
@@ -317,9 +309,18 @@ public class BossAnalyticsController {
     }
 
     @PostMapping("/jobs/{id}/delivery-retry")
-    public Map<String, Object> retryDelivery(@PathVariable("id") Long id) {
+    public Map<String, Object> retryDelivery(
+            @PathVariable("id") Long id,
+            @RequestBody(required = false) GreetingConfirmationRequest request) {
         BossJobDataEntity job = bossService.getBossJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        GreetingDraftService.GreetingView greeting = greetingDraftService.resolveForJob("boss", id);
+        if (greeting.finalGreeting().isBlank()) {
+            return Map.of("success", false, "message", "最终沟通话术为空，请先编辑或配置默认话术");
+        }
+        Map<String, Object> greetingError = validateGreetingSnapshot(
+                request == null ? null : request.getGreetingSnapshot(), greeting);
+        if (greetingError != null) return greetingError;
         DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.retryBoss(
                 job.getId(),
                 job.getProfileId(),
@@ -334,7 +335,7 @@ public class BossAnalyticsController {
                 "message", attempt.created()
                         ? "已创建新的显式重试任务，请再次核对平台结果"
                         : "已恢复原重试任务，未创建重复 attempt",
-                "task", toDeliveryTask(job, attempt.requestKey())
+                "task", toDeliveryTask(job, attempt.requestKey(), snapshotGreeting(attempt.requestKey(), greeting))
         );
     }
 
@@ -365,7 +366,9 @@ public class BossAnalyticsController {
         return null;
     }
 
-    private Map<String, Object> toDeliveryTask(BossJobDataEntity job, String requestKey) {
+    private Map<String, Object> toDeliveryTask(BossJobDataEntity job,
+                                               String requestKey,
+                                               GreetingDraftService.GreetingView greeting) {
         Map<String, Object> task = new HashMap<>();
         task.put("id", job.getId());
         task.put("platform", "boss");
@@ -373,14 +376,105 @@ public class BossAnalyticsController {
         task.put("companyName", Objects.toString(job.getCompanyName(), ""));
         task.put("jobName", Objects.toString(job.getJobName(), ""));
         task.put("salary", Objects.toString(job.getSalary(), ""));
-        task.put("greeting", bossSayHi());
+        task.put("greeting", greeting.finalGreeting());
+        task.put("greetingSource", greeting.greetingSource());
         task.put("requestKey", requestKey);
         return task;
     }
 
-    private String bossSayHi() {
-        BossConfigEntity config = bossService.getFirstConfig();
-        return config == null || config.getSayHi() == null ? "" : config.getSayHi();
+    private GreetingDraftService.GreetingView snapshotGreeting(
+            String requestKey, GreetingDraftService.GreetingView greeting) {
+        String snapshot = deliveryAttemptService.snapshotGreeting(requestKey, greeting.finalGreeting());
+        return new GreetingDraftService.GreetingView(
+                greeting.aiGreeting(), greeting.greetingDraft(), greeting.greetingSource(),
+                greeting.greetingUpdatedAt(), firstNonBlank(snapshot, greeting.finalGreeting()));
+    }
+
+    private Map<String, Object> validateGreetingSnapshot(
+            String expectedGreeting, GreetingDraftService.GreetingView current) {
+        if (expectedGreeting == null || !Objects.equals(expectedGreeting, current.finalGreeting())) {
+            return Map.of(
+                    "success", false,
+                    "message", "沟通话术已在其他页面变化，请刷新并重新确认",
+                    "greetingChanged", true
+            );
+        }
+        return null;
+    }
+
+    private Map<String, Object> validateBatchGreetingSnapshots(
+            ConfirmBatchRequest request,
+            List<BossJobDataEntity> jobs,
+            List<GreetingDraftService.GreetingView> greetings) {
+        Map<Long, String> snapshots = request == null ? null : request.getGreetingSnapshots();
+        for (int index = 0; index < jobs.size(); index++) {
+            Long id = jobs.get(index).getId();
+            if (snapshots == null || !snapshots.containsKey(id)
+                    || !Objects.equals(snapshots.get(id), greetings.get(index).finalGreeting())) {
+                return Map.of(
+                        "success", false,
+                        "message", "批量范围内的话术已变化，请重新预览后再确认",
+                        "tasks", List.of(),
+                        "count", 0,
+                        "greetingChanged", true
+                );
+            }
+        }
+        return null;
+    }
+
+    private void enrichGreetings(List<BossJobDataEntity> jobs) {
+        if (jobs == null) return;
+        for (BossJobDataEntity job : jobs) {
+            GreetingDraftService.GreetingView greeting = greetingDraftService.resolveForJob("boss", job.getId());
+            job.setAiGreeting(greeting.aiGreeting());
+            job.setGreetingDraft(greeting.greetingDraft());
+            job.setGreetingSource(greeting.greetingSource());
+            job.setGreetingUpdatedAt(greeting.greetingUpdatedAt());
+            job.setFinalGreeting(greeting.finalGreeting());
+        }
+    }
+
+    private List<BossJobDataEntity> deliverableBossJobs(ConfirmBatchRequest request) {
+        boolean manualOverride = request != null && Boolean.TRUE.equals(request.getManualOverrideAiNotMatch());
+        boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
+        return batchCandidates(request).stream()
+                .filter(job -> manualOverride
+                        ? DeliveryStatus.AI_NOT_MATCH.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
+                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim())
+                        : DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
+                            || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim()))
+                .filter(job -> !aiRecommendedOnly || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")))
+                .filter(job -> job.getJobUrl() != null && !job.getJobUrl().isBlank())
+                .toList();
+    }
+
+    private List<BossJobDataEntity> batchCandidates(ConfirmBatchRequest request) {
+        List<BossJobDataEntity> candidates = new ArrayList<>();
+        boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
+        if (request != null && request.getIds() != null && !request.getIds().isEmpty()) {
+            for (Long id : request.getIds().stream().filter(Objects::nonNull).distinct().toList()) {
+                BossJobDataEntity job = bossService.getBossJobById(id);
+                if (job != null) candidates.add(job);
+            }
+            return candidates;
+        }
+        BossService.PagedResult page = bossService.listBossJobs(
+                List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
+                aiRecommendedOnly ? null : request == null ? null : request.getLocation(),
+                aiRecommendedOnly ? null : request == null ? null : request.getExperience(),
+                aiRecommendedOnly ? null : request == null ? null : request.getDegree(),
+                aiRecommendedOnly ? null : request == null ? null : request.getMinK(),
+                aiRecommendedOnly ? null : request == null ? null : request.getMaxK(),
+                aiRecommendedOnly ? null : request == null ? null : request.getKeyword(),
+                1,
+                aiRecommendedOnly ? 5000 : 500,
+                !aiRecommendedOnly && request != null && Boolean.TRUE.equals(request.getFilterHeadhunter()),
+                request == null ? null : request.getScanRunId(),
+                aiRecommendedOnly ? null : request == null ? null : request.getMinAiScore()
+        );
+        if (page != null && page.items != null) candidates.addAll(page.items);
+        return candidates;
     }
 
     private String firstNonBlank(String first, String second) {

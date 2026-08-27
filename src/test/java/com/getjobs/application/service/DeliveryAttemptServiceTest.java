@@ -112,6 +112,21 @@ class DeliveryAttemptServiceTest {
     }
 
     @Test
+    void greetingSnapshotKeepsFirstConfirmedTextForResumedAttempt() {
+        insertBoss(35, DeliveryStatus.WAITING_CONFIRM);
+        DeliveryAttemptService.RequestResult requested = service.requestBoss(35, 1, "boss-35", false);
+
+        String first = service.snapshotGreeting(requested.requestKey(), "首次确认的话术");
+        String resumed = service.snapshotGreeting(requested.requestKey(), "后来修改的话术");
+
+        assertThat(first).isEqualTo("首次确认的话术");
+        assertThat(resumed).isEqualTo("首次确认的话术");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
+                String.class, requested.requestKey())).isEqualTo("首次确认的话术");
+    }
+
+    @Test
     void staleAttemptCannotOverwriteANewerAttemptAndFailureIsTerminal() {
         insertBoss(40, DeliveryStatus.WAITING_CONFIRM);
         DeliveryAttemptService.RequestResult first = service.requestBoss(40, 1, "boss-40", false);

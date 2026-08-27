@@ -409,6 +409,7 @@ public class Job51Service {
     public static class StatsResponse { public Kpi kpi; public Charts charts; }
 
     public static class Job51Row {
+        public Long id;
         public Long jobId;
         public String companyName;
         public String jobName;
@@ -423,6 +424,10 @@ public class Job51Service {
         public String createdAt;
         public String industry;
         public String companyScale;
+        public Integer aiScore;
+        public String aiDecision;
+        public String aiReason;
+        public Integer priorityCompany;
     }
     public static class PagedResult51 {
         public java.util.List<Job51Row> items;
@@ -624,6 +629,7 @@ public class Job51Service {
         java.util.List<Job51Row> rows = new java.util.ArrayList<>();
         for (Job51Entity e : pageItems) {
             Job51Row r = new Job51Row();
+            r.id = e.getId();
             r.jobId = e.getJobId();
             r.companyName = e.getCompName();
             r.jobName = e.getJobTitle();
@@ -638,6 +644,10 @@ public class Job51Service {
             r.createdAt = e.getCreateTime();
             r.industry = e.getCompIndustry();
             r.companyScale = e.getCompScale();
+            r.aiScore = e.getAiScore();
+            r.aiDecision = e.getAiDecision();
+            r.aiReason = e.getAiReason();
+            r.priorityCompany = e.getPriorityCompany();
             rows.add(r);
         }
 
@@ -722,6 +732,13 @@ public class Job51Service {
         if (profileId == null || jobId == null) return null;
         QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
         wrapper.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
+        return job51Mapper.selectOne(wrapper);
+    }
+
+    public Job51Entity getJob51ById(Long id) {
+        if (id == null) return null;
+        QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId()).eq("id", id).last("LIMIT 1");
         return job51Mapper.selectOne(wrapper);
     }
 

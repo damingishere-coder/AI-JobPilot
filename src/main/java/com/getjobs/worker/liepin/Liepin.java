@@ -61,6 +61,8 @@ public class Liepin {
     private ProgressCallback progressCallback;
     @Setter
     private Supplier<Boolean> shouldStopCallback;
+    @Setter
+    private boolean scanOnly;
 
     public void prepare() {
         this.startDate = new Date();
@@ -269,9 +271,13 @@ public class Liepin {
                     } catch (Exception ignored) { return false; }
                 }, () -> {});
             } catch (Exception ignored) {}
-            info(String.format("正在投递【%s】第【%d】页...", cleanKeyword, i + 1));
-            submitJob();
-            info(String.format("已投递第【%d】页所有的岗位...", i + 1));
+            if (scanOnly) {
+                info(String.format("已采集【%s】第【%d】页；只读模式未执行投递", cleanKeyword, i + 1));
+            } else {
+                info(String.format("正在投递【%s】第【%d】页...", cleanKeyword, i + 1));
+                submitJob();
+                info(String.format("已投递第【%d】页所有的岗位...", i + 1));
+            }
             
             // 查找下一页按钮（AntD v5 结构）
             paginationBox = page.locator(PAGINATION_BOX);
@@ -293,7 +299,7 @@ public class Liepin {
                 break;
             }
         }
-        info(String.format("【%s】关键词投递完成！", cleanKeyword));
+        info(String.format("【%s】关键词%s完成！", cleanKeyword, scanOnly ? "采集" : "投递"));
     }
 
     private String getSearchUrl() {

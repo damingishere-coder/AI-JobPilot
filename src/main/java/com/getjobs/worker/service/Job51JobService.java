@@ -36,6 +36,14 @@ public class Job51JobService implements JobPlatformService {
 
     @Override
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
+        execute(progressCallback, false);
+    }
+
+    public void executeCollection(Consumer<JobProgressMessage> progressCallback) {
+        execute(progressCallback, true);
+    }
+
+    private void execute(Consumer<JobProgressMessage> progressCallback, boolean scanOnly) {
         if (isRunning) {
             progressCallback.accept(JobProgressMessage.warning(PLATFORM, "任务已在运行中"));
             return;
@@ -66,7 +74,7 @@ public class Job51JobService implements JobPlatformService {
             Job51Config config = configService.getJob51Config();
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
-            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始投递任务..."));
+            progressCallback.accept(JobProgressMessage.info(PLATFORM, scanOnly ? "开始只读采集任务..." : "开始投递任务..."));
 
             // 创建Job51实例并执行投递
             Job51.ProgressCallback job51Callback = (message, current, total) -> {
@@ -89,12 +97,15 @@ public class Job51JobService implements JobPlatformService {
             job51.setConfig(config);
             job51.setProgressCallback(job51Callback);
             job51.setShouldStopCallback(this::shouldStop);
+            job51.setScanOnly(scanOnly);
             job51.prepare();
 
             int deliveredCount = job51.execute();
 
-            progressCallback.accept(JobProgressMessage.warning(PLATFORM,
-                String.format("51job已发起%d个候选动作；平台未提供逐条确认，结果已进入待对账状态", deliveredCount)));
+            progressCallback.accept(scanOnly
+                    ? JobProgressMessage.info(PLATFORM, "51job只读采集完成，未执行真实投递")
+                    : JobProgressMessage.warning(PLATFORM,
+                    String.format("51job已发起%d个候选动作；平台未提供逐条确认，结果已进入待对账状态", deliveredCount)));
         } catch (Exception e) {
             log.error("51job投递任务执行失败", e);
             progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));

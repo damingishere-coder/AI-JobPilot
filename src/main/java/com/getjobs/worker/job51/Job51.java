@@ -41,6 +41,7 @@ public class Job51 {
     private boolean reachedDailyLimit = false;
     private final java.util.Set<String> processedRequestIds = new java.util.HashSet<>();
     private int currentPageNum = 0;
+    private boolean scanOnly;
 
     private static final int DEFAULT_MAX_PAGE = 50;
     private static final String BASE_URL = "https://we.51job.com/pc/search?";
@@ -50,6 +51,7 @@ public class Job51 {
     public void setConfig(Job51Config config) { this.config = config; }
     public void setProgressCallback(ProgressCallback progressCallback) { this.progressCallback = progressCallback; }
     public void setShouldStopCallback(Supplier<Boolean> shouldStopCallback) { this.shouldStopCallback = shouldStopCallback; }
+    public void setScanOnly(boolean scanOnly) { this.scanOnly = scanOnly; }
 
     /**
      * 进度回调接口
@@ -73,7 +75,7 @@ public class Job51 {
      * @return 投递数量
      */
     public int execute() {
-        log.info("51job投递任务开始...");
+        log.info("51job{}任务开始...", scanOnly ? "采集" : "投递");
         long startTime = System.currentTimeMillis();
 
         try {
@@ -89,8 +91,9 @@ public class Job51 {
             }
 
             long duration = System.currentTimeMillis() - startTime;
-            String message = String.format("51job投递完成，共投递%d个简历，用时%s",
-                resultList.size(), formatDuration(duration));
+            String message = scanOnly
+                    ? String.format("51job只读采集完成，未执行真实投递，用时%s", formatDuration(duration))
+                    : String.format("51job投递完成，共投递%d个简历，用时%s", resultList.size(), formatDuration(duration));
             log.info(message);
             sendProgress(message, null, null);
 
@@ -200,7 +203,7 @@ public class Job51 {
                     return;
                 }
 
-                sendProgress(String.format("正在投递第%d页", pageNum), pageNum, DEFAULT_MAX_PAGE);
+                sendProgress(String.format("正在%s第%d页", scanOnly ? "采集" : "投递", pageNum), pageNum, DEFAULT_MAX_PAGE);
                 currentPageNum = pageNum;
 
                 // 跳转到指定页码
@@ -224,8 +227,10 @@ public class Job51 {
                     }
                 } catch (Exception ignored) {}
 
-                // 投递当前页面的所有职位
-                deliverCurrentPage();
+                // 搜索接口响应已由监听器持久化；只读模式绝不勾选岗位或点击批量投递。
+                if (!scanOnly) {
+                    deliverCurrentPage();
+                }
                 if (reachedDailyLimit) break;
 
                 PlaywrightUtil.sleep(3);

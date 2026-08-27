@@ -286,7 +286,6 @@ public class ZhilianService {
         if (entity.getJobId() != null && !entity.getJobId().isBlank()) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("profile_id", profileId).eq("job_id", entity.getJobId());
-            applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
@@ -295,7 +294,6 @@ public class ZhilianService {
             wrapper.eq("profile_id", profileId)
                     .eq("job_title", entity.getJobTitle())
                     .eq("company_name", entity.getCompanyName());
-            applyScanRunFilter(wrapper, scanRunId);
             wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
@@ -323,12 +321,6 @@ public class ZhilianService {
         entity.setPriorityCompany(existing.getPriorityCompany());
         zhilianJobDataMapper.updateById(entity);
         return zhilianJobDataMapper.selectById(existing.getId());
-    }
-
-    private void applyScanRunFilter(QueryWrapper<ZhilianJobDataEntity> wrapper, String scanRunId) {
-        if (scanRunId != null && !scanRunId.isBlank()) {
-            wrapper.eq("scan_run_id", scanRunId.trim());
-        }
     }
 
     private String firstNonBlank(String... values) {
@@ -822,6 +814,7 @@ public class ZhilianService {
 
             int analysisDeleted;
             int tasksDeleted;
+            int draftsDeleted;
             int jobsDeleted;
             try (Statement st = conn.createStatement()) {
                 Long profileId = profileService.getCurrentProfileId();
@@ -837,6 +830,7 @@ public class ZhilianService {
                     }
                 }
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
+                draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data WHERE profile_id=" + profileId);
             }
 
@@ -846,6 +840,7 @@ public class ZhilianService {
             resp.put("jobsDeleted", jobsDeleted);
             resp.put("analysisDeleted", analysisDeleted);
             resp.put("tasksDeleted", tasksDeleted);
+            resp.put("draftsDeleted", draftsDeleted);
             resp.put("total", 0);
         } catch (Exception e) {
             try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}

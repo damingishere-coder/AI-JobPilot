@@ -22,8 +22,15 @@
 - src/test/java/**
 - front/app/boss/analysis/**
 - front/app/zhilian/analysis/**
+- front/app/liepin/**
+- front/app/51job/**
+- front/components/communication/**
 - front/lib/**
-- README.md、ROADMAP.md、CHANGELOG.md、doc/使用指南.md、PROJECT_AUDIT.md
+- src/main/java/com/getjobs/worker/job51/**
+- src/main/java/com/getjobs/worker/liepin/**
+- src/main/java/com/getjobs/worker/service/Job51JobService.java
+- src/main/java/com/getjobs/worker/service/LiepinJobService.java
+- README.md、README.en.md、ROADMAP.md、CHANGELOG.md、doc/使用指南.md、PROJECT_AUDIT.md
 - 本任务文件
 
 ## 禁止修改范围
@@ -40,6 +47,7 @@
 - PlatformAdapter 负责能力声明和岗位分析输入规范化，不强制共享 DOM 实现。
 - 四个平台只能声明一个正式执行模式；日志使用 profileId、runId、requestKey 关联。
 - 用户沟通草稿与 AI 原始 greeting 分开存储，使用 Flyway 新迁移和乐观并发字段。
+- 草稿写接口使用进程级本地操作令牌；确认请求携带页面已审核的话术快照，变化时失败关闭。
 - 最终话术优先级为：用户编辑稿、AI greeting、档案默认话术、空白警告。
 - 单个和批量确认都必须在对外动作前展示最终话术；本任务不增加独立自动发送入口。
 - 真实平台 smoke 第一轮停止在待确认队列。

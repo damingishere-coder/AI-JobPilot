@@ -5,6 +5,7 @@ import { BiBarChart, BiBriefcase, BiTrash } from "react-icons/bi"
 
 import PageHeader from "@/app/components/PageHeader"
 import { Button } from "@/components/ui/button"
+import { GreetingDraftDialog, type GreetingJob } from "@/components/communication/GreetingDraftDialog"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { BatchActionBar } from "./components/BatchActionBar"
 import { BossChartPanel } from "./components/BossChartPanel"
@@ -20,6 +21,7 @@ import { useBossJobs } from "./hooks/useBossJobs"
 import { useBossStats } from "./hooks/useBossStats"
 import { useCsvExport } from "./hooks/useCsvExport"
 import { canManualDeliverAiNotMatch } from "./utils"
+import type { BossJob } from "./types"
 
 export default function AnalysisContent({
   showHeader = false,
@@ -37,6 +39,8 @@ export default function AnalysisContent({
   const [dialogTitle, setDialogTitle] = useState("")
   const [dialogContent, setDialogContent] = useState("")
   const [selectedManualJobIds, setSelectedManualJobIds] = useState<Set<number>>(new Set())
+  const [greetingJob, setGreetingJob] = useState<BossJob | null>(null)
+  const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
 
   const {
     filters,
@@ -173,6 +177,22 @@ export default function AnalysisContent({
     void clearAnalysisData()
   }, [clearAnalysisData])
 
+  const openGreetingDialog = useCallback((job: BossJob, confirmMode: boolean) => {
+    setGreetingJob(job)
+    setGreetingConfirmMode(confirmMode)
+  }, [])
+
+  const greetingDialogJob = useMemo<GreetingJob | null>(() => greetingJob ? ({
+    id: greetingJob.id,
+    companyName: greetingJob.companyName,
+    jobName: greetingJob.jobName,
+    aiGreeting: greetingJob.aiGreeting || "",
+    greetingDraft: greetingJob.greetingDraft || "",
+    greetingSource: greetingJob.greetingSource || "EMPTY",
+    greetingUpdatedAt: greetingJob.greetingUpdatedAt || null,
+    finalGreeting: greetingJob.finalGreeting || "",
+  }) : null, [greetingJob])
+
   useEffect(() => {
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,7 +290,8 @@ export default function AnalysisContent({
             onResetToPendingFilters={resetToPendingFilters}
             onConfirmAiRecommendedBatch={handleConfirmAiRecommendedBatch}
             onOpenText={openTextDialog}
-            onConfirmJob={handleConfirmJob}
+            onConfirmJob={(job) => openGreetingDialog(job, true)}
+            onEditGreeting={(job) => openGreetingDialog(job, false)}
             onSkipJob={handleSkipJob}
             onBlacklistCompany={handleBlacklistCompany}
           />
@@ -288,7 +309,7 @@ export default function AnalysisContent({
             actingManualBatch={actingManualBatch}
             selectedManualJobIds={selectedManualJobIds}
             onOpenText={openTextDialog}
-            onConfirmJob={handleConfirmJob}
+            onConfirmJob={(job) => openGreetingDialog(job, true)}
             onReconcileJob={handleReconcileJob}
             onRetryJob={handleRetryJob}
             onSkipJob={handleSkipJob}
@@ -313,6 +334,22 @@ export default function AnalysisContent({
         title={dialogTitle}
         content={dialogContent}
         onClose={() => setShowDialog(false)}
+      />
+      <GreetingDraftDialog
+        open={Boolean(greetingJob)}
+        platform="boss"
+        job={greetingDialogJob}
+        confirmMode={greetingConfirmMode}
+        submitting={actingJobId === greetingJob?.id}
+        onClose={() => setGreetingJob(null)}
+        onSaved={async () => {
+          await loadList(page, size)
+        }}
+        onConfirm={async (reviewedJob) => {
+          if (!greetingJob) return
+          await handleConfirmJob(greetingJob, reviewedJob.finalGreeting)
+          setGreetingJob(null)
+        }}
       />
     </div>
   )

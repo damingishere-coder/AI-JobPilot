@@ -282,11 +282,11 @@ export default function LiepinPage() {
               </Button>
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="app-button-danger px-4">
-                <BiStop className="mr-1" /> 停止投递
+                <BiStop className="mr-1" /> 停止采集
               </Button>
             ) : (
               <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
-                <BiPlay className="mr-1" /> 开始投递
+                <BiPlay className="mr-1" /> 开始只读采集
               </Button>
             )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
@@ -313,12 +313,12 @@ export default function LiepinPage() {
               <BiBriefcase className="text-primary" />
               猎聘平台说明
             </CardTitle>
-            <CardDescription>登录与投递操作提示</CardDescription>
+            <CardDescription>登录与只读采集操作提示</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">请在浏览器标签页中登录 猎聘 平台，登录成功后系统会自动检测登录状态。</p>
-              <p className="text-sm text-muted-foreground">登录成功后，点击“开始投递”按钮启动自动投递任务。</p>
+              <p className="text-sm text-muted-foreground">登录成功后，点击“开始只读采集”获取岗位；该按钮不会执行真实投递。</p>
               <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
             </div>
           </CardContent>

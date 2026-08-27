@@ -71,6 +71,21 @@ public class ZhilianJobDataEntity {
     @TableField("priority_company")
     private Integer priorityCompany;
 
+    @TableField(exist = false)
+    private String aiGreeting;
+
+    @TableField(exist = false)
+    private String greetingDraft;
+
+    @TableField(exist = false)
+    private String greetingSource;
+
+    @TableField(exist = false)
+    private LocalDateTime greetingUpdatedAt;
+
+    @TableField(exist = false)
+    private String finalGreeting;
+
     @TableField("create_time")
     private LocalDateTime createTime;
 

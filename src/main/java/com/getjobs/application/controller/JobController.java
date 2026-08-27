@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -379,9 +380,18 @@ public class JobController {
 
     /** 启动51job自动投递任务 */
     @PostMapping("/51job/start")
-    public ResponseEntity<Map<String, Object>> start51jobJob() {
+    public ResponseEntity<Map<String, Object>> start51jobJob(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "X-Real-Delivery-Confirmation", required = false) String deliveryConfirmation) {
         Map<String, Object> response = new HashMap<>();
         try {
+            boolean deliveryMode = request != null && "delivery".equalsIgnoreCase(Objects.toString(request.get("mode"), ""));
+            if (deliveryMode && !"CONFIRM_REAL_DELIVERY".equals(deliveryConfirmation)) {
+                response.put("success", false);
+                response.put("message", "真实投递模式需要操作当时再次确认；未提供有效确认头");
+                response.put("status", "confirmation_required");
+                return ResponseEntity.badRequest().body(response);
+            }
             if (!playwrightManager.isLoggedIn("51job")) {
                 response.put("success", false);
                 response.put("message", "请先登录51job");
@@ -396,18 +406,21 @@ public class JobController {
             }
             CompletableFuture.runAsync(() -> {
                 try {
-                    job51JobService.executeDelivery(pm -> {
+                    java.util.function.Consumer<JobProgressMessage> progress = pm -> {
                         sendJob51Progress(pm);
                         log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-                    });
+                    };
+                    if (deliveryMode) job51JobService.executeDelivery(progress);
+                    else job51JobService.executeCollection(progress);
                 } catch (Exception e) {
                     log.error("51job异步任务执行失败", e);
                     sendJob51Progress(JobProgressMessage.error("51job", "51job任务执行失败，请查看后端日志"));
                 }
             }, jobTaskExecutor);
             response.put("success", true);
-            response.put("message", "51job任务启动成功");
+            response.put("message", deliveryMode ? "51job投递任务启动成功" : "51job只读采集任务启动成功，不会执行真实投递");
             response.put("status", "started");
+            response.put("mode", deliveryMode ? "delivery" : "collection");
             log.info("通过API启动51job任务成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
