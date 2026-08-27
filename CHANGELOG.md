@@ -8,6 +8,10 @@
 
 ### Added
 
+- 本机副作用接口令牌、严格 URL/扩展来源边界和独立 readiness 检查
+- 可审计的投递 attempt、`UNKNOWN` 人工对账与显式重试
+- 持久化 AI 分析任务、租约、重启恢复和 Provider 有界重试
+- Liepin / 51job Profile 隔离的 Flyway V8 迁移与副本演练测试
 - CodeQL Java / Kotlin 与 JavaScript / TypeScript 安全扫描
 - Chrome 扩展 Manifest、引用文件和 JavaScript 语法自动校验
 - Docker Compose 与 Dockerfile 阶段配置检查
@@ -19,6 +23,9 @@
 
 ### Changed
 
+- Next.js / React 升级到已修复的兼容版本，生产依赖审计无已知漏洞
+- 平台说明区分 Boss / 智联统一 AI 主链与猎聘 / 51job 兼容链
+- 启动文档区分 `/api/health` 存活状态与 `/api/ready` 业务就绪状态
 - CI 从后端与前端双任务扩展为后端、前端、Chrome 扩展和 Docker 配置四类检查
 - Dependabot 默认只自动提交 Minor 与 Patch 更新，避免未经评估的大版本升级
 - 中英文 README 增加 CodeQL、Release、下载说明和文档中心入口

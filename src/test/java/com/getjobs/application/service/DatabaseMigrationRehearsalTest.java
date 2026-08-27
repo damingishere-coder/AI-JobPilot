@@ -57,6 +57,7 @@ class DatabaseMigrationRehearsalTest {
         try (Connection connection = DriverManager.getConnection(rehearsalUrl)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalarText(connection, "PRAGMA integrity_check")).isEqualTo("ok");
+            assertThat(rowCount(connection, "PRAGMA foreign_key_check")).isZero();
             assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='8'"))
                     .isEqualTo(1L);
@@ -99,6 +100,16 @@ class DatabaseMigrationRehearsalTest {
     private String scalarText(Connection connection, String sql) throws Exception {
         try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
             return resultSet.next() ? resultSet.getString(1) : null;
+        }
+    }
+
+    private long rowCount(Connection connection, String sql) throws Exception {
+        try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
+            long count = 0;
+            while (resultSet.next()) {
+                count++;
+            }
+            return count;
         }
     }
 
