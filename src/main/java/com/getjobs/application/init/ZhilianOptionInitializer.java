@@ -10,14 +10,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import javax.sql.DataSource;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.sql.Connection;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -37,13 +36,11 @@ public class ZhilianOptionInitializer implements CommandLineRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(12);
 
-    private final DataSource dataSource;
     private final ZhilianOptionMapper zhilianOptionMapper;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
     public void run(String... args) {
-        ensureTableExists();
-
         List<OptionSeed> options;
         try {
             options = loadOfficialOptions();
@@ -53,24 +50,15 @@ public class ZhilianOptionInitializer implements CommandLineRunner {
             log.warn("智联官方筛选项同步失败，使用内置兜底选项：{}", e.getMessage());
         }
 
-        replaceCityAndSalaryOptions(options);
+        replaceCityAndSalaryOptionsAtomically(options);
     }
 
-    private void ensureTableExists() {
-        String ddl = "CREATE TABLE IF NOT EXISTS zhilian_option (" +
-                " id INTEGER PRIMARY KEY AUTOINCREMENT," +
-                " type VARCHAR(50)," +
-                " name VARCHAR(100)," +
-                " code VARCHAR(100)," +
-                " sort_order INTEGER," +
-                " created_at DATETIME," +
-                " updated_at DATETIME" +
-                ")";
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute(ddl);
-            log.info("确保 zhilian_option 表已存在");
-        } catch (Exception e) {
-            log.warn("创建 zhilian_option 表失败: {}", e.getMessage());
+    void replaceCityAndSalaryOptionsAtomically(List<OptionSeed> options) {
+        try {
+            new TransactionTemplate(transactionManager)
+                    .executeWithoutResult(status -> replaceCityAndSalaryOptions(options));
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("刷新智联城市/薪资筛选项失败，已回滚", e);
         }
     }
 
@@ -104,25 +92,21 @@ public class ZhilianOptionInitializer implements CommandLineRunner {
 
     private void replaceCityAndSalaryOptions(List<OptionSeed> options) {
         LocalDateTime now = LocalDateTime.now();
-        try {
-            zhilianOptionMapper.delete(
-                    new QueryWrapper<ZhilianOptionEntity>()
-                            .in("type", List.of("city", "salary"))
-            );
-            for (OptionSeed option : options) {
-                ZhilianOptionEntity entity = new ZhilianOptionEntity();
-                entity.setType(option.type());
-                entity.setName(option.name());
-                entity.setCode(option.code());
-                entity.setSortOrder(option.sortOrder());
-                entity.setCreatedAt(now);
-                entity.setUpdatedAt(now);
-                zhilianOptionMapper.insert(entity);
-            }
-            log.info("智联城市/薪资筛选项刷新完成：{} 条", options.size());
-        } catch (Exception e) {
-            log.warn("刷新智联城市/薪资筛选项失败: {}", e.getMessage());
+        zhilianOptionMapper.delete(
+                new QueryWrapper<ZhilianOptionEntity>()
+                        .in("type", List.of("city", "salary"))
+        );
+        for (OptionSeed option : options) {
+            ZhilianOptionEntity entity = new ZhilianOptionEntity();
+            entity.setType(option.type());
+            entity.setName(option.name());
+            entity.setCode(option.code());
+            entity.setSortOrder(option.sortOrder());
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
+            zhilianOptionMapper.insert(entity);
         }
+        log.info("智联城市/薪资筛选项刷新完成：{} 条", options.size());
     }
 
     static List<OptionSeed> buildOptionsFromOfficialBaseData(JsonNode data) {

@@ -1,6 +1,7 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.service.CookieService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import lombok.RequiredArgsConstructor;
@@ -38,19 +39,7 @@ public class CookieController {
             }
 
             CookieEntity cookie = cookieService.getCookieByPlatform(platform);
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", platform);
-                data.put("cookie_value", null);
-                data.put("message", "未找到Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, platform, "未找到Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);

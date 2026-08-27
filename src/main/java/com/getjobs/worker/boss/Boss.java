@@ -71,8 +71,6 @@ public class Boss {
     // 通过 Lombok @RequiredArgsConstructor 使用构造器注入 bossService 与 aiService
 
     public void prepare() {
-        // 调整 boss_data 表结构：将 encrypt_id、encrypt_user_id 前置
-        try { bossService.ensureBossDataColumnOrder(); } catch (Throwable ignore) {}
         // 从数据库加载黑名单
         this.blackCompanies = bossService.getBlackCompanies();
         this.blackRecruiters = bossService.getBlackRecruiters();

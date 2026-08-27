@@ -72,6 +72,9 @@ foreach ($dir in @($DbDir, $DataDir, $OutputDir, $CacheDir, $LogDir, $ChromeProf
 if (-not $env:SPRING_DATASOURCE_URL) {
     $env:SPRING_DATASOURCE_URL = "jdbc:sqlite:$(Join-Path $DbDir 'getjobs.db')"
 }
+if (-not $env:SERVER_ADDRESS) {
+    $env:SERVER_ADDRESS = "127.0.0.1"
+}
 if (-not $env:APP_DATA_DIR) {
     $env:APP_DATA_DIR = $DataDir
 }

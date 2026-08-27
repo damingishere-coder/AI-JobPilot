@@ -86,8 +86,8 @@ public class LiepinJobService implements JobPlatformService {
 
             int deliveredCount = liepin.execute();
 
-            progressCallback.accept(JobProgressMessage.success(PLATFORM,
-                String.format("投递任务完成，共发起%d个聊天", deliveredCount)));
+            progressCallback.accept(JobProgressMessage.warning(PLATFORM,
+                String.format("猎聘已发起%d个聊天动作；只有明确既有会话才记为确认，其余进入待对账", deliveredCount)));
         } catch (Exception e) {
             log.error("猎聘投递任务执行失败", e);
             progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));

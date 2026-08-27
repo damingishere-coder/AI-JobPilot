@@ -59,6 +59,8 @@ export function badgeClass(kind: "delivery" | "hr" | "recruitment", value?: stri
   if (kind === "delivery") {
     if (v.includes("已投递")) return `${base} bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300`
     if (v.includes("待确认")) return `${base} bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300`
+    if (v.includes("投递确认中")) return `${base} bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300`
+    if (v.includes("投递结果待确认")) return `${base} bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300`
     if (v === "LIST_COLLECTED") return `${base} bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300`
     if (v.includes("AI分析中")) return `${base} bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300`
     if (v.includes("采集信息不足")) return `${base} bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300`

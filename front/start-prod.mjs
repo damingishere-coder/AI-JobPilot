@@ -13,7 +13,7 @@ delete require.cache[require.resolve(configPath)];
 const config = require(configPath);
 
 const port = config.production?.port || config.port || 6866;
-const hostname = config.production?.hostname || '0.0.0.0';
+const hostname = process.env.FRONTEND_HOST || config.production?.hostname || '127.0.0.1';
 const outDir = path.resolve(__dirname, 'out');
 
 const contentTypes = new Map([
@@ -74,7 +74,17 @@ function contentTypeFor(filePath) {
 }
 
 const server = http.createServer((req, res) => {
-  const filePath = resolveStaticFile(req.url);
+  let filePath;
+  try {
+    filePath = resolveStaticFile(req.url);
+  } catch (error) {
+    if (error instanceof URIError) {
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Bad Request');
+      return;
+    }
+    throw error;
+  }
   const exists = isReadableFile(filePath);
   res.writeHead(exists ? 200 : 404, {
     'Content-Type': contentTypeFor(filePath),

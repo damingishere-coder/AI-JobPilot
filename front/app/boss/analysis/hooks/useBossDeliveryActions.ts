@@ -6,6 +6,72 @@ import { API_BASE } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import type { BossJob, FilterState } from "../types"
 
+type ReservedTask = { id?: number; requestKey?: string }
+
+async function postJsonWithRetry(url: string, body?: unknown) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      return await response.json()
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("投递请求未收到响应")
+}
+
+function unresolvedReservations(tasks: ReservedTask[], result: Record<string, unknown>) {
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return tasks
+  const persistedKeys = new Set(rows.map((row) => {
+    if (!row || typeof row !== "object") return ""
+    const item = row as { requestKey?: unknown; persisted?: unknown }
+    return item.persisted === true ? String(item.requestKey || "") : ""
+  }))
+  return tasks.filter((task) => !task.requestKey || !persistedKeys.has(task.requestKey))
+}
+
+function formatBatchDeliveryResult(result: Record<string, unknown>) {
+  const summary = String(result.message || "批量投递任务已结束。")
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return summary
+  const details = rows.slice(0, 50).map((row, index) => {
+    const item = row && typeof row === "object"
+      ? row as { id?: unknown; requestKey?: unknown; outcome?: unknown; evidence?: unknown; persisted?: unknown; message?: unknown }
+      : {}
+    const persisted = item.persisted === true ? "已落库" : "待补偿"
+    return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
+  })
+  return `${summary}\n\n逐条结果：\n${details.join("\n")}`
+}
+
+async function markUnknownReservations(tasks: ReservedTask[], reason: string) {
+  const results = await Promise.allSettled(tasks.map(async (task) => {
+    if (!task.id || !task.requestKey) return
+    const response = await fetch(`${API_BASE}/api/boss/jobs/${task.id}/delivery-result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestKey: task.requestKey,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        message: reason,
+      }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.success === false) {
+      throw new Error(data.message || "Boss UNKNOWN 状态回写失败")
+    }
+  }))
+  const failed = results.filter((result) => result.status === "rejected")
+  if (failed.length > 0) console.error("Boss UNKNOWN 状态回写失败", failed)
+}
+
 export function useBossDeliveryActions({
   filters,
   activeScanRunId,
@@ -57,26 +123,83 @@ export function useBossDeliveryActions({
   }, [openTextDialog])
 
   const handleConfirmJob = useCallback(async (job: BossJob) => {
+    let reservedTasks: ReservedTask[] = []
     try {
       setActingJobId(job.id)
-      const res = await fetch(`${API_BASE}/api/boss/jobs/${job.id}/confirm`, { method: "POST" })
-      const data = await res.json()
+      const ok = window.confirm(`将通过 Chrome 真实联系 Boss HR：${job.companyName || ""} / ${job.jobName || ""}。确认继续？`)
+      if (!ok) return
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/confirm`)
       if (!data.success) {
         openTextDialog("确认投递", data.message || "该岗位暂不能投递。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实联系 Boss HR：${job.companyName || ""} / ${job.jobName || ""}。确认继续？`)
-      if (!ok) return
+      reservedTasks = [data.task]
       const result = await sendChromeBridgeMessage({
         type: "BOSS_DELIVER_ONE",
         platform: "boss",
         task: data.task,
       }, 120000)
+      if (result.persisted !== true) {
+        await markUnknownReservations(reservedTasks, result.message || "Chrome Bridge 未返回岗位结果")
+      }
       openTextDialog("确认投递", result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
       await refreshStats()
     } catch {
+      await markUnknownReservations(reservedTasks, "前端未收到 Chrome 投递执行结果")
       openTextDialog("待确认发送", "确认失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }, [loadList, openTextDialog, page, refreshStats, size])
+
+  const handleReconcileJob = useCallback(async (job: BossJob) => {
+    const answer = window.prompt(
+      "请先在 Boss 平台核对该岗位。输入“已投递”确认成功，输入“未投递”确认失败；其他内容不会修改状态。",
+    )?.trim()
+    if (answer !== "已投递" && answer !== "未投递") return
+    try {
+      setActingJobId(job.id)
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/delivery-reconcile`, {
+        outcome: answer === "已投递" ? "CONFIRMED" : "FAILED",
+        message: `用户在 Boss 平台人工核对：${answer}`,
+      })
+      openTextDialog("人工对账", data.message || (data.success ? "人工对账已保存。" : "人工对账失败。"))
+      await loadList(page, size)
+      await refreshStats()
+    } catch {
+      openTextDialog("人工对账", "人工对账失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }, [loadList, openTextDialog, page, refreshStats, size])
+
+  const handleRetryJob = useCallback(async (job: BossJob) => {
+    let reservedTasks: ReservedTask[] = []
+    const ok = window.confirm("这会创建新的投递 attempt，并可能再次联系该 Boss HR。确认显式重试？")
+    if (!ok) return
+    try {
+      setActingJobId(job.id)
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/delivery-retry`)
+      if (!data.success || !data.task) {
+        openTextDialog("重试投递", data.message || "当前岗位不能重试。")
+        return
+      }
+      reservedTasks = [data.task]
+      const result = await sendChromeBridgeMessage({
+        type: "BOSS_DELIVER_ONE",
+        platform: "boss",
+        task: data.task,
+      }, 120000)
+      if (result.persisted !== true) {
+        await markUnknownReservations(reservedTasks, result.message || "Chrome 重试结果未确认写入")
+      }
+      openTextDialog("重试投递", result.message || "重试任务已结束。")
+      await loadList(page, size)
+      await refreshStats()
+    } catch {
+      await markUnknownReservations(reservedTasks, "前端未收到 Chrome 重试执行结果")
+      openTextDialog("重试投递", "重试失败：网络或服务异常，已保守标记待对账。")
     } finally {
       setActingJobId(null)
     }
@@ -95,30 +218,32 @@ export function useBossDeliveryActions({
   }), [activeScanRunId, filters])
 
   const handleConfirmBatch = useCallback(async () => {
+    let reservedTasks: ReservedTask[] = []
     try {
       setActingBatch(true)
-      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentBatchFilters()),
-      })
-      const data = await res.json()
+      const ok = window.confirm("将通过 Chrome 真实联系当前筛选范围内的 Boss 待确认岗位。确认继续？")
+      if (!ok) return
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, currentBatchFilters())
       const tasks = data.tasks || []
+      reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
         openTextDialog("批量投递", data.message || "当前筛选条件下没有待确认岗位。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实联系 ${tasks.length} 个 Boss 待确认岗位。确认继续？`)
-      if (!ok) return
       const result = await sendChromeBridgeMessage({
         type: "BOSS_DELIVER_BATCH",
         platform: "boss",
         tasks,
       }, Math.max(120000, tasks.length * 30000))
-      openTextDialog("批量投递", result.message || "批量投递任务已结束。")
+      const unresolved = unresolvedReservations(reservedTasks, result)
+      if (unresolved.length > 0) {
+        await markUnknownReservations(unresolved, result.message || "Chrome Bridge 未确认写入完整批量结果")
+      }
+      openTextDialog("批量投递", formatBatchDeliveryResult(result))
       await loadList(page, size)
       await refreshStats()
     } catch {
+      await markUnknownReservations(reservedTasks, "前端未收到 Chrome 批量投递执行结果")
       openTextDialog("批量投递", "批量投递失败：网络或服务异常。")
     } finally {
       setActingBatch(false)
@@ -126,30 +251,35 @@ export function useBossDeliveryActions({
   }, [currentBatchFilters, loadList, openTextDialog, page, refreshStats, size])
 
   const handleConfirmAiRecommendedBatch = useCallback(async () => {
+    let reservedTasks: ReservedTask[] = []
     try {
       setActingAiBatch(true)
-      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aiRecommendedOnly: true, scanRunId: activeScanRunId || undefined }),
+      const ok = window.confirm("将通过 Chrome 真实联系当前批次中 AI 推荐的 Boss 待确认岗位。确认继续？")
+      if (!ok) return
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        aiRecommendedOnly: true,
+        scanRunId: activeScanRunId || undefined,
       })
-      const data = await res.json()
       const tasks = data.tasks || []
+      reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
         openTextDialog("AI推荐一键投递", data.message || "当前没有 AI 推荐的待确认岗位。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实联系 ${tasks.length} 个 Boss AI推荐待确认岗位。确认继续？`)
-      if (!ok) return
       const result = await sendChromeBridgeMessage({
         type: "BOSS_DELIVER_BATCH",
         platform: "boss",
         tasks,
       }, Math.max(120000, tasks.length * 30000))
-      openTextDialog("AI推荐一键投递", result.message || "AI推荐批量投递任务已结束。")
+      const unresolved = unresolvedReservations(reservedTasks, result)
+      if (unresolved.length > 0) {
+        await markUnknownReservations(unresolved, result.message || "Chrome Bridge 未确认写入完整批量结果")
+      }
+      openTextDialog("AI推荐一键投递", formatBatchDeliveryResult(result))
       await loadList(page, size)
       await refreshStats()
     } catch {
+      await markUnknownReservations(reservedTasks, "前端未收到 Chrome AI 推荐批量投递结果")
       openTextDialog("AI推荐一键投递", "AI推荐批量投递失败：网络或服务异常。")
     } finally {
       setActingAiBatch(false)
@@ -163,39 +293,40 @@ export function useBossDeliveryActions({
       return false
     }
 
+    let reservedTasks: ReservedTask[] = []
     try {
       setActingManualBatch(true)
-      const res = await fetch(`${API_BASE}/api/boss/jobs/confirm-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ids: uniqueIds,
-          manualOverrideAiNotMatch: true,
-        }),
+      const ok = window.confirm(
+        `AI 已将这些岗位判定为不匹配。你正在按人工判断强制投递 ${uniqueIds.length} 个岗位，`
+        + "将通过 Chrome 真实联系 Boss HR。确认继续？",
+      )
+      if (!ok) return false
+      const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
+        ids: uniqueIds,
+        manualOverrideAiNotMatch: true,
       })
-      const data = await res.json()
       const tasks = data.tasks || []
+      reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
         openTextDialog("人工投递", data.message || "所选岗位中没有可人工投递的AI不匹配岗位。")
         return false
       }
-
-      const ok = window.confirm(
-        `AI 已将这些岗位判定为不匹配。你正在按人工判断强制投递 ${tasks.length} 个岗位，`
-        + `将通过 Chrome 真实联系 Boss HR。确认继续？${data.message ? `\n\n${data.message}` : ""}`,
-      )
-      if (!ok) return false
 
       const result = await sendChromeBridgeMessage({
         type: "BOSS_DELIVER_BATCH",
         platform: "boss",
         tasks,
       }, Math.max(120000, tasks.length * 30000))
-      openTextDialog("人工投递", result.message || "人工批量投递任务已结束。")
+      const unresolved = unresolvedReservations(reservedTasks, result)
+      if (unresolved.length > 0) {
+        await markUnknownReservations(unresolved, result.message || "Chrome Bridge 未确认写入完整批量结果")
+      }
+      openTextDialog("人工投递", formatBatchDeliveryResult(result))
       await loadList(page, size)
       await refreshStats()
       return true
     } catch {
+      await markUnknownReservations(reservedTasks, "前端未收到 Chrome 人工批量投递结果")
       openTextDialog("人工投递", "人工批量投递失败：网络或服务异常。")
       return false
     } finally {
@@ -254,6 +385,8 @@ export function useBossDeliveryActions({
     handleConfirmBatch,
     handleConfirmAiRecommendedBatch,
     handleConfirmManualBatch,
+    handleReconcileJob,
+    handleRetryJob,
     handleSkipJob,
     clearAnalysisData,
   }

@@ -1,5 +1,6 @@
 package com.getjobs.application.controller;
 
+import com.getjobs.application.service.ApplicationReadinessService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
@@ -19,7 +20,7 @@ class HealthControllerTest {
         when(playwrightManager.isInitializing()).thenReturn(false);
         when(playwrightManager.getLastInitializationError()).thenReturn("浏览器启动失败");
 
-        HealthController controller = new HealthController(playwrightManager);
+        HealthController controller = controller(playwrightManager);
         ResponseEntity<Map<String, Object>> response = controller.health();
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
@@ -39,7 +40,7 @@ class HealthControllerTest {
         PlaywrightManager playwrightManager = mock(PlaywrightManager.class);
         when(playwrightManager.isInitialized()).thenReturn(true);
 
-        HealthController controller = new HealthController(playwrightManager);
+        HealthController controller = controller(playwrightManager);
 
         assertThat(controller.health().getBody()).containsEntry("status", "UP");
     }
@@ -51,7 +52,7 @@ class HealthControllerTest {
         when(playwrightManager.isInitializing()).thenReturn(false);
         when(playwrightManager.getLastInitializationError()).thenReturn("");
 
-        HealthController controller = new HealthController(playwrightManager);
+        HealthController controller = controller(playwrightManager);
         Map<String, Object> response = controller.health().getBody();
 
         assertThat(response).containsEntry("status", "UP");
@@ -64,5 +65,24 @@ class HealthControllerTest {
                 .containsEntry("initialized", false)
                 .containsEntry("initializing", false)
                 .containsEntry("message", "浏览器自动化尚未启动，将在使用招聘平台功能时按需初始化");
+    }
+
+    @Test
+    void readinessReturnsServiceUnavailableWhenDependenciesAreNotReady() {
+        PlaywrightManager playwrightManager = mock(PlaywrightManager.class);
+        ApplicationReadinessService readinessService = mock(ApplicationReadinessService.class);
+        when(readinessService.check()).thenReturn(new ApplicationReadinessService.ReadinessReport(
+                false, "DOWN", Map.of("database", Map.of("status", "DOWN"))));
+
+        ResponseEntity<Map<String, Object>> response =
+                new HealthController(playwrightManager, readinessService).ready();
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getBody()).containsEntry("ready", false).containsEntry("status", "DOWN");
+    }
+
+    private HealthController controller(PlaywrightManager playwrightManager) {
+        ApplicationReadinessService readinessService = mock(ApplicationReadinessService.class);
+        return new HealthController(playwrightManager, readinessService);
     }
 }

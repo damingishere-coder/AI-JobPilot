@@ -94,10 +94,10 @@ async function fetchJson<T>(url: string, timeoutMs = 4000): Promise<T> {
 
 async function checkBackend(): Promise<SetupCheckItem> {
   try {
-    const data = await fetchJson<{ status?: string; state?: string; service?: string }>(`${API_BASE}/api/health`, 3000)
+    const data = await fetchJson<{ status?: string; state?: string; service?: string }>(`${API_BASE}/api/ready`, 3000)
     const status = String(data.status || data.state || "").toUpperCase()
     const done = status === "HEALTHY" || status === "UP"
-    return item("backend", "后端连接", done, done ? "本地后端服务运行正常" : "后端健康检查返回异常", "环境配置", "/env-config", !done)
+    return item("backend", "后端连接", done, done ? "本地后端已就绪，可以接收任务" : "后端尚未就绪，请检查数据库与任务队列", "环境配置", "/env-config", !done)
   } catch {
     return item("backend", "后端连接", false, `未检测到 ${API_BASE} 后端服务`, "环境配置", "/env-config", true)
   }

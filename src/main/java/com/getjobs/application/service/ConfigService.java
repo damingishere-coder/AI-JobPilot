@@ -20,8 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 配置服务类
@@ -30,12 +32,27 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class ConfigService {
+    private static final Set<String> UI_CONFIG_KEYS = Set.of(
+            "AI_PROVIDER",
+            "BASE_URL",
+            "API_KEY",
+            "MODEL",
+            "AI_REQUEST_TIMEOUT_SECONDS",
+            "CODEX_PATH",
+            "CODEX_MODEL",
+            "CODEX_TIMEOUT_SECONDS",
+            "HOOK_URL",
+            "BOT_IS_SEND"
+    );
+    private static final Set<String> SENSITIVE_UI_CONFIG_KEYS = Set.of("API_KEY", "HOOK_URL");
+
     private final ConfigMapper configMapper;
     private final LiepinService liepinService;
     private final BossService bossService;
     private final ZhilianService zhilianService;
     private final Job51Service job51Service;
     private final Environment environment;
+    private final CodexCliService codexCliService;
 
     /**
      * 获取所有配置（以Map形式返回）
@@ -50,6 +67,62 @@ public class ConfigService {
         }
 
         return configMap;
+    }
+
+    /**
+     * 获取可安全返回给环境配置页面的配置。敏感值只保留键，不返回原文。
+     */
+    public Map<String, Object> getUiConfigsAsMap() {
+        List<ConfigEntity> configs = configMapper.selectList(null);
+        Map<String, Object> configMap = new LinkedHashMap<>();
+        for (String sensitiveKey : SENSITIVE_UI_CONFIG_KEYS) {
+            configMap.put(sensitiveKey, null);
+        }
+        for (ConfigEntity config : configs) {
+            String key = normalizeUiConfigKey(config.getConfigKey());
+            if (UI_CONFIG_KEYS.contains(key) && !SENSITIVE_UI_CONFIG_KEYS.contains(key)) {
+                configMap.put(key, config.getConfigValue());
+            }
+        }
+        for (String key : UI_CONFIG_KEYS) {
+            if (SENSITIVE_UI_CONFIG_KEYS.contains(key) || configMap.containsKey(key)) continue;
+            String environmentValue = environment.getProperty(key);
+            if (environmentValue != null && !environmentValue.isBlank()) {
+                configMap.put(key, environmentValue.trim());
+            }
+        }
+        return configMap;
+    }
+
+    /**
+     * 仅返回敏感配置是否存在，不返回配置原值。
+     */
+    public Map<String, Boolean> getSensitiveUiConfigStatus() {
+        Map<String, Boolean> status = new LinkedHashMap<>();
+        for (String key : SENSITIVE_UI_CONFIG_KEYS) {
+            status.put(key, isSensitiveUiConfigConfigured(key));
+        }
+        return status;
+    }
+
+    public boolean isSensitiveUiConfigConfigured(String configKey) {
+        String key = normalizeUiConfigKey(configKey);
+        if (!SENSITIVE_UI_CONFIG_KEYS.contains(key)) {
+            throw new IllegalArgumentException("不是可管理的敏感配置键: " + key);
+        }
+        String value = getConfigValue(key);
+        if (value == null || value.isBlank()) {
+            value = environment.getProperty(key);
+        }
+        return value != null && !value.isBlank();
+    }
+
+    public boolean isUiConfigKeyAllowed(String configKey) {
+        return UI_CONFIG_KEYS.contains(normalizeUiConfigKey(configKey));
+    }
+
+    public boolean isSensitiveUiConfigKey(String configKey) {
+        return SENSITIVE_UI_CONFIG_KEYS.contains(normalizeUiConfigKey(configKey));
     }
 
     /**
@@ -107,17 +180,29 @@ public class ConfigService {
     }
 
     /**
-     * 获取AI调用所需的基础配置（BASE_URL, API_KEY, MODEL）
-     * @return 配置Map，包含 BASE_URL, API_KEY, MODEL 键
+     * 获取 AI 调用配置。默认使用本机 Codex CLI；选择 api 时才要求远程地址和密钥。
      */
     public Map<String, String> getAiConfigs() {
         Map<String, String> result = new HashMap<>();
-        String baseUrl = requireAiConfigValue("BASE_URL");
-        String apiKey = requireAiConfigValue("API_KEY");
-        String model = requireAiConfigValue("MODEL");
-        result.put("BASE_URL", baseUrl);
-        result.put("API_KEY", apiKey);
-        result.put("MODEL", model);
+        String provider = optionalAiConfigValue("AI_PROVIDER", "codex").toLowerCase();
+        if (!"codex".equals(provider) && !"api".equals(provider) && !"remote".equals(provider)) {
+            throw new IllegalStateException("AI_PROVIDER 只能是 codex 或 api");
+        }
+        result.put("AI_PROVIDER", "remote".equals(provider) ? "api" : provider);
+        result.put("CODEX_PATH", optionalAiConfigValue("CODEX_PATH", "codex"));
+        result.put("CODEX_HOME", optionalAiConfigValue("CODEX_HOME", ""));
+        result.put("CODEX_MODEL", optionalAiConfigValue("CODEX_MODEL", "gpt-5.6-sol"));
+        result.put("CODEX_TIMEOUT_SECONDS", optionalAiConfigValue("CODEX_TIMEOUT_SECONDS", "300"));
+        result.put("AI_REQUEST_TIMEOUT_SECONDS", optionalAiConfigValue("AI_REQUEST_TIMEOUT_SECONDS", "120"));
+        if ("codex".equals(provider)) {
+            result.put("BASE_URL", optionalAiConfigValue("BASE_URL", ""));
+            result.put("API_KEY", optionalAiConfigValue("API_KEY", ""));
+            result.put("MODEL", optionalAiConfigValue("MODEL", ""));
+        } else {
+            result.put("BASE_URL", requireAiConfigValue("BASE_URL"));
+            result.put("API_KEY", requireAiConfigValue("API_KEY"));
+            result.put("MODEL", requireAiConfigValue("MODEL"));
+        }
         return result;
     }
 
@@ -128,11 +213,24 @@ public class ConfigService {
      */
     @Transactional
     public int batchUpdateConfigs(Map<String, String> configMap) {
+        if (configMap == null) {
+            throw new IllegalArgumentException("配置数据不能为空");
+        }
+        for (Map.Entry<String, String> entry : configMap.entrySet()) {
+            String key = validateUiConfigKey(entry.getKey());
+            validateUiConfigValue(key, entry.getValue());
+        }
+
         int updateCount = 0;
 
         for (Map.Entry<String, String> entry : configMap.entrySet()) {
-            String key = entry.getKey();
+            String key = normalizeUiConfigKey(entry.getKey());
             String value = entry.getValue();
+
+            // 敏感输入为空代表页面没有提供新值，保留数据库中的现有值。
+            if (SENSITIVE_UI_CONFIG_KEYS.contains(key) && (value == null || value.isBlank())) {
+                continue;
+            }
 
             ConfigEntity config = getConfigByKey(key);
 
@@ -166,7 +264,12 @@ public class ConfigService {
      */
     @Transactional
     public boolean updateConfig(String configKey, String configValue) {
-        ConfigEntity config = getConfigByKey(configKey);
+        String key = validateUiConfigKey(configKey);
+        validateUiConfigValue(key, configValue);
+        if (SENSITIVE_UI_CONFIG_KEYS.contains(key) && (configValue == null || configValue.isBlank())) {
+            return true;
+        }
+        ConfigEntity config = getConfigByKey(key);
 
         if (config != null) {
             config.setConfigValue(configValue);
@@ -174,20 +277,42 @@ public class ConfigService {
             int result = configMapper.updateById(config);
 
             if (result > 0) {
-                log.info("更新配置成功: {} = {}", configKey, displayConfigValue(configKey, configValue));
+                log.info("更新配置成功: {} = {}", key, displayConfigValue(key, configValue));
                 return true;
             }
         } else {
             ConfigEntity created = new ConfigEntity();
-            created.setConfigKey(configKey);
+            created.setConfigKey(key);
             created.setConfigValue(configValue);
             created.setConfigType("string");
-            created.setCategory(resolveConfigCategory(configKey));
-            created.setDescription(resolveConfigDescription(configKey));
+            created.setCategory(resolveConfigCategory(key));
+            created.setDescription(resolveConfigDescription(key));
             return createConfig(created);
         }
 
         return false;
+    }
+
+    /**
+     * 显式清除可由 UI 管理的敏感配置。不存在时视为已经清除。
+     */
+    @Transactional
+    public boolean clearSensitiveUiConfig(String configKey) {
+        String key = normalizeUiConfigKey(configKey);
+        if (!SENSITIVE_UI_CONFIG_KEYS.contains(key)) {
+            throw new IllegalArgumentException("仅允许清除 API_KEY 或 HOOK_URL");
+        }
+        ConfigEntity config = getConfigByKey(key);
+        if (config == null) {
+            return true;
+        }
+        config.setConfigValue("");
+        config.setUpdatedAt(LocalDateTime.now());
+        int result = configMapper.updateById(config);
+        if (result > 0) {
+            log.info("已清除敏感配置: {}", key);
+        }
+        return result > 0;
     }
 
     /**
@@ -221,12 +346,54 @@ public class ConfigService {
         return value.trim();
     }
 
+    private String optionalAiConfigValue(String configKey, String defaultValue) {
+        String value = getConfigValue(configKey);
+        if (value == null || value.isBlank()) {
+            value = environment.getProperty(configKey);
+        }
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private String validateUiConfigKey(String configKey) {
+        String key = normalizeUiConfigKey(configKey);
+        if (!UI_CONFIG_KEYS.contains(key)) {
+            throw new IllegalArgumentException("不允许通过配置接口读写该配置键: " + key);
+        }
+        return key;
+    }
+
+    private void validateUiConfigValue(String configKey, String configValue) {
+        if ("CODEX_PATH".equals(configKey)) {
+            codexCliService.validateExecutableName(configValue);
+        }
+        if ("CODEX_TIMEOUT_SECONDS".equals(configKey) || "AI_REQUEST_TIMEOUT_SECONDS".equals(configKey)) {
+            validateTimeoutSeconds(configKey, configValue);
+        }
+    }
+
+    private void validateTimeoutSeconds(String configKey, String configValue) {
+        try {
+            int value = Integer.parseInt(configValue == null ? "" : configValue.trim());
+            int minimum = "CODEX_TIMEOUT_SECONDS".equals(configKey) ? 10 : 1;
+            if (value < minimum || value > 1800) {
+                throw new IllegalArgumentException(configKey + " 必须在 " + minimum + " 到 1800 秒之间");
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(configKey + " 必须是整数秒数", e);
+        }
+    }
+
+    private String normalizeUiConfigKey(String configKey) {
+        return configKey == null ? "" : configKey.trim().toUpperCase();
+    }
+
     private String resolveConfigCategory(String configKey) {
         if (configKey == null) {
             return "general";
         }
         return switch (configKey) {
-            case "BASE_URL", "API_KEY", "MODEL" -> "ai";
+            case "AI_PROVIDER", "BASE_URL", "API_KEY", "MODEL", "AI_REQUEST_TIMEOUT_SECONDS",
+                    "CODEX_PATH", "CODEX_HOME", "CODEX_MODEL", "CODEX_TIMEOUT_SECONDS" -> "ai";
             case "HOOK_URL", "BOT_IS_SEND" -> "notification";
             default -> "general";
         };
@@ -237,9 +404,15 @@ public class ConfigService {
             return "运行配置";
         }
         return switch (configKey) {
+            case "AI_PROVIDER" -> "AI 调用方式（Codex CLI 或远程 API）";
             case "BASE_URL" -> "AI 服务地址";
             case "API_KEY" -> "AI 服务密钥";
             case "MODEL" -> "AI 模型名称";
+            case "AI_REQUEST_TIMEOUT_SECONDS" -> "一次远程 AI 调用的总超时秒数";
+            case "CODEX_PATH" -> "Codex CLI 可执行文件";
+            case "CODEX_HOME" -> "Codex 登录配置目录";
+            case "CODEX_MODEL" -> "Codex 模型名称";
+            case "CODEX_TIMEOUT_SECONDS" -> "Codex 单任务超时秒数";
             case "HOOK_URL" -> "企业微信 Webhook 地址";
             case "BOT_IS_SEND" -> "企业微信通知发送开关";
             default -> "运行配置";

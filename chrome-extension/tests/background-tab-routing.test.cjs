@@ -317,6 +317,81 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
   assert.equal(urls.length, 1);
 });
 
+test("treats HTTP 200 business rejection as a failed local API request", async () => {
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() { return JSON.stringify({ success: false, message: "状态已变化" }); }
+    })
+  });
+
+  const result = await context.requestLocalApi("/api/boss/jobs/1/delivery-result", {
+    operation: "delivery-result",
+    method: "POST",
+    body: { requestKey: "request-1", outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT" }
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorType, "BUSINESS_REJECTED");
+  assert.equal(result.message, "状态已变化");
+});
+
+test("records an empty Boss chat-page response as unknown instead of confirmed", async () => {
+  const requests = [];
+  const { context } = loadBackground({
+    tabs: [{ id: 7, windowId: 1, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, status: 200, async text() { return '{"success":true}'; } };
+    }
+  });
+
+  const result = await context.inferBossDeliveryAfterEmptyResponse(7, {
+    id: 99,
+    requestKey: "request-99"
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.outcome, "UNKNOWN");
+  assert.equal(result.persisted, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.requestKey, "request-99");
+  assert.equal(requests[0].body.outcome, "UNKNOWN");
+  assert.equal(requests[0].body.evidence, "CHAT_SURFACE_ONLY");
+});
+
+test("does not upgrade legacy success booleans to confirmed without explicit evidence", () => {
+  const { context } = loadBackground({ tabs: [] });
+
+  assert.equal(context.deliveryOutcomeOf({ success: true }), "UNKNOWN");
+  assert.equal(context.deliveryOutcomeOf({ outcome: "CONFIRMED" }), "UNKNOWN");
+  assert.equal(context.deliveryOutcomeOf({
+    outcome: "CONFIRMED",
+    evidence: "PLATFORM_STATUS_TEXT"
+  }), "CONFIRMED");
+});
+
+test("surfaces delivery-result persistence failure instead of reporting a stored outcome", async () => {
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      async text() { return JSON.stringify({ success: false, message: "database unavailable" }); }
+    })
+  });
+
+  await assert.rejects(
+    context.recordBossDeliveryResponse(
+      { id: 77, requestKey: "request-77" },
+      { outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: "result uncertain" }
+    ),
+    /database unavailable/
+  );
+});
+
 test("rejects forged Zhilian senders before any local API request", async () => {
   let fetchCalls = 0;
   const { runtimeMessageListener } = loadBackground({
@@ -426,10 +501,42 @@ test("Boss content navigation allows job detail pages and rejects external pages
   const externalResponse = await context.handleBossContentNavigation({
     url: "https://example.com/job_detail/demo.html"
   }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
+  const lookalikeResponse = await context.handleBossContentNavigation({
+    url: "https://evilzhipin.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
+  const insecureResponse = await context.handleBossContentNavigation({
+    url: "http://www.zhipin.com/job_detail/demo.html"
+  }, { tab: { id: 1, url: "https://www.zhipin.com/job_detail/demo.html" } });
 
   assert.equal(detailResponse.success, true);
   assert.equal(tabList[0].url, "https://www.zhipin.com/job_detail/demo.html");
   assert.equal(externalResponse.success, false);
+  assert.equal(lookalikeResponse.success, false);
+  assert.equal(insecureResponse.success, false);
+});
+
+test("rejects forged Boss senders before any local API request", async () => {
+  let fetchCalls = 0;
+  const { runtimeMessageListener } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("forged sender must not reach fetch");
+    }
+  });
+
+  const response = await dispatchRuntimeMessage(runtimeMessageListener, {
+    source: "GET_JOBS_BOSS_CONTENT",
+    type: "BOSS_LOCAL_API",
+    operation: "chrome-jobs",
+    body: {}
+  }, {
+    tab: { id: 10, url: "https://zhipin.com.example.com/job_detail/demo.html" }
+  });
+
+  assert.equal(response.success, false);
+  assert.match(response.message, /拒绝非 Boss 页面/);
+  assert.equal(fetchCalls, 0);
 });
 
 test("Boss stop clears registered scan session and shared checkpoint", async () => {

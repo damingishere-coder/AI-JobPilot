@@ -88,10 +88,10 @@ Boss 直聘和智联招聘支持 Chrome Bridge，复用你已登录的 Chrome �
 | --- | :---: | :---: | :---: | --- |
 | Boss 直聘 | ✅ | ✅ | ✅ | Chrome Bridge 主要流程；含受限 API POC 与页面降级采集 |
 | 智联招聘 | ✅ | ✅ | ✅ | Chrome Bridge 主要流程 |
-| 猎聘 | 🟡 | ✅ | ✅ | 本地基础流程，仍在持续适配 |
-| 前程无忧 51job | 🟡 | ✅ | ✅ | 本地基础流程，仍在持续适配 |
+| 猎聘 | 🟡 | — | 🟡 | 旧 Playwright 兼容流程；尚未接入统一 AI 分析与待确认队列 |
+| 前程无忧 51job | 🟡 | — | 🟡 | 旧 Playwright 兼容流程；尚未接入统一 AI 分析与待确认队列 |
 
-`✅` 表示当前主流程支持，`🟡` 表示已有基础能力但稳定性和覆盖范围仍需继续验证。
+`✅` 表示当前主流程支持，`🟡` 表示已有基础能力但稳定性和覆盖范围仍需继续验证，`—` 表示尚未接入该统一流程。
 
 ## 下载与版本
 
@@ -140,10 +140,11 @@ start_windows.bat
 
 ```text
 前端：http://localhost:6866
-后端健康检查：http://localhost:8888/api/health
+后端存活检查：http://localhost:8888/api/health
+后端就绪检查：http://localhost:8888/api/ready
 ```
 
-当首页检查项正常、健康检查返回 `UP` 时，说明基础服务已经启动成功。
+`/api/health` 返回 `UP` 只表示进程存活；首页检查项正常且 `/api/ready` 返回就绪，才表示数据库、Schema 和任务队列可用于业务操作。
 
 完整的新手安装与排错步骤见 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)。
 
@@ -252,9 +253,9 @@ db/getjobs.db
 
 ## 项目状态
 
-当前版本为 `1.3.0`，重点是巩固 Boss / 智联 Chrome Bridge 采集、AI 分析、人工确认、失败诊断和本地可维护性。
+最新正式版本为 `1.3.0`。当前 `codex/stable-v1-completion` 分支处于稳定 V1 验收阶段，重点是验证 Boss / 智联 Chrome Bridge 主链、猎聘 / 51job 兼容链、数据库迁移和人工确认边界。
 
-仓库现已具备后端与前端 CI、Chrome 扩展校验、Docker 配置校验、CodeQL 安全扫描、Dependabot 依赖维护和 Release 产物校验。后续计划包括统一平台适配层、离线 Demo、完整 Windows 发行包，以及在明确合规和人工确认边界后评估 AI 代聊、提醒和面试信息汇总能力。详见 [ROADMAP.md](ROADMAP.md)。
+仓库现已具备后端与前端 CI、Chrome 扩展校验、Docker 配置校验、CodeQL 安全扫描、Dependabot 依赖维护和 Release 产物校验。下一阶段先完成四平台分级能力与真实 smoke，再把已有 AI `greeting` 做成可见、可编辑、人工确认的沟通草稿；不会新增绕过人工确认的自动发送入口。详见 [ROADMAP.md](ROADMAP.md)。
 
 ## 参与贡献
 

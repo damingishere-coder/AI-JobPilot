@@ -17,6 +17,7 @@ spring:
     hikari:
       maximum-pool-size: 5
       connection-test-query: SELECT 1
+      connection-init-sql: PRAGMA foreign_keys=ON
   sql:
     init:
       mode: never  # 数据库文件已存在，不需要自动初始化
@@ -37,6 +38,7 @@ spring:
 
 # 服务器配置
 server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8888}  # 后端 API 固定端口
 
 app:

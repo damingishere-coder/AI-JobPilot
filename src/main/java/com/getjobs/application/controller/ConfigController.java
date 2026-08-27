@@ -1,8 +1,8 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.service.ConfigService;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,10 +16,9 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/config")
+@RequiredArgsConstructor
 public class ConfigController {
-
-    @Autowired
-    private ConfigService configService;
+    private final ConfigService configService;
 
     /**
      * 获取所有配置
@@ -30,10 +29,11 @@ public class ConfigController {
         Map<String, Object> response = new HashMap<>();
 
         try {
-            Map<String, String> configs = configService.getAllConfigsAsMap();
+            Map<String, Object> configs = configService.getUiConfigsAsMap();
 
             response.put("success", true);
             response.put("data", configs);
+            response.put("sensitive", configService.getSensitiveUiConfigStatus());
             response.put("message", "获取配置成功");
 
             return ResponseEntity.ok(response);
@@ -56,11 +56,25 @@ public class ConfigController {
         Map<String, Object> response = new HashMap<>();
 
         try {
+            if (!configService.isUiConfigKeyAllowed(key)) {
+                throw new IllegalArgumentException("不允许读取该配置键: " + key);
+            }
             var config = configService.getConfigByKey(key);
 
-            if (config != null) {
+            if (config != null || configService.isSensitiveUiConfigKey(key)) {
+                Map<String, Object> data = new HashMap<>();
+                data.put("config_key", key.toUpperCase());
+                if (configService.isSensitiveUiConfigKey(key)) {
+                    data.put("config_value", null);
+                    data.put("sensitive", true);
+                    data.put("configured", configService.isSensitiveUiConfigConfigured(key));
+                } else {
+                    data.put("config_value", config.getConfigValue());
+                    data.put("sensitive", false);
+                    data.put("configured", config.getConfigValue() != null && !config.getConfigValue().isBlank());
+                }
                 response.put("success", true);
-                response.put("data", config);
+                response.put("data", data);
                 response.put("message", "获取配置成功");
                 return ResponseEntity.ok(response);
             } else {
@@ -69,6 +83,10 @@ public class ConfigController {
                 return ResponseEntity.notFound().build();
             }
 
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
         } catch (Exception e) {
             log.error("获取配置失败: {}", key, e);
             response.put("success", false);
@@ -102,6 +120,10 @@ public class ConfigController {
             log.info("批量更新配置成功，共更新 {} 项", updateCount);
             return ResponseEntity.ok(response);
 
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
         } catch (Exception e) {
             log.error("批量更新配置失败", e);
             response.put("success", false);
@@ -144,10 +166,41 @@ public class ConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
         } catch (Exception e) {
             log.error("更新配置失败: {}", key, e);
             response.put("success", false);
             response.put("message", "配置更新失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /**
+     * 显式清除敏感配置。普通空字符串更新会保留原值，避免遮罩页面误覆盖。
+     */
+    @DeleteMapping("/{key}")
+    public ResponseEntity<Map<String, Object>> clearSensitiveConfig(@PathVariable String key) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            boolean success = configService.clearSensitiveUiConfig(key);
+            response.put("success", success);
+            boolean configured = success && configService.isSensitiveUiConfigConfigured(key);
+            response.put("configured", configured);
+            response.put("message", success
+                    ? (configured ? "数据库值已清除，但同名环境变量仍在生效" : "敏感配置已清除")
+                    : "敏感配置清除失败");
+            return success ? ResponseEntity.ok(response) : ResponseEntity.internalServerError().body(response);
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            log.error("清除敏感配置失败: {}", key, e);
+            response.put("success", false);
+            response.put("message", "敏感配置清除失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
     }

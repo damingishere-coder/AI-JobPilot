@@ -2,6 +2,7 @@ package com.getjobs.worker.liepin;
 
 import com.getjobs.worker.utils.PlaywrightUtil;
 import com.getjobs.application.service.LiepinService;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.entity.LiepinEntity;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,6 +50,8 @@ public class Liepin {
     private Page page;
     @Autowired
     private LiepinService liepinService;
+    @Autowired
+    private DeliveryAttemptService deliveryAttemptService;
 
     public interface ProgressCallback {
         void onProgress(String message, Integer current, Integer total);
@@ -334,17 +337,28 @@ public class Liepin {
             }
             // 获取当前岗位卡片（用于后续操作与缺省展示）
             Locator currentJobCard = page.locator(JOB_CARDS).nth(i);
-            // 从接口数据获取展示所需字段，若接口数据缺失则使用缺省占位，仍尝试打招呼
+            Long jobIdForUpdate = extractJobIdFromCard(currentJobCard);
+            if (jobIdForUpdate == null) {
+                log.warn("猎聘当前卡片无法解析 jobId，拒绝按 API 数组下标猜测岗位，已跳过该卡片");
+                continue;
+            }
+            LiepinEntity matchedEntity = null;
+            for (LiepinEntity candidate : lastApiEntities) {
+                if (candidate != null && java.util.Objects.equals(candidate.getJobId(), jobIdForUpdate)) {
+                    matchedEntity = candidate;
+                    break;
+                }
+            }
+            // 只使用与卡片 jobId 精确匹配的接口数据作为展示信息。
             String jobName = null;
             String companyName = null;
             String salary = null;
             String recruiterName = null;
-            if (i < lastApiEntities.size()) {
-                LiepinEntity apiEntity = lastApiEntities.get(i);
-                jobName = safeText(apiEntity.getJobTitle());
-                companyName = safeText(apiEntity.getCompName());
-                salary = safeText(apiEntity.getJobSalaryText());
-                recruiterName = safeText(apiEntity.getHrName());
+            if (matchedEntity != null) {
+                jobName = safeText(matchedEntity.getJobTitle());
+                companyName = safeText(matchedEntity.getCompName());
+                salary = safeText(matchedEntity.getJobSalaryText());
+                recruiterName = safeText(matchedEntity.getHrName());
             }
             if (recruiterName == null) recruiterName = "HR";
             if (jobName == null) jobName = "岗位";
@@ -496,17 +510,13 @@ public class Liepin {
                 continue;
             }
             
-            // 提取 jobId（用于更新投递状态）
-            Long jobIdForUpdate = null;
-            if (i < lastApiEntities.size()) {
-                jobIdForUpdate = lastApiEntities.get(i).getJobId();
-            }
-            if (jobIdForUpdate == null) {
-                jobIdForUpdate = extractJobIdFromCard(currentJobCard);
-            }
-
             // 检查按钮文本并点击
             if (button != null && buttonText.contains("聊一聊")) {
+                DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestLegacy("liepin", jobIdForUpdate);
+                if (!attempt.created()) {
+                    recoverInterruptedAttempt(jobIdForUpdate, attempt);
+                    return;
+                }
                 try {
                     // 在点击按钮前进行鼠标微调，先向右移动2像素，再向左移动2像素
                     try {
@@ -540,7 +550,7 @@ public class Liepin {
                     button.click();
                     // PlaywrightUtil.sleep(1); // 等待点击响应
                     
-                    // 猎聘会自动发送打招呼语，所以我们只需要关闭聊天窗口
+                    // 猎聘会自动发送打招呼语；出现聊天窗口只证明动作已发起，不能等同平台确认成功。
                     try {
                         // 等待聊天界面加载
                         page.waitForSelector(CHAT_HEADER, new Page.WaitForSelectorOptions().setTimeout(3000));
@@ -554,28 +564,48 @@ public class Liepin {
                         
                         resultList.add(sb.append("【").append(companyName).append(" ").append(jobName).append(" ").append(salary).append(" ").append(recruiterName).append(" ").append("】").toString());
                         sb.setLength(0);
-                        // 点击成功后标记为已投递
-                        if (jobIdForUpdate != null) {
-                            liepinService.markDelivered(jobIdForUpdate);
-                        }
+                        resolveLiepinAttempt(
+                                "liepin", jobIdForUpdate, attempt.requestKey(),
+                                DeliveryAttemptService.State.UNKNOWN,
+                                DeliveryAttemptService.CHAT_SURFACE_ONLY,
+                                "猎聘已打开聊天窗口，但没有可验证的平台成功回执"
+                        );
                         
                     } catch (Exception e) {
-                        log.warn("关闭聊天窗口失败，但投递可能已成功: {}", e.getMessage());
-                        // 即使关闭失败，也认为投递成功
+                        log.warn("猎聘点击后无法确认聊天窗口结果，记录为待对账: {}", e.getMessage());
                         resultList.add(sb.append("【").append(companyName).append(" ").append(jobName).append(" ").append(salary).append(" ").append(recruiterName).append(" ").append("】").toString());
                         sb.setLength(0);
-                        if (jobIdForUpdate != null) {
-                            liepinService.markDelivered(jobIdForUpdate);
-                        }
+                        resolveLiepinAttempt(
+                                "liepin", jobIdForUpdate, attempt.requestKey(),
+                                DeliveryAttemptService.State.UNKNOWN,
+                                DeliveryAttemptService.NO_CONFIRMATION,
+                                "猎聘按钮已点击，但聊天窗口状态无法确认"
+                        );
                     }
                     
                 } catch (Exception e) {
                     log.error("点击按钮失败: {}", e.getMessage());
+                    resolveLiepinAttempt(
+                            "liepin", jobIdForUpdate, attempt.requestKey(),
+                            DeliveryAttemptService.State.UNKNOWN,
+                            DeliveryAttemptService.NO_CONFIRMATION,
+                            "猎聘点击过程异常，平台结果未知: " + e.getMessage()
+                    );
                 }
             } else {
-                // 如果按钮是“继续聊”，视为已投递
+                // “继续聊”是明确的平台既有会话状态，可作为确认凭据导入本次 attempt。
                 if (button != null && buttonText.contains("继续聊") && jobIdForUpdate != null) {
-                    liepinService.markDelivered(jobIdForUpdate);
+                    DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestLegacy("liepin", jobIdForUpdate);
+                    if (attempt.created()) {
+                        resolveLiepinAttempt(
+                                "liepin", jobIdForUpdate, attempt.requestKey(),
+                                DeliveryAttemptService.State.CONFIRMED,
+                                DeliveryAttemptService.EXISTING_CONVERSATION,
+                                "猎聘页面明确显示继续聊"
+                        );
+                    } else {
+                        recoverInterruptedAttempt(jobIdForUpdate, attempt);
+                    }
                 }
                 if (button != null) {
                     log.debug("跳过岗位（按钮文本不匹配）: 【{}】的【{}·{}】岗位，按钮文本: '{}'", companyName, jobName, salary, buttonText);
@@ -583,6 +613,36 @@ public class Liepin {
                     // 不再保存页面源码
                 }
             }
+        }
+    }
+
+    private void recoverInterruptedAttempt(Long jobId, DeliveryAttemptService.RequestResult attempt) {
+        if (attempt.accepted() && attempt.state() == DeliveryAttemptService.State.REQUESTED) {
+            DeliveryAttemptService.ResolutionResult recovered = deliveryAttemptService.resolveLegacy(
+                    "liepin", jobId, attempt.requestKey(),
+                    DeliveryAttemptService.State.UNKNOWN,
+                    DeliveryAttemptService.NO_CONFIRMATION,
+                    "检测到上次猎聘投递流程中断，已转为人工待对账"
+            );
+            if (!recovered.accepted()) {
+                throw new IllegalStateException("猎聘中断 attempt 无法恢复: " + recovered.message());
+            }
+            log.warn("猎聘检测到上次中断的投递记录 jobId={}，已转为待对账且未重复点击平台", jobId);
+            return;
+        }
+        log.info("跳过猎聘非首次投递 jobId={}: {}", jobId, attempt.message());
+    }
+
+    private void resolveLiepinAttempt(String platform,
+                                      Long jobId,
+                                      String requestKey,
+                                      DeliveryAttemptService.State state,
+                                      String evidence,
+                                      String message) {
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolveLegacy(
+                platform, jobId, requestKey, state, evidence, message);
+        if (!result.accepted()) {
+            throw new IllegalStateException("猎聘投递 attempt 回写被拒绝: " + result.message());
         }
     }
 

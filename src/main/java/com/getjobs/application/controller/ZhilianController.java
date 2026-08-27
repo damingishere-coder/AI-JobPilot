@@ -6,11 +6,13 @@ import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.ZhilianConfigEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
 import com.getjobs.application.service.CookieService;
 import com.getjobs.application.service.DeliveryStatus;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.OpenClawJobProbeService;
 import com.getjobs.application.service.ZhilianService;
@@ -73,6 +75,9 @@ public class ZhilianController {
 
     @Autowired
     private OpenClawJobProbeService openClawJobProbeService;
+
+    @Autowired
+    private DeliveryAttemptService deliveryAttemptService;
 
     @Autowired
     @Qualifier("jobTaskExecutor")
@@ -251,19 +256,7 @@ public class ZhilianController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("zhilian");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "zhilian");
-                data.put("cookie_value", null);
-                data.put("message", "未找到智联招聘Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "zhilian", "未找到智联招聘Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);
@@ -422,15 +415,11 @@ public class ZhilianController {
                     sendZhilianProgress(JobProgressMessage.warning("zhilian", message));
                     continue;
                 }
-                if (!isFinalZhilianStatus(currentStatus)) {
-                    zhilianService.updateDeliveryStatusByJobId(saved.getJobId(), DeliveryStatus.AI_ANALYZING);
-                    saved = zhilianService.getZhilianJobById(saved.getId());
-                }
-
                 JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
                 analysisRequest.setProfileId(profileId);
                 analysisRequest.setPlatform("zhilian");
                 analysisRequest.setJobKey(saved.getJobId());
+                analysisRequest.setJobRowId(saved.getId());
                 analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
                 analysisRequest.setCompanyName(saved.getCompanyName());
                 analysisRequest.setJobName(saved.getJobTitle());
@@ -451,7 +440,6 @@ public class ZhilianController {
 
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
-                    zhilianService.updateDeliveryStatusByJobId(saved.getJobId(), firstNonBlank(currentStatus, DeliveryStatus.NOT_DELIVERED));
                     Map<String, Object> response = zhilianChromeJobsResponse(
                             false, false, received, savedCount, queued, skipped, insufficient, restored, analyses
                     );
@@ -513,7 +501,17 @@ public class ZhilianController {
         ZhilianJobDataEntity job = getZhilianJobById(id);
         Map<String, Object> error = validateDeliverable(job);
         if (error != null) return error;
-        return Map.of("success", true, "message", "请在 Chrome 中确认投递该智联岗位", "task", toDeliveryTask(job));
+        DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestZhilian(
+                job.getId(), job.getProfileId(), firstNonBlank(job.getJobId(), String.valueOf(job.getId())));
+        if (!attempt.accepted()) {
+            return Map.of("success", false, "message", attempt.message(), "status", Objects.toString(job.getDeliveryStatus(), ""));
+        }
+        return Map.of(
+                "success", true,
+                "resumed", !attempt.created(),
+                "message", attempt.created() ? "投递请求已创建，请在 Chrome 中等待平台确认" : "已恢复原投递请求，请勿重复创建",
+                "task", toDeliveryTask(job, attempt.requestKey())
+        );
     }
 
     @PostMapping("/jobs/confirm-batch")
@@ -526,7 +524,7 @@ public class ZhilianController {
             }
         } else {
             ZhilianService.PagedResult page = zhilianService.listZhilianJobs(
-                    List.of(DeliveryStatus.WAITING_CONFIRM),
+                    List.of(DeliveryStatus.WAITING_CONFIRM, DeliveryStatus.DELIVERY_REQUESTED),
                     request == null ? null : request.getLocation(),
                     request == null ? null : request.getExperience(),
                     request == null ? null : request.getDegree(),
@@ -539,10 +537,18 @@ public class ZhilianController {
             );
             if (page != null && page.items != null) candidates.addAll(page.items);
         }
-        List<Map<String, Object>> tasks = candidates.stream()
-                .filter(job -> DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()))
-                .map(this::toDeliveryTask)
+        List<ZhilianJobDataEntity> deliverableJobs = candidates.stream()
+                .filter(job -> DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
+                        || DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim()))
                 .collect(Collectors.toList());
+        List<Map<String, Object>> tasks = new ArrayList<>();
+        for (ZhilianJobDataEntity job : deliverableJobs) {
+            DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.requestZhilian(
+                    job.getId(), job.getProfileId(), firstNonBlank(job.getJobId(), String.valueOf(job.getId())));
+            if (attempt.accepted()) {
+                tasks.add(toDeliveryTask(job, attempt.requestKey()));
+            }
+        }
         return Map.of("success", true, "message", "已生成智联批量 Chrome 投递任务", "tasks", tasks, "count", tasks.size());
     }
 
@@ -550,20 +556,87 @@ public class ZhilianController {
     public Map<String, Object> updateZhilianDeliveryResult(@PathVariable("id") Long id, @RequestBody DeliveryResultRequest request) {
         ZhilianJobDataEntity job = getZhilianJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
-        String status = request != null && Boolean.TRUE.equals(request.getSuccess()) ? DeliveryStatus.DELIVERED : DeliveryStatus.DELIVERY_FAILED;
-        String message = request == null ? null : request.getMessage();
-        String failureReason = request == null ? null : request.getFailureReason();
-        ZhilianJobDataEntity updated = zhilianService.updateDeliveryStatusById(
-                id,
-                status,
-                request == null ? null : request.getFailureType(),
-                firstNonBlank(failureReason, message)
+        if (request == null) return Map.of("success", false, "message", "投递结果不能为空");
+        DeliveryAttemptService.State outcome = DeliveryAttemptService.State.parse(request.getOutcome());
+        if (outcome == null && request.getSuccess() != null) {
+            outcome = Boolean.TRUE.equals(request.getSuccess())
+                    ? DeliveryAttemptService.State.CONFIRMED
+                    : DeliveryAttemptService.State.FAILED;
+        }
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolve(
+                "zhilian",
+                job.getProfileId(),
+                job.getId(),
+                request.getRequestKey(),
+                outcome,
+                request.getEvidence(),
+                request.getMessage(),
+                request.getFailureType(),
+                firstNonBlank(request.getFailureReason(), request.getMessage())
         );
-        return Map.of("success", true, "message", request == null || request.getMessage() == null ? "投递状态已更新" : request.getMessage(), "status", updated == null ? status : updated.getDeliveryStatus());
+        ZhilianJobDataEntity updated = getZhilianJobById(id);
+        return Map.of(
+                "success", result.accepted(),
+                "accepted", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name(),
+                "status", updated == null ? "" : Objects.toString(updated.getDeliveryStatus(), "")
+        );
+    }
+
+    @PostMapping("/jobs/{id}/delivery-reconcile")
+    public Map<String, Object> reconcileZhilianDeliveryResult(@PathVariable("id") Long id,
+                                                              @RequestBody DeliveryResultRequest request) {
+        ZhilianJobDataEntity job = getZhilianJobById(id);
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatest(
+                "zhilian",
+                job.getProfileId(),
+                job.getId(),
+                firstNonBlank(job.getJobId(), String.valueOf(job.getId())),
+                target,
+                request == null ? null : request.getMessage()
+        );
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/jobs/{id}/delivery-retry")
+    public Map<String, Object> retryZhilianDelivery(@PathVariable("id") Long id) {
+        ZhilianJobDataEntity job = getZhilianJobById(id);
+        if (job == null) return Map.of("success", false, "message", "岗位不存在");
+        DeliveryAttemptService.RequestResult attempt = deliveryAttemptService.retryZhilian(
+                job.getId(),
+                job.getProfileId(),
+                firstNonBlank(job.getJobId(), String.valueOf(job.getId()))
+        );
+        if (!attempt.accepted()) {
+            return Map.of("success", false, "message", attempt.message());
+        }
+        return Map.of(
+                "success", true,
+                "resumed", !attempt.created(),
+                "message", attempt.created()
+                        ? "已创建新的显式重试任务，请再次核对平台结果"
+                        : "已恢复原重试任务，未创建重复 attempt",
+                "task", toDeliveryTask(job, attempt.requestKey())
+        );
     }
 
     @PostMapping("/jobs/{id}/skip")
     public Map<String, Object> skipZhilianJob(@PathVariable("id") Long id) {
+        ZhilianJobDataEntity current = getZhilianJobById(id);
+        if (current != null && DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())) {
+            return Map.of("success", false, "message", "投递已进入请求或结果状态，不能再跳过", "status", current.getDeliveryStatus());
+        }
         ZhilianJobDataEntity updated = zhilianService.updateDeliveryStatusById(id, DeliveryStatus.SKIPPED);
         if (updated == null) {
             return Map.of("success", false, "message", "岗位不存在");
@@ -777,7 +850,8 @@ public class ZhilianController {
 
     private Map<String, Object> validateDeliverable(ZhilianJobDataEntity job) {
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
-        if (!DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())) {
+        if (!DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus())
+                && !DeliveryStatus.DELIVERY_REQUESTED.equals(Objects.toString(job.getDeliveryStatus(), "").trim())) {
             return Map.of("success", false, "message", "只有待确认岗位可以确认投递", "status", job.getDeliveryStatus() == null ? "" : job.getDeliveryStatus());
         }
         if (job.getJobLink() == null || job.getJobLink().isBlank()) {
@@ -791,7 +865,7 @@ public class ZhilianController {
         return DeliveryStatus.isFinalStatus(status);
     }
 
-    private Map<String, Object> toDeliveryTask(ZhilianJobDataEntity job) {
+    private Map<String, Object> toDeliveryTask(ZhilianJobDataEntity job, String requestKey) {
         Map<String, Object> task = new HashMap<>();
         task.put("id", job.getId());
         task.put("platform", "zhilian");
@@ -799,6 +873,7 @@ public class ZhilianController {
         task.put("companyName", Objects.toString(job.getCompanyName(), ""));
         task.put("jobName", Objects.toString(job.getJobTitle(), ""));
         task.put("salary", Objects.toString(job.getSalary(), ""));
+        task.put("requestKey", requestKey);
         return task;
     }
 

@@ -2,9 +2,12 @@ package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.Job51ConfigEntity;
 import com.getjobs.application.entity.Job51OptionEntity;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.Job51Service;
 import com.getjobs.worker.manager.PlaywrightManager;
 // Boss 控制器已独立，移除 Boss 依赖
@@ -48,6 +51,7 @@ public class JobController {
     private final Job51JobService job51JobService;
     private final PlaywrightManager playwrightManager;
     private final CookieService cookieService;
+    private final DeliveryAttemptService deliveryAttemptService;
 
     @Autowired
     @Qualifier("jobTaskExecutor")
@@ -346,19 +350,7 @@ public class JobController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("51job");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "51job");
-                data.put("cookie_value", null);
-                data.put("message", "未找到51job Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "51job", "未找到51job Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);
@@ -528,6 +520,32 @@ public class JobController {
     /** 刷新 job51_data，返回总数 */
     @GetMapping("/51job/reload")
     public Map<String, Object> reload() { return job51Service.reloadJob51Data(); }
+
+    @PostMapping("/51job/jobs/{jobId}/delivery-reconcile")
+    public Map<String, Object> reconcileDelivery(@PathVariable("jobId") Long jobId,
+                                                 @RequestBody DeliveryResultRequest request) {
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatestLegacy(
+                "51job", jobId, target, request == null ? null : request.getMessage());
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/51job/jobs/{jobId}/delivery-retry")
+    public Map<String, Object> prepareDeliveryRetry(@PathVariable("jobId") Long jobId) {
+        DeliveryAttemptService.RequestResult result = deliveryAttemptService.prepareLegacyRetry("51job", jobId);
+        return Map.of(
+                "success", result.accepted(),
+                "prepared", result.accepted(),
+                "message", result.message()
+        );
+    }
 
     // ==================== 辅助方法 ====================
 

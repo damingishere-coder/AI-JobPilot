@@ -27,6 +27,7 @@
   let stopRequestedRunId = "";
   let activeScanRunId = "";
   let activeScanPromise = null;
+  const deliveryExecutions = new Map();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isCurrentContentInstance()) return;
@@ -115,7 +116,7 @@
     }
     if (message?.type === "BOSS_DELIVER_ONE") {
       prepareStandaloneDelivery();
-      deliverOne(message.task, message).then(sendResponse).catch((error) => {
+      executeDeliveryOnce(message.task, () => deliverOne(message.task, message)).then(sendResponse).catch((error) => {
         postProgress(message, "error", error.message || String(error), {
           operation: "deliver",
           stage: "error"
@@ -569,7 +570,9 @@
   function isBossSearchPathSafe(url) {
     try {
       const parsed = new URL(url);
-      return parsed.hostname.includes("zhipin.com") && isBossSearchPath(parsed.pathname);
+      return parsed.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
+        && isBossSearchPath(parsed.pathname);
     } catch {
       return false;
     }
@@ -1901,7 +1904,7 @@
     try {
       const parsed = new URL(candidate, window.location.origin);
       parsed.hash = "";
-      if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+      if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
       if (!parsed.pathname.includes("/job_detail/")) return "";
       return parsed.href;
     } catch {
@@ -1925,7 +1928,7 @@
     try {
       const parsed = new URL(url || window.location.href, window.location.origin);
       return parsed.protocol === "https:"
-        && parsed.hostname.endsWith("zhipin.com")
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
         && parsed.pathname.includes("/job_detail/")
         && Boolean(extractBossId(parsed.href));
     } catch {
@@ -2751,10 +2754,9 @@
     });
     await waitForPage();
     if (!isSameBossJobUrl(window.location.href, task.url)) {
-      return {
-        success: false,
-        message: "Boss投递需要先由扩展后台打开岗位详情页，请刷新扩展和页面后重试。"
-      };
+      const failure = classifyDeliveryFailure("Boss投递需要先由扩展后台打开岗位详情页，请刷新扩展和页面后重试。");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
     return deliverOnCurrentPage(task, message);
   }
@@ -2771,30 +2773,44 @@
       }
     };
 
-    deliverOnCurrentPage(message.task, message, respondOnce).then((result) => {
-      respondOnce(result);
+    executeDeliveryOnce(message.task, () => deliverOnCurrentPage(message.task, message)).then((result) => {
+      respondOnce({ ...result, persisted: true });
     }).catch((error) => {
       postProgress(message, "error", error.message || String(error), {
         operation: "deliver",
         stage: "error"
       });
-      respondOnce({ success: false, message: error.message || String(error) });
+      respondOnce({ success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted: false, message: error.message || String(error) });
     });
   }
 
   async function deliverOnCurrentPage(task, message, earlyRespond) {
     if (!task?.url || !task?.id) {
-      return { success: false, message: "投递任务缺少岗位链接或ID" };
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: "投递任务缺少岗位链接或ID" };
     }
     await waitForPage();
     if (!isSameBossJobUrl(window.location.href, task.url)) {
-      return { success: false, message: "当前Boss页面不是目标岗位详情页，已取消投递。" };
+      const failure = classifyDeliveryFailure("当前Boss页面不是目标岗位详情页，已取消投递。");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
     if (message?.respectScanStop && isStopRequested(message?.runId)) {
       stopRequested = true;
-      return { success: false, message: "Boss扫描已停止" };
+      const failure = classifyDeliveryFailure("Boss扫描已停止，未执行投递");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
     await sleep(1500);
+    if (detectBossDeliveryStatus(document)) {
+      const messageText = "Boss岗位页面已显示沟通或投递状态";
+      await postDeliveryResult(task, true, messageText, "PLATFORM_STATUS_TEXT");
+      return {
+        success: true,
+        outcome: "CONFIRMED",
+        evidence: "PLATFORM_STATUS_TEXT",
+        message: messageText
+      };
+    }
     postProgress(message, "info", `Boss Chrome正在当前详情页投递：${task.companyName || ""} ${task.jobName || ""}`.trim(), {
       operation: "deliver",
       stage: "submitting",
@@ -2822,12 +2838,12 @@
     }
     if (!chatButton) {
       const failure = classifyDeliveryFailure("未找到立即沟通按钮");
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
       postProgress(message, "warning", `Boss Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
       });
-      return { success: false, message: failure.failureReason, failureType: failure.failureType };
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
     postProgress(message, "info", "Boss Chrome已找到沟通入口，准备点击立即沟通。", {
       operation: "deliver",
@@ -2836,9 +2852,9 @@
     clickElement(chatButton);
     const successMessage = favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通";
     const deliveryCheck = await waitForDeliveryOpened(beforeUrl, task, 9000);
-    if (!deliveryCheck.success) {
+    if (deliveryCheck.outcome === "FAILED") {
       const failure = classifyDeliveryFailure(deliveryCheck.message);
-      await postDeliveryResult(task, false, failure);
+      await postDeliveryResult(task, false, failure, deliveryCheck.evidence || "PLATFORM_ERROR");
       postProgress(message, "warning", `Boss Chrome投递失败：${failure.failureReason}`, {
         operation: "deliver",
         stage: "error"
@@ -2847,14 +2863,28 @@
     }
     const greetingResult = await sendConfiguredGreeting(task, message);
     const finalMessage = greetingResult?.sent ? `${successMessage}，已发送开场白` : successMessage;
-    await postDeliveryResult(task, true, finalMessage);
-    earlyRespond?.({ success: true, message: finalMessage, early: true });
-    postProgress(message, "success", buildDeliverySuccessMessage(favoriteButton, greetingResult), {
+    const confirmed = deliveryCheck.outcome === "CONFIRMED";
+    await postDeliveryResult(
+      task,
+      confirmed ? true : null,
+      confirmed ? finalMessage : `${finalMessage}，但未检测到明确平台成功状态`,
+      deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY")
+    );
+    const result = {
+      success: confirmed,
+      outcome: confirmed ? "CONFIRMED" : "UNKNOWN",
+      evidence: deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY"),
+      message: confirmed ? finalMessage : `${finalMessage}，结果待人工确认`
+    };
+    earlyRespond?.({ ...result, early: true });
+    postProgress(message, confirmed ? "success" : "warning", confirmed
+      ? buildDeliverySuccessMessage(favoriteButton, greetingResult)
+      : `${buildDeliverySuccessMessage(favoriteButton, greetingResult)}未检测到明确平台成功状态，已标记待确认。`, {
       operation: "deliver",
       stage: "complete",
-      saved: 1
+      saved: confirmed ? 1 : 0
     });
-    return { success: true, message: finalMessage };
+    return result;
   }
 
   async function sendConfiguredGreeting(task, message) {
@@ -2948,6 +2978,8 @@
   async function deliverBatch(tasks, message) {
     let success = 0;
     let failed = 0;
+    let unknown = 0;
+    const results = [];
     postProgress(message, "info", `Boss Chrome批量投递开始，共 ${tasks.length} 个待确认岗位。`, {
       operation: "deliver",
       stage: "received",
@@ -2964,28 +2996,48 @@
         keywordTotal: tasks.length,
         saved: success
       });
-      const result = await deliverOne(task, message).catch(async (error) => {
+      const result = await executeDeliveryOnce(task, () => deliverOne(task, message))
+        .then((value) => ({ ...value, persisted: true }))
+        .catch(async (error) => {
         const failure = classifyDeliveryFailure(error.message || String(error));
-        await postDeliveryResult(task, false, failure).catch(() => {});
-        return { success: false, message: failure.failureReason, failureType: failure.failureType };
+        let persisted = false;
+        await postDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+          .then(() => { persisted = true; })
+          .catch(() => {});
+        return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted, message: failure.failureReason, failureType: failure.failureType };
       });
-      if (result.success) success += 1;
+      const outcome = result?.outcome || (result?.success ? "CONFIRMED" : "FAILED");
+      if (outcome === "CONFIRMED") success += 1;
+      else if (outcome === "UNKNOWN") unknown += 1;
       else failed += 1;
+      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
     }
-    postProgress(message, failed ? "warning" : "success", `Boss批量投递完成：成功${success}，失败${failed}`, {
+    postProgress(message, failed || unknown ? "warning" : "success", `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`, {
       operation: "deliver",
       stage: "complete",
       keywordTotal: tasks.length,
       saved: success
     });
-    return { success: true, message: `Boss批量投递完成：成功${success}，失败${failed}`, successCount: success, failedCount: failed };
+    return {
+      success: failed === 0 && unknown === 0,
+      partial: success > 0 && (failed > 0 || unknown > 0),
+      message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+      successCount: success,
+      unknownCount: unknown,
+      failedCount: failed,
+      results
+    };
   }
 
-  async function postDeliveryResult(task, success, message) {
-    const failure = success ? null : normalizeFailurePayload(message);
+  async function postDeliveryResult(task, success, message, evidence) {
+    const failure = success === false ? normalizeFailurePayload(message) : null;
+    const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await callBossLocalApi("delivery-result", {
+      requestKey: task.requestKey,
+      outcome,
+      evidence: evidence || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
       success,
-      message: success ? message : failure.failureReason,
+      message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
       failureReason: failure?.failureReason
     }, {
@@ -3338,7 +3390,8 @@
 
   function isBossUrl(url) {
     try {
-      return new URL(url).hostname.includes("zhipin.com");
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(parsed.hostname);
     } catch {
       return false;
     }
@@ -3347,7 +3400,7 @@
   function isBossTaskPage(task) {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhipin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(current.hostname)) return false;
 
       const phase = String(task.phase || "");
       const diagnostics = buildPageBlockDiagnostics();
@@ -3513,7 +3566,7 @@
 
   function buildBossPageStatus() {
     const diagnostics = buildPageBlockDiagnostics();
-    const onBossPage = location.hostname.includes("zhipin.com");
+    const onBossPage = location.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(location.hostname);
     const searchLike = isBossSearchPath(location.pathname) || document.querySelectorAll("a[href*='/job_detail/']").length > 0;
     const detailLike = /\/job_detail\//.test(location.pathname) || Boolean(textOf(document, [".job-title", ".job-name", ".job-banner"]));
     const deliveryStatus = detectBossDeliveryStatus(document);
@@ -3588,20 +3641,40 @@
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const failure = detectDeliveryFailure("");
-      if (failure) return { success: false, message: failure };
+      if (failure) return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure };
+      if (detectBossDeliveryStatus(document)) {
+        return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: "Boss页面已显示沟通或投递状态" };
+      }
       if (isBossChatPage(window.location.href)) {
-        return { success: true, message: "已进入Boss沟通页" };
+        return { success: false, outcome: "UNKNOWN", evidence: "CHAT_SURFACE_ONLY", message: "已进入Boss沟通页，但未显示明确成功状态" };
       }
       if (findChatInput()) {
-        return { success: true, message: "已打开Boss聊天窗口" };
+        return { success: false, outcome: "UNKNOWN", evidence: "CHAT_SURFACE_ONLY", message: "已打开Boss聊天窗口，但未显示明确成功状态" };
       }
       const continueButton = findBossDeliverButton(["继续沟通", "已沟通"], []);
       if (continueButton && (!isSameBossJobUrl(beforeUrl, window.location.href) || isSameBossJobUrl(window.location.href, task.url))) {
-        return { success: true, message: "Boss沟通状态已更新" };
+        return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: "Boss沟通状态已更新" };
       }
       await sleep(300);
     }
-    return { success: false, message: detectDeliveryFailure("点击立即沟通后未出现聊天窗口或沟通页") };
+    const failure = detectDeliveryFailure("");
+    if (failure) return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure };
+    return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: "点击立即沟通后未出现明确平台结果" };
+  }
+
+  function executeDeliveryOnce(task, action) {
+    const requestKey = compact(task?.requestKey || "");
+    if (!requestKey) {
+      return Promise.resolve({ success: false, outcome: "FAILED", message: "投递任务缺少 requestKey，已拒绝执行" });
+    }
+    const existing = deliveryExecutions.get(requestKey);
+    if (existing) return existing;
+    if (deliveryExecutions.size >= 200) {
+      deliveryExecutions.delete(deliveryExecutions.keys().next().value);
+    }
+    const execution = Promise.resolve().then(action);
+    deliveryExecutions.set(requestKey, execution);
+    return execution;
   }
 
   function detectDeliveryFailure(fallback) {
@@ -3642,7 +3715,9 @@
   function isBossChatPage(url) {
     try {
       const parsed = new URL(url, window.location.origin);
-      return parsed.hostname.includes("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+      return parsed.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
+        && /chat|im|message/.test(parsed.pathname);
     } catch {
       return false;
     }
@@ -3814,7 +3889,7 @@
   function isCurrentSearchPage(keyword, city, expectedUrl = "") {
     try {
       const current = new URL(window.location.href);
-      if (!current.hostname.includes("zhipin.com")) return false;
+      if (current.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(current.hostname)) return false;
       if (!isBossSearchPath(current.pathname)) return false;
       if (expectedUrl) return isSameSearchUrl(current.href, expectedUrl);
       const query = current.searchParams.get("query") || "";
@@ -4346,7 +4421,7 @@
     const addUrl = (value) => {
       try {
         const parsed = new URL(value, window.location.origin);
-        if (parsed.hostname.includes("zhipin.com") && parsed.pathname.includes("/wapi/zpgeek/job/detail.json")) {
+        if (parsed.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(parsed.hostname) && parsed.pathname.includes("/wapi/zpgeek/job/detail.json")) {
           urls.push(parsed.href);
         }
       } catch {
@@ -4363,7 +4438,7 @@
     [window.location.href, job?.url].forEach((value) => {
       try {
         const parsed = new URL(value, window.location.origin);
-        if (!parsed.hostname.includes("zhipin.com")) return;
+        if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return;
         if (!parsed.pathname.includes("/job_detail/")) return;
         const query = parsed.search || "";
         if (query) addUrl(`${parsed.origin}/wapi/zpgeek/job/detail.json${query}`);

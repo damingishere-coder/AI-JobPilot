@@ -102,6 +102,10 @@ jobs:
         working-directory: front
         run: pnpm lint
 
+      - name: Run frontend typecheck
+        working-directory: front
+        run: pnpm typecheck
+
       - name: Build frontend
         working-directory: front
         run: pnpm build
@@ -121,6 +125,9 @@ jobs:
 
       - name: Validate manifest and referenced files
         run: node scripts/validate-chrome-extension.mjs
+
+      - name: Run Chrome extension contract tests
+        run: node --test chrome-extension/tests/*.test.cjs
 
   docker-config:
     name: Docker Configuration

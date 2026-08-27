@@ -8,7 +8,6 @@ import com.getjobs.application.mapper.Job51ConfigMapper;
 import com.getjobs.application.mapper.Job51Mapper;
 import com.getjobs.application.mapper.Job51OptionMapper;
 import com.getjobs.worker.job51.Job51Config;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -29,10 +28,13 @@ public class Job51Service {
     private final Job51OptionMapper job51OptionMapper;
     private final Job51Mapper job51Mapper;
     private final DataSource dataSource;
+    private final ProfileService profileService;
 
     /** 获取第一条配置（通常只有一条） */
     public Job51ConfigEntity getFirstConfig() {
         QueryWrapper<Job51ConfigEntity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
+        wrapper.orderByAsc("id");
         wrapper.last("LIMIT 1");
         return job51ConfigMapper.selectOne(wrapper);
     }
@@ -160,60 +162,13 @@ public class Job51Service {
         return v;
     }
 
-    // ==================== 表初始化与数据导入 ====================
-
-    @PostConstruct
-    public void ensureJob51OptionTableAndData() {
-        // 仅确保表存在；城市选项完全由数据库维护
-        ensureJob51OptionTable();
-        ensureJob51DataTable();
-    }
-
-    private void ensureJob51OptionTable() {
-        String createSql = "CREATE TABLE IF NOT EXISTS job51_option (" +
-                " id INTEGER PRIMARY KEY AUTOINCREMENT," +
-                " type VARCHAR(50)," +
-                " name VARCHAR(100)," +
-                " code VARCHAR(100)," +
-                " sort_order INTEGER," +
-                " created_at DATETIME," +
-                " updated_at DATETIME" +
-                ")";
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute(createSql);
-        } catch (Exception e) {
-            log.warn("创建 job51_option 表失败: {}", e.getMessage());
-        }
-    }
-
-    // 初始化逻辑移除：数据由外部迁移并在数据库维护，无需自动填充
-
-    private void insertOption(String type, String name, String code, int sortOrder, LocalDateTime now) {
-        try {
-            Job51OptionEntity e = new Job51OptionEntity();
-            e.setType(type);
-            e.setName(name);
-            e.setCode(code);
-            e.setSortOrder(sortOrder);
-            e.setCreatedAt(now);
-            e.setUpdatedAt(now);
-            job51OptionMapper.insert(e);
-        } catch (Exception ex) {
-            log.warn("写入选项失败 type={} name={} code={}: {}", type, name, code, ex.getMessage());
-        }
-    }
+    // 表结构只由 Flyway 管理；Service 运行时不再执行 DDL。
 
     /**
      * 选择性更新：若传入 ID 则按 ID 更新；否则更新第一条记录（不存在则插入）
      */
     public Job51ConfigEntity updateConfig(Job51ConfigEntity config) {
         if (config == null) return null;
-        if (config.getId() != null) {
-            // 设置更新时间
-            config.setUpdatedAt(java.time.LocalDateTime.now());
-            job51ConfigMapper.updateById(config);
-            return job51ConfigMapper.selectById(config.getId());
-        }
         return saveOrUpdateFirstSelective(config);
     }
 
@@ -225,6 +180,7 @@ public class Job51Service {
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
         if (first == null) {
             Job51ConfigEntity toInsert = new Job51ConfigEntity();
+            toInsert.setProfileId(profileService.getCurrentProfileId());
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setJobArea(incoming.getJobArea());
             toInsert.setSalary(incoming.getSalary());
@@ -235,6 +191,7 @@ public class Job51Service {
         } else {
             Job51ConfigEntity toUpdate = new Job51ConfigEntity();
             toUpdate.setId(first.getId());
+            toUpdate.setProfileId(first.getProfileId());
             // 仅覆盖非空字段
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getJobArea() != null) toUpdate.setJobArea(incoming.getJobArea());
@@ -248,43 +205,10 @@ public class Job51Service {
 
     // ==================== 51job 岗位数据表与持久化 ====================
 
-    /** 创建 job51_data 表（如不存在） */
-    private void ensureJob51DataTable() {
-        String createSql = "CREATE TABLE IF NOT EXISTS job51_data (" +
-                " job_id            BIGINT PRIMARY KEY," +
-                " job_title         VARCHAR(200)," +
-                " job_link          VARCHAR(300)," +
-                " job_salary_text   VARCHAR(100)," +
-                " job_area          VARCHAR(100)," +
-                " job_edu_req       VARCHAR(50)," +
-                " job_exp_req       VARCHAR(50)," +
-                " job_publish_time  VARCHAR(50)," +
-                " comp_id           BIGINT," +
-                " comp_name         VARCHAR(200)," +
-                " comp_industry     VARCHAR(100)," +
-                " comp_scale        VARCHAR(50)," +
-                " hr_id             VARCHAR(64)," +
-                " hr_name           VARCHAR(50)," +
-                " hr_title          VARCHAR(100)," +
-                " delivered         INTEGER DEFAULT 0," +
-                " create_time       TEXT," +
-                " update_time       TEXT" +
-                ")";
-        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute(createSql);
-            // 兼容旧库：添加 delivered 列（已存在则忽略）
-            try { stmt.execute("ALTER TABLE job51_data ADD COLUMN delivered INTEGER DEFAULT 0"); } catch (Exception ignored) {}
-            // 兼容旧库：尝试移除 account_id（已不存在或不支持则忽略）
-            try { stmt.execute("ALTER TABLE job51_data DROP COLUMN account_id"); } catch (Exception ignored) {}
-            log.info("确保 job51_data 表已存在");
-        } catch (Exception e) {
-            log.warn("创建 job51_data 表失败: {}", e.getMessage());
-        }
-    }
-
     /** 批量插入（仅不存在时），默认 delivered=0 */
     public void batchInsertIfNotExists(List<Job51Entity> entities) {
         if (entities == null || entities.isEmpty()) return;
+        Long profileId = profileService.getCurrentProfileId();
 
         java.util.Set<Long> ids = new java.util.HashSet<>();
         for (Job51Entity e : entities) {
@@ -294,7 +218,9 @@ public class Job51Service {
 
         java.util.List<Long> idList = new java.util.ArrayList<>(ids);
         java.util.List<Job51Entity> existing = job51Mapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity>().in("job_id", idList)
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity>()
+                        .eq("profile_id", profileId)
+                        .in("job_id", idList)
         );
         java.util.Set<Long> existingIds = new java.util.HashSet<>();
         if (existing != null) {
@@ -308,7 +234,10 @@ public class Job51Service {
         String nowIso = now.toString();
         for (Job51Entity e : entities) {
             if (e == null || e.getJobId() == null) continue;
-            if (existingIds.contains(e.getJobId())) continue;
+            // 同一批次也可能重复返回相同岗位；先占位，避免触发 V8 复合唯一约束后整批回滚。
+            if (!existingIds.add(e.getJobId())) continue;
+            e.setId(null);
+            e.setProfileId(profileId);
             if (e.getCreateTime() == null) e.setCreateTime(nowIso);
             e.setUpdateTime(nowIso);
             if (e.getDelivered() == null) e.setDelivered(0);
@@ -317,31 +246,33 @@ public class Job51Service {
         if (toInsert.isEmpty()) return;
 
         String sql = "INSERT INTO job51_data (" +
-                "job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
+                "profile_id, job_id, job_title, job_link, job_salary_text, job_area, job_edu_req, job_exp_req, job_publish_time, " +
                 "comp_id, comp_name, comp_industry, comp_scale, " +
-                "hr_id, hr_name, hr_title, delivered, create_time, update_time" +
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                "hr_id, hr_name, hr_title, delivered, delivery_status, create_time, update_time" +
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         try (Connection conn = dataSource.getConnection(); java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
             conn.setAutoCommit(false);
             for (Job51Entity e : toInsert) {
-                if (e.getJobId() == null) ps.setNull(1, java.sql.Types.BIGINT); else ps.setLong(1, e.getJobId());
-                if (e.getJobTitle() == null) ps.setNull(2, java.sql.Types.VARCHAR); else ps.setString(2, e.getJobTitle());
-                if (e.getJobLink() == null) ps.setNull(3, java.sql.Types.VARCHAR); else ps.setString(3, e.getJobLink());
-                if (e.getJobSalaryText() == null) ps.setNull(4, java.sql.Types.VARCHAR); else ps.setString(4, e.getJobSalaryText());
-                if (e.getJobArea() == null) ps.setNull(5, java.sql.Types.VARCHAR); else ps.setString(5, e.getJobArea());
-                if (e.getJobEduReq() == null) ps.setNull(6, java.sql.Types.VARCHAR); else ps.setString(6, e.getJobEduReq());
-                if (e.getJobExpReq() == null) ps.setNull(7, java.sql.Types.VARCHAR); else ps.setString(7, e.getJobExpReq());
-                if (e.getJobPublishTime() == null) ps.setNull(8, java.sql.Types.VARCHAR); else ps.setString(8, e.getJobPublishTime());
-                if (e.getCompId() == null) ps.setNull(9, java.sql.Types.BIGINT); else ps.setLong(9, e.getCompId());
-                if (e.getCompName() == null) ps.setNull(10, java.sql.Types.VARCHAR); else ps.setString(10, e.getCompName());
-                if (e.getCompIndustry() == null) ps.setNull(11, java.sql.Types.VARCHAR); else ps.setString(11, e.getCompIndustry());
-                if (e.getCompScale() == null) ps.setNull(12, java.sql.Types.VARCHAR); else ps.setString(12, e.getCompScale());
-                if (e.getHrId() == null) ps.setNull(13, java.sql.Types.VARCHAR); else ps.setString(13, e.getHrId());
-                if (e.getHrName() == null) ps.setNull(14, java.sql.Types.VARCHAR); else ps.setString(14, e.getHrName());
-                if (e.getHrTitle() == null) ps.setNull(15, java.sql.Types.VARCHAR); else ps.setString(15, e.getHrTitle());
-                if (e.getDelivered() == null) ps.setNull(16, java.sql.Types.INTEGER); else ps.setInt(16, e.getDelivered());
-                if (e.getCreateTime() == null) ps.setNull(17, java.sql.Types.VARCHAR); else ps.setString(17, e.getCreateTime());
-                if (e.getUpdateTime() == null) ps.setNull(18, java.sql.Types.VARCHAR); else ps.setString(18, e.getUpdateTime());
+                ps.setLong(1, profileId);
+                if (e.getJobId() == null) ps.setNull(2, java.sql.Types.BIGINT); else ps.setLong(2, e.getJobId());
+                if (e.getJobTitle() == null) ps.setNull(3, java.sql.Types.VARCHAR); else ps.setString(3, e.getJobTitle());
+                if (e.getJobLink() == null) ps.setNull(4, java.sql.Types.VARCHAR); else ps.setString(4, e.getJobLink());
+                if (e.getJobSalaryText() == null) ps.setNull(5, java.sql.Types.VARCHAR); else ps.setString(5, e.getJobSalaryText());
+                if (e.getJobArea() == null) ps.setNull(6, java.sql.Types.VARCHAR); else ps.setString(6, e.getJobArea());
+                if (e.getJobEduReq() == null) ps.setNull(7, java.sql.Types.VARCHAR); else ps.setString(7, e.getJobEduReq());
+                if (e.getJobExpReq() == null) ps.setNull(8, java.sql.Types.VARCHAR); else ps.setString(8, e.getJobExpReq());
+                if (e.getJobPublishTime() == null) ps.setNull(9, java.sql.Types.VARCHAR); else ps.setString(9, e.getJobPublishTime());
+                if (e.getCompId() == null) ps.setNull(10, java.sql.Types.BIGINT); else ps.setLong(10, e.getCompId());
+                if (e.getCompName() == null) ps.setNull(11, java.sql.Types.VARCHAR); else ps.setString(11, e.getCompName());
+                if (e.getCompIndustry() == null) ps.setNull(12, java.sql.Types.VARCHAR); else ps.setString(12, e.getCompIndustry());
+                if (e.getCompScale() == null) ps.setNull(13, java.sql.Types.VARCHAR); else ps.setString(13, e.getCompScale());
+                if (e.getHrId() == null) ps.setNull(14, java.sql.Types.VARCHAR); else ps.setString(14, e.getHrId());
+                if (e.getHrName() == null) ps.setNull(15, java.sql.Types.VARCHAR); else ps.setString(15, e.getHrName());
+                if (e.getHrTitle() == null) ps.setNull(16, java.sql.Types.VARCHAR); else ps.setString(16, e.getHrTitle());
+                if (e.getDelivered() == null) ps.setNull(17, java.sql.Types.INTEGER); else ps.setInt(17, e.getDelivered());
+                ps.setString(18, firstNonBlank(e.getDeliveryStatus(), DeliveryStatus.NOT_DELIVERED));
+                if (e.getCreateTime() == null) ps.setNull(19, java.sql.Types.VARCHAR); else ps.setString(19, e.getCreateTime());
+                if (e.getUpdateTime() == null) ps.setNull(20, java.sql.Types.VARCHAR); else ps.setString(20, e.getUpdateTime());
                 ps.addBatch();
             }
             ps.executeBatch();
@@ -448,49 +379,16 @@ public class Job51Service {
     // ==================== 投递状态写回 ====================
 
     /** 将指定 jobId 标记为已投递 */
+    @Deprecated(forRemoval = false)
     public void markDelivered(Long jobId) {
-        if (jobId == null) return;
-        try (Connection conn = dataSource.getConnection();
-             java.sql.PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE job51_data SET delivered=1, update_time=? WHERE job_id=?")) {
-            java.time.LocalDateTime now = java.time.LocalDateTime.now();
-            ps.setString(1, now.toString());
-            ps.setLong(2, jobId);
-            ps.executeUpdate();
-        } catch (Exception e) {
-            log.warn("标记 51job 已投递失败 job_id={}: {}", jobId, e.getMessage());
-        }
+        log.warn("已拒绝无 requestKey 的 51job 已投递写入 job_id={}，请使用 DeliveryAttemptService", jobId);
     }
 
     /** 批量标记为已投递 */
+    @Deprecated(forRemoval = false)
     public void markDeliveredBatch(java.util.Collection<Long> jobIds) {
-        if (jobIds == null || jobIds.isEmpty()) return;
-        try (Connection conn = dataSource.getConnection();
-             java.sql.PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE job51_data SET delivered=1, update_time=? WHERE job_id=?")) {
-            conn.setAutoCommit(false);
-            java.time.LocalDateTime now = java.time.LocalDateTime.now();
-            for (Long id : jobIds) {
-                if (id == null) continue;
-                ps.setString(1, now.toString());
-                ps.setLong(2, id);
-                ps.addBatch();
-            }
-            int[] counts = ps.executeBatch();
-            conn.commit();
-            try {
-                int updated = 0;
-                if (counts != null) {
-                    for (int c : counts) {
-                        if (c > 0) updated += c;
-                    }
-                }
-                String sample = jobIds.stream().filter(java.util.Objects::nonNull).limit(5).map(String::valueOf).collect(java.util.stream.Collectors.joining(", "));
-                log.info("[51job] 批量标记已投递完成，入参 {} 条，成功更新 {} 条，示例ID: {}", jobIds.size(), updated, sample);
-            } catch (Exception ignored) {}
-        } catch (Exception e) {
-            log.warn("批量标记 51job 已投递失败: {}", e.getMessage());
-        }
+        log.warn("已拒绝无 requestKey 的 51job 批量已投递写入，入参 {} 条，请使用 DeliveryAttemptService",
+                jobIds == null ? 0 : jobIds.size());
     }
 
     // ==================== 投递分析与列表 ====================
@@ -507,7 +405,7 @@ public class Job51Service {
         public java.util.List<BucketValue> salaryBuckets;
         public java.util.List<NameValue> dailyTrend; // date as name
     }
-    public static class Kpi { public long total; public long delivered; public long pending; public long filtered; public long failed; public Double avgMonthlyK; }
+    public static class Kpi { public long total; public long delivered; public long pending; public long requested; public long unknown; public long filtered; public long failed; public Double avgMonthlyK; }
     public static class StatsResponse { public Kpi kpi; public Charts charts; }
 
     public static class Job51Row {
@@ -557,11 +455,14 @@ public class Job51Service {
 
         try {
             com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+            wrapper.eq("profile_id", profileService.getCurrentProfileId());
             if (statuses != null && !statuses.isEmpty()) {
-                java.util.List<Integer> deliveredVals = new java.util.ArrayList<>();
-                if (statuses.contains("已投递")) deliveredVals.add(1);
-                if (statuses.contains("未投递")) deliveredVals.add(0);
-                if (!deliveredVals.isEmpty()) wrapper.in("delivered", deliveredVals);
+                java.util.Set<String> normalizedStatuses = statuses.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .map(String::trim)
+                        .filter(value -> !value.isEmpty())
+                        .collect(java.util.stream.Collectors.toSet());
+                if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
             }
             if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
             if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -599,15 +500,17 @@ public class Job51Service {
 
             // KPI
             resp.kpi.total = filtered.size();
-            resp.kpi.delivered = filtered.stream().filter(e -> e.getDelivered() != null && e.getDelivered() == 1).count();
-            resp.kpi.pending = filtered.stream().filter(e -> e.getDelivered() == null || e.getDelivered() == 0).count();
+            resp.kpi.delivered = filtered.stream().filter(e -> DeliveryStatus.DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.pending = filtered.stream().filter(e -> DeliveryStatus.NOT_DELIVERED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.requested = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_REQUESTED.equals(deliveryStatusOf(e))).count();
+            resp.kpi.unknown = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_UNKNOWN.equals(deliveryStatusOf(e))).count();
             resp.kpi.filtered = 0; // 51 无明确“已过滤”
-            resp.kpi.failed = 0;   // 51 无明确“投递失败”
+            resp.kpi.failed = filtered.stream().filter(e -> DeliveryStatus.DELIVERY_FAILED.equals(deliveryStatusOf(e))).count();
             resp.kpi.avgMonthlyK = countMedian > 0 ? Math.round((sumMedian / countMedian) * 100.0) / 100.0 : null;
 
             // Charts
             java.util.Map<String, Long> byStatus = filtered.stream()
-                    .collect(java.util.stream.Collectors.groupingBy(e -> (e.getDelivered()!=null && e.getDelivered()==1) ? "已投递" : "未投递", java.util.stream.Collectors.counting()));
+                    .collect(java.util.stream.Collectors.groupingBy(this::deliveryStatusOf, java.util.stream.Collectors.counting()));
             byStatus.forEach((k,v) -> charts.byStatus.add(new NameValue(nullSafe(k), v)));
 
             java.util.Map<String, Long> byCity = filtered.stream()
@@ -680,11 +583,14 @@ public class Job51Service {
         if (size <= 0) size = 20;
 
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Job51Entity> wrapper = new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+        wrapper.eq("profile_id", profileService.getCurrentProfileId());
         if (statuses != null && !statuses.isEmpty()) {
-            java.util.List<Integer> deliveredVals = new java.util.ArrayList<>();
-            if (statuses.contains("已投递")) deliveredVals.add(1);
-            if (statuses.contains("未投递")) deliveredVals.add(0);
-            if (!deliveredVals.isEmpty()) wrapper.in("delivered", deliveredVals);
+            java.util.Set<String> normalizedStatuses = statuses.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!normalizedStatuses.isEmpty()) wrapper.in("delivery_status", normalizedStatuses);
         }
         if (location != null && !location.trim().isEmpty()) wrapper.eq("job_area", location.trim());
         if (experience != null && !experience.trim().isEmpty()) wrapper.eq("job_exp_req", experience.trim());
@@ -726,7 +632,7 @@ public class Job51Service {
             r.experience = e.getJobExpReq();
             r.degree = e.getJobEduReq();
             r.hrName = e.getHrName();
-            r.deliveryStatus = (e.getDelivered()!=null && e.getDelivered()==1) ? "已投递" : "未投递";
+            r.deliveryStatus = deliveryStatusOf(e);
             r.jobUrl = e.getJobLink();
             r.publishTime = e.getJobPublishTime();
             r.createdAt = e.getCreateTime();
@@ -741,6 +647,15 @@ public class Job51Service {
         result.page = page;
         result.size = size;
         return result;
+    }
+
+    private String deliveryStatusOf(Job51Entity entity) {
+        if (entity.getDeliveryStatus() != null && !entity.getDeliveryStatus().isBlank()) {
+            return entity.getDeliveryStatus().trim();
+        }
+        return entity.getDelivered() != null && entity.getDelivered() == 1
+                ? DeliveryStatus.DELIVERED
+                : DeliveryStatus.NOT_DELIVERED;
     }
 
     // ==================== 薪资解析 ====================
@@ -779,17 +694,14 @@ public class Job51Service {
 
     private String nullSafe(String s) { return (s == null || s.isEmpty()) ? "未知" : s; }
 
-    /** 刷新 51job 数据：执行 VACUUM 并返回当前总数 */
+    /** 刷新 51job 数据视图并返回当前总数；不执行数据库维护或 DDL。 */
     public java.util.Map<String, Object> reloadJob51Data() {
         java.util.Map<String, Object> resp = new java.util.HashMap<>();
         Connection conn = null;
         try {
             conn = dataSource.getConnection();
-            try (Statement st = conn.createStatement()) {
-                try { st.execute("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (Exception ignore) {}
-                try { st.execute("VACUUM"); } catch (Exception ignore) {}
-            }
-            long total = scalarCount(conn, "SELECT COUNT(*) FROM job51_data");
+            long total = scalarCount(conn, "SELECT COUNT(*) FROM job51_data WHERE profile_id=" +
+                    profileService.getCurrentProfileId());
             resp.put("success", true);
             resp.put("message", "刷新完成");
             resp.put("total", total);
@@ -804,5 +716,16 @@ public class Job51Service {
         try (java.sql.Statement st = conn.createStatement(); java.sql.ResultSet rs = st.executeQuery(sql)) {
             return rs.next() ? rs.getLong(1) : 0L;
         }
+    }
+
+    public Job51Entity findByProfileAndJobId(Long profileId, Long jobId) {
+        if (profileId == null || jobId == null) return null;
+        QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
+        wrapper.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
+        return job51Mapper.selectOne(wrapper);
+    }
+
+    private String firstNonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 }

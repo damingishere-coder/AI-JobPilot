@@ -96,9 +96,9 @@ export default function Sidebar() {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 3000)
       try {
-        let res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal })
+        let res = await fetch(`${API_BASE}/api/ready`, { signal: controller.signal })
         if (res.status === 404) {
-          res = await fetch(`${API_BASE}/actuator/health`, { signal: controller.signal })
+          res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal })
         }
         if (!res.ok) throw new Error(`status ${res.status}`)
         const data = await res.json()

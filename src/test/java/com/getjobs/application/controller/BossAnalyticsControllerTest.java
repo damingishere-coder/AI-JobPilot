@@ -1,10 +1,12 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.dto.ConfirmBatchRequest;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.service.BossService;
 import com.getjobs.application.service.BossStatsService;
 import com.getjobs.application.service.DeliveryStatus;
+import com.getjobs.application.service.DeliveryAttemptService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -22,12 +24,14 @@ import static org.mockito.Mockito.when;
 
 class BossAnalyticsControllerTest {
     private BossService bossService;
+    private DeliveryAttemptService deliveryAttemptService;
     private BossAnalyticsController controller;
 
     @BeforeEach
     void setUp() {
         bossService = mock(BossService.class);
-        controller = new BossAnalyticsController(bossService, mock(BossStatsService.class));
+        deliveryAttemptService = mock(DeliveryAttemptService.class);
+        controller = new BossAnalyticsController(bossService, mock(BossStatsService.class), deliveryAttemptService);
     }
 
     @Test
@@ -69,6 +73,9 @@ class BossAnalyticsControllerTest {
         when(bossService.getBossJobById(3L)).thenReturn(missingUrl);
         when(bossService.getBossJobById(4L)).thenReturn(delivered);
         when(bossService.getBossJobById(999L)).thenReturn(null);
+        when(deliveryAttemptService.requestBoss(1L, 1L, "boss-1", true)).thenReturn(
+                new DeliveryAttemptService.RequestResult(
+                        true, true, "request-1", DeliveryAttemptService.State.REQUESTED, "投递请求已创建"));
 
         ConfirmBatchRequest request = new ConfirmBatchRequest();
         request.setManualOverrideAiNotMatch(true);
@@ -85,6 +92,7 @@ class BossAnalyticsControllerTest {
         assertThat(tasks).singleElement().satisfies(task -> {
             assertThat(task).containsEntry("id", 1L);
             assertThat(task).containsEntry("url", "https://www.zhipin.com/job_detail/1.html");
+            assertThat(task).containsEntry("requestKey", "request-1");
         });
     }
 
@@ -105,9 +113,52 @@ class BossAnalyticsControllerTest {
                 .containsEntry("count", 0);
     }
 
+    @Test
+    void deliveryCallbackPassesRequestIdentityAndEvidenceToAttemptService() {
+        BossJobDataEntity current = job(5L, DeliveryStatus.DELIVERY_REQUESTED, "https://www.zhipin.com/job_detail/5.html");
+        when(bossService.getBossJobById(5L)).thenReturn(current);
+        when(deliveryAttemptService.resolve(
+                "boss", 1L, 5L, "request-5", DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "页面显示已沟通", null, "页面显示已沟通"
+        )).thenReturn(new DeliveryAttemptService.ResolutionResult(
+                true, false, DeliveryAttemptService.State.CONFIRMED, "投递结果已写入"));
+
+        DeliveryResultRequest request = new DeliveryResultRequest();
+        request.setRequestKey("request-5");
+        request.setOutcome("CONFIRMED");
+        request.setEvidence(DeliveryAttemptService.PLATFORM_STATUS_TEXT);
+        request.setMessage("页面显示已沟通");
+
+        Map<String, Object> response = controller.updateDeliveryResult(5L, request);
+
+        assertThat(response)
+                .containsEntry("success", true)
+                .containsEntry("state", "CONFIRMED");
+    }
+
+    @Test
+    void confirmResumesTheSameRequestedAttemptAfterResponseLoss() {
+        BossJobDataEntity current = job(6L, DeliveryStatus.DELIVERY_REQUESTED, "https://www.zhipin.com/job_detail/6.html");
+        when(bossService.getBossJobById(6L)).thenReturn(current);
+        when(deliveryAttemptService.requestBoss(6L, 1L, "boss-6", false)).thenReturn(
+                new DeliveryAttemptService.RequestResult(
+                        true, false, "request-6", DeliveryAttemptService.State.REQUESTED, "投递请求已存在"));
+
+        Map<String, Object> response = controller.confirmPendingJob(6L);
+
+        assertThat(response)
+                .containsEntry("success", true)
+                .containsEntry("resumed", true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> task = (Map<String, Object>) response.get("task");
+        assertThat(task).containsEntry("requestKey", "request-6");
+    }
+
     private BossJobDataEntity job(Long id, String status, String url) {
         BossJobDataEntity job = new BossJobDataEntity();
         job.setId(id);
+        job.setProfileId(1L);
+        job.setEncryptId("boss-" + id);
         job.setDeliveryStatus(status);
         job.setJobUrl(url);
         job.setCompanyName("测试公司");

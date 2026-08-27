@@ -1,6 +1,7 @@
 package com.getjobs.application.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -13,6 +14,10 @@ public class LiepinConfigEntity {
     @TableId(type = IdType.AUTO)
     /** 主键ID */
     private Long id;
+
+    /** 所属候选人档案 */
+    @TableField("profile_id")
+    private Long profileId;
 
     /** 搜索关键词 */
     private String keywords;

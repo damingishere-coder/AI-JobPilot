@@ -94,8 +94,12 @@ test("rejects Boss navigation titles and non-job detail URLs", () => {
   assert.equal(support.isNonJobNavigationTitle("职位搜索"), true);
   assert.equal(support.isNonJobNavigationTitle("销售赋能运营"), false);
   assert.equal(support.isBossJobDetailUrl("https://www.zhipin.com/job_detail/demo.html"), true);
+  assert.equal(support.isBossJobDetailUrl("https://sub.zhipin.com/job_detail/demo.html"), true);
   assert.equal(support.isBossJobDetailUrl("https://www.zhipin.com/web/geek/job?query=Java"), false);
   assert.equal(support.isBossJobDetailUrl("https://example.com/job_detail/demo.html"), false);
+  assert.equal(support.isBossJobDetailUrl("https://evilzhipin.com/job_detail/demo.html"), false);
+  assert.equal(support.isBossJobDetailUrl("https://zhipin.com.example.com/job_detail/demo.html"), false);
+  assert.equal(support.isBossJobDetailUrl("http://www.zhipin.com/job_detail/demo.html"), false);
 });
 
 test("classifies unchanged Boss detail navigation as blocked", () => {
