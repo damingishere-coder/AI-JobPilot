@@ -72,6 +72,11 @@ export type BossJob = {
   sourceKeyword?: string
   scanRunId?: string
   createdAt?: string
+  aiGreeting?: string
+  greetingDraft?: string
+  greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
+  greetingUpdatedAt?: string | null
+  finalGreeting?: string
 }
 
 export type PagedResult = {

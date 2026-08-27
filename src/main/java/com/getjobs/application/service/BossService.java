@@ -1688,6 +1688,7 @@ public class BossService {
 
             int analysisDeleted;
             int tasksDeleted;
+            int draftsDeleted;
             int jobsDeleted;
             try (Statement st = conn.createStatement()) {
                 Long profileId = profileService.getCurrentProfileId();
@@ -1703,6 +1704,7 @@ public class BossService {
                     }
                 }
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss' AND profile_id=" + profileId);
+                draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='boss' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM boss_data WHERE profile_id=" + profileId);
             }
 
@@ -1712,6 +1714,7 @@ public class BossService {
             resp.put("jobsDeleted", jobsDeleted);
             resp.put("analysisDeleted", analysisDeleted);
             resp.put("tasksDeleted", tasksDeleted);
+            resp.put("draftsDeleted", draftsDeleted);
             resp.put("total", 0);
         } catch (Exception e) {
             try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}

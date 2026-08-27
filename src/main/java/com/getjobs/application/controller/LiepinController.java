@@ -9,6 +9,7 @@ import com.getjobs.application.service.CookieService;
 import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.LiepinService;
 import com.getjobs.worker.manager.PlaywrightManager;
+import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.service.LiepinJobService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -79,10 +81,19 @@ public class LiepinController {
      * @return 响应结果
      */
     @PostMapping("/start")
-    public ResponseEntity<Map<String, Object>> startLiepinJob() {
+    public ResponseEntity<Map<String, Object>> startLiepinJob(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "X-Real-Delivery-Confirmation", required = false) String deliveryConfirmation) {
         Map<String, Object> response = new HashMap<>();
 
         try {
+            boolean deliveryMode = request != null && "delivery".equalsIgnoreCase(Objects.toString(request.get("mode"), ""));
+            if (deliveryMode && !"CONFIRM_REAL_DELIVERY".equals(deliveryConfirmation)) {
+                response.put("success", false);
+                response.put("message", "真实投递模式需要操作当时再次确认；未提供有效确认头");
+                response.put("status", "confirmation_required");
+                return ResponseEntity.badRequest().body(response);
+            }
             // 未登录则不允许启动
             if (!playwrightManager.isLoggedIn("liepin")) {
                 response.put("success", false);
@@ -102,9 +113,11 @@ public class LiepinController {
             // 异步启动新任务
             CompletableFuture.runAsync(() -> {
                 try {
-                    liepinJobService.executeDelivery(progressMessage -> {
+                    java.util.function.Consumer<JobProgressMessage> progress = progressMessage -> {
                         log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
-                    });
+                    };
+                    if (deliveryMode) liepinJobService.executeDelivery(progress);
+                    else liepinJobService.executeCollection(progress);
                 } catch (Exception e) {
                     log.error("猎聘异步任务执行失败", e);
                     log.warn("猎聘任务执行失败，请查看后端日志");
@@ -112,8 +125,9 @@ public class LiepinController {
             }, jobTaskExecutor);
 
             response.put("success", true);
-            response.put("message", "猎聘任务启动成功");
+            response.put("message", deliveryMode ? "猎聘投递任务启动成功" : "猎聘只读采集任务启动成功，不会执行真实投递");
             response.put("status", "started");
+            response.put("mode", deliveryMode ? "delivery" : "collection");
 
             log.info("通过API启动猎聘任务成功");
             return ResponseEntity.ok(response);

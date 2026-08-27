@@ -1,10 +1,12 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.dto.DeliveryResultRequest;
+import com.getjobs.application.dto.GreetingConfirmationRequest;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.ZhilianService;
+import com.getjobs.application.service.GreetingDraftService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -18,15 +20,18 @@ import static org.mockito.Mockito.when;
 class ZhilianDeliveryControllerTest {
     private ZhilianService zhilianService;
     private DeliveryAttemptService deliveryAttemptService;
+    private GreetingDraftService greetingDraftService;
     private ZhilianController controller;
 
     @BeforeEach
     void setUp() {
         zhilianService = mock(ZhilianService.class);
         deliveryAttemptService = mock(DeliveryAttemptService.class);
+        greetingDraftService = mock(GreetingDraftService.class);
         controller = new ZhilianController();
         ReflectionTestUtils.setField(controller, "zhilianService", zhilianService);
         ReflectionTestUtils.setField(controller, "deliveryAttemptService", deliveryAttemptService);
+        ReflectionTestUtils.setField(controller, "greetingDraftService", greetingDraftService);
     }
 
     @Test
@@ -54,5 +59,32 @@ class ZhilianDeliveryControllerTest {
         assertThat(response)
                 .containsEntry("success", true)
                 .containsEntry("state", "UNKNOWN");
+    }
+
+    @Test
+    void confirmTaskCarriesTheExactReviewedGreeting() {
+        ZhilianJobDataEntity job = new ZhilianJobDataEntity();
+        job.setId(9L);
+        job.setProfileId(1L);
+        job.setJobId("zhilian-9");
+        job.setJobLink("https://sou.zhaopin.com/job/9");
+        job.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
+        when(zhilianService.getZhilianJobById(9L)).thenReturn(job);
+        when(greetingDraftService.resolveForJob("zhilian", 9L)).thenReturn(
+                new GreetingDraftService.GreetingView("AI 原稿", "人工稿", GreetingDraftService.USER_EDITED, null, "人工确认稿"));
+        when(deliveryAttemptService.requestZhilian(9L, 1L, "zhilian-9")).thenReturn(
+                new DeliveryAttemptService.RequestResult(true, true, "request-9", DeliveryAttemptService.State.REQUESTED, "已创建"));
+        when(deliveryAttemptService.snapshotGreeting("request-9", "人工确认稿")).thenReturn("人工确认稿");
+
+        GreetingConfirmationRequest request = new GreetingConfirmationRequest();
+        request.setGreetingSnapshot("人工确认稿");
+        Map<String, Object> response = controller.confirmZhilianJob(9L, request);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> task = (Map<String, Object>) response.get("task");
+        assertThat(task)
+                .containsEntry("requestKey", "request-9")
+                .containsEntry("greeting", "人工确认稿")
+                .containsEntry("greetingSource", GreetingDraftService.USER_EDITED);
     }
 }

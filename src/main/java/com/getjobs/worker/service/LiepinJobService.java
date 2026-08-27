@@ -40,6 +40,14 @@ public class LiepinJobService implements JobPlatformService {
 
     @Override
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
+        execute(progressCallback, false);
+    }
+
+    public void executeCollection(Consumer<JobProgressMessage> progressCallback) {
+        execute(progressCallback, true);
+    }
+
+    private void execute(Consumer<JobProgressMessage> progressCallback, boolean scanOnly) {
         if (isRunning) {
             progressCallback.accept(JobProgressMessage.warning(PLATFORM, "任务已在运行中"));
             return;
@@ -67,7 +75,7 @@ public class LiepinJobService implements JobPlatformService {
             LiepinConfig config = configService.getLiepinConfig();
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
-            progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始投递任务..."));
+            progressCallback.accept(JobProgressMessage.info(PLATFORM, scanOnly ? "开始只读采集任务..." : "开始投递任务..."));
 
             // 创建并执行 Bean
             Liepin.ProgressCallback cb = (message, current, total) -> {
@@ -83,11 +91,14 @@ public class LiepinJobService implements JobPlatformService {
             liepin.setConfig(config);
             liepin.setProgressCallback(cb);
             liepin.setShouldStopCallback(this::shouldStop);
+            liepin.setScanOnly(scanOnly);
 
             int deliveredCount = liepin.execute();
 
-            progressCallback.accept(JobProgressMessage.warning(PLATFORM,
-                String.format("猎聘已发起%d个聊天动作；只有明确既有会话才记为确认，其余进入待对账", deliveredCount)));
+            progressCallback.accept(scanOnly
+                    ? JobProgressMessage.info(PLATFORM, "猎聘只读采集完成，未执行真实投递")
+                    : JobProgressMessage.warning(PLATFORM,
+                    String.format("猎聘已发起%d个聊天动作；只有明确既有会话才记为确认，其余进入待对账", deliveredCount)));
         } catch (Exception e) {
             log.error("猎聘投递任务执行失败", e);
             progressCallback.accept(JobProgressMessage.error(PLATFORM, "投递失败: " + e.getMessage()));

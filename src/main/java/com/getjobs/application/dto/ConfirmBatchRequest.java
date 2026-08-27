@@ -3,6 +3,7 @@ package com.getjobs.application.dto;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 public class ConfirmBatchRequest {
@@ -19,4 +20,5 @@ public class ConfirmBatchRequest {
     private Boolean filterHeadhunter;
     private Boolean aiRecommendedOnly;
     private Boolean manualOverrideAiNotMatch;
+    private Map<Long, String> greetingSnapshots;
 }

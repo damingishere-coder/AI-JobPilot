@@ -63,14 +63,16 @@ AI JobPilot brings these steps into a local workspace:
 
 ## Platform support
 
-| Platform | Collection | AI analysis | Human review | Current status |
-| --- | :---: | :---: | :---: | --- |
-| Boss Zhipin | ✅ | ✅ | ✅ | Main Chrome Bridge flow; limited API POC and page fallback collection |
-| Zhaopin | ✅ | ✅ | ✅ | Main Chrome Bridge flow |
-| Liepin | 🟡 | ✅ | ✅ | Basic local flow; adapter work is ongoing |
-| 51job | 🟡 | ✅ | ✅ | Basic local flow; adapter work is ongoing |
+| Platform | Quality tier | Collection | AI analysis / review queue | Formal execution mode |
+| --- | --- | --- | :---: | --- |
+| Boss Zhipin | Tier 1 | Chrome Bridge; limited API POC and page fallback | ✅ | Chrome Bridge |
+| Zhaopin | Tier 1 | Chrome Bridge | ✅ | Chrome Bridge |
+| Liepin | Tier 2 compatibility | Legacy Playwright, read-only collection by default | ✅ | Legacy Playwright with explicit real-action confirmation |
+| 51job | Tier 2 compatibility | Legacy Playwright, read-only collection by default | ✅ | Legacy Playwright with explicit real-action confirmation |
 
-`✅` means the current primary workflow is supported. `🟡` means basic functionality exists but coverage and stability still need validation.
+The read-only `GET /api/platforms/capabilities` endpoint exposes the current capability declarations. Automated coverage does not replace a small real-account smoke test that stops at the review queue.
+
+Boss and Zhaopin review cards also expose the final communication draft, its source, editing, copying, and AI-original restore. User edits are stored separately from AI output. Single and batch confirmation validate the exact reviewed text before creating a browser task; this does not add a separate automatic messaging entry point.
 
 ## Downloads and releases
 
@@ -120,9 +122,10 @@ Open the workspace and health endpoint:
 ```text
 Frontend: http://localhost:6866
 Backend health: http://localhost:8888/api/health
+Backend readiness: http://localhost:8888/api/ready
 ```
 
-The basic setup is ready when the dashboard checks pass and the health endpoint returns `UP`.
+`/api/health` returning `UP` only proves that the process is alive. The workspace is ready for business operations only when the dashboard checks pass and `/api/ready` reports readiness for the database, schema, and task queue.
 
 See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for the full beginner setup and troubleshooting guide.
 

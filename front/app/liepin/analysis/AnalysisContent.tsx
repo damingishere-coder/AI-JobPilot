@@ -39,6 +39,7 @@ type StatsResponse = {
 }
 
 type LiepinJob = {
+  id?: number
   jobId: number
   compName?: string
   compIndustry?: string
@@ -55,6 +56,9 @@ type LiepinJob = {
   delivered?: number
   deliveryStatus?: string
   createTime?: string
+  aiScore?: number
+  aiDecision?: string
+  aiReason?: string
 }
 
 function deliveryStatusOf(job: LiepinJob) {
@@ -234,10 +238,11 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [loadingList, setLoadingList] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [recoveringJobId, setRecoveringJobId] = useState<number | null>(null)
+  const [analyzingJobId, setAnalyzingJobId] = useState<number | null>(null)
   const [detailJob, setDetailJob] = useState<LiepinJob | null>(null)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
 
-  const statusOptions = ["未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
+  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
 
   useEffect(() => {
     loadStats()
@@ -411,6 +416,25 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
       window.alert(error instanceof Error ? error.message : "恢复操作失败")
     } finally {
       setRecoveringJobId(null)
+    }
+  }
+
+  const analyzeJob = async (job: LiepinJob) => {
+    if (!job.id) {
+      alert("该猎聘岗位缺少内部 ID，无法加入统一 AI 分析队列。")
+      return
+    }
+    try {
+      setAnalyzingJobId(job.id)
+      const response = await fetch(`${API_BASE}/api/platforms/liepin/jobs/${job.id}/analyze`, { method: "POST" })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data.success === false) throw new Error(data.message || "加入 AI 分析队列失败")
+      alert(data.queued ? "已加入统一 AI 分析队列。" : (data.message || "该岗位已有分析任务。"))
+      await loadList(page, size)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "加入 AI 分析队列失败")
+    } finally {
+      setAnalyzingJobId(null)
     }
   }
 
@@ -817,6 +841,14 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                     <td className="py-2 px-3 whitespace-nowrap">{it.hrName || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       <span className={badgeClass("delivery", deliveryStatusOf(it))}>{deliveryStatusOf(it)}</span>
+                      <div className="mt-1 text-xs text-muted-foreground">AI {it.aiScore ?? "-"} · {it.aiDecision || "未分析"}</div>
+                      {["未投递", "AI分析失败", "LIST_COLLECTED"].includes(deliveryStatusOf(it)) && (
+                        <div className="mt-2">
+                          <Button size="sm" variant="outline" disabled={analyzingJobId === it.id} onClick={() => analyzeJob(it)}>
+                            {analyzingJobId === it.id ? "入队中..." : "AI 分析"}
+                          </Button>
+                        </div>
+                      )}
                       {deliveryStatusOf(it) === "投递结果待确认" && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           <Button size="sm" variant="outline" disabled={recoveringJobId === it.jobId} onClick={() => recoverDelivery(it.jobId, "confirmed")}>核对已投递</Button>

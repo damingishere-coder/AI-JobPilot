@@ -49,6 +49,22 @@ public class LiepinEntity {
     // 新投递状态真相的兼容读模型；只有 CONFIRMED 才会同时写 delivered=1
     private String deliveryStatus;
 
+    private Integer aiScore;
+    private String aiDecision;
+    private String aiReason;
+    private Integer priorityCompany;
+
+    @TableField(exist = false)
+    private String aiGreeting;
+    @TableField(exist = false)
+    private String greetingDraft;
+    @TableField(exist = false)
+    private String greetingSource;
+    @TableField(exist = false)
+    private LocalDateTime greetingUpdatedAt;
+    @TableField(exist = false)
+    private String finalGreeting;
+
     // ========== 系统字段 ==========
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

@@ -2,11 +2,13 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
+import com.getjobs.application.dto.GreetingConfirmationRequest;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.service.BossService;
 import com.getjobs.application.service.BossStatsService;
 import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.DeliveryAttemptService;
+import com.getjobs.application.service.GreetingDraftService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +18,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -25,13 +29,20 @@ import static org.mockito.Mockito.when;
 class BossAnalyticsControllerTest {
     private BossService bossService;
     private DeliveryAttemptService deliveryAttemptService;
+    private GreetingDraftService greetingDraftService;
     private BossAnalyticsController controller;
 
     @BeforeEach
     void setUp() {
         bossService = mock(BossService.class);
         deliveryAttemptService = mock(DeliveryAttemptService.class);
-        controller = new BossAnalyticsController(bossService, mock(BossStatsService.class), deliveryAttemptService);
+        greetingDraftService = mock(GreetingDraftService.class);
+        when(greetingDraftService.resolveForJob(anyString(), anyLong())).thenReturn(
+                new GreetingDraftService.GreetingView("AI 原稿", "", GreetingDraftService.AI_GREETING, null, "你好，很高兴沟通"));
+        when(deliveryAttemptService.snapshotGreeting(anyString(), anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(1));
+        controller = new BossAnalyticsController(
+                bossService, mock(BossStatsService.class), deliveryAttemptService, greetingDraftService);
     }
 
     @Test
@@ -80,6 +91,7 @@ class BossAnalyticsControllerTest {
         ConfirmBatchRequest request = new ConfirmBatchRequest();
         request.setManualOverrideAiNotMatch(true);
         request.setIds(List.of(1L, 1L, 2L, 3L, 4L, 999L));
+        request.setGreetingSnapshots(Map.of(1L, "你好，很高兴沟通"));
 
         Map<String, Object> response = controller.confirmBatch(request);
 
@@ -93,6 +105,8 @@ class BossAnalyticsControllerTest {
             assertThat(task).containsEntry("id", 1L);
             assertThat(task).containsEntry("url", "https://www.zhipin.com/job_detail/1.html");
             assertThat(task).containsEntry("requestKey", "request-1");
+            assertThat(task).containsEntry("greeting", "你好，很高兴沟通");
+            assertThat(task).containsEntry("greetingSource", GreetingDraftService.AI_GREETING);
         });
     }
 
@@ -144,7 +158,9 @@ class BossAnalyticsControllerTest {
                 new DeliveryAttemptService.RequestResult(
                         true, false, "request-6", DeliveryAttemptService.State.REQUESTED, "投递请求已存在"));
 
-        Map<String, Object> response = controller.confirmPendingJob(6L);
+        GreetingConfirmationRequest request = new GreetingConfirmationRequest();
+        request.setGreetingSnapshot("你好，很高兴沟通");
+        Map<String, Object> response = controller.confirmPendingJob(6L, request);
 
         assertThat(response)
                 .containsEntry("success", true)
@@ -152,6 +168,23 @@ class BossAnalyticsControllerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> task = (Map<String, Object>) response.get("task");
         assertThat(task).containsEntry("requestKey", "request-6");
+        assertThat(task).containsEntry("greeting", "你好，很高兴沟通");
+    }
+
+    @Test
+    void confirmRejectsAChangedGreetingBeforeCreatingAttempt() {
+        BossJobDataEntity current = job(7L, DeliveryStatus.WAITING_CONFIRM, "https://www.zhipin.com/job_detail/7.html");
+        when(bossService.getBossJobById(7L)).thenReturn(current);
+
+        GreetingConfirmationRequest request = new GreetingConfirmationRequest();
+        request.setGreetingSnapshot("旧页面话术");
+        Map<String, Object> response = controller.confirmPendingJob(7L, request);
+
+        assertThat(response)
+                .containsEntry("success", false)
+                .containsEntry("greetingChanged", true);
+        verify(deliveryAttemptService, org.mockito.Mockito.never())
+                .requestBoss(anyLong(), anyLong(), anyString(), anyBoolean());
     }
 
     private BossJobDataEntity job(Long id, String status, String url) {

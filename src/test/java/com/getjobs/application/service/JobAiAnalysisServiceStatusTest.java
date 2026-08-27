@@ -4,11 +4,15 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.entity.JobAiAnalysisEntity;
+import com.getjobs.application.entity.LiepinEntity;
+import com.getjobs.application.entity.Job51Entity;
 import com.getjobs.application.entity.PriorityCompanyEntity;
 import com.getjobs.application.entity.ResumeProfileEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
 import com.getjobs.application.mapper.JobAiAnalysisMapper;
+import com.getjobs.application.mapper.LiepinMapper;
+import com.getjobs.application.mapper.Job51Mapper;
 import com.getjobs.application.mapper.PriorityCompanyMapper;
 import com.getjobs.application.mapper.ResumeProfileMapper;
 import com.getjobs.application.mapper.ZhilianJobDataMapper;
@@ -51,6 +55,10 @@ class JobAiAnalysisServiceStatusTest {
     private BossJobDataMapper bossJobDataMapper;
     @Mock
     private ZhilianJobDataMapper zhilianJobDataMapper;
+    @Mock
+    private LiepinMapper liepinMapper;
+    @Mock
+    private Job51Mapper job51Mapper;
 
     private JobAiAnalysisService service;
 
@@ -63,13 +71,17 @@ class JobAiAnalysisServiceStatusTest {
                 priorityCompanyMapper,
                 jobAiAnalysisMapper,
                 bossJobDataMapper,
-                zhilianJobDataMapper
+                zhilianJobDataMapper,
+                liepinMapper,
+                job51Mapper
         );
         lenient().when(priorityCompanyMapper.selectList(any())).thenReturn(List.of());
         lenient().when(jobAiAnalysisMapper.insert(
                 any(com.getjobs.application.entity.JobAiAnalysisEntity.class))).thenReturn(1);
         lenient().when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
         lenient().when(zhilianJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
+        lenient().when(liepinMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
+        lenient().when(job51Mapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
     }
 
     @Test
@@ -106,6 +118,40 @@ class JobAiAnalysisServiceStatusTest {
         service.updatePlatformCache(zhilianRequest(), analysis("SKIP"));
 
         assertThat(lastZhilianUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_NOT_MATCH);
+    }
+
+    @Test
+    void liepinApplyUpdatesWaitingConfirm() {
+        LiepinEntity current = new LiepinEntity();
+        current.setId(21L);
+        current.setProfileId(PROFILE_ID);
+        current.setJobId(2100L);
+        current.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
+        when(liepinMapper.selectOne(any())).thenReturn(current);
+
+        service.updatePlatformCache(legacyRequest("liepin", 21L, "2100"), analysis("APPLY"));
+
+        ArgumentCaptor<LiepinEntity> captor = ArgumentCaptor.forClass(LiepinEntity.class);
+        verify(liepinMapper).update(captor.capture(), any(UpdateWrapper.class));
+        assertThat(captor.getValue().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        assertThat(captor.getValue().getAiScore()).isEqualTo(90);
+    }
+
+    @Test
+    void job51SkipUpdatesAiNotMatch() {
+        Job51Entity current = new Job51Entity();
+        current.setId(31L);
+        current.setProfileId(PROFILE_ID);
+        current.setJobId(3100L);
+        current.setDeliveryStatus(DeliveryStatus.NOT_DELIVERED);
+        when(job51Mapper.selectOne(any())).thenReturn(current);
+
+        service.updatePlatformCache(legacyRequest("51job", 31L, "3100"), analysis("SKIP"));
+
+        ArgumentCaptor<Job51Entity> captor = ArgumentCaptor.forClass(Job51Entity.class);
+        verify(job51Mapper).update(captor.capture(), any(UpdateWrapper.class));
+        assertThat(captor.getValue().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_NOT_MATCH);
+        assertThat(captor.getValue().getAiScore()).isEqualTo(20);
     }
 
     @Test
@@ -505,6 +551,13 @@ class JobAiAnalysisServiceStatusTest {
     private JobAiAnalysisService.JobAnalysisRequest zhilianRequest() {
         JobAiAnalysisService.JobAnalysisRequest request = baseRequest("zhilian");
         request.setJobKey("z1");
+        return request;
+    }
+
+    private JobAiAnalysisService.JobAnalysisRequest legacyRequest(String platform, Long rowId, String jobKey) {
+        JobAiAnalysisService.JobAnalysisRequest request = baseRequest(platform);
+        request.setJobRowId(rowId);
+        request.setJobKey(jobKey);
         return request;
     }
 

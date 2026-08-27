@@ -1,6 +1,6 @@
 "use client"
 
-import { BiBlock, BiBriefcase, BiCheckCircle, BiChevronDown, BiChevronUp, BiFilterAlt, BiLinkExternal, BiX } from "react-icons/bi"
+import { BiBlock, BiBriefcase, BiCheckCircle, BiChevronDown, BiChevronUp, BiFilterAlt, BiLinkExternal, BiMessageDetail, BiX } from "react-icons/bi"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -14,6 +14,7 @@ function PendingJobCard({
   riskText,
   onOpenText,
   onConfirm,
+  onEditGreeting,
   onSkip,
   onBlacklist,
 }: {
@@ -23,6 +24,7 @@ function PendingJobCard({
   riskText: string
   onOpenText: (title: string, content?: string) => void
   onConfirm: () => void
+  onEditGreeting: () => void
   onSkip: () => void
   onBlacklist: () => void
 }) {
@@ -85,6 +87,18 @@ function PendingJobCard({
           </button>
         </div>
 
+        <button
+          type="button"
+          className="w-full rounded-lg border border-cyan-200 bg-white/80 p-3 text-left text-sm dark:border-cyan-900/60 dark:bg-neutral-900/50"
+          onClick={onEditGreeting}
+        >
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+            <span>最终沟通话术</span>
+            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "AI 原稿" : job.greetingSource === "PROFILE_DEFAULT" ? "档案默认" : "空白警告"}</span>
+          </div>
+          <div className="line-clamp-2 leading-6">{job.finalGreeting || "暂无可用话术，请先编辑后再确认"}</div>
+        </button>
+
         <div className="flex flex-wrap gap-2">
           {job.jobUrl ? (
             <Button asChild size="sm" variant="outline">
@@ -99,6 +113,9 @@ function PendingJobCard({
           )}
           <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
             <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onEditGreeting}>
+            <BiMessageDetail className="mr-1" /> 编辑沟通语
           </Button>
           <Button size="sm" variant="outline" disabled={acting} onClick={onSkip}>
             <BiX className="mr-1" /> 跳过
@@ -127,6 +144,7 @@ export function BossPendingCards({
   onConfirmAiRecommendedBatch,
   onOpenText,
   onConfirmJob,
+  onEditGreeting,
   onSkipJob,
   onBlacklistCompany,
 }: {
@@ -144,6 +162,7 @@ export function BossPendingCards({
   onConfirmAiRecommendedBatch: () => void
   onOpenText: (title: string, content?: string) => void
   onConfirmJob: (job: BossJob) => void
+  onEditGreeting: (job: BossJob) => void
   onSkipJob: (job: BossJob) => void
   onBlacklistCompany: (job: BossJob) => void
 }) {
@@ -190,6 +209,7 @@ export function BossPendingCards({
               riskText={riskTextOf(job)}
               onOpenText={onOpenText}
               onConfirm={() => onConfirmJob(job)}
+              onEditGreeting={() => onEditGreeting(job)}
               onSkip={() => onSkipJob(job)}
               onBlacklist={() => onBlacklistCompany(job)}
             />

@@ -43,6 +43,20 @@ public class Job51Entity {
     // 状态与时间戳
     private Integer delivered; // 0=未投递 1=已投递
     private String deliveryStatus;
+    private Integer aiScore;
+    private String aiDecision;
+    private String aiReason;
+    private Integer priorityCompany;
+    @TableField(exist = false)
+    private String aiGreeting;
+    @TableField(exist = false)
+    private String greetingDraft;
+    @TableField(exist = false)
+    private String greetingSource;
+    @TableField(exist = false)
+    private LocalDateTime greetingUpdatedAt;
+    @TableField(exist = false)
+    private String finalGreeting;
     private String createTime;
     private String updateTime;
 }

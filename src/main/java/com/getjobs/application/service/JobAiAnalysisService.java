@@ -5,11 +5,15 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.entity.JobAiAnalysisEntity;
+import com.getjobs.application.entity.LiepinEntity;
+import com.getjobs.application.entity.Job51Entity;
 import com.getjobs.application.entity.PriorityCompanyEntity;
 import com.getjobs.application.entity.ResumeProfileEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
 import com.getjobs.application.mapper.JobAiAnalysisMapper;
+import com.getjobs.application.mapper.LiepinMapper;
+import com.getjobs.application.mapper.Job51Mapper;
 import com.getjobs.application.mapper.PriorityCompanyMapper;
 import com.getjobs.application.mapper.ResumeProfileMapper;
 import com.getjobs.application.mapper.ZhilianJobDataMapper;
@@ -59,6 +63,8 @@ public class JobAiAnalysisService {
     private final JobAiAnalysisMapper jobAiAnalysisMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
+    private final LiepinMapper liepinMapper;
+    private final Job51Mapper job51Mapper;
     private final ConcurrentMap<Long, List<PriorityCompanyEntity>> enabledPriorityCompanyCache = new ConcurrentHashMap<>();
 
     @Transactional
@@ -627,6 +633,42 @@ public class JobAiAnalysisService {
                 applyExpectedZhilianStatus(wrapper, existing);
                 return zhilianJobDataMapper.update(update, wrapper) == 1;
             }
+            if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+                LiepinEntity existing = findLiepinJobForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result));
+                LiepinEntity update = new LiepinEntity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdateTime(LocalDateTime.now());
+                UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+                applyExpectedLegacyStatus(wrapper, existing == null ? null : existing.getDeliveryStatus());
+                return liepinMapper.update(update, wrapper) == 1;
+            }
+            if ("51job".equalsIgnoreCase(request.getPlatform())) {
+                Job51Entity existing = findJob51ForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result));
+                Job51Entity update = new Job51Entity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdateTime(LocalDateTime.now().toString());
+                UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+                applyExpectedLegacyStatus(wrapper, existing == null ? null : existing.getDeliveryStatus());
+                return job51Mapper.update(update, wrapper) == 1;
+            }
             return false;
         } catch (RuntimeException e) {
             log.warn("写回 AI 平台状态失败: platform={}, rowId={}, error={}",
@@ -647,6 +689,16 @@ public class JobAiAnalysisService {
         }
         if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity existing = findLiepinJobForAnalysis(request);
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity existing = findJob51ForAnalysis(request);
             if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
             return platformAnalysisState(existing.getDeliveryStatus());
         }
@@ -680,6 +732,26 @@ public class JobAiAnalysisService {
             UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
             wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
             return zhilianJobDataMapper.update(update, wrapper) == 1;
+        }
+        if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity update = new LiepinEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return liepinMapper.update(update, wrapper) == 1;
+        }
+        if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity update = new Job51Entity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now().toString());
+            UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return job51Mapper.update(update, wrapper) == 1;
         }
         return false;
     }
@@ -743,6 +815,28 @@ public class JobAiAnalysisService {
             update.setUpdateTime(LocalDateTime.now());
             zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
             return true;
+        } else if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity update = new LiepinEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+            wrapper.and(w -> w.in("delivery_status", List.of(
+                            DeliveryStatus.NOT_DELIVERED,
+                            DeliveryStatus.LIST_COLLECTED,
+                            DeliveryStatus.AI_ANALYSIS_FAILED
+                    )).or().isNull("delivery_status"));
+            return liepinMapper.update(update, wrapper) == 1;
+        } else if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity update = new Job51Entity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdateTime(LocalDateTime.now().toString());
+            UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+            wrapper.and(w -> w.in("delivery_status", List.of(
+                            DeliveryStatus.NOT_DELIVERED,
+                            DeliveryStatus.LIST_COLLECTED,
+                            DeliveryStatus.AI_ANALYSIS_FAILED
+                    )).or().isNull("delivery_status"));
+            return job51Mapper.update(update, wrapper) == 1;
         }
         return request.getJobRowId() == null;
     }
@@ -764,6 +858,14 @@ public class JobAiAnalysisService {
             wrapper.isNull("delivery_status");
         } else {
             wrapper.eq("delivery_status", existing.getDeliveryStatus());
+        }
+    }
+
+    private <T> void applyExpectedLegacyStatus(UpdateWrapper<T> wrapper, String existingStatus) {
+        if (existingStatus == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existingStatus);
         }
     }
 
@@ -803,6 +905,32 @@ public class JobAiAnalysisService {
         return uw;
     }
 
+    private UpdateWrapper<LiepinEntity> liepinUpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<LiepinEntity> wrapper = new UpdateWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        return wrapper;
+    }
+
+    private UpdateWrapper<Job51Entity> job51UpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<Job51Entity> wrapper = new UpdateWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        return wrapper;
+    }
+
     private BossJobDataEntity findBossJobForAnalysis(JobAnalysisRequest request) {
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
         if (request.getProfileId() != null) {
@@ -839,6 +967,34 @@ public class JobAiAnalysisService {
         }
         wrapper.last("LIMIT 1");
         return zhilianJobDataMapper.selectOne(wrapper);
+    }
+
+    private LiepinEntity findLiepinJobForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<LiepinEntity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        wrapper.last("LIMIT 1");
+        return liepinMapper.selectOne(wrapper);
+    }
+
+    private Job51Entity findJob51ForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        wrapper.last("LIMIT 1");
+        return job51Mapper.selectOne(wrapper);
     }
 
     private String toJsonArray(List<String> values) {
