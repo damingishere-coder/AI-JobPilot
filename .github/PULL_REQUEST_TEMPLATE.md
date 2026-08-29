@@ -58,3 +58,8 @@ cd front && pnpm lint
 
 - [ ] 不需要更新文档
 - [ ] 已更新 README / Windows Setup / Architecture / Task Flow / Security / Roadmap / Changelog 中的相关内容
+
+## 风险与回滚
+
+- 主要风险：
+- 回滚方式：
