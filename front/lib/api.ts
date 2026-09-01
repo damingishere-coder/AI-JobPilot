@@ -28,12 +28,19 @@ export const readApiResponse = async <T>(
   response: Response,
   fallback: string,
 ): Promise<ApiEnvelope<T>> => {
+  const contentType = response.headers.get("content-type")?.toLowerCase() || ""
+  if (!contentType.includes("application/json")) {
+    throw new Error(fallbackForStatus(response, fallback))
+  }
   const raw = await response.text()
   let result: ApiEnvelope<T> | null = null
 
   if (raw.trim()) {
     try {
-      result = JSON.parse(raw) as ApiEnvelope<T>
+      const parsed = JSON.parse(raw) as unknown
+      result = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as ApiEnvelope<T>
+        : null
     } catch {
       result = null
     }
@@ -42,7 +49,7 @@ export const readApiResponse = async <T>(
   if (!response.ok || result?.success === false) {
     throw new Error(result?.message || fallbackForStatus(response, fallback))
   }
-  if (!result) {
+  if (!result || result.success !== true) {
     throw new Error(fallback)
   }
   return result

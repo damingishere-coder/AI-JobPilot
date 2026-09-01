@@ -96,6 +96,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.resume-models/
 
 # Logs, temporary outputs, and user uploads
 *.log

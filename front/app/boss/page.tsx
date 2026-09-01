@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents, type ChromeBridgeResponse } from '@/lib/chromeBridge'
-import { API_BASE } from '@/lib/api'
+import { API_BASE, type ApiEnvelope, readApiResponse } from '@/lib/api'
 import { createPortal } from 'react-dom'
 import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
@@ -36,6 +36,14 @@ interface BossConfig {
   filterDeadHr?: number
   autoDeliver?: number
   deadStatus?: string
+}
+
+type BossConfigEnvelope = ApiEnvelope<never> & {
+  config?: BossConfig
+  options?: BossOptions
+  blacklist?: BlacklistItem[]
+  currentProfile?: CurrentProfile | null
+  hasProfile?: boolean
 }
 
 interface BossOption {
@@ -513,7 +521,7 @@ export default function BossPage() {
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/boss/config`)
-      const data = await response.json()
+      const data = await readApiResponse<never>(response, 'Boss配置加载失败') as BossConfigEnvelope
 
       console.log('Fetched data:', data)
       console.log('Blacklist:', data.blacklist)
@@ -764,7 +772,8 @@ export default function BossPage() {
       })
 
       if (response.ok) {
-        const savedConfig = await response.json().catch(() => null)
+        const saveResult = await readApiResponse<BossConfig>(response, 'Boss配置保存失败')
+        const savedConfig = saveResult.data
         if (savedConfig?.searchJobLimit != null) {
           const savedLimit = syncSearchJobLimitControls(savedConfig.searchJobLimit)
           setConfig((prev) => ({ ...prev, searchJobLimit: savedLimit }))

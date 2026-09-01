@@ -69,30 +69,24 @@ public class BossService {
      * 根据类型获取选项列表
      */
     public List<BossOptionEntity> getOptionsByType(String type) {
-        // 确保数据库存在『不限』选项（code=0），并置顶显示
-        // city 与 industry 都需要此默认项
-        QueryWrapper<BossOptionEntity> checkWrapper = new QueryWrapper<>();
-        checkWrapper.eq("type", type);
-        checkWrapper.eq("code", com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
-        Long count = bossOptionMapper.selectCount(checkWrapper);
-        if (count == null || count == 0) {
-            BossOptionEntity unlimited = new BossOptionEntity();
-            unlimited.setType(type);
-            unlimited.setName("不限");
-            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
-            // 置顶显示
-            unlimited.setSortOrder(0);
-            unlimited.setCreatedAt(java.time.LocalDateTime.now());
-            unlimited.setUpdatedAt(java.time.LocalDateTime.now());
-            bossOptionMapper.insert(unlimited);
-        }
-
         // 排序：所有 Boss 筛选项都按 sort_order 优先，其次 id，保证薪资/经验等固定顺序显示
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
         wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
-        return bossOptionMapper.selectList(wrapper);
+        List<BossOptionEntity> stored = bossOptionMapper.selectList(wrapper);
+        List<BossOptionEntity> result = stored == null ? new ArrayList<>() : new ArrayList<>(stored);
+        boolean hasUnlimited = result.stream().anyMatch(option ->
+                com.getjobs.worker.utils.Constant.UNLIMITED_CODE.equals(option.getCode()));
+        if (!hasUnlimited) {
+            BossOptionEntity unlimited = new BossOptionEntity();
+            unlimited.setType(type);
+            unlimited.setName("不限");
+            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
+            unlimited.setSortOrder(0);
+            result.add(0, unlimited);
+        }
+        return result;
     }
 
     /**
@@ -106,6 +100,14 @@ public class BossService {
      * 根据类型和代码获取选项
      */
     public BossOptionEntity getOptionByTypeAndCode(String type, String code) {
+        if (com.getjobs.worker.utils.Constant.UNLIMITED_CODE.equals(code)) {
+            BossOptionEntity unlimited = new BossOptionEntity();
+            unlimited.setType(type);
+            unlimited.setName("不限");
+            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
+            unlimited.setSortOrder(0);
+            return unlimited;
+        }
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         wrapper.eq("code", code);
@@ -117,6 +119,9 @@ public class BossService {
      * 如果找不到，返回默认值 "0"
      */
     public String getCodeByTypeAndName(String type, String name) {
+        if ("不限".equals(name)) {
+            return com.getjobs.worker.utils.Constant.UNLIMITED_CODE;
+        }
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         wrapper.eq("name", name);
@@ -407,6 +412,9 @@ public class BossService {
     public List<String> toCodes(String type, List<String> items) {
         if (items == null || items.isEmpty()) return java.util.Collections.emptyList();
         return items.stream().map(it -> {
+            if ("不限".equals(it)) {
+                return com.getjobs.worker.utils.Constant.UNLIMITED_CODE;
+            }
             // 若是有效code，保留
             BossOptionEntity byCode = getOptionByTypeAndCode(type, it);
             if (byCode != null && byCode.getCode() != null) {

@@ -20,14 +20,10 @@ import com.getjobs.application.mapper.ZhilianJobDataMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.context.annotation.DependsOn;
 
 import java.io.ByteArrayInputStream;
@@ -103,40 +99,6 @@ public class JobAiAnalysisService {
         wrapper.eq("profile_id", profileId);
         wrapper.orderByDesc("updated_at").last("LIMIT 1");
         return resumeProfileMapper.selectOne(wrapper);
-    }
-
-    public ResumeProfileEntity parseAndSaveResumeFile(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("上传文件不能为空");
-        }
-        String filename = file.getOriginalFilename() == null ? "resume" : file.getOriginalFilename();
-        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
-        try {
-            byte[] bytes = file.getBytes();
-            String text;
-            if (filename.toLowerCase(Locale.ROOT).endsWith(".pdf") || contentType.contains("pdf")) {
-                text = extractPdfText(bytes);
-                if (text == null || text.trim().isEmpty()) {
-                    return saveResumeText("", filename, "empty_text_pdf", "PDF未解析到文字，可能是扫描版PDF，请粘贴文本或上传图片简历");
-                }
-                return saveResumeText(text, filename, "parsed", "PDF解析成功");
-            }
-            if (contentType.startsWith("image/") || filename.toLowerCase(Locale.ROOT).matches(".*\\.(png|jpg|jpeg|webp)$")) {
-                text = aiService.extractResumeFromImage(bytes, contentType.isEmpty() ? "image/jpeg" : contentType);
-                return saveResumeText(text, filename, "parsed", "图片简历已通过AI解析");
-            }
-            text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-            return saveResumeText(text, filename, "parsed", "文本文件解析成功");
-        } catch (Exception e) {
-            log.warn("简历文件解析失败: {}", e.getMessage());
-            return saveResumeText("", filename, "failed", e.getMessage());
-        }
-    }
-
-    private String extractPdfText(byte[] bytes) throws Exception {
-        try (PDDocument document = Loader.loadPDF(bytes)) {
-            return new PDFTextStripper().getText(document).trim();
-        }
     }
 
     @Transactional

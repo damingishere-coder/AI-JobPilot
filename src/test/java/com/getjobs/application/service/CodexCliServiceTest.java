@@ -34,6 +34,20 @@ class CodexCliServiceTest {
     }
 
     @Test
+    void commandAttachesAllResumePagesToOneCodexRequest() {
+        CodexCliService service = new CodexCliService();
+        Path cwd = Path.of("work");
+        Path first = cwd.resolve("page-1.jpg");
+        Path second = cwd.resolve("page-2.jpg");
+
+        List<String> command = service.buildCommandWithImages(
+                "codex", "gpt-5.6-sol", cwd, cwd.resolve("final.txt"), List.of(first, second));
+
+        assertThat(command).containsSubsequence("--image", first.toString(), second.toString());
+        assertThat(command.stream().filter("--image"::equals)).hasSize(1);
+    }
+
+    @Test
     void commandWrapsWindowsCmdLauncher() {
         CodexCliService service = new CodexCliService();
         Path cwd = Path.of("work");

@@ -7,7 +7,7 @@ import com.getjobs.application.service.BossService;
 import com.getjobs.application.entity.BlacklistEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
@@ -34,7 +34,7 @@ public class BossConfigController {
      */
     @GetMapping
     public Map<String, Object> getAllBossConfig() {
-        Map<String, Object> result = new HashMap<>();
+        Map<String, Object> result = new LinkedHashMap<>();
 
         // 获取配置
         BossConfigEntity config = bossService.getFirstConfig();
@@ -51,7 +51,7 @@ public class BossConfigController {
         }
 
         // 获取所有选项并按类型分组
-        Map<String, List<BossOptionEntity>> options = new HashMap<>();
+        Map<String, List<BossOptionEntity>> options = new LinkedHashMap<>();
         options.put("city", bossService.getOptionsByType("city"));
         options.put("industry", bossService.getOptionsByType("industry"));
         options.put("experience", bossService.getOptionsByType("experience"));
@@ -64,6 +64,8 @@ public class BossConfigController {
         // 获取黑名单列表
         List<BlacklistEntity> blacklist = bossService.getAllBlacklist();
 
+        result.put("success", true);
+        result.put("message", "Boss配置加载成功");
         result.put("config", config);
         result.put("options", options);
         result.put("blacklist", blacklist);
@@ -77,7 +79,7 @@ public class BossConfigController {
      * 更新Boss配置
      */
   @PutMapping
-  public BossConfigEntity updateConfig(@RequestBody BossConfigEntity config) {
+  public Map<String, Object> updateConfig(@RequestBody BossConfigEntity config) {
         // 关键词标准化：将来自前端的逗号分隔或括号列表统一转换为 JSON 字符串列表
         config.setKeywords(normalizeKeywords(config.getKeywords()));
         if (config.getAutoDeliver() == null) {
@@ -130,7 +132,12 @@ public class BossConfigController {
 
         // 档案模式下保存始终落到当前激活档案，避免前端携带旧ID时串档案。
         config.setId(null);
-        return bossService.saveOrUpdateFirstSelective(config);
+        BossConfigEntity saved = bossService.saveOrUpdateFirstSelective(config);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("data", saved);
+        result.put("message", "Boss配置保存成功");
+        return result;
   }
 
     /**
