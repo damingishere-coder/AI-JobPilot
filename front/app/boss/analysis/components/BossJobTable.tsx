@@ -228,7 +228,14 @@ export function BossJobTable({
                     )}
                   </td>
                   <TextCell title="公司名称" value={job.companyName} onOpenText={onOpenText} />
-                  <TextCell title="岗位名称" value={job.jobName} onOpenText={onOpenText} />
+                  <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
+                    <div className="truncate cursor-pointer hover:text-primary transition-colors" title={job.jobName || "-"} onClick={() => onOpenText("岗位名称", job.jobName)}>{job.jobName || "-"}</div>
+                    {job.scanResultSource === "HISTORICAL_REUSED" ? (
+                      <span className="mt-1 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                        历史结果
+                      </span>
+                    ) : null}
+                  </td>
                   <TextCell title="薪资" value={job.salary} onOpenText={onOpenText} nowrap />
                   <TextCell title="地点" value={job.location} onOpenText={onOpenText} nowrap />
                   <TextCell title="经验" value={job.experience} onOpenText={onOpenText} nowrap />

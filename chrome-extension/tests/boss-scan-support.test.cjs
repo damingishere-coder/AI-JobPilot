@@ -246,3 +246,70 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
     "LOCAL_SERVICE_UNAVAILABLE"
   );
 });
+
+test("partitions all historical Boss jobs for reuse without detail collection", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "history-1", company: "甲公司", title: "产品经理", url: "https://www.zhipin.com/job_detail/history-1.html" },
+    { id: "history-2", company: "乙公司", title: "运营经理", url: "https://www.zhipin.com/job_detail/history-2.html" },
+  ];
+  const partition = support.partitionDedupeJobs(jobs, jobs.map((job) => ({ ...job, duplicate: true, action: "SKIP" })));
+
+  assert.equal(partition.detailJobs.length, 0);
+  assert.equal(partition.historicalJobs.length, 2);
+  assert.deepEqual(Array.from(partition.historicalJobs, (job) => job.collectionAction), ["REUSE_HISTORY", "REUSE_HISTORY"]);
+});
+
+test("keeps new and enrich jobs in details while marking only skips as historical", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "new-1", company: "甲公司", title: "新岗位", url: "https://www.zhipin.com/job_detail/new-1.html" },
+    { id: "enrich-1", company: "乙公司", title: "补全岗位", url: "https://www.zhipin.com/job_detail/enrich-1.html" },
+    { id: "history-1", company: "丙公司", title: "历史岗位", url: "https://www.zhipin.com/job_detail/history-1.html" },
+  ];
+  const partition = support.partitionDedupeJobs(jobs, [
+    { ...jobs[0], action: "NEW" },
+    { ...jobs[1], action: "ENRICH", duplicate: true },
+    { ...jobs[2], action: "SKIP", duplicate: true },
+  ]);
+
+  assert.deepEqual(Array.from(partition.detailJobs, (job) => job.id), ["new-1", "enrich-1"]);
+  assert.deepEqual(Array.from(partition.historicalJobs, (job) => job.id), ["history-1"]);
+  assert.ok(partition.detailJobs.every((job) => job.collectionAction === "ANALYZE"));
+});
+
+test("rejects incomplete or invalid Boss dedupe decisions instead of treating them as new", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "job-1", company: "甲公司", title: "岗位一" },
+    { id: "job-2", company: "乙公司", title: "岗位二" },
+  ];
+
+  assert.throws(
+    () => support.partitionDedupeJobs(jobs, [{ ...jobs[0], action: "NEW" }]),
+    /未完整返回/
+  );
+  assert.throws(
+    () => support.partitionDedupeJobs(jobs, jobs.map((job) => ({ ...job, action: "UNKNOWN" }))),
+    /未完整返回/
+  );
+});
+
+test("keeps the failed Boss submit batch index and prior success summary for resume", () => {
+  const support = loadSupport();
+  const checkpoint = support.buildFailedSubmitCheckpoint(
+    { type: "BOSS_SCAN_START", runId: "boss-submit-retry", jobs: [{ id: 1 }, { id: 2 }] },
+    2,
+    { received: 40, saved: 36, queued: 30 },
+    { type: "LOCAL_SERVICE_UNAVAILABLE", message: "database is locked" },
+    123456,
+  );
+
+  assert.equal(checkpoint.phase, "submitting");
+  assert.equal(checkpoint.submitBatchIndex, 2);
+  assert.equal(checkpoint.submitSummary.received, 40);
+  assert.equal(checkpoint.submitSummary.saved, 36);
+  assert.equal(checkpoint.submitSummary.queued, 30);
+  assert.equal(checkpoint.lastSubmitError.failedAt, 123456);
+  assert.equal(checkpoint.lastSubmitError.message, "database is locked");
+});

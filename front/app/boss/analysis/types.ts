@@ -71,6 +71,7 @@ export type BossJob = {
   priorityCompany?: number
   sourceKeyword?: string
   scanRunId?: string
+  scanResultSource?: "CURRENT_SCAN" | "HISTORICAL_REUSED"
   createdAt?: string
   aiGreeting?: string
   greetingDraft?: string
@@ -115,8 +116,6 @@ export const EMPTY_FILTERS: FilterState = {
 }
 
 export const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
-export const LIST_COLLECTED_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["LIST_COLLECTED"] }
-
 export const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",
   PLATFORM_VERIFICATION: "平台验证",

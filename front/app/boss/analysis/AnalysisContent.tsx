@@ -54,7 +54,6 @@ export default function AnalysisContent({
     applyFilters,
     resetFilters,
     resetToPendingFilters,
-    showListCollectedFilters,
   } = useBossFilters()
 
   const {
@@ -197,11 +196,6 @@ export default function AnalysisContent({
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  useEffect(() => {
-    if (!focusScanRunId) return
-    showListCollectedFilters()
-  }, [focusScanRunId, showListCollectedFilters])
 
   useEffect(() => {
     if (!refreshSignal) return

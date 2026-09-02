@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV8AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV11AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -29,17 +29,43 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='8'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='11'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
             assertThat(columns(connection, "boss_data"))
-                    .contains("source_keyword", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
+                    .contains("source_keyword", "scan_result_source", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
             assertThat(columns(connection, "liepin_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(columns(connection, "job51_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(tableExists(connection, "delivery_attempt")).isTrue();
             assertThat(columns(connection, "job_analysis_task"))
                     .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
                             "lease_owner", "lease_expires_at", "last_error", "started_at", "completed_at");
+        }
+    }
+
+    @Test
+    void v11BackfillsHistoricalBossRowsWithoutChangingBusinessTimestamps() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("boss-scan-source.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("9")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO boss_data(id, profile_id, encrypt_id, company_name, job_name, scan_run_id, created_at, updated_at) " +
+                    "VALUES (99, 1, 'history-job', '历史公司', '历史岗位', 'boss-old', '2026-07-18 10:00:00', '2026-08-24 20:00:00')");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT scan_result_source, created_at, updated_at FROM boss_data WHERE id=99")) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getString("scan_result_source")).isEqualTo("CURRENT_SCAN");
+            assertThat(result.getString("created_at")).isEqualTo("2026-07-18 10:00:00");
+            assertThat(result.getString("updated_at")).isEqualTo("2026-08-24 20:00:00");
         }
     }
 

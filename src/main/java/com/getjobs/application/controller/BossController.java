@@ -116,6 +116,7 @@ public class BossController {
         boolean listOnlyCollection = isListOnlyCollection(request);
         List<Map<String, Object>> analyses = new ArrayList<>();
         List<Map<String, Object>> collectionWarnings = new ArrayList<>();
+        List<Map<String, Object>> rejected = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
             if (jobRunCoordinator.isCancelRequested(runId)) {
                 jobRunCoordinator.clearCancel(runId);
@@ -140,128 +141,171 @@ public class BossController {
                             listOnlyCollection, listCollected, collectionWarnings
                     ));
                 }
-                BossJobDataEntity entity = toBossEntity(dto, request.getKeyword());
-                BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
-                insertedOrUpdated++;
+                try {
+                    if (isHistoricalReuse(dto)) {
+                        BossJobDataEntity restoredJob = restoreHistoricalBossJob(profileId, dto, runId);
+                        skipped++;
+                        Map<String, Object> snapshot = toBossAnalysisSnapshot(restoredJob);
+                        if (snapshot != null) {
+                            analyses.add(snapshot);
+                            restored++;
+                        }
+                        continue;
+                    }
 
-                if (saved == null) {
-                    log.warn("Boss Chrome岗位入库返回为空：company={}, title={}, url={}", dto == null ? "" : dto.getCompany(), dto == null ? "" : dto.getTitle(), dto == null ? "" : dto.getUrl());
-                    continue;
-                }
+                    BossJobDataEntity entity = toBossEntity(dto, request.getKeyword());
+                    BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
+                    insertedOrUpdated++;
 
-                String currentStatus = saved.getDeliveryStatus();
-                if (listOnlyCollection) {
+                    if (saved == null) {
+                        skipped++;
+                        rejected.add(chromeJobRejection(dto, "Boss 岗位入库未返回有效记录"));
+                        continue;
+                    }
+
+                    String currentStatus = saved.getDeliveryStatus();
+                    if (listOnlyCollection) {
+                        if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
+                            skipped++;
+                        } else {
+                            BossJobDataEntity updated = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.LIST_COLLECTED);
+                            if (updated != null && DeliveryStatus.LIST_COLLECTED.equals(updated.getDeliveryStatus())) {
+                                saved = updated;
+                                listCollected++;
+                            } else {
+                                skipped++;
+                                saved = updated == null ? saved : updated;
+                            }
+                        }
+                        List<String> missingListFields = collectMissingListFields(dto, saved, request.getKeyword());
+                        if (!missingListFields.isEmpty()) {
+                            Map<String, Object> warning = Map.of(
+                                    "id", saved.getId() == null ? 0L : saved.getId(),
+                                    "title", dto == null ? "" : Objects.toString(dto.getTitle(), ""),
+                                    "company", dto == null ? "" : Objects.toString(dto.getCompany(), ""),
+                                    "missingFields", missingListFields,
+                                    "reason", "Boss列表页字段不完整，已按LIST_COLLECTED入库，未进入AI分析"
+                            );
+                            collectionWarnings.add(warning);
+                            sendBossProgress(JobProgressMessage.warning(
+                                    "boss",
+                                    "Boss列表岗位已入库但字段不完整：" + warning.get("company") + " / " + warning.get("title")
+                                            + "，缺少：" + String.join("、", missingListFields)
+                            ));
+                        }
+                        continue;
+                    }
                     if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
                         skipped++;
-                    } else {
-                        saved = bossService.updateDeliveryStatusById(saved.getId(), DeliveryStatus.LIST_COLLECTED);
-                        listCollected++;
+                        Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
+                        if (snapshot != null) {
+                            analyses.add(snapshot);
+                            restored++;
+                        }
+                        continue;
                     }
-                    List<String> missingListFields = collectMissingListFields(dto, saved, request.getKeyword());
-                    if (!missingListFields.isEmpty()) {
-                        Map<String, Object> warning = Map.of(
-                                "id", saved == null || saved.getId() == null ? 0L : saved.getId(),
-                                "title", dto == null ? "" : Objects.toString(dto.getTitle(), ""),
-                                "company", dto == null ? "" : Objects.toString(dto.getCompany(), ""),
-                                "missingFields", missingListFields,
-                                "reason", "Boss列表页字段不完整，已按LIST_COLLECTED入库，未进入AI分析"
-                        );
-                        collectionWarnings.add(warning);
-                        sendBossProgress(JobProgressMessage.warning(
-                                "boss",
-                                "Boss列表岗位已入库但字段不完整：" + warning.get("company") + " / " + warning.get("title")
-                                        + "，缺少：" + String.join("、", missingListFields)
+
+                    List<String> missingFields = collectMissingAnalysisFields(saved);
+                    if (!missingFields.isEmpty()) {
+                        BossJobDataEntity marked = bossService.markBossJobCollectionInsufficient(saved.getId(), missingFields);
+                        BossJobDataEntity display = marked == null ? saved : marked;
+                        if (!DeliveryStatus.COLLECTION_INSUFFICIENT.equals(display.getDeliveryStatus())) {
+                            skipped++;
+                            Map<String, Object> snapshot = toBossAnalysisSnapshot(display);
+                            if (snapshot != null) analyses.add(snapshot);
+                            continue;
+                        }
+                        insufficient++;
+                        analyses.add(Map.of(
+                                "id", display.getId(),
+                                "jobKey", Objects.toString(display.getEncryptId(), ""),
+                                "jobName", Objects.toString(display.getJobName(), ""),
+                                "companyName", Objects.toString(display.getCompanyName(), ""),
+                                "score", 0,
+                                "decision", DeliveryStatus.COLLECTION_INSUFFICIENT,
+                                "shouldApply", false
                         ));
+                        String message = "采集信息不足：" + Objects.toString(display.getCompanyName(), "") + " / " + Objects.toString(display.getJobName(), "") + "，缺少：" + String.join("、", missingFields);
+                        log.warn("{}", message);
+                        sendBossProgress(JobProgressMessage.warning("boss", message));
+                        continue;
                     }
-                    continue;
-                }
-                if (DeliveryStatus.AI_ANALYZING.equals(currentStatus) || isFinalBossStatus(currentStatus)) {
-                    skipped++;
-                    Map<String, Object> snapshot = toBossAnalysisSnapshot(saved);
-                    if (snapshot != null) {
-                        analyses.add(snapshot);
-                        restored++;
+
+                    JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
+                    analysisRequest.setProfileId(profileId);
+                    analysisRequest.setPlatform("boss");
+                    analysisRequest.setJobKey(saved.getEncryptId());
+                    analysisRequest.setJobRowId(saved.getId());
+                    analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
+                    analysisRequest.setCompanyName(saved.getCompanyName());
+                    analysisRequest.setJobName(saved.getJobName());
+                    analysisRequest.setSalary(saved.getSalary());
+                    analysisRequest.setLocation(saved.getLocation());
+                    analysisRequest.setExperience(saved.getExperience());
+                    analysisRequest.setDegree(saved.getDegree());
+                    analysisRequest.setCompanyInfo(saved.getIntroduce());
+                    analysisRequest.setJobDescription(saved.getJobDescription());
+                    analysisRequest.setScanRunId(runId);
+                    ChromeJobAnalysisQueueService.AnalysisJob job = new ChromeJobAnalysisQueueService.AnalysisJob();
+                    job.setRunId(runId);
+                    job.setCurrentStatus(currentStatus);
+                    job.setCurrent(insertedOrUpdated);
+                    job.setTotal(received);
+                    job.setRequest(analysisRequest);
+                    job.setProgressCallback(this::sendBossProgress);
+
+                    ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
+                    if (enqueueResult.isRejected()) {
+                        skipped++;
+                        rejected.add(chromeJobRejection(dto, Objects.toString(enqueueResult.getMessage(), "AI 分析任务被拒绝")));
+                        continue;
                     }
-                    continue;
-                }
-
-                List<String> missingFields = collectMissingAnalysisFields(saved);
-                if (!missingFields.isEmpty()) {
-                    insufficient++;
-                    BossJobDataEntity marked = bossService.markBossJobCollectionInsufficient(saved.getId(), missingFields);
-                    BossJobDataEntity display = marked == null ? saved : marked;
-                    analyses.add(Map.of(
-                            "id", display.getId(),
-                            "jobKey", Objects.toString(display.getEncryptId(), ""),
-                            "jobName", Objects.toString(display.getJobName(), ""),
-                            "companyName", Objects.toString(display.getCompanyName(), ""),
-                            "score", 0,
-                            "decision", DeliveryStatus.COLLECTION_INSUFFICIENT,
-                            "shouldApply", false
-                    ));
-                    String message = "采集信息不足：" + Objects.toString(display.getCompanyName(), "") + " / " + Objects.toString(display.getJobName(), "") + "，缺少：" + String.join("、", missingFields);
-                    log.warn("{}", message);
-                    sendBossProgress(JobProgressMessage.warning("boss", message));
-                    continue;
-                }
-
-                JobAiAnalysisService.JobAnalysisRequest analysisRequest = new JobAiAnalysisService.JobAnalysisRequest();
-                analysisRequest.setProfileId(profileId);
-                analysisRequest.setPlatform("boss");
-                analysisRequest.setJobKey(saved.getEncryptId());
-                analysisRequest.setJobRowId(saved.getId());
-                analysisRequest.setKeyword(dto.getKeyword() == null ? request.getKeyword() : dto.getKeyword());
-                analysisRequest.setCompanyName(saved.getCompanyName());
-                analysisRequest.setJobName(saved.getJobName());
-                analysisRequest.setSalary(saved.getSalary());
-                analysisRequest.setLocation(saved.getLocation());
-                analysisRequest.setExperience(saved.getExperience());
-                analysisRequest.setDegree(saved.getDegree());
-                analysisRequest.setCompanyInfo(saved.getIntroduce());
-                analysisRequest.setJobDescription(saved.getJobDescription());
-                analysisRequest.setScanRunId(runId);
-                ChromeJobAnalysisQueueService.AnalysisJob job = new ChromeJobAnalysisQueueService.AnalysisJob();
-                job.setRunId(runId);
-                job.setCurrentStatus(currentStatus);
-                job.setCurrent(insertedOrUpdated);
-                job.setTotal(received);
-                job.setRequest(analysisRequest);
-                job.setProgressCallback(this::sendBossProgress);
-
-                ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
-                if (enqueueResult.isRejected()) {
-                    Map<String, Object> response = decorateListCollectionResponse(
-                            bossChromeJobsResponse(false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
-                            listOnlyCollection, listCollected, collectionWarnings
-                    );
-                    response.put("message", enqueueResult.getMessage());
-                    return ResponseEntity.status(429).body(response);
-                }
-                if (enqueueResult.isQueued()) {
-                    queued++;
-                    sendBossProgress(JobProgressMessage.progress(
-                            "boss",
-                            "已加入后台AI队列：" + saved.getJobName(),
-                            insertedOrUpdated,
-                            received
-                    ));
-                } else {
+                    if (enqueueResult.isQueued()) {
+                        queued++;
+                        sendBossProgress(JobProgressMessage.progress(
+                                "boss",
+                                "已加入后台AI队列：" + saved.getJobName(),
+                                insertedOrUpdated,
+                                received
+                        ));
+                    } else {
+                        skipped++;
+                    }
+                } catch (Exception exception) {
                     skipped++;
+                    rejected.add(chromeJobRejection(dto, Objects.toString(exception.getMessage(), "Boss 岗位入库或持久 AI 入队失败")));
+                    log.warn("Boss Chrome岗位处理失败，jobId={}", dto == null ? "" : dto.getId(), exception);
                 }
             }
+        }
+        if (!rejected.isEmpty()) {
+            Map<String, Object> response = decorateChromeJobRejections(
+                    decorateListCollectionResponse(
+                            bossChromeJobsResponse(false, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                            listOnlyCollection, listCollected, collectionWarnings
+                    ),
+                    received,
+                    rejected
+            );
+            response.put("message", "部分 Boss 岗位未完成入库、历史恢复或持久 AI 入队，请查看 rejected 明细后重试被拒绝项");
+            return ResponseEntity.status(429).body(response);
         }
         if (listOnlyCollection) {
             sendBossProgress(JobProgressMessage.success(
                     "boss",
                     "Boss当前搜索结果页已入库 " + insertedOrUpdated + " 个岗位，其中LIST_COLLECTED "
-                            + listCollected + " 个，未进入AI分析"
+                            + listCollected + " 个，恢复历史结果 " + restored + " 个，未进入AI分析"
             ));
         } else {
             sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
         }
-        return ResponseEntity.ok(decorateListCollectionResponse(
-                bossChromeJobsResponse(true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
-                listOnlyCollection, listCollected, collectionWarnings
+        return ResponseEntity.ok(decorateChromeJobRejections(
+                decorateListCollectionResponse(
+                        bossChromeJobsResponse(true, false, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
+                        listOnlyCollection, listCollected, collectionWarnings
+                ),
+                received,
+                rejected
         ));
     }
 
@@ -320,6 +364,7 @@ public class BossController {
         String status = Objects.toString(existing.getDeliveryStatus(), "");
         if (DeliveryStatus.LIST_COLLECTED.equals(status)
                 || DeliveryStatus.COLLECTION_INSUFFICIENT.equals(status)
+                || (!DeliveryStatus.AI_ANALYZING.equals(status) && !isFinalBossStatus(status))
                 || (missingFields != null && !missingFields.isEmpty())) {
             return "ENRICH";
         }
@@ -719,6 +764,36 @@ public class BossController {
                 && "LIST_ONLY".equalsIgnoreCase(Objects.toString(request.getCollectionMode(), "").trim());
     }
 
+    private boolean isHistoricalReuse(ChromeJobDto dto) {
+        String action = Objects.toString(dto == null ? null : dto.getCollectionAction(), "").trim().toUpperCase();
+        if (action.isEmpty() || "ANALYZE".equals(action)) return false;
+        if ("REUSE_HISTORY".equals(action)) return true;
+        throw new IllegalArgumentException("不支持的 Boss 岗位采集动作：" + action);
+    }
+
+    private BossJobDataEntity restoreHistoricalBossJob(Long profileId, ChromeJobDto dto, String runId) {
+        if (profileId == null) throw new IllegalStateException("当前档案不可用，无法恢复历史岗位");
+        if (runId == null || runId.isBlank()) throw new IllegalArgumentException("历史岗位恢复缺少本次 runId");
+        String requestedId = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
+        if (requestedId == null || requestedId.isBlank()) {
+            throw new IllegalArgumentException("历史岗位恢复缺少可核验的 Boss 岗位 ID");
+        }
+        Map<Integer, BossJobDataEntity> matches = bossService.findExistingChromeBossJobs(profileId, List.of(dto), null);
+        BossJobDataEntity existing = matches.get(0);
+        if (existing == null) throw new IllegalArgumentException("历史岗位身份核验失败，未找到当前档案中的匹配记录");
+        if (!requestedId.equals(Objects.toString(existing.getEncryptId(), ""))) {
+            throw new IllegalArgumentException("历史岗位身份核验失败，Boss 岗位 ID 不匹配");
+        }
+        List<String> missingFields = collectMissingAnalysisFields(existing);
+        String action = dedupeAction(existing, missingFields);
+        if (!"SKIP".equals(action)) {
+            throw new IllegalStateException("历史岗位状态已变化，需要重新采集详情，当前动作：" + action);
+        }
+        BossJobDataEntity restored = bossService.reuseHistoricalBossJob(existing.getId(), profileId, runId);
+        if (restored == null) throw new IllegalStateException("历史岗位恢复失败，记录可能已被其他操作修改");
+        return restored;
+    }
+
     private boolean isFinalBossStatus(String status) {
         if (status == null || status.isBlank()) return false;
         return DeliveryStatus.isFinalStatus(status);
@@ -763,6 +838,27 @@ public class BossController {
         return response;
     }
 
+    private Map<String, Object> decorateChromeJobRejections(Map<String, Object> response,
+                                                              int requestedCount,
+                                                              List<Map<String, Object>> rejected) {
+        List<Map<String, Object>> safeRejected = rejected == null ? List.of() : rejected;
+        int rejectedCount = safeRejected.size();
+        int acceptedCount = Math.max(0, requestedCount - rejectedCount);
+        response.put("status", rejectedCount == 0 ? "SUCCESS" : acceptedCount > 0 ? "PARTIAL" : "FAILED");
+        response.put("requestedCount", requestedCount);
+        response.put("acceptedCount", acceptedCount);
+        response.put("rejectedCount", rejectedCount);
+        response.put("rejected", safeRejected);
+        return response;
+    }
+
+    private Map<String, Object> chromeJobRejection(ChromeJobDto dto, String message) {
+        return Map.of(
+                "jobId", Objects.toString(dto == null ? null : dto.getId(), ""),
+                "message", firstNonBlank(message, "Boss 岗位处理失败")
+        );
+    }
+
     private String normalizeRunId(String runId) {
         return runId == null || runId.isBlank() ? null : runId.trim();
     }
@@ -779,6 +875,7 @@ public class BossController {
         item.put("deliveryStatus", Objects.toString(job.getDeliveryStatus(), ""));
         item.put("reason", Objects.toString(job.getAiReason(), ""));
         item.put("priorityCompany", job.getPriorityCompany() != null && job.getPriorityCompany() == 1);
+        item.put("scanResultSource", Objects.toString(job.getScanResultSource(), ""));
         item.put("shouldApply", DeliveryStatus.isWaitingConfirm(job.getDeliveryStatus()) || DeliveryStatus.isDelivered(job.getDeliveryStatus()) || "APPLY".equalsIgnoreCase(Objects.toString(job.getAiDecision(), "")));
         item.put("restored", true);
         return item;

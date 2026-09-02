@@ -14,6 +14,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -609,11 +610,13 @@ public class DatabaseSchemaService {
         requiredColumns.put("cookie", Set.of("platform", "cookie_value"));
         requiredColumns.put("ai", Set.of("profile_id", "apply_threshold", "priority_apply_threshold"));
         requiredColumns.put("priority_company", Set.of("profile_id", "company_name"));
-        requiredColumns.put("boss_data", Set.of(
+        Set<String> bossDataColumns = new LinkedHashSet<>(Set.of(
                 "profile_id", "encrypt_id", "encrypt_user_id", "delivery_status", "failure_type",
                 "failure_reason", "scan_run_id", "source_keyword", "salary_min_k", "salary_max_k",
                 "salary_median_k", "salary_months"
         ));
+        if (requireV7TaskSchema) bossDataColumns.add("scan_result_source");
+        requiredColumns.put("boss_data", bossDataColumns);
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));
         requiredColumns.put("liepin_data", Set.of("job_id", "delivered"));
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
@@ -652,6 +655,7 @@ public class DatabaseSchemaService {
         ));
         if (requireV7TaskSchema) {
             requiredIndexes.addAll(List.of(
+                    "idx_boss_data_profile_run_source",
                     "idx_job_analysis_task_task_key",
                     "idx_job_analysis_task_active_job",
                     "idx_job_analysis_task_dispatch",

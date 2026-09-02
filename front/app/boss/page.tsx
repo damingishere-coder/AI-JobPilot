@@ -15,6 +15,7 @@ import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
+import { hasBossScanResult, readBossScanRunId } from '@/app/boss/scan-result'
 
 interface BossConfig {
   id?: number
@@ -112,6 +113,7 @@ interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
   skippedCount?: number
   saved?: number
   listCollected?: number
+  restored?: number
   missingFieldCounts?: Record<string, number>
   failures?: Array<{
     index?: number
@@ -123,6 +125,7 @@ interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
   backend?: {
     saved?: number
     listCollected?: number
+    restored?: number
     collectionWarnings?: Array<Record<string, unknown>>
   }
 }
@@ -138,6 +141,7 @@ interface BossApiPocResponse extends BossDiagnosticsResponse {
   collectorSource?: string
   saved?: number
   listCollected?: number
+  restored?: number
 }
 
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
@@ -323,8 +327,8 @@ export default function BossPage() {
     window.setTimeout(() => setLogSpotlight(false), 2200)
   }, [])
 
-  const guideToConfirmStep = useCallback(() => {
-    setAnalysisFocusRunId('')
+  const guideToConfirmStep = useCallback((payload: Record<string, unknown>) => {
+    setAnalysisFocusRunId(readBossScanRunId(payload))
     setHasScanResult(true)
     setAnalysisRefreshSignal((value) => value + 1)
   }, [])
@@ -450,7 +454,7 @@ export default function BossPage() {
                 if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
               }
               if (shouldRefreshAnalysisFromProgress(data)) {
-                guideToConfirmStep()
+                guideToConfirmStep(data)
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
@@ -482,7 +486,7 @@ export default function BossPage() {
       })
 
       if (shouldRefreshAnalysisFromProgress(payload)) {
-        guideToConfirmStep()
+        guideToConfirmStep(payload)
       }
       if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
         setIsDelivering(false)
@@ -1009,7 +1013,7 @@ export default function BossPage() {
           message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
         })
       }
-      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+      if (data.success && typeof data.runId === 'string' && hasBossScanResult(data)) {
         setAnalysisFocusRunId(data.runId)
         setHasScanResult(true)
         setAnalysisRefreshSignal((value) => value + 1)
@@ -1085,10 +1089,10 @@ export default function BossPage() {
       })
       appendProgressLog({
         type: data.success ? 'info' : 'warning',
-        message: `Boss API POC 诊断：diagnosticType=${data.diagnosticType || '未知'}；apiCode=${data.apiCode ?? '无'}；httpStatus=${Number(data.httpStatus || 0)}；candidateCount=${Number(data.candidateCount || 0)}；missingSalaryCount=${Number(data.missingSalaryCount || 0)}；fallbackUsed=${Boolean(data.fallbackUsed)}；collectorSource=${data.collectorSource || 'none'}；saved=${Number(data.saved || 0)}；listCollected=${Number(data.listCollected || 0)}。`,
+        message: `Boss API POC 诊断：diagnosticType=${data.diagnosticType || '未知'}；apiCode=${data.apiCode ?? '无'}；httpStatus=${Number(data.httpStatus || 0)}；candidateCount=${Number(data.candidateCount || 0)}；missingSalaryCount=${Number(data.missingSalaryCount || 0)}；fallbackUsed=${Boolean(data.fallbackUsed)}；collectorSource=${data.collectorSource || 'none'}；saved=${Number(data.saved || 0)}；listCollected=${Number(data.listCollected || 0)}；restored=${Number(data.restored || 0)}。`,
       })
 
-      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+      if (data.success && typeof data.runId === 'string' && hasBossScanResult(data)) {
         setAnalysisFocusRunId(data.runId)
         setHasScanResult(true)
         setAnalysisRefreshSignal((value) => value + 1)

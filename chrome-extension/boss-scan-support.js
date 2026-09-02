@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-07-18-boss-security-resume-fix";
+  const SUPPORT_VERSION = "2026-09-02-boss-history-reuse";
   if (root.GetJobsBossScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -162,6 +162,58 @@
     return Math.min(parsed, total);
   }
 
+  function buildFailedSubmitCheckpoint(task, batchIndex, submitSummary, lastSubmitError, now = Date.now()) {
+    return {
+      ...(task || {}),
+      phase: "submitting",
+      submitBatchIndex: Math.max(0, Math.floor(Number(batchIndex) || 0)),
+      submitSummary: { ...(submitSummary || {}) },
+      lastSubmitError: {
+        ...(lastSubmitError || {}),
+        failedAt: Number(lastSubmitError?.failedAt || now)
+      }
+    };
+  }
+
+  function partitionDedupeJobs(jobs, items) {
+    const jobList = Array.isArray(jobs) ? jobs : [];
+    const decisionItems = Array.isArray(items) ? items : [];
+    const jobKeys = jobList.map(dedupeDecisionKey);
+    const itemKeys = decisionItems.map(dedupeDecisionKey);
+    const allowedActions = new Set(["NEW", "ENRICH", "SKIP"]);
+    const uniqueJobKeys = new Set(jobKeys);
+    const uniqueItemKeys = new Set(itemKeys);
+    const complete = jobKeys.every((key) => key && uniqueItemKeys.has(key))
+      && itemKeys.every((key) => key && uniqueJobKeys.has(key))
+      && uniqueJobKeys.size === jobKeys.length
+      && uniqueItemKeys.size === itemKeys.length
+      && itemKeys.length === jobKeys.length
+      && decisionItems.every((item) => allowedActions.has(String(item?.action || "").trim().toUpperCase()));
+    if (!complete) throw new Error("Boss查重接口未完整返回全部岗位决策");
+
+    const decisionByKey = new Map(decisionItems.map((item) => [
+      dedupeDecisionKey(item),
+      String(item.action).trim().toUpperCase()
+    ]));
+    const detailJobs = [];
+    const historicalJobs = [];
+    jobList.forEach((job) => {
+      const action = decisionByKey.get(dedupeDecisionKey(job));
+      if (action === "SKIP") {
+        historicalJobs.push({ ...job, collectionAction: "REUSE_HISTORY" });
+      } else {
+        detailJobs.push({ ...job, collectionAction: "ANALYZE" });
+      }
+    });
+    return { detailJobs, historicalJobs };
+  }
+
+  function dedupeDecisionKey(item) {
+    const id = compact(item?.id || extractBossJobId(item?.url));
+    if (id) return `id:${id}`;
+    return `ct:${compact(item?.company).toLowerCase()}::${compact(item?.title).toLowerCase()}`;
+  }
+
   function classifyLocalApiFailure(error) {
     const explicit = String(error?.code || "");
     if (explicit) return explicit;
@@ -197,6 +249,8 @@
     isNonJobNavigationTitle,
     classifyBossDetailNavigation,
     normalizeBatchIndex,
+    buildFailedSubmitCheckpoint,
+    partitionDedupeJobs,
     classifyLocalApiFailure
   });
 })(typeof window !== "undefined" ? window : globalThis);

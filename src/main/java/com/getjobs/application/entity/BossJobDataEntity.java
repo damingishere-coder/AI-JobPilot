@@ -104,6 +104,9 @@ public class BossJobDataEntity {
     @TableField("scan_run_id")
     private String scanRunId;
 
+    @TableField("scan_result_source")
+    private String scanResultSource;
+
     @TableField("ai_score")
     private Integer aiScore;
 
