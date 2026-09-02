@@ -1,15 +1,19 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.AiEntity;
+import com.getjobs.application.dto.ResumeParseResult;
+import com.getjobs.application.dto.ResumeSaveRequest;
 import com.getjobs.application.service.AiService;
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
 import com.getjobs.application.service.JobAnalysisTaskStore;
 import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.ProfileService;
+import com.getjobs.application.service.ResumeDocumentParsingService;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -38,6 +42,9 @@ public class AiConfigController {
 
     @Autowired
     private ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
+
+    @Autowired
+    private ResumeDocumentParsingService resumeDocumentParsingService;
 
     /**
      * 获取AI配置
@@ -173,16 +180,103 @@ public class AiConfigController {
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/resume")
-    public ResponseEntity<Map<String, Object>> saveResume(
+    @PostMapping(value = "/resume/parse", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> parseResume(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "mode", defaultValue = "auto") String mode
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            ResumeParseResult result = resumeDocumentParsingService.parse(file, mode);
+            response.put("success", true);
+            response.put("data", result);
+            response.put("message", "简历识别完成，请核对预览后再保存");
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            log.error("简历识别失败", e);
+            response.put("success", false);
+            response.put("message", "简历识别失败: " + e.getMessage());
+            return ResponseEntity.unprocessableEntity().body(response);
+        }
+    }
+
+    @PostMapping(value = "/resume", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Object>> saveResume(@RequestBody ResumeSaveRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String text = resumeDocumentParsingService.normalizeResumeText(request.getResumeText());
+            if (text.isBlank()) {
+                response.put("success", false);
+                response.put("message", "简历内容不能为空，且不会覆盖已保存简历");
+                return ResponseEntity.badRequest().body(response);
+            }
+            if (text.length() > 200_000) {
+                response.put("success", false);
+                response.put("message", "简历文本超过200000字符限制");
+                return ResponseEntity.badRequest().body(response);
+            }
+            String method = request.getParseMethod() == null || request.getParseMethod().isBlank()
+                    ? "manual"
+                    : request.getParseMethod().trim();
+            int score = request.getQualityScore() == null
+                    ? resumeDocumentParsingService.qualityScore(text)
+                    : Math.max(0, Math.min(100, request.getQualityScore()));
+            String status = "ai-reviewed".equals(method) ? "ai_reviewed"
+                    : "manual".equals(method) ? "manual" : "local_parsed";
+            String message = buildResumeSaveMessage(score, request.getWarnings());
+            Object data = jobAiAnalysisService.saveResumeText(
+                    text,
+                    safeFilename(request.getSourceFilename()),
+                    status,
+                    message
+            );
+            response.put("success", true);
+            response.put("data", data);
+            response.put("message", "简历已按确认后的预览文本保存");
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            log.error("保存简历失败", e);
+            response.put("success", false);
+            response.put("message", "保存简历失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /** 兼容旧客户端：仅在识别成功且文本非空时保存，绝不以空文本覆盖旧简历。 */
+    @PostMapping(value = "/resume", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> saveResumeLegacy(
             @RequestParam(value = "file", required = false) MultipartFile file,
             @RequestParam(value = "resumeText", required = false) String resumeText
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
-            Object data = file != null && !file.isEmpty()
-                    ? jobAiAnalysisService.parseAndSaveResumeFile(file)
-                    : jobAiAnalysisService.saveResumeText(resumeText, null, "manual", "手动保存成功");
+            String text;
+            String filename = null;
+            String status = "manual";
+            String message = "手动保存成功";
+            if (file != null && !file.isEmpty()) {
+                ResumeParseResult parsed = resumeDocumentParsingService.parse(file, "auto");
+                text = parsed.text();
+                filename = parsed.sourceFilename();
+                status = "ai-reviewed".equals(parsed.method()) ? "ai_reviewed" : "local_parsed";
+                message = buildResumeSaveMessage(parsed.qualityScore(), parsed.warnings());
+            } else {
+                text = resumeDocumentParsingService.normalizeResumeText(resumeText);
+            }
+            if (text == null || text.isBlank()) {
+                response.put("success", false);
+                response.put("message", "简历内容不能为空，且不会覆盖已保存简历");
+                return ResponseEntity.badRequest().body(response);
+            }
+            Object data = jobAiAnalysisService.saveResumeText(text, filename, status, message);
             response.put("success", true);
             response.put("data", data);
             response.put("message", "简历保存成功");
@@ -193,6 +287,24 @@ public class AiConfigController {
             response.put("message", "保存简历失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
+    }
+
+    private String buildResumeSaveMessage(int qualityScore, List<String> warnings) {
+        String warningText = warnings == null ? "" : warnings.stream()
+                .filter(item -> item != null && !item.isBlank())
+                .limit(5)
+                .reduce((left, right) -> left + "；" + right)
+                .orElse("");
+        String result = "用户已确认识别预览；质量分 " + qualityScore;
+        return warningText.isBlank() ? result : result + "；" + warningText;
+    }
+
+    private String safeFilename(String original) {
+        if (original == null || original.isBlank()) return null;
+        String filename = original.replace('\\', '/');
+        int slash = filename.lastIndexOf('/');
+        if (slash >= 0) filename = filename.substring(slash + 1);
+        return filename.length() > 255 ? filename.substring(filename.length() - 255) : filename;
     }
 
     @PostMapping("/resume/generate-config")

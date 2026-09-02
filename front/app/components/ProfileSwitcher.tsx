@@ -19,9 +19,16 @@ const parseApiResponse = async (response: Response, fallback: string): Promise<A
 }
 
 const parseDeleteResponse = async (response: Response, fallback: string): Promise<ApiResponse> => {
+  const contentType = response.headers.get('content-type')?.toLowerCase() || ''
+  if (!contentType.includes('application/json')) {
+    throw new Error(response.status === 404 ? '档案接口暂不可用，请重启后端服务后再试' : fallback)
+  }
   let result: ApiResponse | null = null
   try {
-    result = await response.json()
+    const parsed = await response.json() as unknown
+    result = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as ApiResponse
+      : null
   } catch {
     result = null
   }
@@ -31,7 +38,10 @@ const parseDeleteResponse = async (response: Response, fallback: string): Promis
   if (!response.ok) {
     throw new Error(result?.message || fallback)
   }
-  return result || {}
+  if (!result || (result.success !== true && !(result.success === false && result.forceRequired))) {
+    throw new Error(result?.message || fallback)
+  }
+  return result
 }
 
 export type Profile = {
@@ -52,19 +62,20 @@ const impactLabels: Record<string, string> = {
 }
 
 type ProfileSwitcherProps = {
-  onProfileChange?: (profile: Profile) => void
+  onProfileChange?: (profile: Profile | null) => void
   beforeSwitch?: () => boolean
   compact?: boolean
+  disabled?: boolean
 }
 
-export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact = false }: ProfileSwitcherProps) {
+export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact = false, disabled = false }: ProfileSwitcherProps) {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [currentId, setCurrentId] = useState('')
   const [newName, setNewName] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
 
-  const loadProfiles = async () => {
+  const loadProfiles = async (notifyChange = true) => {
     setLoading(true)
     setLoadError('')
     try {
@@ -75,9 +86,10 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       const current = result.current as Profile | undefined || list.find((item: Profile) => item.isActive === 1) || list[0]
       if (current?.id) {
         setCurrentId(String(current.id))
-        onProfileChange?.(current)
+        if (notifyChange) onProfileChange?.(current)
       } else {
         setCurrentId('')
+        if (notifyChange) onProfileChange?.(null)
       }
     } catch (error) {
       setLoadError(friendlyApiError(error, '档案加载失败'))
@@ -91,14 +103,14 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
   }, [])
 
   const activateProfile = async (id: string, skipBeforeSwitch = false) => {
-    if (!id || id === currentId) return
+    if (disabled || !id || id === currentId) return
     if (!skipBeforeSwitch && beforeSwitch && !beforeSwitch()) return
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/profiles/${id}/activate`, { method: 'POST' })
       const result = await parseApiResponse(response, '档案切换失败')
       setCurrentId(id)
-      await loadProfiles()
+      await loadProfiles(false)
       if (result.data) {
         onProfileChange?.(result.data as Profile)
       }
@@ -110,6 +122,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
   }
 
   const createProfile = async () => {
+    if (disabled) return
     const name = newName.trim()
     if (!name) return
     if (beforeSwitch && !beforeSwitch()) return
@@ -143,7 +156,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
   }
 
   const deleteProfile = async () => {
-    if (!currentId || loading) return
+    if (disabled || !currentId || loading) return
     const current = profiles.find((profile) => String(profile.id) === currentId)
     if (!current) return
     const firstConfirm = window.confirm(`确认删除档案「${current.name}」？系统会先检查关联数据，不会静默删除已有配置或岗位。`)
@@ -184,7 +197,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       <Select
         value={currentId}
         onChange={(event) => activateProfile(event.target.value)}
-        disabled={loading}
+        disabled={loading || disabled}
         className="min-w-[150px]"
       >
         {profiles.map((profile) => (
@@ -204,15 +217,15 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
         }}
         placeholder="新档案名称"
         className="h-9 w-[150px]"
-        disabled={loading}
+        disabled={loading || disabled}
       />
-      <Button type="button" size="sm" variant="outline" onClick={createProfile} disabled={loading || !newName.trim()}>
+      <Button type="button" size="sm" variant="outline" onClick={createProfile} disabled={loading || disabled || !newName.trim()}>
         <BiPlus className="mr-1" /> 新建
       </Button>
-      <Button type="button" size="sm" variant="destructive" onClick={deleteProfile} disabled={loading || !currentId} title="删除当前档案">
+      <Button type="button" size="sm" variant="destructive" onClick={deleteProfile} disabled={loading || disabled || !currentId} title="删除当前档案">
         <BiTrash className="mr-1" /> 删除
       </Button>
-      <Button type="button" size="sm" variant="ghost" onClick={loadProfiles} disabled={loading} title="刷新档案列表">
+      <Button type="button" size="sm" variant="ghost" onClick={() => void loadProfiles()} disabled={loading || disabled} title="刷新档案列表">
         <BiRefresh className="mr-1" /> 刷新
       </Button>
       {loadError ? (

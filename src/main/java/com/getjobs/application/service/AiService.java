@@ -22,6 +22,7 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.time.Duration;
@@ -181,6 +182,75 @@ public class AiService {
             );
         }
         return result;
+    }
+
+    /**
+     * 对本地识别结果做一次视觉复核。该方法的远程请求预算固定为 1，
+     * 不切换 Provider，也不对结果未知的请求重试。
+     */
+    public String reviewResumeImages(List<ResumeImage> images, String localText) {
+        if (images == null || images.isEmpty()) {
+            throw new IllegalArgumentException("简历页面图像不能为空");
+        }
+        String prompt = "你是简历 OCR 复核器。请对照附件页面图像与本地识别文本，"
+                + "只允许纠正错别字、补全图像中明确可见的内容、恢复正确阅读顺序。"
+                + "严禁编造任何候选人经历，严禁添加图像中不存在的信息。"
+                + "保留姓名、联系方式、工作经历、项目经历和教育背景的顺序，只输出复核后的纯文本。\n\n"
+                + "本地识别文本：\n" + limit(localText == null ? "" : localText, 20_000);
+        var cfg = configService.getAiConfigs();
+        if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
+            return codexCliService.reviewResumeImages(
+                    images.stream().map(ResumeImage::bytes).toList(),
+                    images.stream().map(ResumeImage::mimeType).toList(),
+                    prompt,
+                    cfg
+            );
+        }
+
+        String endpoint = buildChatCompletionsEndpoint(cfg.get("BASE_URL"));
+        Duration timeout = requestTimeout(cfg);
+        String clientRequestId = UUID.randomUUID().toString();
+        JSONObject requestData = new JSONObject();
+        requestData.put("model", cfg.get("MODEL"));
+        requestData.put("temperature", 0.1);
+        JSONArray content = new JSONArray();
+        content.put(new JSONObject().put("type", "text").put("text", prompt));
+        for (ResumeImage image : images) {
+            String mime = image.mimeType() == null || image.mimeType().isBlank() ? "image/jpeg" : image.mimeType();
+            String dataUrl = "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(image.bytes());
+            content.put(new JSONObject()
+                    .put("type", "image_url")
+                    .put("image_url", new JSONObject().put("url", dataUrl)));
+        }
+        JSONObject message = new JSONObject().put("role", "user").put("content", content);
+        requestData.put("messages", new JSONArray().put(message));
+        ProviderHttpResponse response = sendRemoteJson(
+                buildHttpClient(timeout), endpoint, cfg.get("API_KEY"), requestData,
+                deadlineAfter(timeout), clientRequestId, new RequestBudget(1), true);
+        if (response.statusCode() != 200) {
+            throw providerHttpError(response, endpoint, clientRequestId);
+        }
+        String result = parseChatContent(response, endpoint, clientRequestId);
+        if (result.isBlank()) {
+            throw providerResponseError(
+                    AiProviderException.Code.EMPTY_RESPONSE,
+                    "AI Provider 返回空内容",
+                    response,
+                    endpoint,
+                    clientRequestId
+            );
+        }
+        return result;
+    }
+
+    public record ResumeImage(byte[] bytes, String mimeType) {
+        public ResumeImage {
+            if (bytes == null || bytes.length == 0) {
+                throw new IllegalArgumentException("简历页面图像不能为空");
+            }
+            bytes = bytes.clone();
+            mimeType = mimeType == null || mimeType.isBlank() ? "image/jpeg" : mimeType;
+        }
     }
 
     /**

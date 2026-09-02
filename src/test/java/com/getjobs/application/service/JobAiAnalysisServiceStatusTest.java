@@ -327,22 +327,20 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
-    void parsesUtf8ResumeTextFile() {
+    void savesConfirmedUtf8ResumeText() {
         when(profileService.getCurrentProfileId()).thenReturn(PROFILE_ID);
         when(profileService.getCurrentProfileIdOrNull()).thenReturn(PROFILE_ID);
         when(resumeProfileMapper.selectOne(any())).thenReturn(null);
-        MockMultipartFile file = new MockMultipartFile(
-                "file",
+        ResumeProfileEntity result = service.saveResumeText(
+                "中文简历：熟悉 Java 和 Spring Boot",
                 "简历.txt",
-                "text/plain",
-                "中文简历：熟悉 Java 和 Spring Boot".getBytes(StandardCharsets.UTF_8)
+                "local_parsed",
+                "用户已确认识别预览"
         );
-
-        ResumeProfileEntity result = service.parseAndSaveResumeFile(file);
 
         assertThat(result.getResumeText()).contains("熟悉 Java");
         assertThat(result.getSourceFilename()).isEqualTo("简历.txt");
-        assertThat(result.getParseStatus()).isEqualTo("parsed");
+        assertThat(result.getParseStatus()).isEqualTo("local_parsed");
     }
 
     @Test

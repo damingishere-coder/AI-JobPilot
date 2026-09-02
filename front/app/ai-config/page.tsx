@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BiSave, BiBrain, BiInfoCircle, BiRefresh, BiUpload } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -58,10 +58,18 @@ type GeneratedAiConfig = {
   sayHi?: string
 }
 
+type ResumeParsePreview = {
+  text: string
+  localText: string
+  sourceFilename: string
+  method: string
+  qualityScore: number
+  warnings: string[]
+}
+
 type SaveOptions = {
   nextAiConfig?: AiConfig
   nextResumeText?: string
-  nextResumeFile?: File | null
   nextSayHi?: string
   skipResume?: boolean
   showAlert?: boolean
@@ -87,15 +95,93 @@ export default function AiConfigPage() {
   const [enableAi, setEnableAi] = useState<number>(0)
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileSnapshotReady, setProfileSnapshotReady] = useState(false)
+  const [backendReady, setBackendReady] = useState(false)
+  const [checkingBackend, setCheckingBackend] = useState(true)
+  const [readinessError, setReadinessError] = useState('')
+  const [recognizing, setRecognizing] = useState(false)
+  const [resumePreview, setResumePreview] = useState<ResumeParsePreview | null>(null)
+  const profileLoadSequenceRef = useRef(0)
+  const profileLoadAbortRef = useRef<AbortController | null>(null)
+  const selectedProfileRef = useRef<Profile | null>(null)
+  const readinessAbortRef = useRef<AbortController | null>(null)
+  const resumeRecognitionSequenceRef = useRef(0)
+
+  const waitForBackendReady = useCallback(async () => {
+    readinessAbortRef.current?.abort()
+    const controller = new AbortController()
+    readinessAbortRef.current = controller
+    setCheckingBackend(true)
+    setReadinessError('')
+    setBackendReady(false)
+    let lastError = '后端服务未就绪'
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const attemptController = new AbortController()
+        const abortAttempt = () => attemptController.abort()
+        controller.signal.addEventListener('abort', abortAttempt, { once: true })
+        const timeoutId = window.setTimeout(() => attemptController.abort(), 1500)
+        try {
+          const response = await fetch(`${API_BASE}/api/ready`, { cache: 'no-store', signal: attemptController.signal })
+          const contentType = response.headers.get('content-type')?.toLowerCase() || ''
+          const body = contentType.includes('application/json')
+            ? await response.json() as { ready?: boolean; status?: string }
+            : null
+          if (response.ok && body?.ready === true) {
+            setBackendReady(true)
+            return
+          }
+          lastError = body?.status ? `后端尚未就绪：${body.status}` : `后端尚未就绪（HTTP ${response.status}）`
+        } catch (error) {
+          if (controller.signal.aborted) return
+          lastError = friendlyApiError(error, '无法连接后端服务')
+        } finally {
+          window.clearTimeout(timeoutId)
+          controller.signal.removeEventListener('abort', abortAttempt)
+        }
+        if (attempt < 4) await new Promise((resolve) => window.setTimeout(resolve, 600))
+      }
+      setReadinessError(`${lastError}，已停止自动重试`)
+    } finally {
+      if (!controller.signal.aborted) setCheckingBackend(false)
+    }
+  }, [])
 
   useEffect(() => {
-    reloadCurrentData()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    void waitForBackendReady()
+    return () => {
+      profileLoadAbortRef.current?.abort()
+      readinessAbortRef.current?.abort()
+    }
+  }, [waitForBackendReady])
 
   const markDirty = () => {
     setHasUnsavedChanges(true)
     setStatusMessage('')
+  }
+
+  const clearProfileSnapshot = () => {
+    profileLoadAbortRef.current?.abort()
+    profileLoadAbortRef.current = null
+    profileLoadSequenceRef.current += 1
+    selectedProfileRef.current = null
+    setCurrentProfile(null)
+    setHasProfile(false)
+    setProfileLoading(false)
+    setProfileSnapshotReady(true)
+    setAiConfig({ introduce: '', prompt: '' })
+    setEnableAi(0)
+    setSayHi('')
+    setResumeText('')
+    setResumeMeta(null)
+    setResumePreview(null)
+    setPriorityCompanies('')
+    setResumeFile(null)
+    setResumeDirty(false)
+    setHasUnsavedChanges(false)
+    setStatusMessage('')
+    setLoadError('')
   }
 
   const parseEnableAi = (raw: unknown) => {
@@ -108,91 +194,72 @@ export default function AiConfigPage() {
     return `${(bytes / 1024 / 1024).toFixed(1)}MB`
   }
 
-  const reloadCurrentData = async () => {
+  const reloadCurrentData = async (expectedProfileId?: number, selectedProfile?: Profile) => {
+    const targetProfile = selectedProfile || selectedProfileRef.current || currentProfile
+    const targetProfileId = expectedProfileId ?? targetProfile?.id
+    if (!targetProfileId) return
+    if (selectedProfile) selectedProfileRef.current = selectedProfile
+    const sequence = ++profileLoadSequenceRef.current
+    profileLoadAbortRef.current?.abort()
+    const controller = new AbortController()
+    profileLoadAbortRef.current = controller
+    setProfileLoading(true)
+    setProfileSnapshotReady(false)
     setLoadError('')
-    await Promise.all([fetchAiConfig(), fetchBossConfig(), fetchResume(), fetchPriorityCompanies()])
-    setHasUnsavedChanges(false)
-    setResumeDirty(false)
-    setResumeFile(null)
-  }
-
-  const fetchAiConfig = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/ai/config`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const result = await readApiResponse<AiConfig>(response, 'AI配置加载失败') as ProfileAwareResponse<AiConfig>
-      if (result.success && result.data) {
-        setAiConfig({
-          introduce: result.data.introduce || '',
-          prompt: result.data.prompt || '',
-        })
-      } else {
-        setAiConfig({ introduce: '', prompt: '' })
+      const [aiResponse, bossResponse, resumeResponse, companiesResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/ai/config`, { signal: controller.signal }),
+        fetch(`${API_BASE}/api/boss/config`, { signal: controller.signal }),
+        fetch(`${API_BASE}/api/ai/resume`, { signal: controller.signal }),
+        fetch(`${API_BASE}/api/ai/companies/priority`, { signal: controller.signal }),
+      ])
+      const [aiResult, bossResult, resumeResult, companiesResult] = await Promise.all([
+        readApiResponse<AiConfig>(aiResponse, 'AI配置加载失败') as Promise<ProfileAwareResponse<AiConfig>>,
+        readApiResponse<never>(bossResponse, 'Boss配置加载失败') as Promise<BossConfigResponse>,
+        readApiResponse<SavedResume>(resumeResponse, '简历加载失败') as Promise<ProfileAwareResponse<SavedResume>>,
+        readApiResponse<PriorityCompany[]>(companiesResponse, '优先公司加载失败') as Promise<ProfileAwareResponse<PriorityCompany[]>>,
+      ])
+      const profileIds = [
+        aiResult.currentProfile?.id,
+        bossResult.currentProfile?.id,
+        resumeResult.currentProfile?.id,
+        companiesResult.currentProfile?.id,
+      ]
+      if (profileIds.some((profileId) => profileId !== targetProfileId)) {
+        throw new Error('档案已切换，已丢弃不匹配的旧响应')
       }
-      setCurrentProfile(result.currentProfile || null)
-      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
-    } catch (error) {
-      setLoadError((current) => current || friendlyApiError(error, 'AI配置加载失败'))
-      setAiConfig({ introduce: '', prompt: '' })
-    }
-  }
+      if (controller.signal.aborted || sequence !== profileLoadSequenceRef.current) return
 
-  const fetchResume = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/ai/resume`)
-      const result = await readApiResponse<SavedResume>(response, '简历加载失败') as ProfileAwareResponse<SavedResume>
-      if (result.success && result.data) {
-        setResumeText(result.data.resumeText || '')
-        setResumeMeta({
-          sourceFilename: result.data.sourceFilename,
-          parseStatus: result.data.parseStatus,
-          parseMessage: result.data.parseMessage,
-        })
-      } else {
-        setResumeText('')
-        setResumeMeta(null)
+      const resume = resumeResult.data || null
+      setAiConfig(aiResult.data
+        ? { introduce: aiResult.data.introduce || '', prompt: aiResult.data.prompt || '' }
+        : { introduce: '', prompt: '' })
+      setEnableAi(parseEnableAi(bossResult.config?.enableAi))
+      setSayHi(bossResult.config?.sayHi || '')
+      setResumeText(resume?.resumeText || '')
+      setResumeMeta(resume ? {
+        sourceFilename: resume.sourceFilename,
+        parseStatus: resume.parseStatus,
+        parseMessage: resume.parseMessage,
+      } : null)
+      setResumePreview(null)
+      setPriorityCompanies(Array.isArray(companiesResult.data)
+        ? companiesResult.data.map((it) => it.companyName).filter(Boolean).join('\n')
+        : '')
+      const committedProfile = selectedProfile || aiResult.currentProfile || null
+      selectedProfileRef.current = committedProfile
+      setCurrentProfile(committedProfile)
+      setHasProfile(true)
+      setProfileSnapshotReady(true)
+      setHasUnsavedChanges(false)
+      setResumeDirty(false)
+      setResumeFile(null)
+    } catch (error) {
+      if (!controller.signal.aborted && sequence === profileLoadSequenceRef.current) {
+        setLoadError(friendlyApiError(error, '档案快照加载失败'))
       }
-      setCurrentProfile(result.currentProfile || null)
-      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
-    } catch (error) {
-      setLoadError((current) => current || friendlyApiError(error, '简历加载失败'))
-      setResumeText('')
-      setResumeMeta(null)
-    }
-  }
-
-  const fetchPriorityCompanies = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/ai/companies/priority`)
-      const result = await readApiResponse<PriorityCompany[]>(response, '优先公司加载失败') as ProfileAwareResponse<PriorityCompany[]>
-      if (result.success && Array.isArray(result.data)) {
-        setPriorityCompanies(result.data.map((it: PriorityCompany) => it.companyName).filter(Boolean).join('\n'))
-      } else {
-        setPriorityCompanies('')
-      }
-      setCurrentProfile(result.currentProfile || null)
-      setHasProfile(Boolean(result.hasProfile || result.currentProfile))
-    } catch (error) {
-      setLoadError((current) => current || friendlyApiError(error, '优先公司加载失败'))
-      setPriorityCompanies('')
-    }
-  }
-
-  const fetchBossConfig = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/boss/config`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const result = await readApiResponse<never>(response, 'Boss配置加载失败') as BossConfigResponse
-      setEnableAi(parseEnableAi(result?.config?.enableAi))
-      setSayHi(result?.config?.sayHi || '')
-      setCurrentProfile(result?.currentProfile || null)
-      setHasProfile(Boolean(result?.hasProfile || result?.currentProfile))
-    } catch (error) {
-      setLoadError((current) => current || friendlyApiError(error, 'Boss配置加载失败'))
+    } finally {
+      if (sequence === profileLoadSequenceRef.current) setProfileLoading(false)
     }
   }
 
@@ -230,21 +297,19 @@ export default function AiConfigPage() {
     return result.data
   }
 
-  const saveResume = async (fileToSave: File | null, textToSave: string): Promise<SavedResume> => {
-    if (fileToSave && fileToSave.size > MAX_RESUME_FILE_SIZE) {
-      throw new Error(`文件过大：${formatFileSize(fileToSave.size)}，请压缩到30MB以内后再上传`)
-    }
-
-    const resumeForm = new FormData()
-    if (fileToSave) {
-      resumeForm.append('file', fileToSave)
-    } else {
-      resumeForm.append('resumeText', textToSave)
-    }
-
+  const saveResume = async (textToSave: string): Promise<SavedResume> => {
+    if (!textToSave.trim()) throw new Error('简历内容不能为空')
+    const previewUnedited = resumePreview?.text === textToSave
     const response = await fetch(`${API_BASE}/api/ai/resume`, {
       method: 'POST',
-      body: resumeForm,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resumeText: textToSave,
+        sourceFilename: resumePreview?.sourceFilename || resumeMeta?.sourceFilename || null,
+        parseMethod: resumePreview?.method || 'manual',
+        qualityScore: previewUnedited ? resumePreview?.qualityScore : undefined,
+        warnings: resumePreview?.warnings || [],
+      }),
     })
     const result = await parseJsonResponse<SavedResume>(response, '简历保存失败')
     if (result.data) {
@@ -256,6 +321,7 @@ export default function AiConfigPage() {
       })
     }
     setResumeFile(null)
+    setResumePreview(null)
     setResumeDirty(false)
     return result.data || { resumeText: textToSave }
   }
@@ -288,14 +354,13 @@ export default function AiConfigPage() {
   const saveEverything = async ({
     nextAiConfig = aiConfig,
     nextResumeText = resumeText,
-    nextResumeFile = resumeFile,
     nextSayHi = sayHi,
     skipResume = false,
     showAlert = true,
   }: SaveOptions = {}) => {
     await saveAiConfig(nextAiConfig)
-    if (!skipResume && (nextResumeFile || resumeDirty)) {
-      await saveResume(nextResumeFile, nextResumeText)
+    if (!skipResume && resumeDirty) {
+      await saveResume(nextResumeText)
     }
     await saveBossGreeting(nextSayHi)
     await savePriorityCompanies(priorityCompanies)
@@ -309,6 +374,10 @@ export default function AiConfigPage() {
   const handleSave = async () => {
     if (!hasProfile) {
       alert('请先新建档案')
+      return
+    }
+    if (resumeFile && !resumePreview) {
+      alert('请先等待文件识别完成，再确认保存')
       return
     }
     setLoading(true)
@@ -328,8 +397,11 @@ export default function AiConfigPage() {
     }
     setGenerating(true)
     try {
-      const savedResume = resumeFile || resumeDirty
-        ? await saveResume(resumeFile, resumeText)
+      if (resumeFile && !resumePreview) {
+        throw new Error('请先完成文件识别并核对预览')
+      }
+      const savedResume = resumeDirty
+        ? await saveResume(resumeText)
         : { resumeText }
       const latestResumeText = savedResume?.resumeText || resumeText
       if (!latestResumeText.trim()) {
@@ -355,7 +427,6 @@ export default function AiConfigPage() {
       await saveEverything({
         nextAiConfig,
         nextResumeText: latestResumeText,
-        nextResumeFile: null,
         nextSayHi,
         skipResume: true,
         showAlert: false,
@@ -369,18 +440,55 @@ export default function AiConfigPage() {
     }
   }
 
+  const recognizeResumeFile = async (file: File, mode: 'local' | 'ai_review') => {
+    const sequence = ++resumeRecognitionSequenceRef.current
+    setRecognizing(true)
+    setStatusMessage('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('mode', mode)
+      const response = await fetch(`${API_BASE}/api/ai/resume/parse`, { method: 'POST', body: form })
+      const result = await readApiResponse<ResumeParsePreview>(response, '简历识别失败')
+      if (sequence !== resumeRecognitionSequenceRef.current || !result.data) return
+      setResumePreview(result.data)
+      setResumeText(result.data.text || '')
+      setResumeDirty(true)
+      setHasUnsavedChanges(true)
+      setStatusMessage(mode === 'ai_review' ? 'AI复核完成，待确认保存' : '本地识别完成，待核对保存')
+    } catch (error) {
+      if (sequence === resumeRecognitionSequenceRef.current) {
+        alert(friendlyApiError(error, '简历识别失败'))
+      }
+    } finally {
+      if (sequence === resumeRecognitionSequenceRef.current) setRecognizing(false)
+    }
+  }
+
   const handleResumeFileChange = (file: File | null) => {
+    resumeRecognitionSequenceRef.current += 1
     if (file && file.size > MAX_RESUME_FILE_SIZE) {
       setResumeFile(null)
       alert(`文件过大：${formatFileSize(file.size)}，请压缩到30MB以内后再上传`)
       return
     }
     setResumeFile(file)
-    setResumeDirty(true)
-    markDirty()
+    setResumePreview(null)
+    setResumeDirty(false)
+    if (file) {
+      setHasUnsavedChanges(true)
+      void recognizeResumeFile(file, 'local')
+    }
   }
 
-  const isBusy = loading || generating
+  const handleAiReview = async () => {
+    if (!resumeFile || recognizing || resumePreview?.method === 'ai-reviewed') return
+    const confirmed = window.confirm('复核会把简历页面和本地识别结果发送给当前 AI Provider。系统只请求一次，不会自动切换 Provider 或重试未知结果。是否继续？')
+    if (!confirmed) return
+    await recognizeResumeFile(resumeFile, 'ai_review')
+  }
+
+  const isBusy = loading || generating || recognizing || profileLoading || (hasProfile && !profileSnapshotReady)
   const beforeProfileSwitch = () => {
     if (!hasUnsavedChanges && !resumeDirty && !resumeFile) return true
     return window.confirm('当前简历配置有未保存更改，切换档案会重新加载当前档案数据。确定继续吗？')
@@ -418,19 +526,35 @@ export default function AiConfigPage() {
         }
       />
 
-      <ProfileSwitcher
-        beforeSwitch={beforeProfileSwitch}
-        onProfileChange={(profile) => {
-          setCurrentProfile(profile)
-          setHasProfile(true)
-          reloadCurrentData()
-        }}
-      />
+      {backendReady ? (
+        <ProfileSwitcher
+          disabled={isBusy}
+          beforeSwitch={beforeProfileSwitch}
+          onProfileChange={(profile) => {
+            if (!profile) {
+              clearProfileSnapshot()
+              return
+            }
+            setCurrentProfile(profile)
+            setHasProfile(true)
+            void reloadCurrentData(profile.id, profile)
+          }}
+        />
+      ) : (
+        <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>{checkingBackend ? '正在等待后端就绪…' : readinessError || '后端服务未就绪'}</span>
+          {!checkingBackend ? (
+            <Button type="button" size="sm" variant="ghost" onClick={() => void waitForBackendReady()}>
+              <BiRefresh className="mr-1" /> 手动重试
+            </Button>
+          ) : null}
+        </div>
+      )}
 
       {loadError ? (
         <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <span>{loadError}</span>
-          <Button type="button" size="sm" variant="ghost" onClick={reloadCurrentData}>
+          <Button type="button" size="sm" variant="ghost" onClick={() => void reloadCurrentData()} disabled={profileLoading}>
             <BiRefresh className="mr-1" /> 重试加载
           </Button>
         </div>
@@ -443,6 +567,12 @@ export default function AiConfigPage() {
       ) : currentProfile ? (
         <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
           当前正在编辑：{currentProfile.name}
+        </div>
+      ) : null}
+
+      {hasProfile && !profileSnapshotReady ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          当前档案已存在，但配置快照尚未完整加载；为防止空值覆盖，保存已禁用。
         </div>
       ) : null}
 
@@ -459,7 +589,7 @@ export default function AiConfigPage() {
               <BiUpload className="text-primary" />
               提交简历
             </CardTitle>
-            <CardDescription>支持 PDF、TXT、PNG、JPG、JPEG、WEBP，单个文件不超过30MB</CardDescription>
+            <CardDescription>支持 PDF、Word、TXT、PNG、JPG、JPEG、WEBP，单个文件不超过30MB</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -468,23 +598,56 @@ export default function AiConfigPage() {
                 <input
                   id="resume-file"
                   type="file"
-                  accept=".pdf,.txt,.png,.jpg,.jpeg,.webp"
+                  accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp"
                   onChange={(e) => handleResumeFileChange(e.target.files?.[0] || null)}
                   disabled={!hasProfile || isBusy}
                   className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:text-white"
                 />
                 <p className="text-xs text-muted-foreground">
                   {resumeFile
-                    ? `待提交文件：${resumeFile.name}（${formatFileSize(resumeFile.size)}）`
+                    ? `${recognizing ? '正在识别' : '已选择'}：${resumeFile.name}（${formatFileSize(resumeFile.size)}）`
                     : '也可以直接在下面粘贴简历文本'}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  文本型 PDF 可直接解析；扫描版 PDF 可能无法提取文字，请粘贴文本或上传图片简历。
+                  文件会先在本机用 Docling + RapidOCR 识别，只生成预览；点击确认保存前不会覆盖已有简历。
                 </p>
                 {resumeMeta?.sourceFilename ? (
                   <p className="text-xs text-muted-foreground">
                     最近文件：{resumeMeta.sourceFilename}；状态：{resumeMeta.parseStatus || '-'}；{resumeMeta.parseMessage || ''}
                   </p>
+                ) : null}
+                {resumePreview ? (
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-2 py-1 font-medium ${resumePreview.method === 'ai-reviewed' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {resumePreview.method === 'ai-reviewed' ? 'AI已复核' : '本地识别'}
+                      </span>
+                      <span className={`rounded-full px-2 py-1 font-medium ${resumePreview.qualityScore >= 85 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
+                        {resumePreview.qualityScore >= 85 ? '质量良好' : '低置信度'} {resumePreview.qualityScore}
+                      </span>
+                    </div>
+                    {resumePreview.warnings.length > 0 ? (
+                      <ul className="list-disc space-y-1 pl-5">
+                        {resumePreview.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
+                {resumeFile ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => void recognizeResumeFile(resumeFile, 'local')} disabled={recognizing}>
+                      {recognizing ? '识别中…' : '重新本地识别'}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleAiReview()}
+                      disabled={recognizing || !resumePreview || resumePreview.method === 'ai-reviewed'}
+                    >
+                      {resumePreview?.method === 'ai-reviewed' ? '已完成AI复核' : '使用AI强制复核'}
+                    </Button>
+                  </div>
                 ) : null}
               </div>
 
@@ -499,7 +662,7 @@ export default function AiConfigPage() {
                     markDirty()
                   }}
                   disabled={!hasProfile || isBusy}
-                  placeholder="上传 PDF/图片后会在这里显示解析结果；也可以直接粘贴完整简历文本"
+                  placeholder="上传 PDF/图片/Word 后会在这里显示识别预览；也可以直接粘贴完整简历文本"
                   className="min-h-[240px] resize-y"
                 />
               </div>
@@ -510,7 +673,7 @@ export default function AiConfigPage() {
                 type="button"
                 disabled={!hasProfile || isBusy}
               >
-                <BiBrain className="mr-1" /> {generating ? '提交并生成中...' : '提交简历并生成AI配置'}
+                <BiBrain className="mr-1" /> {generating ? '保存并生成中...' : '确认保存并生成AI配置'}
               </Button>
             </div>
           </CardContent>

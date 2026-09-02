@@ -22,7 +22,7 @@ public class CodexCliService {
     private static final Semaphore CODEX_SLOTS = new Semaphore(2, true);
 
     public String generateText(String content, Map<String, String> config) {
-        return run(content, null, config);
+        return run(content, (Path) null, config);
     }
 
     public String extractResumeFromImage(byte[] imageBytes, String mimeType, Map<String, String> config) {
@@ -44,7 +44,43 @@ public class CodexCliService {
         }
     }
 
+    public String reviewResumeImages(
+            List<byte[]> images,
+            List<String> mimeTypes,
+            String prompt,
+            Map<String, String> config
+    ) {
+        if (images == null || images.isEmpty()) {
+            throw new IllegalArgumentException("简历页面图像不能为空");
+        }
+        List<Path> imagePaths = new ArrayList<>();
+        try {
+            for (int index = 0; index < images.size(); index++) {
+                byte[] bytes = images.get(index);
+                if (bytes == null || bytes.length == 0) continue;
+                String mimeType = mimeTypes != null && index < mimeTypes.size()
+                        ? mimeTypes.get(index)
+                        : "image/jpeg";
+                Path path = Files.createTempFile("jobpilot-resume-page-", extensionForMimeType(mimeType));
+                Files.write(path, bytes);
+                imagePaths.add(path);
+            }
+            if (imagePaths.isEmpty()) {
+                throw new IllegalArgumentException("简历页面图像不能为空");
+            }
+            return run(prompt, imagePaths, config);
+        } catch (IOException e) {
+            throw new IllegalStateException("无法创建临时简历页面", e);
+        } finally {
+            imagePaths.forEach(this::deleteQuietly);
+        }
+    }
+
     String run(String content, Path imagePath, Map<String, String> config) {
+        return run(content, imagePath == null ? List.of() : List.of(imagePath), config);
+    }
+
+    String run(String content, List<Path> imagePaths, Map<String, String> config) {
         String executable = resolveExecutable(value(config, "CODEX_PATH", "codex"));
         String model = value(config, "CODEX_MODEL", "gpt-5.6-sol");
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
@@ -57,7 +93,7 @@ public class CodexCliService {
         try {
             tempDirectory = Files.createTempDirectory("jobpilot-codex-");
             outputPath = tempDirectory.resolve("final.txt");
-            List<String> command = buildCommand(executable, model, tempDirectory, outputPath, imagePath);
+            List<String> command = buildCommandWithImages(executable, model, tempDirectory, outputPath, imagePaths);
             ProcessBuilder builder = new ProcessBuilder(command)
                     .directory(tempDirectory.toFile())
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -77,7 +113,7 @@ public class CodexCliService {
             }
             process = builder.start();
             try (var writer = process.outputWriter(StandardCharsets.UTF_8)) {
-                writer.write(buildPrompt(content, imagePath != null));
+                writer.write(buildPrompt(content, imagePaths != null && !imagePaths.isEmpty()));
             }
             if (!process.waitFor(processBudgetMillis, TimeUnit.MILLISECONDS)) {
                 terminateProcessTree(process);
@@ -112,6 +148,22 @@ public class CodexCliService {
     }
 
     List<String> buildCommand(String executable, String model, Path workingDirectory, Path outputPath, Path imagePath) {
+        return buildCommandWithImages(
+                executable,
+                model,
+                workingDirectory,
+                outputPath,
+                imagePath == null ? List.of() : List.of(imagePath)
+        );
+    }
+
+    List<String> buildCommandWithImages(
+            String executable,
+            String model,
+            Path workingDirectory,
+            Path outputPath,
+            List<Path> imagePaths
+    ) {
         List<String> command = new ArrayList<>();
         addExecutable(command, executable);
         command.add("exec");
@@ -123,9 +175,9 @@ public class CodexCliService {
         command.add("--ephemeral");
         command.add("--model");
         command.add(model);
-        if (imagePath != null) {
+        if (imagePaths != null && !imagePaths.isEmpty()) {
             command.add("--image");
-            command.add(imagePath.toString());
+            imagePaths.forEach(path -> command.add(path.toString()));
         }
         command.add("--output-last-message");
         command.add(outputPath.toString());

@@ -65,6 +65,13 @@ app:
     command: ${APP_OPENCLAW_COMMAND:}
     profile: ${APP_OPENCLAW_PROFILE:openclaw}
     detail-limit: ${APP_OPENCLAW_DETAIL_LIMIT:5}
+  resume-parser:
+    python: ${APP_RESUME_PARSER_PYTHON:}
+    script: ${APP_RESUME_PARSER_SCRIPT:./resume-parser/parse_document.py}
+    model-dir: ${APP_RESUME_PARSER_MODEL_DIR:./.resume-models}
+    timeout-seconds: ${APP_RESUME_PARSER_TIMEOUT_SECONDS:120}
+    max-pages: ${APP_RESUME_PARSER_MAX_PAGES:10}
+    max-output-chars: ${APP_RESUME_PARSER_MAX_OUTPUT_CHARS:200000}
 
 # 日志配置
 logging:
