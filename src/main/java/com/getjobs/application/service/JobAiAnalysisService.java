@@ -461,7 +461,14 @@ public class JobAiAnalysisService {
         if (raw == null || raw.trim().isEmpty()) {
             throw outputError("AI_OUTPUT_EMPTY", "AI 返回空内容", raw);
         }
-        String s = raw.trim()
+        String original = raw.trim();
+        try {
+            new JSONObject(original);
+            return original;
+        } catch (Exception ignored) {
+        }
+
+        String s = original
                 .replace('\u201c', '"')
                 .replace('\u201d', '"')
                 .replace('\u2018', '\'')

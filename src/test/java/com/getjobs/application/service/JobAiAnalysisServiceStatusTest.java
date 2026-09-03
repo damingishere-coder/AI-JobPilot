@@ -365,6 +365,21 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void keepsChineseCurlyQuotesInsideValidJsonString() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
+                {"score":88,"decision":"APPLY","summary":"岗位要求“3年以上”经验","strengths":["熟悉Java"],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getSummary()).isEqualTo("岗位要求“3年以上”经验");
+        verify(aiService).sendStructuredRequest(any(), any());
+    }
+
+    @Test
     void emptyProviderOutputBecomesExplicitAiFailureInsteadOfSkip() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
