@@ -133,6 +133,45 @@ public class JobAiAnalysisService {
     private final Job51Mapper job51Mapper;
     private final ConcurrentMap<Long, List<PriorityCompanyEntity>> enabledPriorityCompanyCache = new ConcurrentHashMap<>();
 
+    /**
+     * 保存当前档案的投递分数线，并让历史 Boss AI 不匹配岗位应用新分数线。
+     * 这里只复用已经保存的 AI 分数，不重新调用 Provider，也不创建投递请求。
+     */
+    @Transactional
+    public ThresholdApplicationResult saveThresholdsAndPromoteBossHistory(
+            Integer applyThreshold,
+            Integer priorityApplyThreshold
+    ) {
+        AiEntity saved = aiService.saveOrUpdateAiThresholds(applyThreshold, priorityApplyThreshold);
+        if (saved == null || saved.getProfileId() == null) {
+            throw new IllegalStateException("AI分数线保存后缺少档案信息");
+        }
+
+        BossJobDataEntity update = new BossJobDataEntity();
+        update.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
+        update.setAiDecision("APPLY");
+        update.setUpdatedAt(LocalDateTime.now());
+
+        UpdateWrapper<BossJobDataEntity> wrapper = new UpdateWrapper<>();
+        wrapper.eq("profile_id", saved.getProfileId())
+                .eq("delivery_status", DeliveryStatus.AI_NOT_MATCH)
+                .isNotNull("ai_score")
+                .and(group -> group
+                        .eq("priority_company", 1)
+                        .ge("ai_score", saved.getPriorityApplyThreshold())
+                        .or(normal -> normal
+                                .and(priorityFlag -> priorityFlag
+                                        .isNull("priority_company")
+                                        .or()
+                                        .ne("priority_company", 1))
+                                .ge("ai_score", saved.getApplyThreshold())));
+
+        int promotedCount = bossJobDataMapper.update(update, wrapper);
+        log.info("Boss历史岗位已应用新分数线: profileId={}, promotedCount={}",
+                saved.getProfileId(), promotedCount);
+        return new ThresholdApplicationResult(saved, promotedCount);
+    }
+
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
         Long profileId = profileService.getCurrentProfileId();
@@ -1480,6 +1519,9 @@ public class JobAiAnalysisService {
         private String companyInfo;
         private String jobDescription;
         private String scanRunId;
+    }
+
+    public record ThresholdApplicationResult(AiEntity thresholds, int bossHistoricalPromotedCount) {
     }
 
     public record PlatformAnalysisState(boolean completed, boolean failed, String status) {

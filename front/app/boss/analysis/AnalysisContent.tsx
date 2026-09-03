@@ -287,7 +287,10 @@ export default function AnalysisContent({
               onConfirmBatch={handleConfirmBatch}
             />
           </div>
-          <BossThresholdSettings />
+          <BossThresholdSettings onApplied={async () => {
+            setSelectedManualJobIds(new Set())
+            await Promise.all([loadList(1, size), refreshStats()])
+          }} />
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-xs text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-100">
             <span className="font-semibold">AI分析队列</span>
             <span>排队中 {analysisPendingCount}</span>

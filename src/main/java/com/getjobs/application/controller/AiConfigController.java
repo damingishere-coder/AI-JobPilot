@@ -142,13 +142,16 @@ public class AiConfigController {
     public ResponseEntity<Map<String, Object>> saveAiThresholds(@RequestBody AiThresholdRequest requestBody) {
         Map<String, Object> response = new HashMap<>();
         try {
-            AiEntity aiEntity = aiService.saveOrUpdateAiThresholds(
+            JobAiAnalysisService.ThresholdApplicationResult result =
+                    jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(
                     requestBody.getApplyThreshold(),
                     requestBody.getPriorityApplyThreshold()
             );
+            Map<String, Object> data = thresholdData(result.thresholds());
+            data.put("bossHistoricalPromotedCount", result.bossHistoricalPromotedCount());
             response.put("success", true);
-            response.put("data", thresholdData(aiEntity));
-            response.put("message", "AI投递分数线已保存");
+            response.put("data", data);
+            response.put("message", "AI投递分数线已保存，历史Boss岗位已更新");
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
             log.warn("AI投递分数线参数不合法: {}", e.getMessage());

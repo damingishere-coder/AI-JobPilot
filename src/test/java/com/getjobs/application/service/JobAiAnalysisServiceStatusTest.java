@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
@@ -117,6 +118,54 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(reason.getInt("schemaVersion")).isEqualTo(2);
         assertThat(reason.getJSONArray("matches").getString(0)).contains("Java");
         assertThat(reason.getJSONArray("unknowns").getString(0)).contains("待核实");
+    }
+
+    @Test
+    void savingThresholdsPromotesOnlyCurrentProfileBossAiNotMatchRowsThatMeetStoredPriorityRules() {
+        AiEntity saved = new AiEntity();
+        saved.setProfileId(PROFILE_ID);
+        saved.setApplyThreshold(60);
+        saved.setPriorityApplyThreshold(50);
+        when(aiService.saveOrUpdateAiThresholds(60, 50)).thenReturn(saved);
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(4);
+
+        JobAiAnalysisService.ThresholdApplicationResult result =
+                service.saveThresholdsAndPromoteBossHistory(60, 50);
+
+        assertThat(result.thresholds()).isSameAs(saved);
+        assertThat(result.bossHistoricalPromotedCount()).isEqualTo(4);
+
+        ArgumentCaptor<BossJobDataEntity> updateCaptor = ArgumentCaptor.forClass(BossJobDataEntity.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<BossJobDataEntity>> wrapperCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(bossJobDataMapper).update(updateCaptor.capture(), wrapperCaptor.capture());
+
+        assertThat(updateCaptor.getValue().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        assertThat(updateCaptor.getValue().getAiDecision()).isEqualTo("APPLY");
+        assertThat(updateCaptor.getValue().getAiScore()).isNull();
+        assertThat(updateCaptor.getValue().getAiReason()).isNull();
+        assertThat(updateCaptor.getValue().getUpdatedAt()).isNotNull();
+
+        UpdateWrapper<BossJobDataEntity> wrapper = wrapperCaptor.getValue();
+        assertThat(wrapper.getSqlSegment())
+                .contains("profile_id", "delivery_status", "ai_score", "priority_company")
+                .contains("IS NOT NULL", "OR");
+        assertThat(wrapper.getParamNameValuePairs().values())
+                .contains(PROFILE_ID, DeliveryStatus.AI_NOT_MATCH, 1, 50, 60);
+        verify(aiService, never()).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void thresholdValidationFailureDoesNotAttemptHistoricalBossUpdate() {
+        when(aiService.saveOrUpdateAiThresholds(60, 70))
+                .thenThrow(new IllegalArgumentException("优先公司分数线不能高于普通公司分数线"));
+
+        assertThatThrownBy(() -> service.saveThresholdsAndPromoteBossHistory(60, 70))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("优先公司分数线");
+
+        verify(bossJobDataMapper, never()).update(any(), any(UpdateWrapper.class));
     }
 
     @Test
