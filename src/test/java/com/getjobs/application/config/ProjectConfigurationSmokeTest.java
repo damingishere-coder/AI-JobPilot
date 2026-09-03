@@ -18,7 +18,7 @@ class ProjectConfigurationSmokeTest {
     void readsApplicationYamlConfiguration() throws Exception {
         JsonNode root = yamlMapper.readTree(Path.of("src/main/resources/application.yaml").toFile());
 
-        assertThat(root.path("server").path("port").asText()).contains("8888");
+        assertThat(root.path("server").path("port").asText()).contains("6866");
         assertThat(root.path("server").path("address").asText()).contains("127.0.0.1");
         assertThat(root.path("spring").path("datasource").path("url").asText()).contains("jdbc:sqlite");
         assertThat(root.path("app").path("paths").path("data-dir").asText()).contains("APP_DATA_DIR");
@@ -43,6 +43,16 @@ class ProjectConfigurationSmokeTest {
         assertThat(startScript).contains("'out'");
         assertThat(startScript).contains("http.createServer");
         assertThat(startScript).contains("127.0.0.1");
+    }
+
+    @Test
+    void unifiedWindowsBackendBuildsAndServesFrontendOn6866() throws Exception {
+        String backendScript = Files.readString(Path.of("scripts/run_backend.ps1"), StandardCharsets.UTF_8);
+
+        assertThat(backendScript).contains("$env:SERVER_PORT = \"6866\"");
+        assertThat(backendScript).contains("$env:APP_STATIC_SERVER_ENABLED = \"true\"");
+        assertThat(backendScript).contains("pnpm build:prod");
+        assertThat(backendScript).doesNotContain("Port 8888");
     }
 
     @Test

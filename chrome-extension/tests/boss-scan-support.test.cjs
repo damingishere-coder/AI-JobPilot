@@ -260,7 +260,7 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
     "CORS_REJECTED"
   );
   assert.equal(
-    support.classifyLocalApiFailure(new Error("无法连接本地服务，请确认8888端口正常")),
+    support.classifyLocalApiFailure(new Error("无法连接本地服务，请确认6866端口正常")),
     "LOCAL_SERVICE_UNAVAILABLE"
   );
 });

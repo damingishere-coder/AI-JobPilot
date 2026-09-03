@@ -282,7 +282,7 @@ test("allows Zhilian job submission through the fixed local API route", async ()
   assert.equal(response.success, true);
   assert.equal(response.data.saved, 1);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "http://localhost:8888/api/zhilian/chrome/jobs");
+  assert.equal(requests[0].url, "http://localhost:6866/api/zhilian/chrome/jobs");
   assert.equal(requests[0].options.method, "POST");
 });
 
@@ -318,7 +318,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
   }, sender);
 
   assert.equal(allowed.success, true);
-  assert.equal(urls[0], "http://localhost:8888/api/zhilian/jobs/123/delivery-result");
+  assert.equal(urls[0], "http://localhost:6866/api/zhilian/jobs/123/delivery-result");
   assert.equal(invalidId.success, false);
   assert.match(invalidId.message, /有效岗位ID/);
   assert.equal(unknown.success, false);

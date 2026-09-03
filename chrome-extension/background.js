@@ -39,7 +39,7 @@ const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
-const LOCAL_API_BASE_URLS = ["http://localhost:8888", "http://127.0.0.1:8888", "http://localhost:6866", "http://127.0.0.1:6866"];
+const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
 const ALLOWED_PAGE_ORIGINS = new Set([
@@ -556,7 +556,7 @@ function isRetryableLocalApiStatus(status) {
 function friendlyLocalApiError(error) {
   const message = error?.message || String(error || "");
   if (error?.name === "AbortError" || /abort/i.test(message)) return "请求超时，请确认本地服务仍在运行";
-  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地后端，请确认 8888 端口正常";
+  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地服务，请确认 6866 端口正常";
   return message || "未知网络错误";
 }
 
