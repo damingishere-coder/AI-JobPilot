@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-03-profile-scoped-scan";
+  const EXTENSION_VERSION = "2026-09-03-boss-navigation-loop-fix";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -205,7 +205,7 @@
 
     // 关键检查：必须在Boss搜索结果页才能采集
     if (!diagnostics.isSearchPage) {
-      const text = `当前不是Boss岗位搜索结果页，无法采集。请在Chrome中打开Boss搜索页（如 https://www.zhipin.com/web/geek/job?city=101280600&query=Java），再重新采集。当前页面：${diagnostics.currentUrl || window.location.href}`;
+      const text = `当前不是Boss岗位搜索结果页，无法采集。请在Chrome中打开Boss搜索页（如 https://www.zhipin.com/web/geek/jobs?city=101280600&query=Java），再重新采集。当前页面：${diagnostics.currentUrl || window.location.href}`;
       postProgress(message, "warning", text, {
         operation: "listCollect",
         stage: "blocked",
@@ -971,7 +971,7 @@
       markKeywordCursorCurrent(task, index, keyword);
       const url = buildSearchUrl(keyword, city, config);
       const navigationKey = buildNavigationKey(keyword, city);
-      const navigationAttempts = task.navigationKey === navigationKey ? Number(task.navigationAttempts || 0) : 0;
+      const navigationAttempts = bossSearchNavigationAttempts(task, navigationKey);
       const nextNavigationAttempts = navigationAttempts + 1;
       const searchTaskState = {
         ...task,
@@ -1058,7 +1058,11 @@
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
 
-      storeScanTask({ ...searchTaskState, phase: "collecting", navigationAttempts: 0, navigationStartedAt: 0 });
+      const collectingTaskState = beginBossSearchCollection({
+        ...searchTaskState,
+        navigationAttempts
+      });
+      storeScanTask(collectingTaskState);
       postProgress(task, "info", `Boss Chrome开始搜索：${keyword}，当前URL：${window.location.href}`, {
         ...baseMeta,
         stage: "searching",
@@ -1081,6 +1085,23 @@
       }
       if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
         return { success: true, saved: totalSaved, blocked: true };
+      }
+      if (!isCurrentSearchPage(keyword, city, url)) {
+        if (isBossSearchNavigationExhausted(collectingTaskState)) {
+          return stopSearchNavigationFailure(collectingTaskState, url);
+        }
+        const retryTaskState = retryBossSearchNavigation(collectingTaskState);
+        postProgress(task, "warning", `Boss搜索页在列表加载期间被重定向，准备重新打开：${keyword}（第 ${retryTaskState.navigationAttempts} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
+          ...baseMeta,
+          stage: "searching",
+          currentUrl: window.location.href,
+          targetUrl: url,
+          navigationAttempts: retryTaskState.navigationAttempts,
+          diagnosticType: "SEARCH_PAGE_REDIRECTED"
+        });
+        storeScanTask(retryTaskState);
+        openSearchPage(url, retryTaskState);
+        return { success: true, saved: totalSaved, pendingNavigation: true };
       }
       postProgress(task, "info", `Boss岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，搜索结果容器 ${waitState.diagnostics.resultContainers} 个。`, {
         ...baseMeta,
@@ -1298,7 +1319,7 @@
     addList(params, "industry", config.industry);
     addList(params, "stage", config.stage);
     params.set("query", keyword);
-    return `https://www.zhipin.com/web/geek/job?${params.toString()}`;
+    return `https://www.zhipin.com/web/geek/jobs?${params.toString()}`;
   }
 
   function collectJobs(keyword, message, baseMeta, options = {}) {
@@ -4091,6 +4112,40 @@
     } catch {
       return false;
     }
+  }
+
+  function bossSearchNavigationAttempts(task, navigationKey) {
+    return SCAN_SUPPORT.bossSearchNavigationAttempts
+      ? SCAN_SUPPORT.bossSearchNavigationAttempts(task, navigationKey)
+      : task?.navigationKey === navigationKey
+        ? Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0))
+        : 0;
+  }
+
+  function beginBossSearchCollection(task) {
+    if (SCAN_SUPPORT.beginBossSearchCollection) return SCAN_SUPPORT.beginBossSearchCollection(task);
+    return {
+      ...(task || {}),
+      phase: "collecting",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)),
+      navigationStartedAt: 0
+    };
+  }
+
+  function retryBossSearchNavigation(task) {
+    if (SCAN_SUPPORT.retryBossSearchNavigation) return SCAN_SUPPORT.retryBossSearchNavigation(task);
+    return {
+      ...(task || {}),
+      phase: "searching",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) + 1,
+      navigationStartedAt: Date.now()
+    };
+  }
+
+  function isBossSearchNavigationExhausted(task) {
+    return SCAN_SUPPORT.isBossSearchNavigationExhausted
+      ? SCAN_SUPPORT.isBossSearchNavigationExhausted(task, SEARCH_NAVIGATION_MAX_ATTEMPTS)
+      : Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) >= SEARCH_NAVIGATION_MAX_ATTEMPTS;
   }
 
   function isSameSearchUrl(left, right) {

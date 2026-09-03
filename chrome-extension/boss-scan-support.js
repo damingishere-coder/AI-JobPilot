@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-03-keyword-deep-fill";
+  const SUPPORT_VERSION = "2026-09-03-boss-navigation-loop-fix";
   if (root.GetJobsBossScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -111,6 +111,33 @@
     if (!isFreshTask(existingTask, options.now || Date.now(), options.ttlMs || DEFAULT_TASK_TTL_MS)) return false;
     if (options.resumable === false && !status?.resumable && status?.stage !== "blocked") return false;
     return true;
+  }
+
+  function bossSearchNavigationAttempts(task, navigationKey) {
+    if (!task || task.navigationKey !== navigationKey) return 0;
+    return Math.max(0, Math.floor(Number(task.navigationAttempts) || 0));
+  }
+
+  function beginBossSearchCollection(task) {
+    return {
+      ...(task || {}),
+      phase: "collecting",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)),
+      navigationStartedAt: 0
+    };
+  }
+
+  function retryBossSearchNavigation(task, now = Date.now()) {
+    return {
+      ...(task || {}),
+      phase: "searching",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) + 1,
+      navigationStartedAt: Number(now)
+    };
+  }
+
+  function isBossSearchNavigationExhausted(task, maxAttempts = 5) {
+    return Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) >= Math.max(1, Math.floor(Number(maxAttempts) || 5));
   }
 
   function normalizeRunId(value) {
@@ -272,6 +299,10 @@
     isFreshTask,
     sameScanRun,
     canResumeScanTask,
+    bossSearchNavigationAttempts,
+    beginBossSearchCollection,
+    retryBossSearchNavigation,
+    isBossSearchNavigationExhausted,
     normalizeBossJobUrl,
     extractBossJobId,
     isBossJobDetailUrl,

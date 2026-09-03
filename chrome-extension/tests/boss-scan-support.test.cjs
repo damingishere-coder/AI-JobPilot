@@ -265,6 +265,64 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
   );
 });
 
+test("preserves Boss search attempts while collecting and increments after route drift", () => {
+  const support = loadSupport();
+  assert.equal(support.version, "2026-09-03-boss-navigation-loop-fix");
+  const collecting = support.beginBossSearchCollection({
+    type: "BOSS_SCAN_START",
+    navigationKey: "AIGC产品运营::101280600",
+    navigationAttempts: 3,
+    navigationStartedAt: 123
+  });
+  const retrying = support.retryBossSearchNavigation(collecting, 456);
+
+  assert.equal(collecting.phase, "collecting");
+  assert.equal(collecting.navigationAttempts, 3);
+  assert.equal(collecting.navigationStartedAt, 0);
+  assert.equal(retrying.phase, "searching");
+  assert.equal(retrying.navigationAttempts, 4);
+  assert.equal(retrying.navigationStartedAt, 456);
+});
+
+test("stops repeated Boss search redirects at five attempts and resets for the next keyword", () => {
+  const support = loadSupport();
+  const firstNavigationKey = "AIGC产品运营::101280600";
+  let task = {
+    type: "BOSS_SCAN_START",
+    navigationKey: firstNavigationKey,
+    navigationAttempts: 0
+  };
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    task = support.retryBossSearchNavigation(task, attempt);
+    assert.equal(task.navigationAttempts, attempt);
+    assert.equal(support.isBossSearchNavigationExhausted(task, 5), attempt === 5);
+  }
+
+  assert.equal(support.bossSearchNavigationAttempts(task, firstNavigationKey), 5);
+  assert.equal(support.bossSearchNavigationAttempts(task, "AI产品运营::101280600"), 0);
+});
+
+test("keeps singular and plural Boss search paths compatible while generating the canonical plural path", () => {
+  const content = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+
+  assert.match(content, /return `https:\/\/www\.zhipin\.com\/web\/geek\/jobs\?\$\{params\.toString\(\)\}`/);
+  assert.match(content, /pathname === "\/web\/geek\/job" \|\| pathname === "\/web\/geek\/jobs"/);
+});
+
+test("rechecks the Boss search URL after waiting for cards before collecting", () => {
+  const content = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+  const waitIndex = content.indexOf("const waitState = await waitForJobCards();");
+  const redirectGuardIndex = content.indexOf("if (!isCurrentSearchPage(keyword, city, url))", waitIndex);
+  const collectIndex = content.indexOf("const collectResult = collectJobs", waitIndex);
+
+  assert.ok(waitIndex >= 0);
+  assert.ok(redirectGuardIndex > waitIndex);
+  assert.ok(collectIndex > redirectGuardIndex);
+  assert.match(content.slice(redirectGuardIndex, collectIndex), /retryBossSearchNavigation\(collectingTaskState\)/);
+  assert.match(content.slice(redirectGuardIndex, collectIndex), /stopSearchNavigationFailure\(collectingTaskState, url\)/);
+});
+
 test("partitions all historical Boss jobs for reuse without detail collection", () => {
   const support = loadSupport();
   const jobs = [
