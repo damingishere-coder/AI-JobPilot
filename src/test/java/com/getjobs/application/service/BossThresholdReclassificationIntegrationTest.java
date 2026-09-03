@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "app.auto-open-browser=false",
@@ -46,6 +47,7 @@ class BossThresholdReclassificationIntegrationTest {
 
     @Test
     void savingThresholdsPromotesOnlyEligibleCurrentProfileBossRowsAndIsIdempotent() {
+        jdbcTemplate.update("UPDATE profile SET is_active=0");
         jdbcTemplate.update("INSERT INTO profile(name, is_active) VALUES ('当前档案', 1)");
         long profileId = profileService.getCurrentProfileId();
         jdbcTemplate.update("INSERT INTO profile(name, is_active) VALUES ('其他档案', 0)");
@@ -63,6 +65,11 @@ class BossThresholdReclassificationIntegrationTest {
                 INSERT INTO job_ai_analysis(profile_id, platform, job_key, score, decision, summary)
                 VALUES (?, 'boss', 'normal-pass', 60, 'SKIP', '历史分析')
                 """, profileId);
+        int deliveryAttemptsBefore = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=? AND platform='boss'",
+                Integer.class,
+                profileId
+        );
 
         JobAiAnalysisService.ThresholdApplicationResult first =
                 jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(60, 50);
@@ -84,6 +91,50 @@ class BossThresholdReclassificationIntegrationTest {
                 String.class,
                 profileId
         )).isEqualTo("SKIP");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=? AND platform='boss'",
+                Integer.class,
+                profileId
+        )).isEqualTo(deliveryAttemptsBefore);
+    }
+
+    @Test
+    void bossUpdateFailureRollsBackThresholdSave() {
+        jdbcTemplate.update("UPDATE profile SET is_active=0");
+        jdbcTemplate.update("INSERT INTO profile(name, is_active) VALUES ('回滚档案', 1)");
+        long profileId = profileService.getCurrentProfileId();
+        jdbcTemplate.update("""
+                INSERT INTO ai(profile_id, apply_threshold, priority_apply_threshold)
+                VALUES (?, 75, 65)
+                """, profileId);
+        insertBoss(profileId, "rollback-row", DeliveryStatus.AI_NOT_MATCH, 80, "SKIP", 0, "rollback-reason");
+
+        jdbcTemplate.execute("""
+                CREATE TRIGGER abort_boss_threshold_reclassification
+                BEFORE UPDATE ON boss_data
+                WHEN OLD.encrypt_id='rollback-row'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced rollback');
+                END
+                """);
+        try {
+            assertThatThrownBy(() -> jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(60, 50))
+                    .isInstanceOf(RuntimeException.class);
+        } finally {
+            jdbcTemplate.execute("DROP TRIGGER IF EXISTS abort_boss_threshold_reclassification");
+        }
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT apply_threshold FROM ai WHERE profile_id=?",
+                Integer.class,
+                profileId
+        )).isEqualTo(75);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT priority_apply_threshold FROM ai WHERE profile_id=?",
+                Integer.class,
+                profileId
+        )).isEqualTo(65);
+        assertBoss("rollback-row", DeliveryStatus.AI_NOT_MATCH, "SKIP", "rollback-reason");
     }
 
     private void insertBoss(
