@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-03-keyword-deep-fill";
+  const EXTENSION_VERSION = "2026-09-03-profile-scoped-scan";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -98,7 +98,7 @@
       return true;
     }
     if (messageType === "ZHILIAN_SCAN_STATUS") {
-      handleScanStatusMessage(sendResponse);
+      handleScanStatusMessage(message, sendResponse);
       return true;
     }
     if (messageType === "ZHILIAN_SCAN_START") {
@@ -130,6 +130,15 @@
   }
 
   async function handleScanStopMessage(message) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) return { success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描停止请求缺少档案 ID" };
+    const storedTask = await readStoredScanTaskFromAnyStorage();
+    const storedProfileId = normalizeProfileId(storedTask?.profileId);
+    if (storedProfileId && storedProfileId !== profileId) {
+      clearStoredScanTask();
+      writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "已清除其他档案的智联扫描断点" });
+      return { success: true, message: "已清除其他档案的智联扫描断点", profileId };
+    }
     stopRequested = true;
     await storeStopRequested(message?.runId);
     clearStoredScanTask();
@@ -137,6 +146,7 @@
       isRunning: false,
       stopRequested: true,
       stage: "stopped",
+      profileId,
       message: "已请求停止智联扫描",
       runId: message?.runId || readScanStatus().runId || "",
       updatedAt: Date.now()
@@ -145,31 +155,37 @@
       operation: "scan",
       stage: "stopping"
     });
-    return { success: true, message: "已请求停止智联扫描" };
+    return { success: true, message: "已请求停止智联扫描", profileId };
   }
 
   async function handleScanStartMessage(message) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) return { success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描启动请求缺少档案 ID" };
     if (!scanKeywords(message).length) {
       return { success: false, message: "请至少填写一个搜索关键词" };
     }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     const incomingTask = normalizeScanTask(message);
+    const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
     const configChanged = Boolean(
       existingTask?.keywordCursorKey
         && incomingTask.keywordCursorKey
         && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
     );
-    if (configChanged) {
+    if (profileChanged || configChanged) {
       clearStoredScanTask();
-      postProgress(message, "warning", "智联扫描配置已变化，旧断点已放弃，将按新配置重新开始。", {
+      postProgress(message, "warning", profileChanged
+        ? "智联档案已变化，其他档案或旧版扫描断点已放弃，将从第一个关键词重新开始。"
+        : "智联扫描配置已变化，旧断点已放弃，将按新配置重新开始。", {
         operation: "scan",
         stage: "checkpointReset",
-        diagnosticType: "CONFIG_CHANGED"
+        diagnosticType: profileChanged ? "PROFILE_CHANGED" : "CONFIG_CHANGED"
       });
     }
     const canResumeExisting = Boolean(
-      !configChanged
+      !profileChanged
+        && !configChanged
         && existingTask
         && !existingTask.completed
         && (isResumableScanTask(existingTask) || status.resumable || status.stage === "blocked")
@@ -188,7 +204,7 @@
           updatedAt: Date.now()
         });
       });
-      return { success: true, message: "智联 Chrome扫描任务已恢复。", resumed: true, runId: existingTask.runId };
+      return { success: true, message: "智联 Chrome扫描任务已恢复。", resumed: true, runId: existingTask.runId, profileId };
     }
 
     startScan(incomingTask).catch((error) => {
@@ -197,10 +213,15 @@
         stage: "error"
       });
     });
-    return { success: true, message: "智联 Chrome扫描任务已启动。" };
+    return { success: true, message: "智联 Chrome扫描任务已启动。", profileId };
   }
 
-  async function handleScanStatusMessage(sendResponse) {
+  async function handleScanStatusMessage(message, sendResponse) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) {
+      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描状态请求缺少档案 ID", isRunning: false, hasStoredTask: false });
+      return;
+    }
     if (await hasStopRequested()) {
       stopRequested = true;
       clearStoredScanTask();
@@ -211,8 +232,15 @@
         message: "智联扫描已取消"
       });
     }
-    const task = await readStoredScanTaskFromAnyStorage();
-    const status = readScanStatus();
+    let task = await readStoredScanTaskFromAnyStorage();
+    let status = readScanStatus();
+    if ((task && normalizeProfileId(task.profileId) !== profileId)
+        || (normalizeProfileId(status.profileId) && normalizeProfileId(status.profileId) !== profileId)) {
+      clearStoredScanTask();
+      writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "智联档案已变化，旧扫描断点已清理" });
+      task = null;
+      status = readScanStatus();
+    }
     const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable));
     const hasFreshTask = Boolean(task && isFreshScanTask(task));
     const hasResumableTask = Boolean(hasFreshTask || paused);
@@ -222,6 +250,10 @@
         isRunning: false,
         stopRequested: false,
         stage: "idle",
+        paused: false,
+        resumable: false,
+        profileId,
+        runId: "",
         message: "智联旧扫描任务已清理"
       });
     }
@@ -234,6 +266,7 @@
       resumable: Boolean(nextStatus.resumable || hasResumableTask),
       runId: nextStatus.runId || task?.runId || "",
       scanOwnerToken: task?.scanOwnerToken || "",
+      profileId,
       hasStoredTask: hasResumableTask
     });
   }
@@ -245,7 +278,10 @@
       isRunning: true,
       stopRequested: false,
       stage: "received",
+      paused: false,
+      resumable: false,
       message: "智联 Chrome扫描任务已接收",
+      profileId: task.profileId,
       runId: task.runId,
       startedAt: task.startedAt,
       updatedAt: Date.now()
@@ -260,7 +296,7 @@
     }
     if (keywords.length) {
       const startIndex = normalizeKeywordIndex(task.currentIndex, keywords.length);
-      postProgress(task, "info", `智联关键词历史：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
+      postProgress(task, "info", `智联本档案关键词进度：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
         operation: "scan",
         stage: "keywordCursor",
         keyword: keywords[startIndex],
@@ -915,7 +951,7 @@
     const list = Array.isArray(jobs) ? jobs : [];
     if (!list.length) return { jobs: [], duplicateCount: 0 };
     const data = await requestZhilianLocalApi("chrome-jobs-dedupe", {
-      body: { runId: task?.runId, keyword, jobs: list },
+      body: { profileId: normalizeProfileId(task?.profileId), runId: task?.runId, keyword, jobs: list },
       pageTabId: task?.pageTabId
     });
     const items = Array.isArray(data.items) ? data.items : [];
@@ -1328,7 +1364,7 @@
     let data;
     try {
       data = await requestZhilianLocalApi("chrome-jobs", {
-        body: { runId, keyword, jobs },
+        body: { profileId: normalizeProfileId(message?.profileId), runId, keyword, jobs },
         pageTabId: message.pageTabId
       });
       if (!data.success) {
@@ -1395,6 +1431,44 @@
   async function pauseZhilianSubmission(message, jobs, totalSaved, error, baseMeta) {
     const reason = error?.message || String(error || "未知错误");
     const errorType = error?.errorType || "LOCAL_API_ERROR";
+    if (["PROFILE_REQUIRED", "PROFILE_CHANGED"].includes(errorType)) {
+      const failureMessage = `智联岗位提交已终止：${reason}`;
+      clearStoredScanTask();
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: false,
+        stage: "error",
+        paused: false,
+        profileId: normalizeProfileId(message?.profileId),
+        message: failureMessage,
+        runId: message.runId,
+        resumable: false,
+        diagnosticType: errorType,
+        errorType,
+        httpStatus: error?.httpStatus,
+        startedAt: message.startedAt,
+        updatedAt: Date.now()
+      });
+      postProgress(message, "error", failureMessage, {
+        ...baseMeta,
+        stage: "error",
+        paused: false,
+        resumable: false,
+        errorType,
+        httpStatus: error?.httpStatus
+      });
+      return {
+        success: false,
+        totalSaved,
+        totalRead: Number(message.totalRead || 0),
+        totalReceived: Number(message.totalReceived || 0),
+        totalInsufficient: Number(message.totalInsufficient || 0),
+        paused: false,
+        resumable: false,
+        message: failureMessage,
+        errorType
+      };
+    }
     const failureMessage = `智联岗位提交失败，扫描断点已保留：${reason}`;
     const pausedAt = Date.now();
     await storeScanTask({
@@ -1737,7 +1811,7 @@
     }
     if (!response?.success) {
       const error = new Error(response?.message || "智联本地服务请求失败");
-      error.errorType = response?.errorType || "LOCAL_API_ERROR";
+      error.errorType = response?.data?.errorCode || response?.errorType || "LOCAL_API_ERROR";
       error.httpStatus = response?.httpStatus;
       throw error;
     }
@@ -1750,6 +1824,7 @@
       pageTabId: message.pageTabId,
       payload: {
         platform: "zhilian",
+        profileId: normalizeProfileId(message?.profileId),
         type,
         message: text,
         timestamp: Date.now(),
@@ -2046,6 +2121,7 @@
     const cursorState = resolveKeywordCursor(message, keywords, hasExplicitIndex);
     return {
       ...message,
+      profileId: normalizeProfileId(message?.profileId),
       config: { ...config, keywords, searchJobLimit },
       keywords,
       source: "GET_JOBS_BACKGROUND",
@@ -2152,6 +2228,7 @@
     const searchParams = normalizedZhilianSearchParams(config);
     return stableKey({
       platform: "zhilian",
+      profileId: normalizeProfileId(message?.profileId),
       keywords: uniqueStrings(keywords),
       cityCode: searchParams.cityCode,
       salary: searchParams.salary,
@@ -2184,11 +2261,17 @@
     return Object.prototype.hasOwnProperty.call(value || {}, key);
   }
 
+  function normalizeProfileId(value) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
   function isResumableScanTask(task) {
     return Boolean(isFreshScanTask(task) && isZhilianUrl(window.location.href));
   }
 
   function isFreshScanTask(task) {
+    if (!normalizeProfileId(task?.profileId)) return false;
     if (!task || task.type !== "ZHILIAN_SCAN_START" || !task.runId) return false;
     if (task.completed || task.phase === "complete" || task.phase === "stopped" || task.phase === "error") return false;
 

@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV12AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV13AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -29,7 +29,10 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='12'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='13'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_boss_data_profile_encrypt_id'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "resume_profile")).contains("recommended_job_keywords");
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
@@ -94,6 +97,50 @@ class DatabaseMigrationTest {
             assertThat(result.getString("resume_text")).isEqualTo("原有简历内容");
             assertThat(result.getString("source_filename")).isEqualTo("resume.pdf");
             assertThat(result.getString("recommended_job_keywords")).isNull();
+        }
+    }
+
+    @Test
+    void v13AllowsSameBossJobAcrossProfilesAndRejectsDuplicatesWithinOneProfile() throws Exception {
+        String validUrl = sqliteUrl(tempDir.resolve("boss-unique-valid.db"));
+        Flyway.configure()
+                .dataSource(validUrl, null, null)
+                .locations("classpath:db/migration")
+                .target("12")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(validUrl); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'one', 1), (2, 'two', 0)");
+            statement.execute("INSERT INTO boss_data(profile_id, encrypt_id, company_name, job_name) VALUES " +
+                    "(1, 'shared-job', 'A', '岗位'), (2, 'shared-job', 'A', '岗位')");
+        }
+        flyway(validUrl).migrate();
+        try (Connection connection = DriverManager.getConnection(validUrl)) {
+            assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM boss_data WHERE encrypt_id='shared-job'"))
+                    .isEqualTo(2L);
+        }
+
+        String duplicateUrl = sqliteUrl(tempDir.resolve("boss-unique-duplicate.db"));
+        Flyway.configure()
+                .dataSource(duplicateUrl, null, null)
+                .locations("classpath:db/migration")
+                .target("12")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(duplicateUrl); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'duplicate', 1)");
+            statement.execute("INSERT INTO boss_data(profile_id, encrypt_id, company_name, job_name) VALUES " +
+                    "(1, ' duplicate-job ', 'A', '岗位'), (1, 'duplicate-job', 'A', '岗位')");
+        }
+
+        assertThatThrownBy(() -> flyway(duplicateUrl).migrate())
+                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasStackTraceContaining("profile_id=1")
+                .hasStackTraceContaining("duplicate-job")
+                .hasStackTraceContaining("ids=");
+        try (Connection connection = DriverManager.getConnection(duplicateUrl)) {
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM boss_data")).isEqualTo(2L);
         }
     }
 

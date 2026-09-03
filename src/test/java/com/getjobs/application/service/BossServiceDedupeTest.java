@@ -163,6 +163,20 @@ class BossServiceDedupeTest {
     }
 
     @Test
+    void upsertDoesNotMergeDifferentStableIdsWithSameCompanyAndTitle() {
+        BossJobDataEntity incoming = bossJob(null, "stable-new", "相同公司", "相同岗位");
+        when(bossJobDataMapper.selectOne(any(QueryWrapper.class))).thenReturn(null);
+        when(bossJobDataMapper.insert(any(BossJobDataEntity.class))).thenReturn(1);
+
+        BossJobDataEntity saved = bossService.upsertChromeBossJob(incoming, "run-new", 1L);
+
+        verify(bossJobDataMapper).insert(incoming);
+        verify(bossJobDataMapper, never()).updateById(any(BossJobDataEntity.class));
+        assertThat(saved.getEncryptId()).isEqualTo("stable-new");
+        assertThat(saved.getProfileId()).isEqualTo(1L);
+    }
+
+    @Test
     void reuseHistoricalJobOnlyUpdatesScanOwnershipFields() {
         LocalDateTime createdAt = LocalDateTime.of(2026, 7, 18, 10, 0);
         LocalDateTime updatedAt = LocalDateTime.of(2026, 8, 24, 20, 0);

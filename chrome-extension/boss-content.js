@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-03-keyword-deep-fill";
+  const EXTENSION_VERSION = "2026-09-03-profile-scoped-scan";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -42,22 +42,34 @@
       return;
     }
     if (message?.type === "BOSS_SCAN_STOP") {
+      const profileId = normalizeProfileId(message?.profileId);
+      if (!profileId) {
+        sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描停止请求缺少档案 ID" });
+        return;
+      }
+      const storedProfileId = normalizeProfileId(readStoredScanTask()?.profileId);
+      if (storedProfileId && storedProfileId !== profileId) {
+        clearStoredScanTask();
+        writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "已清除其他档案的 Boss 扫描断点" });
+        sendResponse({ success: true, message: "已清除其他档案的 Boss 扫描断点", profileId });
+        return;
+      }
       const runId = normalizeScanRunId(message?.runId || activeScanRunId || readStoredScanTask()?.runId);
       activeScanRunId = runId || activeScanRunId;
       stopRequested = true;
       storeStopRequested(runId);
       clearStoredScanTask();
-      writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "已请求停止Boss扫描", runId });
+      writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", profileId, message: "已请求停止Boss扫描", runId });
       postProgress(message, "warning", "Boss Chrome扫描停止请求已接收，正在中断当前任务。", {
         operation: "scan",
         stage: "stopping",
         runId
       });
-      sendResponse({ success: true, message: "已请求停止Boss扫描" });
+      sendResponse({ success: true, message: "已请求停止Boss扫描", profileId });
       return;
     }
     if (message?.type === "BOSS_SCAN_STATUS") {
-      handleScanStatusMessage(sendResponse);
+      handleScanStatusMessage(message, sendResponse);
       return true;
     }
     if (message?.type === "BOSS_PAGE_STATUS") {
@@ -274,6 +286,7 @@
       };
     }
     const data = await callBossLocalApi("chrome-jobs", {
+      profileId: normalizeProfileId(message?.profileId),
       runId,
       keyword: result.keyword,
       collectionMode: "LIST_ONLY",
@@ -456,6 +469,7 @@
     }
 
     const data = await callBossLocalApi("chrome-jobs", {
+      profileId: normalizeProfileId(message?.profileId),
       runId,
       keyword,
       collectionMode: "LIST_ONLY",
@@ -652,9 +666,21 @@
     };
   }
 
-  async function handleScanStatusMessage(sendResponse) {
-    const task = await readStoredScanTaskFromAnyStorage();
-    const status = readScanStatus();
+  async function handleScanStatusMessage(message, sendResponse) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) {
+      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描状态请求缺少档案 ID", isRunning: false, hasStoredTask: false });
+      return;
+    }
+    let task = await readStoredScanTaskFromAnyStorage();
+    let status = readScanStatus();
+    if ((task && normalizeProfileId(task.profileId) !== profileId)
+        || (normalizeProfileId(status.profileId) && normalizeProfileId(status.profileId) !== profileId)) {
+      clearStoredScanTask();
+      writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "Boss档案已变化，旧扫描断点已清理" });
+      task = null;
+      status = readScanStatus();
+    }
     const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable));
     const hasFreshTask = Boolean(task && isFreshScanTask(task));
     const hasResumableTask = Boolean(hasFreshTask || paused);
@@ -664,6 +690,10 @@
         isRunning: false,
         stopRequested: false,
         stage: "idle",
+        paused: false,
+        resumable: false,
+        profileId,
+        runId: "",
         message: "Boss旧扫描任务已清理"
       });
     }
@@ -676,11 +706,17 @@
       resumable: Boolean(nextStatus.resumable || hasResumableTask),
       runId: nextStatus.runId || task?.runId || "",
       scanOwnerToken: task?.scanOwnerToken || "",
+      profileId,
       hasStoredTask: hasResumableTask
     });
   }
 
   async function handleScanStartMessage(message, sendResponse) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) {
+      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
+      return;
+    }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     const incomingTask = normalizeScanTask(message);
@@ -690,15 +726,18 @@
         && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
     );
     const sameRun = isSameScanRun(existingTask, incomingTask);
-    const shouldDiscardExisting = Boolean(existingTask && (!sameRun || configChanged));
+    const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
+    const shouldDiscardExisting = Boolean(existingTask && (profileChanged || !sameRun || configChanged));
     if (shouldDiscardExisting) {
       clearStoredScanTask();
-      postProgress(message, "warning", configChanged
+      postProgress(message, "warning", profileChanged
+        ? "Boss档案已变化，其他档案或旧版扫描断点已放弃，将从第一个关键词重新开始。"
+        : configChanged
         ? "Boss扫描配置已变化，旧断点已放弃，将按新配置重新开始。"
         : "Boss检测到新的扫描任务，旧断点已清理，将按新关键词重新开始。", {
         operation: "scan",
         stage: "checkpointReset",
-        diagnosticType: configChanged ? "CONFIG_CHANGED" : "NEW_RUN_DISCARDED_CHECKPOINT",
+        diagnosticType: profileChanged ? "PROFILE_CHANGED" : configChanged ? "CONFIG_CHANGED" : "NEW_RUN_DISCARDED_CHECKPOINT",
         previousRunId: existingTask?.runId || "",
         runId: incomingTask.runId || ""
       });
@@ -723,7 +762,7 @@
           updatedAt: Date.now()
         });
       });
-      sendResponse({ success: true, message: "Boss Chrome扫描任务已恢复。", resumed: true, runId: activeScanRunId });
+      sendResponse({ success: true, message: "Boss Chrome扫描任务已恢复。", resumed: true, runId: activeScanRunId, profileId });
       return;
     }
 
@@ -733,7 +772,7 @@
     stopRequestedRunId = "";
     clearStopRequested();
     startScan({ ...incomingTask, runId });
-    sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId });
+    sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId, profileId });
   }
 
   function startScan(message) {
@@ -744,7 +783,10 @@
       isRunning: true,
       stopRequested: false,
       stage: "received",
+      paused: false,
+      resumable: false,
       message: "Boss Chrome扫描任务已接收",
+      profileId: task.profileId,
       runId: task.runId,
       startedAt: task.startedAt,
       updatedAt: Date.now()
@@ -759,7 +801,7 @@
     }
     if (keywords.length) {
       const startIndex = normalizeKeywordIndex(task.currentIndex, keywords.length);
-      postProgress(task, "info", `Boss关键词历史：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
+      postProgress(task, "info", `Boss本档案关键词进度：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
         operation: "scan",
         stage: "keywordCursor",
         keyword: keywords[startIndex],
@@ -1738,6 +1780,7 @@
 
     try {
       const data = await callBossLocalApi("chrome-jobs-dedupe", {
+        profileId: normalizeProfileId(message?.profileId),
         runId: message?.runId,
         keyword: baseMeta.keyword,
         jobs: list.map(normalizeJobForDedupe)
@@ -2589,6 +2632,7 @@
         batchAttempt++;
         try {
           data = await callBossLocalApi("chrome-jobs", {
+            profileId: normalizeProfileId(message?.profileId),
             runId,
             keyword: options.keyword,
             jobs: batch,
@@ -2599,6 +2643,10 @@
           });
           break; // 成功，跳出重试循环
         } catch (error) {
+          if (["PROFILE_REQUIRED", "PROFILE_CHANGED"].includes(String(error?.code || ""))) {
+            clearStoredScanTask();
+            throw error;
+          }
           if (batchAttempt < maxBatchAttempts) {
             postProgress(message, "warning", `Boss岗位提交第 ${index + 1}/${batches.length} 批失败，正在重试（${batchAttempt}/${maxBatchAttempts}）：${safeErrorMessage(error)}`, {
               ...baseMeta,
@@ -3193,7 +3241,7 @@
     });
     if (!response?.success) {
       const error = new Error(response?.message || "Boss本地服务请求失败");
-      error.code = response?.errorType || "LOCAL_API_ERROR";
+      error.code = response?.data?.errorCode || response?.errorType || "LOCAL_API_ERROR";
       error.httpStatus = response?.httpStatus;
       throw error;
     }
@@ -3225,6 +3273,7 @@
       pageTabId: message.pageTabId,
       payload: {
         platform: "boss",
+        profileId: normalizeProfileId(message?.profileId),
         type,
         message: text,
         timestamp: Date.now(),
@@ -3243,6 +3292,7 @@
     const cursorState = resolveKeywordCursor(message, cursorKeywords, hasExplicitIndex);
     return {
       ...message,
+      profileId: normalizeProfileId(message?.profileId),
       config: { ...config, keywords, searchJobLimit },
       keywords,
       cursorKeywords,
@@ -3431,6 +3481,7 @@
     const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
     return stableKey({
       platform: "boss",
+      profileId: normalizeProfileId(message?.profileId),
       keywords: uniqueStrings(keywords || message?.cursorKeywords || []),
       cityCode: normalizedList(config.cityCode),
       jobType: compact(config.jobType || ""),
@@ -3515,6 +3566,7 @@
   }
 
   function isFreshScanTask(task) {
+    if (!normalizeProfileId(task?.profileId)) return false;
     if (SCAN_SUPPORT.isFreshTask) {
       return SCAN_SUPPORT.isFreshTask(task, Date.now(), SCAN_TASK_TTL_MS);
     }
@@ -3681,6 +3733,11 @@
 
   function normalizeScanRunId(value) {
     return String(value || "").trim();
+  }
+
+  function normalizeProfileId(value) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   function writeScanStatus(nextStatus) {

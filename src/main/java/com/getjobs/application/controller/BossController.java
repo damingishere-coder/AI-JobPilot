@@ -21,6 +21,7 @@ import com.getjobs.worker.service.JobRunCoordinator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.env.Environment;
@@ -103,7 +104,9 @@ public class BossController {
 
     @PostMapping("/chrome/jobs")
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
-        Long profileId = profileService.getCurrentProfileId();
+        ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
+        if (profileError != null) return profileError;
+        Long profileId = request.getProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int insertedOrUpdated = 0;
         int queued = 0;
@@ -121,13 +124,13 @@ public class BossController {
         if (request != null && request.getJobs() != null) {
             if (jobRunCoordinator.isCancelRequested(runId)) {
                 jobRunCoordinator.clearCancel(runId);
-                sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续处理本批岗位"));
+                sendBossProgress(profileId, JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端未继续处理本批岗位"));
                 return ResponseEntity.ok(decorateListCollectionResponse(
                         bossChromeJobsResponse(true, true, received, 0, 0, 0, 0, 0, autoDeliver, List.of()),
                         listOnlyCollection, 0, List.of()
                 ));
             }
-            sendBossProgress(JobProgressMessage.info(
+            sendBossProgress(profileId, JobProgressMessage.info(
                     "boss",
                     listOnlyCollection
                             ? "Chrome已采集到 " + received + " 个Boss列表岗位，正在按LIST_COLLECTED入库"
@@ -136,7 +139,7 @@ public class BossController {
             for (ChromeJobDto dto : request.getJobs()) {
                 if (jobRunCoordinator.isCancelRequested(runId)) {
                     jobRunCoordinator.clearCancel(runId);
-                    sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
+                    sendBossProgress(profileId, JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
                     return ResponseEntity.ok(decorateListCollectionResponse(
                             bossChromeJobsResponse(true, true, received, insertedOrUpdated, queued, skipped, insufficient, restored, autoDeliver, analyses),
                             listOnlyCollection, listCollected, collectionWarnings
@@ -155,7 +158,7 @@ public class BossController {
                     }
 
                     BossJobDataEntity entity = toBossEntity(dto, request.getKeyword());
-                    BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId);
+                    BossJobDataEntity saved = bossService.upsertChromeBossJob(entity, runId, profileId);
                     insertedOrUpdated++;
 
                     if (saved == null) {
@@ -163,6 +166,7 @@ public class BossController {
                         rejected.add(chromeJobRejection(dto, "Boss 岗位入库未返回有效记录"));
                         continue;
                     }
+                    validateBossSavedIdentity(profileId, dto, saved);
 
                     String currentStatus = saved.getDeliveryStatus();
                     if (listOnlyCollection) {
@@ -188,7 +192,7 @@ public class BossController {
                                     "reason", "Boss列表页字段不完整，已按LIST_COLLECTED入库，未进入AI分析"
                             );
                             collectionWarnings.add(warning);
-                            sendBossProgress(JobProgressMessage.warning(
+                            sendBossProgress(profileId, JobProgressMessage.warning(
                                     "boss",
                                     "Boss列表岗位已入库但字段不完整：" + warning.get("company") + " / " + warning.get("title")
                                             + "，缺少：" + String.join("、", missingListFields)
@@ -228,7 +232,7 @@ public class BossController {
                         ));
                         String message = "采集信息不足：" + Objects.toString(display.getCompanyName(), "") + " / " + Objects.toString(display.getJobName(), "") + "，缺少：" + String.join("、", missingFields);
                         log.warn("{}", message);
-                        sendBossProgress(JobProgressMessage.warning("boss", message));
+                        sendBossProgress(profileId, JobProgressMessage.warning("boss", message));
                         continue;
                     }
 
@@ -253,7 +257,7 @@ public class BossController {
                     job.setCurrent(insertedOrUpdated);
                     job.setTotal(received);
                     job.setRequest(analysisRequest);
-                    job.setProgressCallback(this::sendBossProgress);
+                    job.setProgressCallback(message -> sendBossProgress(profileId, message));
 
                     ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                     if (enqueueResult.isRejected()) {
@@ -263,7 +267,7 @@ public class BossController {
                     }
                     if (enqueueResult.isQueued()) {
                         queued++;
-                        sendBossProgress(JobProgressMessage.progress(
+                        sendBossProgress(profileId, JobProgressMessage.progress(
                                 "boss",
                                 "已加入后台AI队列：" + saved.getJobName(),
                                 insertedOrUpdated,
@@ -292,13 +296,13 @@ public class BossController {
             return ResponseEntity.status(429).body(response);
         }
         if (listOnlyCollection) {
-            sendBossProgress(JobProgressMessage.success(
+            sendBossProgress(profileId, JobProgressMessage.success(
                     "boss",
                     "Boss当前搜索结果页已入库 " + insertedOrUpdated + " 个岗位，其中LIST_COLLECTED "
                             + listCollected + " 个，恢复历史结果 " + restored + " 个，未进入AI分析"
             ));
         } else {
-            sendBossProgress(JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
+            sendBossProgress(profileId, JobProgressMessage.success("boss", "Boss Chrome岗位已提交后台AI队列：入库 " + insertedOrUpdated + " 个，入队 " + queued + " 个，恢复本档案已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
         }
         return ResponseEntity.ok(decorateChromeJobRejections(
                 decorateListCollectionResponse(
@@ -312,10 +316,12 @@ public class BossController {
 
     @PostMapping("/chrome/jobs/dedupe")
     public ResponseEntity<Map<String, Object>> dedupeChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
+        if (profileError != null) return profileError;
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
         int duplicateCount = 0;
-        Long profileId = profileService.getCurrentProfileIdOrNull();
+        Long profileId = request.getProfileId();
         Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, null);
 
         for (int index = 0; index < jobs.size(); index++) {
@@ -384,9 +390,12 @@ public class BossController {
 
     @PostMapping("/chrome/stop")
     public ResponseEntity<Map<String, Object>> stopChromeBoss(@RequestBody(required = false) Map<String, Object> payload) {
+        Long profileId = parseProfileId(payload == null ? null : payload.get("profileId"));
+        ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(profileId);
+        if (profileError != null) return profileError;
         String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");
         jobRunCoordinator.requestCancel(runId);
-        sendBossProgress(JobProgressMessage.warning("boss", "Boss Chrome扫描停止请求已发送"));
+        sendBossProgress(profileId, JobProgressMessage.warning("boss", "Boss Chrome扫描停止请求已发送"));
         return ResponseEntity.ok(Map.of(
                 "success", true,
                 "message", "Boss Chrome扫描停止请求已发送",
@@ -864,6 +873,51 @@ public class BossController {
         return runId == null || runId.isBlank() ? null : runId.trim();
     }
 
+    private ResponseEntity<Map<String, Object>> validateChromeProfile(Long requestedProfileId) {
+        if (requestedProfileId == null || requestedProfileId <= 0) {
+            return chromeProfileError(HttpStatus.BAD_REQUEST, "PROFILE_REQUIRED", "Chrome 扫描请求缺少有效档案 ID", null);
+        }
+        Long currentProfileId = profileService.getCurrentProfileIdOrNull();
+        if (!Objects.equals(requestedProfileId, currentProfileId)) {
+            return chromeProfileError(HttpStatus.CONFLICT, "PROFILE_CHANGED", "当前档案已切换，旧扫描已停止；请重新加载扩展后从当前档案重新扫描", currentProfileId);
+        }
+        return null;
+    }
+
+    private ResponseEntity<Map<String, Object>> chromeProfileError(HttpStatus status,
+                                                                    String errorCode,
+                                                                    String message,
+                                                                    Long currentProfileId) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("success", false);
+        body.put("errorCode", errorCode);
+        body.put("message", message);
+        if (currentProfileId != null) body.put("currentProfileId", currentProfileId);
+        return ResponseEntity.status(status).body(body);
+    }
+
+    private Long parseProfileId(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            String text = Objects.toString(value, "").trim();
+            return text.isEmpty() ? null : Long.parseLong(text);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private void validateBossSavedIdentity(Long profileId, ChromeJobDto dto, BossJobDataEntity saved) {
+        if (saved.getId() == null || !Objects.equals(profileId, saved.getProfileId())) {
+            throw new IllegalStateException("Boss 岗位入库结果与扫描档案不一致");
+        }
+        String requestedJobId = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractBossId(dto.getUrl()));
+        if (requestedJobId != null
+                && !requestedJobId.isBlank()
+                && !requestedJobId.trim().equals(Objects.toString(saved.getEncryptId(), "").trim())) {
+            throw new IllegalStateException("Boss 岗位稳定 ID 与入库记录不一致，已阻止错误分析任务");
+        }
+    }
+
     private Map<String, Object> toBossAnalysisSnapshot(BossJobDataEntity job) {
         if (job == null || job.getId() == null) return null;
         Map<String, Object> item = new HashMap<>();
@@ -933,6 +987,11 @@ public class BossController {
             }
         }
         bossProgressEmitters.removeAll(deadEmitters);
+    }
+
+    private void sendBossProgress(Long profileId, JobProgressMessage message) {
+        if (message != null) message.setProfileId(profileId);
+        sendBossProgress(message);
     }
 
     /** 心跳 - Boss进度 SSE */

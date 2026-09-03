@@ -17,7 +17,7 @@ function extensionIdFromKey(key) {
 test('manifest public key derives the backend allowlisted extension id', () => {
   const manifestPath = path.join(__dirname, '..', 'manifest.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  assert.equal(manifest.version, '1.4.1');
+  assert.equal(manifest.version, '1.4.2');
   assert.equal(extensionIdFromKey(manifest.key), EXPECTED_EXTENSION_ID);
 
   const publicKey = crypto.createPublicKey({

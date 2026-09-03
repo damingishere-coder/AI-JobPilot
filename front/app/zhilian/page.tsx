@@ -17,6 +17,7 @@ import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/Curre
 import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
+import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
 
 interface ZhilianConfig {
   id?: number
@@ -147,10 +148,13 @@ export default function ZhilianPage() {
   }, [])
 
   const syncZhilianScanStatus = useCallback(async (silent = false, keepStopping = false) => {
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) return
     try {
       const status = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_STATUS',
         platform: 'zhilian',
+        profileId,
       }, 2000)
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
@@ -175,7 +179,7 @@ export default function ZhilianPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id])
 
   useEffect(() => {
     checkChromeBridge()
@@ -261,6 +265,7 @@ export default function ZhilianPage() {
     return subscribeChromeBridgeEvents((event) => {
       const payload = event.payload
       if (!payload || payload.platform !== 'zhilian') return
+      if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -277,7 +282,7 @@ export default function ZhilianPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -308,6 +313,7 @@ export default function ZhilianPage() {
             try {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+              if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
@@ -331,7 +337,7 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id])
 
   // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
@@ -456,6 +462,11 @@ export default function ZhilianPage() {
         alert('请先在简历配置页新建档案。')
         return
       }
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) {
+        appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
+        return
+      }
       const setup = await validateSetupForPlatform('zhilian')
       if (!setup.ready) {
         const message = formatSetupMissingMessage('智联招聘', setup.missing)
@@ -472,6 +483,7 @@ export default function ZhilianPage() {
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
         platform: 'zhilian',
+        profileId,
         runId,
         config: {
           ...config,
@@ -500,12 +512,14 @@ export default function ZhilianPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) throw new Error('当前档案 ID 无效')
       await fetch(`${API_BASE}/api/zhilian/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, profileId }),
       }).catch(() => null)
-      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId }, 1500)
+      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId, profileId }, 1500)
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || '智联招聘扫描停止请求已处理。' })
         await syncZhilianScanStatus(true, true)

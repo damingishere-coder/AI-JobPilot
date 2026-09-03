@@ -54,7 +54,7 @@ public class JobAiAnalysisService {
             {
               "type": "object",
               "properties": {
-                "score": {"type": "integer"},
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
                 "decision": {"type": "string", "enum": ["APPLY", "SKIP"]},
                 "summary": {"type": "string"},
                 "strengths": {"type": "array", "items": {"type": "string"}},
@@ -269,7 +269,19 @@ public class JobAiAnalysisService {
         String raw;
         try {
             raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
-            AnalysisResult result = parseResult(raw);
+            AnalysisResult result;
+            try {
+                result = parseResult(raw);
+            } catch (AiOutputException outputError) {
+                if (!"AI_OUTPUT_INVALID_JSON".equals(outputError.code())) throw outputError;
+                if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
+                log.warn("AI岗位分析返回无效 JSON，将使用同一 Provider、模型和 Schema 重试一次: {}", outputError.getMessage());
+                raw = aiService.sendStructuredRequest(
+                        prompt + "\n\n重要：上一次输出不是有效 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
+                        JOB_ANALYSIS_OUTPUT_SCHEMA
+                );
+                result = parseResult(raw);
+            }
             result.setPriorityCompany(priority);
             result.setThreshold(threshold);
             if (result.getScore() == null) result.setScore(0);
@@ -283,10 +295,12 @@ public class JobAiAnalysisService {
                 result.setDecision("SKIP");
             }
             if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-            AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
+            AnalysisResult finalResult = result;
+            String finalRaw = raw;
+            AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(finalResult);
             if (!executeLeaseWrite(leaseWriteGuard, () -> {
                 storedResult.set(persistAndUpdate(
-                        request, result, responseDiagnostic(raw), true));
+                        request, finalResult, responseDiagnostic(finalRaw), true));
             })) {
                 return AnalysisResult.staleLease();
             }

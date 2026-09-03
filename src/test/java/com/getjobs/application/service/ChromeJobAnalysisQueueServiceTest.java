@@ -286,7 +286,20 @@ class ChromeJobAnalysisQueueServiceTest {
         request.setProfileId(1L);
         request.setPlatform(platform);
         request.setJobKey(jobKey);
-        request.setJobRowId("boss".equals(platform) ? 10L : 20L);
+        jdbcTemplate.update("INSERT OR IGNORE INTO profile(id, name, is_active) VALUES (1, 'queue-profile', 0)");
+        if ("boss".equals(platform)) {
+            jdbcTemplate.update("INSERT OR IGNORE INTO boss_data(profile_id, encrypt_id, company_name, job_name, delivery_status) " +
+                            "VALUES (1, ?, '测试公司', 'Java 工程师', ?)",
+                    jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM boss_data WHERE profile_id=1 AND encrypt_id=?", Long.class, jobKey));
+        } else {
+            jdbcTemplate.update("INSERT OR IGNORE INTO zhilian_data(profile_id, job_id, company_name, job_title, delivery_status) " +
+                            "VALUES (1, ?, '测试公司', 'Java 工程师', ?)",
+                    jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM zhilian_data WHERE profile_id=1 AND job_id=?", Long.class, jobKey));
+        }
         request.setKeyword("Java");
         request.setCompanyName("测试公司");
         request.setJobName("Java 工程师");

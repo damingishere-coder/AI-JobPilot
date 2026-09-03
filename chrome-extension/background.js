@@ -32,13 +32,13 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-03-keyword-cors-recovery";
+const BACKGROUND_VERSION = "2026-09-03-profile-scoped-scan";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-profile-scoped-scan";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-profile-scoped-scan";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -176,6 +176,13 @@ async function forwardPlatformEvent(message, sender) {
     ...message.payload,
     platform: message.payload?.platform || platform
   };
+  if (payload.operation === "scan") {
+    const profileId = normalizeProfileId(payload.profileId);
+    if (!profileId) return;
+    const session = await readScanSession(platform);
+    if (session && normalizeProfileId(session.profileId) !== profileId) return;
+    payload.profileId = profileId;
+  }
   await updateScanSessionFromEvent(platform, sender.tab?.id, payload);
   await broadcastPlatformEvent(payload, message.pageTabId);
 }
@@ -367,6 +374,9 @@ async function handleZhilianContentNavigation(message, sender) {
 async function handleBossLocalApiRequest(message) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
 
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
@@ -383,6 +393,9 @@ async function handleBossLocalApiRequest(message) {
 async function handleZhilianLocalApiRequest(message) {
   const endpoint = resolveZhilianLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
 
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
@@ -456,7 +469,7 @@ async function requestLocalApi(path, options = {}) {
             httpStatus: response.status,
             data,
             message: data.message || "本地接口拒绝了本次请求",
-            errorType: "BUSINESS_REJECTED",
+            errorType: data.errorCode || "BUSINESS_REJECTED",
             attempt,
             baseUrl
           };
@@ -596,6 +609,12 @@ async function handlePageMessage(message, sender) {
     return { success: false, message: "未知平台" };
   }
 
+  if (isProfileScopedScanMessage(message.type)) {
+    const profileId = normalizeProfileId(message.profileId);
+    if (!profileId) return profileRequiredResponse();
+    message = { ...message, profileId };
+  }
+
   if (platform === "zhilian" && message.type === "ZHILIAN_SCAN_START" && !normalizeZhilianKeywordList(readZhilianKeywordInput(message)).length) {
     return { success: false, message: "请至少填写一个搜索关键词" };
   }
@@ -640,7 +659,7 @@ async function handlePageMessage(message, sender) {
   try {
     let scanSession = null;
     if (isScanStartMessage(message.type)) {
-      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken);
+      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken, message.profileId);
     }
     const response = await chrome.tabs.sendMessage(tab.id, {
       ...toPlatformContentMessage(message, platform),
@@ -733,6 +752,34 @@ function isPassiveStopMessage(type) {
 
 function isScanStartMessage(type) {
   return type === "BOSS_SCAN_START" || type === "ZHILIAN_SCAN_START";
+}
+
+function isProfileScopedScanMessage(type) {
+  return type === "BOSS_SCAN_START"
+    || type === "BOSS_SCAN_STATUS"
+    || type === "BOSS_SCAN_STOP"
+    || type === "ZHILIAN_SCAN_START"
+    || type === "ZHILIAN_SCAN_STATUS"
+    || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isProfileScopedLocalApiOperation(operation) {
+  return operation === "chrome-jobs" || operation === "chrome-jobs-dedupe";
+}
+
+function profileRequiredResponse() {
+  return {
+    success: false,
+    httpStatus: 400,
+    errorCode: "PROFILE_REQUIRED",
+    errorType: "PROFILE_REQUIRED",
+    message: "缺少有效档案ID，请刷新本地页面后重新开始扫描"
+  };
+}
+
+function normalizeProfileId(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function isBossDeliverMessage(type) {
@@ -1280,6 +1327,7 @@ async function buildRegisteredNavigationStatus(platform, tabId) {
     temporaryUnavailable: true,
     stage: "navigating",
     runId: session.runId || "",
+    profileId: normalizeProfileId(session.profileId) || null,
     message: `${platform === "boss" ? "Boss" : "智联"}扫描页面正在跳转，任务仍在后台继续。`
   };
 }
@@ -1318,13 +1366,13 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
 
 async function resolvePlatformTab(platform, message) {
   if (isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type)) {
-    return await findRegisteredOrRunningScanTab(platform);
+    return await findRegisteredOrRunningScanTab(platform, message.profileId);
   }
   if (isDeliverMessage(platform, message.type)) {
     return await findDeliveryPlatformTab(platform, platformStartUrl(message));
   }
   if (isScanStartMessage(message.type)) {
-    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId);
+    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId, message.profileId);
   }
   if (isNoCreatePlatformMessage(message.type)) {
     return await findPlatformTab(platform);
@@ -1332,25 +1380,28 @@ async function resolvePlatformTab(platform, message) {
   return await findOrCreatePlatformTab(platform, platformStartUrl(message));
 }
 
-async function findScanPlatformTab(platform, startUrl, requestedRunId = "") {
-  const registered = await getRegisteredScanTab(platform, requestedRunId);
+async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, requestedRunId, requestedProfileId);
   if (registered) return registered;
 
-  const running = await findRunningPlatformTab(platform, requestedRunId);
+  const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
   if (running) return running;
 
   return await findOrCreatePlatformTab(platform, startUrl);
 }
 
-async function findRegisteredOrRunningScanTab(platform) {
-  const registered = await getRegisteredScanTab(platform);
+async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, "", requestedProfileId);
   if (registered) return registered;
-  return await findRunningPlatformTab(platform);
+  return await findRunningPlatformTab(platform, "", requestedProfileId);
 }
 
 async function findDeliveryPlatformTab(platform, startUrl) {
   const scanTab = await findRegisteredOrRunningScanTab(platform);
-  const scanStatus = scanTab?.id ? await probePlatformScanStatus(scanTab.id, platform) : null;
+  const session = await readScanSession(platform);
+  const scanStatus = scanTab?.id
+    ? await probePlatformScanStatus(scanTab.id, platform, session?.profileId)
+    : null;
   const scanIsActive = isActiveScanStatus(scanStatus);
   const excludedTabIds = scanIsActive && scanTab?.id ? [scanTab.id] : [];
 
@@ -1384,30 +1435,36 @@ async function findPlatformTab(platform) {
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
-async function findRunningPlatformTab(platform, requestedRunId = "") {
+async function findRunningPlatformTab(platform, requestedRunId = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
     .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config));
 
   for (const tab of tabs) {
     if (!tab.id) continue;
-    const status = await probePlatformScanStatus(tab.id, platform);
+    const status = await probePlatformScanStatus(tab.id, platform, profileId);
     if (isActiveScanStatus(status)) {
       if (requestedRunId && !scanRunMatches(status?.runId, requestedRunId)) continue;
-      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken);
+      if (normalizeProfileId(status?.profileId) !== profileId) continue;
+      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken, profileId);
       return tab;
     }
   }
   return null;
 }
 
-async function probePlatformScanStatus(tabId, platform) {
+async function probePlatformScanStatus(tabId, platform, requestedProfileId) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   if (!await pingContentScript(tabId)) return null;
   try {
     const type = platform === "boss" ? "BOSS_SCAN_STATUS" : "ZHILIAN_SCAN_STATUS_V2";
     return await chrome.tabs.sendMessage(tabId, {
       source: "GET_JOBS_BACKGROUND",
-      type
+      type,
+      profileId
     });
   } catch {
     return null;
@@ -1442,22 +1499,26 @@ async function handleScanOwnerStatus(platform, sender) {
     isOwner: Boolean(session && tabId && session.tabId === tabId),
     ownerToken: session?.ownerToken || "",
     runId: session?.runId || "",
+    profileId: normalizeProfileId(session?.profileId) || null,
     tabId: session?.tabId || null
   };
 }
 
-async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "") {
-  if (!platform || !tabId) return null;
+async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!platform || !tabId || !profileId) return null;
   return await mutateScanSessions((sessions) => {
     const existing = sessions[platform];
+    const sameProfile = normalizeProfileId(existing?.profileId) === profileId;
     const session = {
       platform,
       tabId,
-      runId: String(runId || existing?.runId || ""),
-      pageTabId: pageTabId || existing?.pageTabId || null,
+      profileId,
+      runId: String(runId || (sameProfile ? existing?.runId : "") || ""),
+      pageTabId: pageTabId || (sameProfile ? existing?.pageTabId : null) || null,
       ownerToken: String(
         ownerToken
-          || (existing?.tabId === tabId ? existing?.ownerToken : "")
+          || (sameProfile && existing?.tabId === tabId ? existing?.ownerToken : "")
           || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
       ),
       updatedAt: Date.now()
@@ -1471,6 +1532,10 @@ async function readScanSession(platform) {
   const sessions = await readScanSessions();
   const session = sessions[platform];
   if (!session) return null;
+  if (!normalizeProfileId(session.profileId)) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (Date.now() - Number(session.updatedAt || 0) > SCAN_SESSION_TTL_MS) {
     await clearScanSession(platform, session.tabId);
     return null;
@@ -1488,9 +1553,14 @@ async function readScanSessions() {
   }
 }
 
-async function getRegisteredScanTab(platform, requestedRunId = "") {
+async function getRegisteredScanTab(platform, requestedRunId = "", requestedProfileId = 0) {
   const session = await readScanSession(platform);
   if (!session?.tabId) return null;
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (profileId && normalizeProfileId(session.profileId) !== profileId) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (requestedRunId && !scanRunMatches(session.runId, requestedRunId)) {
     await cleanupPlatformScanState(platform, session.tabId);
     return null;
@@ -1539,13 +1609,15 @@ async function mutateScanSessions(mutator) {
 
 async function updateScanSessionFromEvent(platform, tabId, payload) {
   if (!tabId || payload?.operation !== "scan") return;
+  const profileId = normalizeProfileId(payload.profileId);
+  if (!profileId) return;
+  const session = await readScanSession(platform);
+  if (!session || session.tabId !== tabId || normalizeProfileId(session.profileId) !== profileId) return;
   if (["complete", "stopped", "error"].includes(String(payload.stage || ""))) {
     await clearScanSession(platform, tabId);
     return;
   }
-  const session = await readScanSession(platform);
-  if (!session || session.tabId !== tabId) return;
-  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken);
+  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken, profileId);
 }
 
 async function broadcastPlatformEvent(payload, preferredPageTabId = null) {

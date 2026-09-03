@@ -598,27 +598,36 @@ public class BossService {
     }
 
     public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
+        return upsertChromeBossJob(entity, scanRunId, profileService.getCurrentProfileId());
+    }
+
+    public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity,
+                                                               String scanRunId,
+                                                               Long profileId) {
         if (entity == null) return null;
-        Long profileId = profileService.getCurrentProfileId();
+        if (profileId == null || profileId <= 0) {
+            throw new IllegalArgumentException("Boss 岗位入库缺少有效档案 ID");
+        }
         entity.setProfileId(profileId);
         if (scanRunId != null && !scanRunId.isBlank()) {
             entity.setScanRunId(scanRunId.trim());
             entity.setScanResultSource(SCAN_RESULT_CURRENT);
         }
-        String encryptId = entity.getEncryptId();
+        String encryptId = entity.getEncryptId() == null ? null : entity.getEncryptId().trim();
+        entity.setEncryptId(encryptId);
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId, null);
-            if (existing == null) {
-                QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-                wrapper.eq("profile_id", profileId)
-                        .eq("encrypt_id", encryptId);
-                wrapper.last("LIMIT 1");
-                existing = bossJobDataMapper.selectOne(wrapper);
-            }
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("profile_id", profileId)
+                    .apply("TRIM(encrypt_id) = {0}", encryptId);
+            wrapper.last("LIMIT 1");
+            existing = bossJobDataMapper.selectOne(wrapper);
         }
-        if (existing == null && entity.getCompanyName() != null && entity.getJobName() != null) {
+        if ((encryptId == null || encryptId.isBlank())
+                && existing == null
+                && entity.getCompanyName() != null
+                && entity.getJobName() != null) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("profile_id", profileId)
                     .eq("company_name", entity.getCompanyName())

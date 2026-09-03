@@ -99,6 +99,7 @@ public class JobAnalysisTaskStore {
         validateRequest(request);
         String platform = normalizePlatform(request.getPlatform());
         String jobKey = stableJobKey(request);
+        validateTargetJobIdentity(request, platform, jobKey);
         String taskKey = taskKey(request, platform, jobKey);
         String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
@@ -148,6 +149,7 @@ public class JobAnalysisTaskStore {
         validateRequest(request);
         String platform = normalizePlatform(request.getPlatform());
         String jobKey = stableJobKey(request);
+        validateTargetJobIdentity(request, platform, jobKey);
         String taskKey = taskKey(request, platform, jobKey);
         String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
@@ -447,7 +449,19 @@ public class JobAnalysisTaskStore {
             throw new IllegalArgumentException("任务缺少可恢复的请求快照");
         }
         try {
-            return objectMapper.readValue(task.requestJson(), JobAiAnalysisService.JobAnalysisRequest.class);
+            JobAiAnalysisService.JobAnalysisRequest request = objectMapper.readValue(
+                    task.requestJson(), JobAiAnalysisService.JobAnalysisRequest.class);
+            validateRequest(request);
+            String platform = normalizePlatform(request.getPlatform());
+            String jobKey = stableJobKey(request);
+            if (!java.util.Objects.equals(task.profileId(), request.getProfileId())
+                    || !java.util.Objects.equals(normalizePlatform(task.platform()), platform)
+                    || !java.util.Objects.equals(task.jobKey(), jobKey)
+                    || !java.util.Objects.equals(task.jobRowId(), request.getJobRowId())) {
+                throw new IllegalStateException("AI 分析任务快照与任务索引不一致");
+            }
+            validateTargetJobIdentity(request, platform, jobKey);
+            return request;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("AI 分析任务请求快照损坏", e);
         }
@@ -564,6 +578,44 @@ public class JobAnalysisTaskStore {
         }
         if (stableJobKey(request).isBlank()) {
             throw new IllegalArgumentException("AI 分析任务缺少稳定岗位标识");
+        }
+        if (request.getJobRowId() == null || request.getJobRowId() <= 0) {
+            throw new IllegalArgumentException("AI 分析任务缺少有效岗位行 ID");
+        }
+    }
+
+    private void validateTargetJobIdentity(JobAiAnalysisService.JobAnalysisRequest request,
+                                           String platform,
+                                           String jobKey) {
+        String table = "boss".equals(platform) ? "boss_data" : "zhilian_data";
+        String stableIdColumn = "boss".equals(platform) ? "encrypt_id" : "job_id";
+        String jobNameColumn = "boss".equals(platform) ? "job_name" : "job_title";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT profile_id, " + stableIdColumn + " AS stable_id, company_name, "
+                        + jobNameColumn + " AS job_name FROM " + table + " WHERE id=?",
+                request.getJobRowId()
+        );
+        String storedKey = "";
+        Long storedProfileId = null;
+        if (rows.size() == 1) {
+            Map<String, Object> row = rows.get(0);
+            storedProfileId = nullableLong(row.get("profile_id"));
+            storedKey = firstNonBlank((String) row.get("stable_id"));
+            if (storedKey.isBlank()) {
+                String company = canonical((String) row.get("company_name"));
+                String jobName = canonical((String) row.get("job_name"));
+                storedKey = company.isBlank() && jobName.isBlank() ? "" : company + "::" + jobName;
+            }
+        }
+        if (rows.size() != 1
+                || !java.util.Objects.equals(storedProfileId, request.getProfileId())
+                || !java.util.Objects.equals(storedKey, jobKey)) {
+            throw new IllegalArgumentException(
+                    "AI 分析任务与目标岗位不一致：profileId=" + request.getProfileId()
+                            + ", platform=" + platform
+                            + ", jobRowId=" + request.getJobRowId()
+                            + ", jobKey=" + jobKey
+            );
         }
     }
 

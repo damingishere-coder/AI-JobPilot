@@ -19,6 +19,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JobAnalysisTaskStoreTest {
     @TempDir
@@ -57,6 +58,28 @@ class JobAnalysisTaskStoreTest {
         assertThat(otherProfile.created()).isTrue();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsTaskWhoseProfileOrJobKeyDoesNotMatchTargetRow() {
+        JobAiAnalysisService.JobAnalysisRequest wrongJobKey = request(1L, "boss", "job-real", "run-a");
+        wrongJobKey.setJobKey("job-other");
+
+        assertThatThrownBy(() -> store.submit(wrongJobKey))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("目标岗位不一致");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL", Integer.class)).isZero();
+    }
+
+    @Test
+    void rejectsPersistedTaskWhenItsIndexedIdentityNoLongerMatchesSnapshot() {
+        JobAnalysisTaskStore.SubmitResult submitted = store.submit(request(1L, "boss", "job-real", "run-a"));
+        jdbcTemplate.update("UPDATE job_analysis_task SET job_key='job-corrupted' WHERE id=?", submitted.task().id());
+
+        assertThatThrownBy(() -> store.deserialize(store.findById(submitted.task().id())))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("任务快照与任务索引不一致");
     }
 
     @Test
@@ -162,7 +185,21 @@ class JobAnalysisTaskStoreTest {
         request.setProfileId(profileId);
         request.setPlatform(platform);
         request.setJobKey(jobKey);
-        request.setJobRowId("boss".equals(platform) ? 10L : 20L);
+        jdbcTemplate.update("INSERT OR IGNORE INTO profile(id, name, is_active) VALUES (?, ?, 0)",
+                profileId, "profile-" + profileId);
+        if ("boss".equals(platform)) {
+            jdbcTemplate.update("INSERT OR IGNORE INTO boss_data(profile_id, encrypt_id, company_name, job_name, delivery_status) " +
+                            "VALUES (?, ?, '测试公司', 'Java 工程师', ?)",
+                    profileId, jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM boss_data WHERE profile_id=? AND encrypt_id=?", Long.class, profileId, jobKey));
+        } else {
+            jdbcTemplate.update("INSERT OR IGNORE INTO zhilian_data(profile_id, job_id, company_name, job_title, delivery_status) " +
+                            "VALUES (?, ?, '测试公司', 'Java 工程师', ?)",
+                    profileId, jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM zhilian_data WHERE profile_id=? AND job_id=?", Long.class, profileId, jobKey));
+        }
         request.setKeyword("Java");
         request.setCompanyName("测试公司");
         request.setJobName("Java 工程师");

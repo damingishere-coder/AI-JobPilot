@@ -33,6 +33,35 @@ import static org.mockito.Mockito.when;
 class BossControllerListOnlyTest {
 
     @Test
+    void rejectsMissingOrChangedProfileWithoutSideEffects() {
+        BossService bossService = mock(BossService.class);
+        ProfileService profileService = mock(ProfileService.class);
+        ChromeJobAnalysisQueueService queueService = mock(ChromeJobAnalysisQueueService.class);
+        JobRunCoordinator jobRunCoordinator = mock(JobRunCoordinator.class);
+        BossController controller = controller(bossService, profileService, queueService, jobRunCoordinator);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(4L);
+
+        ChromeJobBatchRequest missing = new ChromeJobBatchRequest();
+        missing.setJobs(List.of(chromeJob("job-missing", "公司", "岗位")));
+        ResponseEntity<Map<String, Object>> missingResponse = controller.receiveChromeJobs(missing);
+
+        ChromeJobBatchRequest changed = new ChromeJobBatchRequest();
+        changed.setProfileId(3L);
+        changed.setJobs(List.of(chromeJob("job-changed", "公司", "岗位")));
+        ResponseEntity<Map<String, Object>> changedResponse = controller.receiveChromeJobs(changed);
+
+        assertThat(missingResponse.getStatusCode().value()).isEqualTo(400);
+        assertThat(missingResponse.getBody()).containsEntry("errorCode", "PROFILE_REQUIRED");
+        assertThat(changedResponse.getStatusCode().value()).isEqualTo(409);
+        assertThat(changedResponse.getBody())
+                .containsEntry("errorCode", "PROFILE_CHANGED")
+                .containsEntry("currentProfileId", 4L);
+        verify(bossService, never()).upsertChromeBossJob(any(), any(), any());
+        verify(queueService, never()).enqueue(any());
+        verify(jobRunCoordinator, never()).requestCancel(any());
+    }
+
+    @Test
     void savesListOnlyJobsWithoutEnqueueingAiAnalysis() {
         BossJobService bossJobService = mock(BossJobService.class);
         PlaywrightManager playwrightManager = mock(PlaywrightManager.class);
@@ -72,6 +101,7 @@ class BossControllerListOnlyTest {
         dto.setDeliveryStatus(DeliveryStatus.LIST_COLLECTED);
 
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("boss-list-test");
         request.setKeyword("Java");
         request.setCollectionMode("LIST_ONLY");
@@ -81,6 +111,7 @@ class BossControllerListOnlyTest {
 
         BossJobDataEntity saved = new BossJobDataEntity();
         saved.setId(1L);
+        saved.setProfileId(1L);
         saved.setEncryptId("job-1");
         saved.setJobName(dto.getTitle());
         saved.setCompanyName(dto.getCompany());
@@ -89,9 +120,9 @@ class BossControllerListOnlyTest {
         saved.setJobUrl(dto.getUrl());
         saved.setDeliveryStatus(DeliveryStatus.LIST_COLLECTED);
 
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
         when(jobRunCoordinator.isCancelRequested("boss-list-test")).thenReturn(false);
-        when(bossService.upsertChromeBossJob(any(BossJobDataEntity.class), eq("boss-list-test"))).thenReturn(saved);
+        when(bossService.upsertChromeBossJob(any(BossJobDataEntity.class), eq("boss-list-test"), eq(1L))).thenReturn(saved);
         when(bossService.updateDeliveryStatusById(1L, DeliveryStatus.LIST_COLLECTED)).thenReturn(saved);
         when(queueService.queueSize()).thenReturn(0);
 
@@ -142,6 +173,7 @@ class BossControllerListOnlyTest {
         ChromeJobDto collected = chromeJob("job-collected", "待补全公司", "待补全岗位");
         ChromeJobDto fresh = chromeJob("job-new", "新公司", "新岗位");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("run-new");
         request.setJobs(List.of(complete, collected, fresh));
 
@@ -179,6 +211,7 @@ class BossControllerListOnlyTest {
         );
         ChromeJobDto dto = chromeJob("job-not-analyzed", "待分析公司", "待分析岗位");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setJobs(List.of(dto));
         BossJobDataEntity existing = savedJob(21L, dto, DeliveryStatus.NOT_DELIVERED);
 
@@ -203,6 +236,7 @@ class BossControllerListOnlyTest {
         ChromeJobDto dto = chromeJob("job-history", "历史公司", "历史岗位");
         dto.setCollectionAction("REUSE_HISTORY");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("boss-current");
         request.setJobs(List.of(dto));
 
@@ -215,7 +249,7 @@ class BossControllerListOnlyTest {
         restored.setScanRunId("boss-current");
         restored.setScanResultSource(BossService.SCAN_RESULT_HISTORICAL);
 
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
         when(jobRunCoordinator.isCancelRequested("boss-current")).thenReturn(false);
         when(bossService.findExistingChromeBossJobs(eq(1L), any(), eq(null))).thenReturn(Map.of(0, existing));
         when(bossService.reuseHistoricalBossJob(31L, 1L, "boss-current")).thenReturn(restored);
@@ -230,7 +264,7 @@ class BossControllerListOnlyTest {
                 .containsEntry("queued", 0)
                 .containsEntry("restored", 1)
                 .containsEntry("rejectedCount", 0);
-        verify(bossService, never()).upsertChromeBossJob(any(), any());
+        verify(bossService, never()).upsertChromeBossJob(any(), any(), any());
         verify(queueService, never()).enqueue(any());
     }
 
@@ -245,11 +279,12 @@ class BossControllerListOnlyTest {
         ChromeJobDto dto = chromeJob("job-changed", "变化公司", "变化岗位");
         dto.setCollectionAction("REUSE_HISTORY");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("boss-current");
         request.setJobs(List.of(dto));
         BossJobDataEntity needsEnrichment = savedJob(41L, dto, DeliveryStatus.LIST_COLLECTED);
 
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
         when(jobRunCoordinator.isCancelRequested("boss-current")).thenReturn(false);
         when(bossService.findExistingChromeBossJobs(eq(1L), any(), eq(null))).thenReturn(Map.of(0, needsEnrichment));
 
@@ -261,7 +296,7 @@ class BossControllerListOnlyTest {
                 .containsEntry("status", "FAILED")
                 .containsEntry("rejectedCount", 1);
         verify(bossService, never()).reuseHistoricalBossJob(any(), any(), any());
-        verify(bossService, never()).upsertChromeBossJob(any(), any());
+        verify(bossService, never()).upsertChromeBossJob(any(), any(), any());
         verify(queueService, never()).enqueue(any());
     }
 
@@ -276,10 +311,11 @@ class BossControllerListOnlyTest {
         ChromeJobDto dto = chromeJob("job-other-profile", "其他档案公司", "其他档案岗位");
         dto.setCollectionAction("REUSE_HISTORY");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("boss-current");
         request.setJobs(List.of(dto));
 
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
         when(jobRunCoordinator.isCancelRequested("boss-current")).thenReturn(false);
         when(bossService.findExistingChromeBossJobs(eq(1L), any(), eq(null))).thenReturn(Map.of());
 
@@ -291,7 +327,7 @@ class BossControllerListOnlyTest {
                 .containsEntry("status", "FAILED")
                 .containsEntry("rejectedCount", 1);
         verify(bossService, never()).reuseHistoricalBossJob(any(), any(), any());
-        verify(bossService, never()).upsertChromeBossJob(any(), any());
+        verify(bossService, never()).upsertChromeBossJob(any(), any(), any());
         verify(queueService, never()).enqueue(any());
     }
 
@@ -307,10 +343,11 @@ class BossControllerListOnlyTest {
         dto.setUrl("");
         dto.setCollectionAction("REUSE_HISTORY");
         ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
         request.setRunId("boss-current");
         request.setJobs(List.of(dto));
 
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
         when(jobRunCoordinator.isCancelRequested("boss-current")).thenReturn(false);
 
         ResponseEntity<Map<String, Object>> response = controller.receiveChromeJobs(request);
@@ -355,6 +392,7 @@ class BossControllerListOnlyTest {
     private BossJobDataEntity savedJob(Long id, ChromeJobDto dto, String status) {
         BossJobDataEntity entity = new BossJobDataEntity();
         entity.setId(id);
+        entity.setProfileId(1L);
         entity.setEncryptId(dto.getId());
         entity.setCompanyName(dto.getCompany());
         entity.setJobName(dto.getTitle());

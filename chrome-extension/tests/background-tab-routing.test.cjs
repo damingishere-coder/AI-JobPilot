@@ -182,11 +182,31 @@ test("rejects empty Zhilian keywords before creating or starting a scan", async 
   const response = await context.handlePageMessage({
     type: "ZHILIAN_SCAN_START",
     platform: "zhilian",
+    profileId: 4,
     config: { keywords: "[]" }
   }, { tab: { id: 20, url: "http://localhost:6866/zhilian" } });
 
   assert.equal(response.success, false);
   assert.equal(response.message, "请至少填写一个搜索关键词");
+});
+
+test("requires a profile for every scan lifecycle request before touching tabs", async () => {
+  const { context, tabList } = loadBackground({ tabs: [] });
+  const sender = { tab: { id: 20, url: "http://localhost:6866/boss" } };
+
+  for (const [type, platform] of [
+    ["BOSS_SCAN_START", "boss"],
+    ["BOSS_SCAN_STATUS", "boss"],
+    ["BOSS_SCAN_STOP", "boss"],
+    ["ZHILIAN_SCAN_START", "zhilian"],
+    ["ZHILIAN_SCAN_STATUS", "zhilian"],
+    ["ZHILIAN_SCAN_STOP", "zhilian"]
+  ]) {
+    const response = await context.handlePageMessage({ type, platform, config: { keywords: ["Java"] } }, sender);
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "PROFILE_REQUIRED");
+  }
+  assert.equal(tabList.length, 0);
 });
 
 test("injects all Zhilian dependencies when the content script is missing", async () => {
@@ -274,7 +294,7 @@ test("allows Zhilian job submission through the fixed local API route", async ()
     source: "GET_JOBS_ZHILIAN_CONTENT",
     type: "ZHILIAN_LOCAL_API",
     operation: "chrome-jobs",
-    body: { runId: "run-1", keyword: "Java", jobs: [{ title: "Java工程师" }] }
+    body: { profileId: 4, runId: "run-1", keyword: "Java", jobs: [{ title: "Java工程师" }] }
   }, {
     tab: { id: 8, url: "https://www.zhaopin.com/jobdetail/demo.htm" }
   });
@@ -341,6 +361,24 @@ test("treats HTTP 200 business rejection as a failed local API request", async (
   assert.equal(result.success, false);
   assert.equal(result.errorType, "BUSINESS_REJECTED");
   assert.equal(result.message, "状态已变化");
+});
+
+test("preserves backend profile errors and rejects unscoped job submission locally", async () => {
+  let fetchCalls = 0;
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return jsonResponse({ success: false, errorCode: "PROFILE_CHANGED", message: "档案已切换" }, { ok: false, status: 409 });
+    }
+  });
+
+  const missing = await context.handleBossLocalApiRequest({ operation: "chrome-jobs", body: { jobs: [] } });
+  const changed = await context.handleBossLocalApiRequest({ operation: "chrome-jobs", body: { profileId: 4, jobs: [] } });
+
+  assert.equal(missing.errorCode, "PROFILE_REQUIRED");
+  assert.equal(fetchCalls, 1);
+  assert.equal(changed.errorType, "PROFILE_CHANGED");
 });
 
 test("records an empty Boss chat-page response as unknown instead of confirmed", async () => {
@@ -424,13 +462,56 @@ test("keeps Boss and Zhilian scan ownership when both start together", async () 
   const { context, storage } = loadBackground({ tabs: [] });
 
   await Promise.all([
-    context.registerScanSession("boss", 1, "boss-run", 10),
-    context.registerScanSession("zhilian", 2, "zhilian-run", 10)
+    context.registerScanSession("boss", 1, "boss-run", 10, "", 4),
+    context.registerScanSession("zhilian", 2, "zhilian-run", 10, "", 4)
   ]);
 
   const sessions = storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__;
   assert.equal(sessions.boss.tabId, 1);
   assert.equal(sessions.zhilian.tabId, 2);
+});
+
+test("profile switch and legacy sessions invalidate shared checkpoints", async () => {
+  const { context, storage } = loadBackground({
+    tabs: [
+      { id: 1, windowId: 1, url: "https://www.zhipin.com/job_detail/old.html", status: "complete", lastAccessed: 10 },
+      { id: 2, windowId: 1, url: "https://www.zhipin.com/web/geek/job", status: "complete", lastAccessed: 20 }
+    ],
+    statuses: {
+      1: { success: true, isRunning: true, hasStoredTask: true, stage: "details", runId: "old", profileId: 3 }
+    }
+  });
+  await context.registerScanSession("boss", 1, "old", 10, "", 3);
+  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "old", profileId: 3 };
+
+  const selected = await context.findScanPlatformTab("boss", "https://www.zhipin.com/web/geek/job", "new", 4);
+
+  assert.equal(selected.id, 2);
+  assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss, undefined);
+  assert.equal(storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__, undefined);
+
+  storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__ = {
+    boss: { platform: "boss", tabId: 1, runId: "legacy", updatedAt: Date.now() }
+  };
+  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "legacy" };
+  assert.equal(await context.readScanSession("boss"), null);
+  assert.equal(storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__, undefined);
+});
+
+test("drops delayed scan events from another profile", async () => {
+  const { context, sentMessages } = loadBackground({
+    tabs: [
+      { id: 1, windowId: 1, url: "https://www.zhipin.com/web/geek/job", status: "complete" },
+      { id: 10, windowId: 1, url: "http://localhost:6866/boss", status: "complete" }
+    ]
+  });
+  await context.registerScanSession("boss", 1, "current", 10, "", 4);
+
+  await context.forwardPlatformEvent({
+    payload: { platform: "boss", operation: "scan", stage: "details", profileId: 3 }
+  }, { tab: { id: 1, url: "https://www.zhipin.com/web/geek/job" } });
+
+  assert.equal(sentMessages.filter((entry) => entry.message.type === "GET_JOBS_EXTENSION_EVENT").length, 0);
 });
 
 test("uses a separate Boss tab for delivery while scanning", async () => {
@@ -440,11 +521,11 @@ test("uses a separate Boss tab for delivery while scanning", async () => {
       { id: 2, windowId: 1, url: "https://www.zhipin.com/", status: "complete", lastAccessed: 20 }
     ],
     statuses: {
-      1: { success: true, isRunning: true, hasStoredTask: true, stage: "details", runId: "boss-run" },
+      1: { success: true, isRunning: true, hasStoredTask: true, stage: "details", runId: "boss-run", profileId: 4 },
       2: { success: true, isRunning: false, hasStoredTask: false, stage: "idle" }
     }
   });
-  await context.registerScanSession("boss", 1, "boss-run", 10);
+  await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
 
   const deliveryTab = await context.findDeliveryPlatformTab("boss", "https://www.zhipin.com/job_detail/demo.html");
 
@@ -458,9 +539,9 @@ test("status lookup keeps using the registered scan tab after another tab is cli
       { id: 2, windowId: 1, url: "https://www.zhipin.com/job_detail/other.html", status: "complete", lastAccessed: 999 }
     ]
   });
-  await context.registerScanSession("boss", 1, "boss-run", 10);
+  await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
 
-  const scanTab = await context.findRegisteredOrRunningScanTab("boss");
+  const scanTab = await context.findRegisteredOrRunningScanTab("boss", 4);
   const owner = await context.handleScanOwnerStatus("boss", { tab: { id: 2 } });
 
   assert.equal(scanTab.id, 1);
@@ -474,17 +555,18 @@ test("new Boss scan run does not keep using a registered stale scan tab", async 
       { id: 2, windowId: 1, url: "https://www.zhipin.com/web/geek/job", status: "complete", lastAccessed: 20 }
     ],
     statuses: {
-      1: { success: true, isRunning: true, hasStoredTask: true, stage: "details", runId: "boss-old-run" },
+      1: { success: true, isRunning: true, hasStoredTask: true, stage: "details", runId: "boss-old-run", profileId: 4 },
       2: { success: true, isRunning: false, hasStoredTask: false, stage: "idle" }
     }
   });
-  await context.registerScanSession("boss", 1, "boss-old-run", 10);
-  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "boss-old-run" };
+  await context.registerScanSession("boss", 1, "boss-old-run", 10, "", 4);
+  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "boss-old-run", profileId: 4 };
 
   const scanTab = await context.findScanPlatformTab(
     "boss",
     "https://www.zhipin.com/web/geek/job?city=101280600&query=Java",
-    "boss-new-run"
+    "boss-new-run",
+    4
   );
 
   assert.equal(scanTab.id, 2);
@@ -549,11 +631,11 @@ test("Boss stop clears registered scan session and shared checkpoint", async () 
       { id: 1, windowId: 1, url: "https://www.zhipin.com/job_detail/old.html", status: "complete" }
     ]
   });
-  await context.registerScanSession("boss", 1, "boss-run", 10);
-  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "boss-run" };
+  await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
+  storage.__GET_JOBS_BOSS_SHARED_SCAN_TASK__ = { runId: "boss-run", profileId: 4 };
   storage.__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__ = { runId: "boss-run", requested: true };
 
-  const response = await context.sendPassiveStop(1, "boss", { type: "BOSS_SCAN_STOP", runId: "boss-run" }, 10);
+  const response = await context.sendPassiveStop(1, "boss", { type: "BOSS_SCAN_STOP", runId: "boss-run", profileId: 4 }, 10);
 
   assert.equal(response.success, true);
   assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss, undefined);
@@ -585,7 +667,7 @@ test("reports navigation as running while the registered scan content script rel
       { id: 1, windowId: 1, url: "https://www.zhipin.com/job_detail/demo.html", status: "loading" }
     ]
   });
-  await context.registerScanSession("boss", 1, "boss-run", 10);
+  await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
 
   const status = await context.buildRegisteredNavigationStatus("boss", 1);
 
@@ -593,6 +675,7 @@ test("reports navigation as running while the registered scan content script rel
   assert.equal(status.hasStoredTask, true);
   assert.equal(status.stage, "navigating");
   assert.equal(status.runId, "boss-run");
+  assert.equal(status.profileId, 4);
 });
 
 test("runs only the fixed Boss search API request in the page MAIN world", async () => {

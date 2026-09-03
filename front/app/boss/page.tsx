@@ -18,6 +18,7 @@ import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 import { hasBossScanResult, readBossScanRunId } from '@/app/boss/scan-result'
 import { MAX_JOB_KEYWORDS, parseJobKeywords, serializeJobKeywords } from '@/lib/job-keywords'
+import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
 
 interface BossConfig {
   id?: number
@@ -279,10 +280,13 @@ export default function BossPage() {
   }, [])
 
   const syncBossScanStatus = useCallback(async (silent = false) => {
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) return
     try {
       const status = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_STATUS',
         platform: 'boss',
+        profileId,
       }, 2000)
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
       const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
@@ -324,7 +328,7 @@ export default function BossPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id])
 
   const focusLogSection = useCallback(() => {
     setActiveStep('scan')
@@ -450,6 +454,7 @@ export default function BossPage() {
             try {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+              if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
@@ -480,12 +485,13 @@ export default function BossPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep])
 
   useEffect(() => {
     return subscribeChromeBridgeEvents((event) => {
       const payload = event.payload
       if (!payload || payload.platform !== 'boss') return
+      if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -509,7 +515,7 @@ export default function BossPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep])
 
   const checkChromeBridge = async () => {
     try {
@@ -870,6 +876,11 @@ export default function BossPage() {
         alert('请先在简历配置页新建档案。')
         return
       }
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) {
+        appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
+        return
+      }
       if (!keywordsDisplay.length || keywordsDisplay.length > MAX_JOB_KEYWORDS) {
         const message = !keywordsDisplay.length
           ? '请至少选择一个搜索关键词。'
@@ -896,6 +907,7 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
         platform: 'boss',
+        profileId,
         runId,
         config: {
           ...config,
@@ -980,6 +992,11 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存岗位。' })
       return
     }
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) {
+      appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新页面后重试。' })
+      return
+    }
 
     focusLogSection()
     setIsCollectingCurrentPage(true)
@@ -991,6 +1008,7 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_COLLECT_CURRENT_PAGE',
         platform: 'boss',
+        profileId,
         keyword: keywordsDisplay.join(', '),
         runId: `boss-list-${Date.now()}`,
       }, 70000) as BossCurrentPageCollectResponse
@@ -1048,6 +1066,11 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存 POC 岗位。' })
       return
     }
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) {
+      appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新页面后重试。' })
+      return
+    }
 
     const keywords = parseJobKeywords(keywordsDisplay)
     if (keywords.length !== 1) {
@@ -1071,6 +1094,7 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_API_POC_COLLECT',
         platform: 'boss',
+        profileId,
         keyword: keywords[0],
         cityCode,
         page: 1,
@@ -1117,13 +1141,15 @@ export default function BossPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) throw new Error('当前档案 ID 无效')
       await fetch(`${API_BASE}/api/boss/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, profileId }),
       }).catch(() => null)
 
-      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId }, 1500)
+      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId, profileId }, 1500)
 
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })

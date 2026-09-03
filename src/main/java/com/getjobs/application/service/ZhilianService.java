@@ -244,19 +244,25 @@ public class ZhilianService {
     }
 
     public boolean existsByJobId(String jobId) {
-        if (jobId == null || jobId.trim().isEmpty()) return false;
         Long profileId = profileService.getCurrentProfileIdOrNull();
-        if (profileId == null) return false;
+        return existsByJobId(profileId, jobId);
+    }
+
+    public boolean existsByJobId(Long profileId, String jobId) {
+        if (profileId == null || jobId == null || jobId.trim().isEmpty()) return false;
         QueryWrapper<ZhilianJobDataEntity> w = new QueryWrapper<>();
-        w.eq("profile_id", profileId).eq("job_id", jobId).last("LIMIT 1");
+        w.eq("profile_id", profileId).apply("TRIM(job_id) = {0}", jobId.trim()).last("LIMIT 1");
         Long c = zhilianJobDataMapper.selectCount(w);
         return c != null && c > 0;
     }
 
     public boolean existsByTitleAndCompany(String jobTitle, String companyName) {
-        if (jobTitle == null || companyName == null) return false;
         Long profileId = profileService.getCurrentProfileIdOrNull();
-        if (profileId == null) return false;
+        return existsByTitleAndCompany(profileId, jobTitle, companyName);
+    }
+
+    public boolean existsByTitleAndCompany(Long profileId, String jobTitle, String companyName) {
+        if (profileId == null || jobTitle == null || companyName == null) return false;
         QueryWrapper<ZhilianJobDataEntity> w = new QueryWrapper<>();
         w.eq("profile_id", profileId).eq("job_title", jobTitle).eq("company_name", companyName).last("LIMIT 1");
         Long c = zhilianJobDataMapper.selectCount(w);
@@ -278,20 +284,33 @@ public class ZhilianService {
     }
 
     public ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity, String scanRunId) {
+        return upsertChromeJob(entity, scanRunId, profileService.getCurrentProfileId());
+    }
+
+    public synchronized ZhilianJobDataEntity upsertChromeJob(ZhilianJobDataEntity entity,
+                                                              String scanRunId,
+                                                              Long profileId) {
         if (entity == null) return null;
-        Long profileId = profileService.getCurrentProfileId();
+        if (profileId == null || profileId <= 0) {
+            throw new IllegalArgumentException("智联岗位入库缺少有效档案 ID");
+        }
         entity.setProfileId(profileId);
         if (scanRunId != null && !scanRunId.isBlank()) {
             entity.setScanRunId(scanRunId.trim());
         }
         ZhilianJobDataEntity existing = null;
-        if (entity.getJobId() != null && !entity.getJobId().isBlank()) {
+        String jobId = entity.getJobId() == null ? null : entity.getJobId().trim();
+        entity.setJobId(jobId);
+        if (jobId != null && !jobId.isBlank()) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
-            wrapper.eq("profile_id", profileId).eq("job_id", entity.getJobId());
+            wrapper.eq("profile_id", profileId).apply("TRIM(job_id) = {0}", jobId);
             wrapper.last("LIMIT 1");
             existing = zhilianJobDataMapper.selectOne(wrapper);
         }
-        if (existing == null && entity.getJobTitle() != null && entity.getCompanyName() != null) {
+        if ((jobId == null || jobId.isBlank())
+                && existing == null
+                && entity.getJobTitle() != null
+                && entity.getCompanyName() != null) {
             QueryWrapper<ZhilianJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("profile_id", profileId)
                     .eq("job_title", entity.getJobTitle())

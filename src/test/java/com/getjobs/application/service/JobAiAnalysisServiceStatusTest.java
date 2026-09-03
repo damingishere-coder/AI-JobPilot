@@ -413,20 +413,49 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
-    void invalidJsonAndDecisionAreRejected() {
+    void invalidJsonRetriesOnceWithSameSchemaAndCanSucceed() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.sendStructuredRequest(any(), any()))
                 .thenReturn("not-json-at-all")
                 .thenReturn("""
-                        {"score":80,"decision":"MAYBE","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                        {"score":80,"decision":"APPLY","summary":"重试成功","strengths":[],"risks":[],"greeting":"你好"}
                         """);
 
-        JobAiAnalysisService.AnalysisResult invalidJson = service.analyzeJob(bossRequest());
-        JobAiAnalysisService.AnalysisResult invalidDecision = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
-        assertThat(invalidJson.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_JSON");
-        assertThat(invalidDecision.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_DECISION");
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getSummary()).isEqualTo("重试成功");
+        ArgumentCaptor<String> schema = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(any(), schema.capture());
+        assertThat(schema.getAllValues()).hasSize(2).allMatch(schema.getAllValues().get(0)::equals);
+    }
+
+    @Test
+    void invalidJsonFailsAfterExactlyOneRetry() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("bad-json", "still-bad-json");
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_JSON");
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void invalidDecisionFailsWithoutJsonRetry() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
+                {"score":80,"decision":"MAYBE","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
+                """);
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_DECISION");
+        verify(aiService).sendStructuredRequest(any(), any());
     }
 
     @Test
