@@ -222,6 +222,19 @@ public class JobAnalysisTaskStore {
                 TASK_MAPPER, dbTime(LocalDateTime.now()), safeLimit);
     }
 
+    public List<TaskRecord> listCompatibleDuePending(long profileId, String platform, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, JobAiAnalysisService.MAX_BATCH_SIZE - 1));
+        return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                        "WHERE profile_id=? AND lower(platform)=? AND task_key IS NOT NULL " +
+                        "AND request_json IS NOT NULL AND status='PENDING' " +
+                        "AND (next_retry_at IS NULL OR next_retry_at<=?) ORDER BY id LIMIT ?",
+                TASK_MAPPER,
+                profileId,
+                normalizePlatform(platform),
+                dbTime(LocalDateTime.now()),
+                safeLimit);
+    }
+
     public List<TaskRecord> listExpiredLeases(int limit) {
         int safeLimit = Math.max(1, Math.min(limit, MAX_OUTSTANDING_TASKS));
         return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
@@ -420,7 +433,18 @@ public class JobAnalysisTaskStore {
     }
 
     public List<TaskView> listRecent(long profileId, int limit) {
+        return listRecent(profileId, null, limit);
+    }
+
+    public List<TaskView> listRecent(long profileId, String platform, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 200));
+        if (platform != null && !platform.isBlank()) {
+            return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                            "WHERE profile_id=? AND lower(platform)=? AND task_key IS NOT NULL " +
+                            "ORDER BY id DESC LIMIT ?",
+                    TASK_MAPPER, profileId, normalizePlatform(platform), safeLimit)
+                    .stream().map(TaskRecord::toView).toList();
+        }
         return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
                         "WHERE profile_id=? AND task_key IS NOT NULL ORDER BY id DESC LIMIT ?",
                 TASK_MAPPER, profileId, safeLimit).stream().map(TaskRecord::toView).toList();
@@ -435,11 +459,62 @@ public class JobAnalysisTaskStore {
     }
 
     public int outstandingCount(long profileId) {
+        return outstandingCount(profileId, null);
+    }
+
+    public int outstandingCount(long profileId, String platform) {
+        if (platform != null && !platform.isBlank()) {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND lower(platform)=? " +
+                            "AND task_key IS NOT NULL AND status IN ('PENDING','LEASED')",
+                    Integer.class,
+                    profileId,
+                    normalizePlatform(platform)
+            );
+            return count == null ? 0 : count;
+        }
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND task_key IS NOT NULL " +
                         "AND status IN ('PENDING','LEASED')",
                 Integer.class,
                 profileId
+        );
+        return count == null ? 0 : count;
+    }
+
+    public int pendingCount(long profileId) {
+        return pendingCount(profileId, null);
+    }
+
+    public int pendingCount(long profileId, String platform) {
+        return statusCount(profileId, platform, Status.PENDING);
+    }
+
+    public int processingCount(long profileId) {
+        return processingCount(profileId, null);
+    }
+
+    public int processingCount(long profileId, String platform) {
+        return statusCount(profileId, platform, Status.LEASED);
+    }
+
+    private int statusCount(long profileId, String platform, Status status) {
+        if (platform != null && !platform.isBlank()) {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND lower(platform)=? " +
+                            "AND task_key IS NOT NULL AND status=?",
+                    Integer.class,
+                    profileId,
+                    normalizePlatform(platform),
+                    status.name()
+            );
+            return count == null ? 0 : count;
+        }
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND task_key IS NOT NULL AND status=?",
+                Integer.class,
+                profileId,
+                status.name()
         );
         return count == null ? 0 : count;
     }
@@ -521,12 +596,23 @@ public class JobAnalysisTaskStore {
         inputs.put("degree", canonical(request.getDegree()));
         inputs.put("companyInfo", canonical(request.getCompanyInfo()));
         inputs.put("jobDescription", canonical(request.getJobDescription()));
+        inputs.put("resumeFingerprint", currentResumeFingerprint(request.getProfileId()));
         try {
             String digest = sha256(objectMapper.writeValueAsString(inputs));
-            return "ai:v1:" + request.getProfileId() + ":" + platform + ":" + digest;
+            return "ai:v2:" + request.getProfileId() + ":" + platform + ":" + digest;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("无法生成 AI 分析任务摘要", e);
         }
+    }
+
+    private String currentResumeFingerprint(Long profileId) {
+        List<String> rows = jdbcTemplate.query(
+                "SELECT COALESCE(resume_text, '') FROM resume_profile WHERE profile_id=? " +
+                        "ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                profileId
+        );
+        return sha256(rows.isEmpty() ? "" : rows.get(0));
     }
 
     private JobAiAnalysisService.JobAnalysisRequest analysisRequest(String platform,

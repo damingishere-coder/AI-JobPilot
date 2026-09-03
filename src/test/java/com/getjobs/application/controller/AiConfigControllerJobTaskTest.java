@@ -38,16 +38,20 @@ class AiConfigControllerJobTaskTest {
 
     @Test
     void taskListIsScopedToCurrentProfile() {
-        when(queueService.listTasks(7L, 20)).thenReturn(List.of());
-        when(queueService.queueSize(7L)).thenReturn(3);
+        when(queueService.listTasks(7L, "boss", 20)).thenReturn(List.of());
+        when(queueService.queueSize(7L, "boss")).thenReturn(3);
+        when(queueService.pendingCount(7L, "boss")).thenReturn(2);
+        when(queueService.processingCount(7L, "boss")).thenReturn(1);
 
-        ResponseEntity<Map<String, Object>> response = controller.listJobAnalysisTasks(20);
+        ResponseEntity<Map<String, Object>> response = controller.listJobAnalysisTasks(20, "boss");
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(response.getBody())
                 .containsEntry("success", true)
-                .containsEntry("queueSize", 3);
-        verify(queueService).listTasks(7L, 20);
+                .containsEntry("queueSize", 3)
+                .containsEntry("pendingCount", 2)
+                .containsEntry("processingCount", 1);
+        verify(queueService).listTasks(7L, "boss", 20);
     }
 
     @Test

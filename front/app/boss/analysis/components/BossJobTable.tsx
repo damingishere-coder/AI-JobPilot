@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
-import type { BossJob } from "../types"
-import { badgeClass, canManualDeliverAiNotMatch, deliveryStatusLabel, failureReasonText, formatDateOnly } from "../utils"
+import type { BossJob, JobAnalysisTask } from "../types"
+import { badgeClass, canManualDeliverAiNotMatch, deliveryStatusLabel, failureReasonText, formatAiReasonDetail, formatDateOnly, parseAiReason } from "../utils"
 
 export function BossJobTable({
   items,
@@ -25,6 +25,9 @@ export function BossJobTable({
   onConfirmJob,
   onReconcileJob,
   onRetryJob,
+  analysisTaskByJobId,
+  retryingAnalysisTaskId,
+  onRetryAnalysisJob,
   onSkipJob,
   onLoadList,
   onInputPageChange,
@@ -48,6 +51,9 @@ export function BossJobTable({
   onConfirmJob: (job: BossJob) => void
   onReconcileJob: (job: BossJob) => void
   onRetryJob: (job: BossJob) => void
+  analysisTaskByJobId: ReadonlyMap<number, JobAnalysisTask>
+  retryingAnalysisTaskId: number | null
+  onRetryAnalysisJob: (job: BossJob) => void
   onSkipJob: (job: BossJob) => void
   onLoadList: (page: number, size: number) => void
   onInputPageChange: (value: number | string) => void
@@ -155,6 +161,8 @@ export function BossJobTable({
               items.map((job, idx) => {
                 const manualSelectable = canManualDeliverAiNotMatch(job)
                 const aiNotMatchWithoutUrl = job.deliveryStatus === "AI不匹配" && !job.jobUrl?.trim()
+                const analysisTask = analysisTaskByJobId.get(job.id)
+                const aiReason = parseAiReason(job.aiReason)
                 return (
                   <tr
                   key={job.id}
@@ -218,6 +226,16 @@ export function BossJobTable({
                       <Button size="sm" variant="outline" disabled={actingJobId === job.id} onClick={() => onRetryJob(job)} className="h-7 w-full rounded px-2 text-xs leading-none">
                         重试
                       </Button>
+                    ) : job.deliveryStatus === "AI分析失败" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!analysisTask || !["FAILED", "UNKNOWN"].includes(analysisTask.status) || retryingAnalysisTaskId === analysisTask.id}
+                        onClick={() => onRetryAnalysisJob(job)}
+                        className="h-7 w-full rounded px-2 text-xs leading-none"
+                      >
+                        {retryingAnalysisTaskId === analysisTask?.id ? "排队中..." : "重试分析"}
+                      </Button>
                     ) : (job.deliveryStatus || "").includes("已投递") ? (
                       <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
                         <BiCheckCircle className="h-3.5 w-3.5" />
@@ -263,7 +281,7 @@ export function BossJobTable({
                     <button className={badgeClass("delivery", job.aiDecision)} title={job.aiDecision} onClick={() => onOpenText("AI决策", job.aiDecision)}>{job.aiDecision || "-"}</button>
                   </td>
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden align-top border-r border-gray-200 dark:border-gray-700">
-                    <div className="line-clamp-2 cursor-pointer hover:text-primary transition-colors" title={job.aiReason || "-"} onClick={() => onOpenText("AI原因", job.aiReason)}>{job.aiReason || "-"}</div>
+                    <div className="line-clamp-2 cursor-pointer hover:text-primary transition-colors" title={aiReason.summary} onClick={() => onOpenText("AI分析详情", formatAiReasonDetail(job.aiReason))}>{aiReason.summary}</div>
                   </td>
                   <td className="px-3 py-3 text-xs leading-6 overflow-hidden whitespace-nowrap align-top border-r border-gray-200 dark:border-gray-700">
                     {job.priorityCompany ? "是" : "-"}

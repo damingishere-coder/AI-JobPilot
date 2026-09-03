@@ -1,4 +1,4 @@
-import type { BossJob } from "./types"
+import type { AiReasonDimension, AiReasonHardConflict, BossJob, ParsedAiReason } from "./types"
 import { FAILURE_TYPE_LABELS } from "./types"
 
 export function formatDateOnlyValue(value?: string | null) {
@@ -46,11 +46,139 @@ export function deliveryStatusLabel(value?: string) {
 }
 
 export function riskTextOf(job: BossJob) {
-  const reason = (job.aiReason || "").trim()
-  if (reason) return reason
+  const reason = parseAiReason(job.aiReason)
+  const dimensionRisks = reason.dimensions
+    .filter((item) => item.status === "PARTIAL" || item.status === "CONFLICT")
+    .map((item) => `${item.label}：${item.note || (item.status === "CONFLICT" ? "存在冲突" : "部分匹配")}`)
+  const risks = Array.from(new Set([
+    ...reason.hardConflicts.map((item) => `硬冲突：${item.requirement}`),
+    ...reason.gaps,
+    ...dimensionRisks,
+    ...reason.unknowns.map((item) => `待核实：${item}`),
+  ]))
+  if (risks.length > 0) return risks.join("\n")
+  if (reason.errorCode) return `${reason.summary}（${reason.errorCode}）`
   if (!job.jobUrl) return "缺少原岗位链接，确认前建议核对岗位来源。"
   if (!job.aiScore && job.aiScore !== 0) return "暂无AI分数，确认前建议人工复核。"
   return "暂无明显风险点。"
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .map((item) => item.trim())
+    : []
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+const MATCH_STATUS_LABEL: Record<string, string> = {
+  MATCH: "匹配",
+  PARTIAL: "部分匹配",
+  UNKNOWN: "待核实",
+  CONFLICT: "冲突",
+}
+
+function parseDimensions(value: unknown): AiReasonDimension[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.key !== "string") return []
+    return [{
+      key: item.key,
+      label: typeof item.label === "string" && item.label.trim() ? item.label.trim() : item.key,
+      weight: numberValue(item.weight) ?? 0,
+      status: typeof item.status === "string" ? item.status : "UNKNOWN",
+      awarded: numberValue(item.awarded) ?? 0,
+      jobEvidence: stringList(item.jobEvidence),
+      resumeEvidence: stringList(item.resumeEvidence),
+      note: typeof item.note === "string" ? item.note.trim() : "",
+    }]
+  })
+}
+
+function parseHardConflicts(value: unknown): AiReasonHardConflict[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.requirement !== "string" || !item.requirement.trim()) return []
+    return [{
+      requirement: item.requirement.trim(),
+      jobEvidence: stringList(item.jobEvidence),
+      resumeEvidence: stringList(item.resumeEvidence),
+    }]
+  })
+}
+
+export function parseAiReason(value?: string | null): ParsedAiReason {
+  const text = (value || "").trim()
+  const empty: ParsedAiReason = {
+    schemaVersion: 0,
+    summary: "暂无AI理由",
+    matches: [],
+    gaps: [],
+    unknowns: [],
+    dimensions: [],
+    hardConflicts: [],
+    malformed: false,
+  }
+  if (!text) return empty
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!isRecord(parsed)) throw new Error("reason is not an object")
+    const schemaVersion = numberValue(parsed.schemaVersion) ?? 1
+    return {
+      schemaVersion,
+      summary: typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : "暂无AI结论",
+      matches: stringList(schemaVersion >= 2 ? parsed.matches : parsed.strengths),
+      gaps: stringList(schemaVersion >= 2 ? parsed.gaps : parsed.risks),
+      unknowns: stringList(parsed.unknowns),
+      dimensions: parseDimensions(parsed.dimensions),
+      hardConflicts: parseHardConflicts(parsed.hardConflicts),
+      threshold: numberValue(parsed.threshold),
+      errorCode: typeof parsed.errorCode === "string" && parsed.errorCode.trim()
+        ? parsed.errorCode.trim()
+        : undefined,
+      malformed: false,
+    }
+  } catch {
+    if (text.startsWith("{") || text.startsWith("[")) {
+      return {
+        ...empty,
+        summary: "AI分析理由格式异常，请重试该岗位",
+        errorCode: "AI_REASON_INVALID_JSON",
+        malformed: true,
+      }
+    }
+    return { ...empty, summary: text }
+  }
+}
+
+export function formatAiReasonDetail(value?: string | null) {
+  const reason = parseAiReason(value)
+  const sections: string[] = [`结论\n${reason.summary}`]
+  if (reason.matches.length > 0) sections.push(`匹配证据\n${reason.matches.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)
+  if (reason.gaps.length > 0) sections.push(`明确差距\n${reason.gaps.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)
+  if (reason.unknowns.length > 0) sections.push(`待核实\n${reason.unknowns.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)
+  if (reason.dimensions.length > 0) {
+    sections.push(`分项得分\n${reason.dimensions.map((item) =>
+      `${item.label}：${Number.isInteger(item.awarded) ? item.awarded : item.awarded.toFixed(2)}/${item.weight}（${MATCH_STATUS_LABEL[item.status] || item.status}）${item.note ? `，${item.note}` : ""}`
+      + `${item.jobEvidence.length > 0 ? `\n   岗位原文：${item.jobEvidence.join("；")}` : ""}`
+      + `${item.resumeEvidence.length > 0 ? `\n   简历原文：${item.resumeEvidence.join("；")}` : ""}`).join("\n")}`)
+  }
+  if (reason.hardConflicts.length > 0) {
+    sections.push(`硬冲突\n${reason.hardConflicts.map((item, index) =>
+      `${index + 1}. ${item.requirement}\n   岗位原文：${item.jobEvidence.join("；")}\n   简历原文：${item.resumeEvidence.join("；")}`).join("\n")}`)
+  }
+  if (reason.threshold !== undefined) sections.push(`当前投递阈值\n${reason.threshold}`)
+  if (reason.errorCode) sections.push(`错误代码\n${reason.errorCode}`)
+  return sections.join("\n\n")
 }
 
 export function badgeClass(kind: "delivery" | "hr" | "recruitment", value?: string) {

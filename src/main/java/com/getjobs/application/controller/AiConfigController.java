@@ -399,14 +399,17 @@ public class AiConfigController {
 
     @GetMapping("/job-analysis/tasks")
     public ResponseEntity<Map<String, Object>> listJobAnalysisTasks(
-            @RequestParam(name = "limit", defaultValue = "50") int limit
+            @RequestParam(name = "limit", defaultValue = "50") int limit,
+            @RequestParam(name = "platform", required = false) String platform
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
             long profileId = profileService.getCurrentProfileId();
             response.put("success", true);
-            response.put("data", chromeJobAnalysisQueueService.listTasks(profileId, limit));
-            response.put("queueSize", chromeJobAnalysisQueueService.queueSize(profileId));
+            response.put("data", chromeJobAnalysisQueueService.listTasks(profileId, platform, limit));
+            response.put("queueSize", chromeJobAnalysisQueueService.queueSize(profileId, platform));
+            response.put("pendingCount", chromeJobAnalysisQueueService.pendingCount(profileId, platform));
+            response.put("processingCount", chromeJobAnalysisQueueService.processingCount(profileId, platform));
             response.put("message", "AI 分析任务读取成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {

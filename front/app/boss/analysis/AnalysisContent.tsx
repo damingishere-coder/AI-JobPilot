@@ -16,6 +16,7 @@ import { BossPendingCards } from "./components/BossPendingCards"
 import { BossThresholdSettings } from "./components/BossThresholdSettings"
 import { ConfirmDeliveryDialog } from "./components/ConfirmDeliveryDialog"
 import { useBossDeliveryActions } from "./hooks/useBossDeliveryActions"
+import { useBossAnalysisTasks } from "./hooks/useBossAnalysisTasks"
 import { useBossFilters } from "./hooks/useBossFilters"
 import { useBossJobs } from "./hooks/useBossJobs"
 import { useBossStats } from "./hooks/useBossStats"
@@ -82,6 +83,18 @@ export default function AnalysisContent({
     clearStats,
   } = useBossStats({ filters, activeScanRunId, buildFilterParams })
 
+  const {
+    taskByJobId,
+    queueSize: analysisQueueSize,
+    pendingCount: analysisPendingCount,
+    processingCount: analysisProcessingCount,
+    loading: loadingAnalysisTasks,
+    retryingTaskId,
+    error: analysisTaskError,
+    pollRevision,
+    retryTask: retryAnalysisTask,
+  } = useBossAnalysisTasks()
+
   const openTextDialog = useCallback((title: string, content?: string) => {
     setDialogTitle(title)
     setDialogContent(content || "")
@@ -92,6 +105,19 @@ export default function AnalysisContent({
     await loadStats()
     await loadDashboardStats()
   }, [loadDashboardStats, loadStats])
+
+  const handleRetryAnalysisJob = useCallback(async (job: BossJob) => {
+    const task = taskByJobId.get(job.id)
+    if (!task || (task.status !== "FAILED" && task.status !== "UNKNOWN")) {
+      openTextDialog("重试AI分析", "没有找到可重试的失败任务，请先刷新任务状态。")
+      return
+    }
+    if (task.status === "UNKNOWN" && !window.confirm(
+      "该任务上次执行结果未知，重新分析可能再次消耗一次 AI 调用。确认重试吗？",
+    )) return
+    const result = await retryAnalysisTask(task)
+    openTextDialog(result.success ? "AI分析已重新排队" : "AI分析重试失败", result.message)
+  }, [openTextDialog, retryAnalysisTask, taskByJobId])
 
   const {
     actingJobId,
@@ -205,6 +231,13 @@ export default function AnalysisContent({
   }, [refreshSignal])
 
   useEffect(() => {
+    if (!pollRevision) return
+    loadList(page, size)
+    refreshStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollRevision])
+
+  useEffect(() => {
     loadList(1, size)
     refreshStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -255,6 +288,14 @@ export default function AnalysisContent({
             />
           </div>
           <BossThresholdSettings />
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-xs text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-100">
+            <span className="font-semibold">AI分析队列</span>
+            <span>排队中 {analysisPendingCount}</span>
+            <span>处理中 {analysisProcessingCount}</span>
+            {loadingAnalysisTasks ? <span className="text-muted-foreground">读取中...</span> : null}
+            {analysisQueueSize > 0 ? <span className="text-muted-foreground">页面可见时每 3 秒自动刷新</span> : null}
+            {analysisTaskError ? <span className="text-red-600 dark:text-red-300">{analysisTaskError}</span> : null}
+          </div>
         </CardHeader>
         <CardContent>
           <BossFilterPanel
@@ -306,6 +347,9 @@ export default function AnalysisContent({
             onConfirmJob={(job) => openGreetingDialog(job, true)}
             onReconcileJob={handleReconcileJob}
             onRetryJob={handleRetryJob}
+            analysisTaskByJobId={taskByJobId}
+            retryingAnalysisTaskId={retryingTaskId}
+            onRetryAnalysisJob={handleRetryAnalysisJob}
             onSkipJob={handleSkipJob}
             onLoadList={loadList}
             onInputPageChange={setInputPage}

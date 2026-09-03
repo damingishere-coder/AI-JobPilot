@@ -58,6 +58,54 @@ class JobAnalysisTaskStoreTest {
         assertThat(otherProfile.created()).isTrue();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL", Integer.class)).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT task_key FROM job_analysis_task WHERE id=?", String.class, first.task().id()))
+                .startsWith("ai:v2:");
+    }
+
+    @Test
+    void compatibleBatchSelectionKeepsProfileAndPlatformIsolated() {
+        store.submit(request(1L, "boss", "boss-one", "run-a"));
+        store.submit(request(1L, "boss", "boss-two", "run-a"));
+        store.submit(request(1L, "zhilian", "zhilian-one", "run-a"));
+        store.submit(request(2L, "boss", "boss-other-profile", "run-a"));
+
+        List<JobAnalysisTaskStore.TaskRecord> compatible =
+                store.listCompatibleDuePending(1L, "BOSS", 4);
+
+        assertThat(compatible).hasSize(2);
+        assertThat(compatible).extracting(JobAnalysisTaskStore.TaskRecord::profileId).containsOnly(1L);
+        assertThat(compatible).extracting(JobAnalysisTaskStore.TaskRecord::platform).containsOnly("boss");
+        assertThat(store.pendingCount(1L)).isEqualTo(3);
+        assertThat(store.pendingCount(1L, "boss")).isEqualTo(2);
+        assertThat(store.pendingCount(1L, "zhilian")).isEqualTo(1);
+        assertThat(store.outstandingCount(1L, "boss")).isEqualTo(2);
+        assertThat(store.listRecent(1L, "boss", 10))
+                .extracting(JobAnalysisTaskStore.TaskView::platform)
+                .containsOnly("boss");
+        assertThat(store.processingCount(1L)).isZero();
+    }
+
+    @Test
+    void changedResumeCreatesAFreshV2TaskForTheSameJob() {
+        JobAiAnalysisService.JobAnalysisRequest initialRequest = request(1L, "boss", "job-resume", "run-a");
+        jdbcTemplate.update("INSERT INTO resume_profile(profile_id, resume_text, updated_at) VALUES (?, ?, ?)",
+                1L, "三年 Java 经验", "2026-09-03 10:00:00.000");
+        JobAnalysisTaskStore.SubmitResult first = store.submit(initialRequest);
+        assertThat(store.claim(first.task().id(), "lease-first", Duration.ofMinutes(1))).isNotNull();
+        assertThat(store.complete(first.task().id(), "lease-first", false, "ok")).isTrue();
+
+        jdbcTemplate.update("UPDATE resume_profile SET resume_text=?, updated_at=? WHERE profile_id=?",
+                "五年 Java 与 Spring Boot 经验", "2026-09-03 10:01:00.000", 1L);
+        JobAnalysisTaskStore.SubmitResult second = store.submit(request(1L, "boss", "job-resume", "run-b"));
+
+        assertThat(second.created()).isTrue();
+        assertThat(second.task().id()).isNotEqualTo(first.task().id());
+        String firstTaskKey = jdbcTemplate.queryForObject(
+                "SELECT task_key FROM job_analysis_task WHERE id=?", String.class, first.task().id());
+        String secondTaskKey = jdbcTemplate.queryForObject(
+                "SELECT task_key FROM job_analysis_task WHERE id=?", String.class, second.task().id());
+        assertThat(secondTaskKey).isNotEqualTo(firstTaskKey);
     }
 
     @Test
