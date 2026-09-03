@@ -124,6 +124,21 @@ public class AiService {
     }
 
     /**
+     * 请求符合 JSON Schema 的结构化结果。本地 Codex CLI 使用其原生
+     * --output-schema 能力；其他兼容 Provider 保持原有请求协议并由调用方继续校验结果。
+     */
+    public String sendStructuredRequest(String content, String outputSchema) {
+        if (outputSchema == null || outputSchema.isBlank()) {
+            throw new IllegalArgumentException("结构化输出 Schema 不能为空");
+        }
+        var cfg = configService.getAiConfigs();
+        if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
+            return codexCliService.generateStructuredText(content, outputSchema, cfg);
+        }
+        return sendRequest(content);
+    }
+
+    /**
      * 使用配置的视觉模型从图片简历中提取结构化文本。
      */
     public String extractResumeFromImage(byte[] imageBytes, String mimeType) {

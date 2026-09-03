@@ -50,6 +50,21 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
+    private static final String JOB_ANALYSIS_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "score": {"type": "integer"},
+                "decision": {"type": "string", "enum": ["APPLY", "SKIP"]},
+                "summary": {"type": "string"},
+                "strengths": {"type": "array", "items": {"type": "string"}},
+                "risks": {"type": "array", "items": {"type": "string"}},
+                "greeting": {"type": "string"}
+              },
+              "required": ["score", "decision", "summary", "strengths", "risks", "greeting"],
+              "additionalProperties": false
+            }
+            """;
     public static final int DEFAULT_APPLY_THRESHOLD = 75;
     public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
@@ -253,7 +268,7 @@ public class JobAiAnalysisService {
         String prompt = buildPrompt(resumeText, request, priority, threshold);
         String raw;
         try {
-            raw = aiService.sendRequest(prompt);
+            raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
             AnalysisResult result = parseResult(raw);
             result.setPriorityCompany(priority);
             result.setThreshold(threshold);

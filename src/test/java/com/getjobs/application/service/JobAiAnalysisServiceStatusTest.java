@@ -223,7 +223,7 @@ class JobAiAnalysisServiceStatusTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(result.getSummary()).contains("未调用 AI Provider");
-        verify(aiService, never()).sendRequest(any());
+        verify(aiService, never()).sendStructuredRequest(any(), any());
     }
 
     @Test
@@ -232,7 +232,7 @@ class JobAiAnalysisServiceStatusTest {
         request.setJobRowId(99L);
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":90,"decision":"APPLY","summary":"旧租约结果","strengths":[],"risks":[],"greeting":"你好"}
                 """);
         AtomicInteger guardedWrites = new AtomicInteger();
@@ -250,7 +250,7 @@ class JobAiAnalysisServiceStatusTest {
         );
 
         assertThat(result.isStaleLease()).isTrue();
-        verify(aiService).sendRequest(any());
+        verify(aiService).sendStructuredRequest(any(), any());
         verify(jobAiAnalysisMapper, never()).insert(any(com.getjobs.application.entity.JobAiAnalysisEntity.class));
         verify(bossJobDataMapper, times(1)).update(any(), any(UpdateWrapper.class));
     }
@@ -259,7 +259,7 @@ class JobAiAnalysisServiceStatusTest {
     void manualZhilianAnalyzeApplyEndsWaitingConfirm() {
         when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":90,"decision":"APPLY","summary":"匹配","strengths":["经验匹配"],"risks":[],"greeting":"你好"}
                 """);
 
@@ -276,7 +276,7 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":60,"decision":"SKIP","summary":"达到自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -287,8 +287,11 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(result.getDecision()).isEqualTo("APPLY");
         assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-        verify(aiService).sendRequest(prompt.capture());
+        ArgumentCaptor<String> schema = ArgumentCaptor.forClass(String.class);
+        verify(aiService).sendStructuredRequest(prompt.capture(), schema.capture());
         assertThat(prompt.getValue()).contains("当前阈值为60");
+        assertThat(schema.getValue())
+                .contains("\"required\"", "\"score\"", "\"decision\"", "\"additionalProperties\": false");
     }
 
     @Test
@@ -296,7 +299,7 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":59,"decision":"APPLY","summary":"低于自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -314,7 +317,7 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":50,"decision":"SKIP","summary":"达到优先公司分数线","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -347,7 +350,7 @@ class JobAiAnalysisServiceStatusTest {
     void repairsMarkdownWrappedAiJsonAndKeepsWaitingConfirmFlow() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 ```json
                 {score:88, decision:"APPLY", summary:"匹配", strengths:["Java"], risks:[], greeting:"你好",}
                 ```
@@ -365,7 +368,7 @@ class JobAiAnalysisServiceStatusTest {
     void emptyProviderOutputBecomesExplicitAiFailureInsteadOfSkip() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("   ");
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("   ");
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -379,7 +382,7 @@ class JobAiAnalysisServiceStatusTest {
     void missingRequiredOutputFieldBecomesExplicitAiFailure() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":80,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[]}
                 """);
 
@@ -394,7 +397,7 @@ class JobAiAnalysisServiceStatusTest {
     void invalidScoreAndArrayElementTypesAreRejected() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any()))
+        when(aiService.sendStructuredRequest(any(), any()))
                 .thenReturn("""
                         {"score":101,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
                         """)
@@ -413,7 +416,7 @@ class JobAiAnalysisServiceStatusTest {
     void invalidJsonAndDecisionAreRejected() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any()))
+        when(aiService.sendStructuredRequest(any(), any()))
                 .thenReturn("not-json-at-all")
                 .thenReturn("""
                         {"score":80,"decision":"MAYBE","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
@@ -431,7 +434,7 @@ class JobAiAnalysisServiceStatusTest {
         String marker = "sensitive-response-marker";
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":88,"decision":"APPLY","summary":"sensitive-response-marker","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -451,7 +454,7 @@ class JobAiAnalysisServiceStatusTest {
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(jobAiAnalysisMapper.insert(any(JobAiAnalysisEntity.class))).thenReturn(0);
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1);
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -468,7 +471,7 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.AI_ANALYZING));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1, 1, 1);
-        when(aiService.sendRequest(any())).thenReturn("""
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("""
                 {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
                 """);
 
@@ -488,14 +491,14 @@ class JobAiAnalysisServiceStatusTest {
                         DeliveryStatus.AI_ANALYZING,
                         DeliveryStatus.WAITING_CONFIRM
                 );
-        verify(aiService, times(2)).sendRequest(any());
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
     @Test
     void providerTimeoutIsPersistedAsUnknownOutcome() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenThrow(new AiProviderException(
+        when(aiService.sendStructuredRequest(any(), any())).thenThrow(new AiProviderException(
                 AiProviderException.Code.TIMEOUT,
                 "AI Provider 请求超时（requestId=test-request）",
                 null,

@@ -25,6 +25,13 @@ public class CodexCliService {
         return run(content, (Path) null, config);
     }
 
+    public String generateStructuredText(String content, String outputSchema, Map<String, String> config) {
+        if (outputSchema == null || outputSchema.isBlank()) {
+            throw new IllegalArgumentException("Codex CLI 结构化输出 Schema 不能为空");
+        }
+        return run(content, List.of(), outputSchema, config);
+    }
+
     public String extractResumeFromImage(byte[] imageBytes, String mimeType, Map<String, String> config) {
         if (imageBytes == null || imageBytes.length == 0) {
             throw new IllegalArgumentException("图片内容不能为空");
@@ -81,6 +88,10 @@ public class CodexCliService {
     }
 
     String run(String content, List<Path> imagePaths, Map<String, String> config) {
+        return run(content, imagePaths, null, config);
+    }
+
+    String run(String content, List<Path> imagePaths, String outputSchema, Map<String, String> config) {
         String executable = resolveExecutable(value(config, "CODEX_PATH", "codex"));
         String model = value(config, "CODEX_MODEL", "gpt-5.6-sol");
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
@@ -88,12 +99,18 @@ public class CodexCliService {
 
         Path tempDirectory = null;
         Path outputPath = null;
+        Path outputSchemaPath = null;
         Process process = null;
         boolean slotAcquired = false;
         try {
             tempDirectory = Files.createTempDirectory("jobpilot-codex-");
             outputPath = tempDirectory.resolve("final.txt");
-            List<String> command = buildCommandWithImages(executable, model, tempDirectory, outputPath, imagePaths);
+            if (outputSchema != null && !outputSchema.isBlank()) {
+                outputSchemaPath = tempDirectory.resolve("output-schema.json");
+                Files.writeString(outputSchemaPath, outputSchema, StandardCharsets.UTF_8);
+            }
+            List<String> command = buildCommandWithImages(
+                    executable, model, tempDirectory, outputPath, imagePaths, outputSchemaPath);
             ProcessBuilder builder = new ProcessBuilder(command)
                     .directory(tempDirectory.toFile())
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -143,6 +160,7 @@ public class CodexCliService {
                 CODEX_SLOTS.release();
             }
             deleteQuietly(outputPath);
+            deleteQuietly(outputSchemaPath);
             deleteQuietly(tempDirectory);
         }
     }
@@ -164,6 +182,17 @@ public class CodexCliService {
             Path outputPath,
             List<Path> imagePaths
     ) {
+        return buildCommandWithImages(executable, model, workingDirectory, outputPath, imagePaths, null);
+    }
+
+    List<String> buildCommandWithImages(
+            String executable,
+            String model,
+            Path workingDirectory,
+            Path outputPath,
+            List<Path> imagePaths,
+            Path outputSchemaPath
+    ) {
         List<String> command = new ArrayList<>();
         addExecutable(command, executable);
         command.add("exec");
@@ -178,6 +207,10 @@ public class CodexCliService {
         if (imagePaths != null && !imagePaths.isEmpty()) {
             command.add("--image");
             imagePaths.forEach(path -> command.add(path.toString()));
+        }
+        if (outputSchemaPath != null) {
+            command.add("--output-schema");
+            command.add(outputSchemaPath.toString());
         }
         command.add("--output-last-message");
         command.add(outputPath.toString());
