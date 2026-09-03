@@ -16,6 +16,19 @@ function readContentVersion(file) {
 const BOSS_CONTENT_VERSION = readContentVersion("boss-content.js");
 const ZHILIAN_CONTENT_VERSION = readContentVersion("zhilian-content.js");
 
+function jsonResponse(body, { ok = true, status = 200 } = {}) {
+  return {
+    ok,
+    status,
+    headers: {
+      get(name) {
+        return String(name).toLowerCase() === "content-type" ? "application/json; charset=utf-8" : null;
+      }
+    },
+    async text() { return JSON.stringify(body); }
+  };
+}
+
 function loadBackground({
   tabs,
   statuses = {},
@@ -253,11 +266,7 @@ test("allows Zhilian job submission through the fixed local API route", async ()
     tabs: [],
     fetchImpl: async (url, options) => {
       requests.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        async text() { return JSON.stringify({ success: true, saved: 1 }); }
-      };
+      return jsonResponse({ success: true, received: 1, saved: 1, queued: 1 });
     }
   });
 
@@ -273,7 +282,7 @@ test("allows Zhilian job submission through the fixed local API route", async ()
   assert.equal(response.success, true);
   assert.equal(response.data.saved, 1);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "http://localhost:6866/api/zhilian/chrome/jobs");
+  assert.equal(requests[0].url, "http://localhost:8888/api/zhilian/chrome/jobs");
   assert.equal(requests[0].options.method, "POST");
 });
 
@@ -283,7 +292,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
     tabs: [],
     fetchImpl: async (url) => {
       urls.push(url);
-      return { ok: true, status: 200, async text() { return '{"success":true}'; } };
+      return jsonResponse({ success: true, accepted: true, state: "CONFIRMED" });
     }
   });
   const sender = { tab: { id: 9, url: "https://www.zhaopin.com/jobdetail/demo.htm" } };
@@ -293,7 +302,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
     type: "ZHILIAN_LOCAL_API",
     operation: "delivery-result",
     params: { id: 123 },
-    body: { success: true }
+    body: { outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT" }
   }, sender);
   const invalidId = await dispatchRuntimeMessage(runtimeMessageListener, {
     source: "GET_JOBS_ZHILIAN_CONTENT",
@@ -309,7 +318,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
   }, sender);
 
   assert.equal(allowed.success, true);
-  assert.equal(urls[0], "http://localhost:6866/api/zhilian/jobs/123/delivery-result");
+  assert.equal(urls[0], "http://localhost:8888/api/zhilian/jobs/123/delivery-result");
   assert.equal(invalidId.success, false);
   assert.match(invalidId.message, /有效岗位ID/);
   assert.equal(unknown.success, false);
@@ -320,11 +329,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
 test("treats HTTP 200 business rejection as a failed local API request", async () => {
   const { context } = loadBackground({
     tabs: [],
-    fetchImpl: async () => ({
-      ok: true,
-      status: 200,
-      async text() { return JSON.stringify({ success: false, message: "状态已变化" }); }
-    })
+    fetchImpl: async () => jsonResponse({ success: false, message: "状态已变化" })
   });
 
   const result = await context.requestLocalApi("/api/boss/jobs/1/delivery-result", {
@@ -344,7 +349,7 @@ test("records an empty Boss chat-page response as unknown instead of confirmed",
     tabs: [{ id: 7, windowId: 1, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
     fetchImpl: async (url, options) => {
       requests.push({ url, body: JSON.parse(options.body) });
-      return { ok: true, status: 200, async text() { return '{"success":true}'; } };
+      return jsonResponse({ success: true, accepted: true, state: "UNKNOWN" });
     }
   });
 
@@ -376,11 +381,10 @@ test("does not upgrade legacy success booleans to confirmed without explicit evi
 test("surfaces delivery-result persistence failure instead of reporting a stored outcome", async () => {
   const { context } = loadBackground({
     tabs: [],
-    fetchImpl: async () => ({
-      ok: false,
-      status: 500,
-      async text() { return JSON.stringify({ success: false, message: "database unavailable" }); }
-    })
+    fetchImpl: async () => jsonResponse(
+      { success: false, message: "database unavailable" },
+      { ok: false, status: 500 }
+    )
   });
 
   await assert.rejects(

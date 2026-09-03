@@ -473,6 +473,35 @@ public class ZhilianController {
         ));
     }
 
+    @PostMapping("/chrome/jobs/dedupe")
+    public ResponseEntity<Map<String, Object>> dedupeChromeJobs(@RequestBody ChromeJobBatchRequest request) {
+        List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
+        List<Map<String, Object>> items = new ArrayList<>();
+        int duplicateCount = 0;
+        for (ChromeJobDto dto : jobs) {
+            String id = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractUrlId(dto.getUrl()));
+            String title = dto == null ? "" : Objects.toString(dto.getTitle(), "").trim();
+            String company = dto == null ? "" : Objects.toString(dto.getCompany(), "").trim();
+            boolean duplicate = (!isBlank(id) && zhilianService.existsByJobId(id))
+                    || (!title.isBlank() && !company.isBlank() && zhilianService.existsByTitleAndCompany(title, company));
+            if (duplicate) duplicateCount++;
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", Objects.toString(id, ""));
+            item.put("url", dto == null ? "" : Objects.toString(dto.getUrl(), ""));
+            item.put("title", title);
+            item.put("company", company);
+            item.put("duplicate", duplicate);
+            item.put("action", duplicate ? "SKIP" : "NEW");
+            items.add(item);
+        }
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "items", items,
+                "duplicateCount", duplicateCount,
+                "newCount", Math.max(0, jobs.size() - duplicateCount)
+        ));
+    }
+
     @PostMapping("/chrome/stop")
     public ResponseEntity<Map<String, Object>> stopChromeZhilian(@RequestBody(required = false) Map<String, Object> payload) {
         String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");

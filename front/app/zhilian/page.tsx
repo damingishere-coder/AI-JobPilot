@@ -14,7 +14,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
+import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
 
 interface ZhilianConfig {
   id?: number
@@ -48,43 +50,6 @@ const OFFICIAL_ZHILIAN_SALARY_CODES = new Set([
   '50001,9999999',
 ])
 const ZHILIAN_KEYWORD_REQUIRED_MESSAGE = '请至少填写一个搜索关键词'
-
-const normalizeKeywordTokens = (value: unknown): string[] => {
-  const keywords: string[] = []
-
-  const append = (rawValue: unknown) => {
-    if (Array.isArray(rawValue)) {
-      rawValue.forEach(append)
-      return
-    }
-
-    const raw = String(rawValue ?? '').trim()
-    if (!raw) return
-    if (raw.startsWith('[') && raw.endsWith(']')) {
-      try {
-        const parsed: unknown = JSON.parse(raw)
-        if (Array.isArray(parsed)) {
-          parsed.forEach(append)
-          return
-        }
-      } catch {
-        append(raw.slice(1, -1))
-        return
-      }
-    }
-
-    raw.split(/[,，;；\n\r]+/).forEach((item) => {
-      const keyword = item.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '').trim()
-      if (!keyword) return
-      if (!keywords.some((existing) => existing.toLocaleLowerCase() === keyword.toLocaleLowerCase())) {
-        keywords.push(keyword)
-      }
-    })
-  }
-
-  append(value)
-  return keywords
-}
 
 const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
@@ -129,6 +94,7 @@ export default function ZhilianPage() {
   const [hasProfile, setHasProfile] = useState(false)
 
   const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: DEFAULT_ZHILIAN_CITY_CODE, salary: DEFAULT_ZHILIAN_SALARY_CODE, searchJobLimit: 20 })
+  const [recommendedKeywords, setRecommendedKeywords] = useState<string[]>([])
   const [searchJobLimitInput, setSearchJobLimitInput] = useState('20')
   const [options, setOptions] = useState<ZhilianOptions>({ city: [], salary: [] })
   const [configWarnings, setConfigWarnings] = useState<Record<string, string>>({})
@@ -369,18 +335,23 @@ export default function ZhilianPage() {
 
   // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
-    return normalizeKeywordTokens(raw).join(', ')
-  }
-
-  const serializeKeywordsForDb = (display?: unknown): string => {
-    return JSON.stringify(normalizeKeywordTokens(display))
+    return serializeJobKeywords(normalizeKeywordTokens(raw))
   }
 
   const fetchAllData = async () => {
     setLoadingConfig(true)
     try {
-      const res = await fetch(`${API_BASE}/api/zhilian/config`)
+      const [res, recommendationResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/zhilian/config`),
+        fetch(`${API_BASE}/api/ai/job-keywords`).catch(() => null),
+      ])
       const data = await res.json()
+      if (recommendationResponse?.ok) {
+        const recommendationEnvelope = await recommendationResponse.json() as { data?: { keywords?: string[] } }
+        setRecommendedKeywords(normalizeKeywordTokens(recommendationEnvelope.data?.keywords))
+      } else {
+        setRecommendedKeywords([])
+      }
       const nextOptions: ZhilianOptions = {
         city: Array.isArray(data.options?.city) ? data.options.city : [],
         salary: Array.isArray(data.options?.salary) ? data.options.salary : [],
@@ -472,6 +443,12 @@ export default function ZhilianPage() {
       if (!keywords.length) {
         appendProgressLog({ type: 'error', message: ZHILIAN_KEYWORD_REQUIRED_MESSAGE })
         alert(ZHILIAN_KEYWORD_REQUIRED_MESSAGE)
+        return
+      }
+      if (keywords.length > MAX_JOB_KEYWORDS) {
+        const message = `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再开始扫描。`
+        appendProgressLog({ type: 'error', message })
+        alert(message)
         return
       }
       if (!hasProfile) {
@@ -586,7 +563,7 @@ export default function ZhilianPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           runId: `zhilian-openclaw-${Date.now()}`,
-          keyword: probeData.keyword || config.keywords,
+          keyword: probeData.keyword || normalizeKeywordTokens(config.keywords)[0] || '',
           autoDeliver: false,
           jobs,
         }),
@@ -662,6 +639,11 @@ export default function ZhilianPage() {
       setShowSaveDialog(true)
       return
     }
+    if (keywords.length > MAX_JOB_KEYWORDS) {
+      setSaveResult({ success: false, message: `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再保存。` })
+      setShowSaveDialog(true)
+      return
+    }
     if (!hasProfile) {
       setSaveResult({ success: false, message: '请先在简历配置页新建档案。' })
       setShowSaveDialog(true)
@@ -685,7 +667,7 @@ export default function ZhilianPage() {
         ...config,
         cityCode,
         salary,
-        keywords: serializeKeywordsForDb(keywords),
+        keywords: serializeJobKeywords(keywords),
         searchJobLimit,
       }
       setConfig((current) => ({ ...current, cityCode, salary, searchJobLimit }))
@@ -735,14 +717,14 @@ export default function ZhilianPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
+	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> 开始扫描
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={handleSaveConfig} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
+            <Button onClick={handleSaveConfig} size="sm" disabled={!hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -832,11 +814,11 @@ export default function ZhilianPage() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>搜索关键词（逗号分隔）</Label>
-                    <Input
-                      placeholder="如：Java, 后端, Spring"
-                      value={config.keywords || ''}
-                      onChange={(e) => setConfig((c) => ({ ...c, keywords: e.target.value }))}
+                    <Label>搜索关键词</Label>
+                    <KeywordTagInput
+                      value={normalizeKeywordTokens(config.keywords)}
+                      onChange={(keywords) => setConfig((current) => ({ ...current, keywords: serializeJobKeywords(keywords) }))}
+                      recommendations={recommendedKeywords}
                       disabled={!hasProfile}
                     />
                     {!normalizeKeywordTokens(config.keywords).length && (

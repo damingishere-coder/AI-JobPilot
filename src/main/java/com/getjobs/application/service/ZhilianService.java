@@ -67,8 +67,7 @@ public class ZhilianService {
             return config;
         }
 
-        // 关键词解析：支持逗号或括号列表
-        config.setKeywords(parseListString(entity.getKeywords()));
+        config.setKeywords(JobKeywordCodec.parse(entity.getKeywords()));
         config.setSearchJobLimit(normalizeSearchJobLimit(entity.getSearchJobLimit()));
         config.setCityCode(normalizeCityCode(entity.getCityCode()));
         config.setSalary(normalizeSalaryCode(entity.getSalary()));
@@ -105,6 +104,9 @@ public class ZhilianService {
     public ZhilianConfigEntity updateConfig(ZhilianConfigEntity config) {
         if (config == null) return null;
         config.setId(null);
+        if (config.getKeywords() != null) {
+            config.setKeywords(JobKeywordCodec.validateAndSerialize(config.getKeywords()));
+        }
         config.setCityCode(normalizeCityCode(config.getCityCode()));
         config.setSalary(normalizeSalaryCode(config.getSalary()));
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));

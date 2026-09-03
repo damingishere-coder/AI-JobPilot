@@ -32,14 +32,14 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-08-01-consolidated-scan-fix";
+const BACKGROUND_VERSION = "2026-09-03-keyword-cors-recovery";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-08-01-consolidated-boss-api";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-29-zhilian-security-resume-fix";
-const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-keyword-deep-fill";
+const LOCAL_API_BASE_URLS = ["http://localhost:8888", "http://127.0.0.1:8888", "http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
 const ALLOWED_PAGE_ORIGINS = new Set([
@@ -419,6 +419,9 @@ function resolveBossLocalApiEndpoint(message) {
 
 function resolveZhilianLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "chrome-jobs-dedupe") {
+    return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs/dedupe" };
+  }
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs" };
   }
@@ -447,18 +450,20 @@ async function requestLocalApi(path, options = {}) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
         const data = await parseLocalApiResponse(response);
+        if (data.success === false) {
+          return {
+            success: false,
+            httpStatus: response.status,
+            data,
+            message: data.message || "本地接口拒绝了本次请求",
+            errorType: "BUSINESS_REJECTED",
+            attempt,
+            baseUrl
+          };
+        }
+        const expectedState = options.expectedState || String(options.body?.outcome || "").toUpperCase();
+        assertExpectedLocalApiPayload(data, options.operation, expectedState);
         if (response.ok) {
-          if (data && data.success === false) {
-            return {
-              success: false,
-              httpStatus: response.status,
-              data,
-              message: data.message || "本地接口拒绝了本次请求",
-              errorType: "BUSINESS_REJECTED",
-              attempt,
-              baseUrl
-            };
-          }
           return { success: true, httpStatus: response.status, data, attempt, baseUrl };
         }
         lastError = new Error(data?.message || `本地接口返回 HTTP ${response.status}`);
@@ -502,12 +507,39 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function parseLocalApiResponse(response) {
+  const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    throw new Error(`本地接口契约不匹配：Content-Type=${contentType || "missing"}`);
+  }
   const text = await response.text();
-  if (!text) return {};
+  if (!text) throw new Error("本地接口契约不匹配：JSON 响应为空");
+  let data;
   try {
-    return JSON.parse(text);
+    data = JSON.parse(text);
   } catch {
-    return { message: text };
+    throw new Error("本地接口契约不匹配：响应不是合法 JSON");
+  }
+  if (!data || Array.isArray(data) || typeof data !== "object" || typeof data.success !== "boolean") {
+    throw new Error("本地接口契约不匹配：缺少 success 业务字段");
+  }
+  return data;
+}
+
+function assertExpectedLocalApiPayload(data, operation, expectedState) {
+  const name = String(operation || "");
+  if (name === "chrome-jobs" && !["received", "saved", "queued"].every((field) => Number.isFinite(Number(data[field])))) {
+    throw new Error("本地接口契约不匹配：岗位批次响应缺少 received/saved/queued");
+  }
+  if (name === "chrome-jobs-dedupe" && !Array.isArray(data.items)) {
+    throw new Error("本地接口契约不匹配：岗位查重响应缺少 items");
+  }
+  if (name === "ai-keywords" && !Array.isArray(data.keywords)) {
+    throw new Error("本地接口契约不匹配：AI 关键词响应缺少 keywords");
+  }
+  if (name === "delivery-result"
+      && (data.accepted !== true || !["CONFIRMED", "FAILED", "UNKNOWN"].includes(expectedState)
+        || data.state !== expectedState)) {
+    throw new Error("本地接口契约不匹配：投递回写必须 accepted=true 且 state 与请求一致");
   }
 }
 
@@ -524,7 +556,7 @@ function isRetryableLocalApiStatus(status) {
 function friendlyLocalApiError(error) {
   const message = error?.message || String(error || "");
   if (error?.name === "AbortError" || /abort/i.test(message)) return "请求超时，请确认本地服务仍在运行";
-  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地服务，请确认 6866 端口正常";
+  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return "无法连接本地后端，请确认 8888 端口正常";
   return message || "未知网络错误";
 }
 

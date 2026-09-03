@@ -56,6 +56,7 @@ type GeneratedAiConfig = {
   introduce?: string
   prompt?: string
   sayHi?: string
+  recommendedKeywords?: string[]
 }
 
 type ResumeParsePreview = {
@@ -431,8 +432,9 @@ export default function AiConfigPage() {
         skipResume: true,
         showAlert: false,
       })
-      setStatusMessage('已提交简历并生成AI配置')
-      alert('已提交简历，并生成打招呼话术和AI配置！')
+      const keywordCount = Array.isArray(result.data?.recommendedKeywords) ? result.data.recommendedKeywords.length : 0
+      setStatusMessage(`已提交简历并生成AI配置和 ${keywordCount} 个岗位关键词`)
+      alert(`已提交简历，并生成打招呼话术、AI配置和 ${keywordCount} 个岗位关键词！请到 Boss 或智联页面点击选择。`)
     } catch (error) {
       alert(friendlyApiError(error, '提交简历并生成AI配置失败'))
     } finally {

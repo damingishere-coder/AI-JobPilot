@@ -4,18 +4,13 @@ import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.entity.BossOptionEntity;
 import com.getjobs.application.service.ProfileService;
 import com.getjobs.application.service.BossService;
+import com.getjobs.application.service.JobKeywordCodec;
 import com.getjobs.application.entity.BlacklistEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.stream.Collectors;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api/boss/config")
@@ -81,7 +76,9 @@ public class BossConfigController {
   @PutMapping
   public Map<String, Object> updateConfig(@RequestBody BossConfigEntity config) {
         // 关键词标准化：将来自前端的逗号分隔或括号列表统一转换为 JSON 字符串列表
-        config.setKeywords(normalizeKeywords(config.getKeywords()));
+        if (config.getKeywords() != null) {
+            config.setKeywords(JobKeywordCodec.validateAndSerialize(config.getKeywords()));
+        }
         if (config.getAutoDeliver() == null) {
             config.setAutoDeliver(0);
         }
@@ -139,48 +136,6 @@ public class BossConfigController {
         result.put("message", "Boss配置保存成功");
         return result;
   }
-
-    /**
-     * 将关键词字符串标准化为 JSON 字符串列表。
-     * 支持输入形式：
-     * 1) 逗号分隔："大模型, Python, Golang"
-     * 2) 中文逗号："大模型，Python，Golang"
-     * 3) 括号列表："[大模型,Python]" 或 "[\"大模型\",\"Python\"]"
-     * 4) JSON 数组："["大模型","Python"]"
-     */
-    private String normalizeKeywords(String raw) {
-        if (raw == null) return null;
-        String s = raw.trim();
-        if (s.isEmpty()) return "[]";
-
-        ObjectMapper mapper = new ObjectMapper();
-        // 优先尝试 JSON 解析
-        if (s.startsWith("[") && s.endsWith("]")) {
-            try {
-                JsonNode node = mapper.readTree(s);
-                if (node.isArray()) {
-                    java.util.List<String> list = new ArrayList<>();
-                    node.forEach(it -> list.add(it.asText().trim()));
-                    return mapper.writeValueAsString(list);
-                }
-            } catch (Exception ignore) {
-                // 非严格 JSON，继续走分隔解析
-            }
-            // 去除括号后按逗号拆分
-            s = s.substring(1, s.length() - 1);
-        }
-
-        java.util.List<String> items = Arrays.stream(s.split("[,，]"))
-                .map(String::trim)
-                .filter(v -> !v.isEmpty())
-                .map(v -> v.replaceAll("^\"|\"$", ""))
-                .collect(Collectors.toList());
-        try {
-            return mapper.writeValueAsString(items);
-        } catch (Exception e) {
-            return "[]";
-        }
-    }
 
     /**
      * 获取指定类型的选项列表

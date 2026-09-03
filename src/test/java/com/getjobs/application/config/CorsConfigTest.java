@@ -1,16 +1,55 @@
 package com.getjobs.application.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.filter.CorsFilter;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.Base64;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class CorsConfigTest {
 
     private final CorsFilter corsFilter = new CorsConfig().corsFilter();
+
+    @Test
+    void manifestPublicKeyMatchesBackendExtensionId() throws Exception {
+        Path manifestPath = Path.of(System.getProperty("user.dir"), "chrome-extension", "manifest.json");
+        JsonNode manifest = new ObjectMapper().readTree(Files.readString(manifestPath));
+        byte[] publicKey = Base64.getDecoder().decode(manifest.path("key").asText());
+        byte[] hash = MessageDigest.getInstance("SHA-256").digest(publicKey);
+        StringBuilder id = new StringBuilder();
+        for (int index = 0; index < 16; index++) {
+            id.append((char) ('a' + ((hash[index] >>> 4) & 0x0f)));
+            id.append((char) ('a' + (hash[index] & 0x0f)));
+        }
+        assertThat(id.toString()).isEqualTo(CorsConfig.CHROME_EXTENSION_ID);
+    }
+
+    @Test
+    void allowsStableChromeExtensionForBossAndZhilianEndpoints() throws Exception {
+        for (String path : new String[]{
+                "/api/boss/chrome/jobs",
+                "/api/boss/chrome/jobs/dedupe",
+                "/api/boss/ai-keywords",
+                "/api/boss/jobs/123/delivery-result",
+                "/api/zhilian/chrome/jobs",
+                "/api/zhilian/chrome/jobs/dedupe",
+                "/api/zhilian/jobs/123/delivery-result"
+        }) {
+            MockHttpServletResponse response = preflight(path, CorsConfig.CHROME_EXTENSION_ORIGIN);
+            assertThat(response.getStatus()).as(path).isEqualTo(200);
+            assertThat(response.getHeader("Access-Control-Allow-Origin"))
+                    .as(path).isEqualTo(CorsConfig.CHROME_EXTENSION_ORIGIN);
+        }
+    }
 
     @Test
     void rejectsUnknownChromeExtensionForBossCollectionEndpoint() throws Exception {
@@ -26,6 +65,16 @@ class CorsConfigTest {
     void rejectsUnknownChromeExtensionForBossDeliveryResultEndpoint() throws Exception {
         MockHttpServletResponse response = preflight(
                 "/api/boss/jobs/123/delivery-result",
+                "chrome-extension://abcdefghijklmnop"
+        );
+
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void rejectsUnknownChromeExtensionForZhilianCollectionEndpoint() throws Exception {
+        MockHttpServletResponse response = preflight(
+                "/api/zhilian/chrome/jobs",
                 "chrome-extension://abcdefghijklmnop"
         );
 

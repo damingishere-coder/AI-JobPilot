@@ -1,8 +1,10 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-02-boss-history-reuse";
+  const SUPPORT_VERSION = "2026-09-03-keyword-deep-fill";
   if (root.GetJobsBossScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;
+  const DEEP_COLLECTION_MAX_DURATION_MS = 180 * 1000;
+  const DEEP_COLLECTION_MAX_STAGNANT_ROUNDS = 5;
   const DEGREE_NAME_BY_CODE = Object.freeze({
     "0": "不限",
     "209": "初中及以下",
@@ -16,6 +18,30 @@
 
   function degreeNameForCode(value) {
     return DEGREE_NAME_BY_CODE[String(value ?? "").trim()] || "";
+  }
+
+  function deepCollectionBounds(targetValue) {
+    const target = Math.max(1, Math.min(200, Math.floor(Number(targetValue) || 20)));
+    return {
+      target,
+      maxRounds: 30,
+      maxCandidates: 500,
+      maxDurationMs: DEEP_COLLECTION_MAX_DURATION_MS,
+      maxStagnantRounds: DEEP_COLLECTION_MAX_STAGNANT_ROUNDS
+    };
+  }
+
+  function deepCollectionStopReason(state = {}) {
+    const bounds = deepCollectionBounds(state.target);
+    if (state.stopped) return "stopped";
+    if (Number(state.fresh || 0) >= bounds.target) return "target_reached";
+    if (state.blocked) return "blocked";
+    if (state.platformExhausted) return "platform_exhausted";
+    if (Number(state.elapsedMs || 0) >= bounds.maxDurationMs) return "timeout_safety_cap";
+    if (Number(state.candidates || 0) >= bounds.maxCandidates) return "candidate_safety_cap";
+    if (Number(state.stagnantRounds || 0) >= bounds.maxStagnantRounds) return "stagnation_safety_cap";
+    if (Number(state.rounds || 0) >= bounds.maxRounds) return "round_safety_cap";
+    return "";
   }
 
   function isBossSecurityInstructionText(value) {
@@ -220,7 +246,7 @@
     const text = String(error?.message || error || "");
     if (/Invalid CORS request|cors/i.test(text)) return "CORS_REJECTED";
     if (/超时|timeout|abort/i.test(text)) return "LOCAL_API_TIMEOUT";
-    if (/无法连接|Failed to fetch|NetworkError|本地服务请求失败|6866端口/i.test(text)) {
+    if (/无法连接|Failed to fetch|NetworkError|本地服务请求失败|(?:8888|6866)端口/i.test(text)) {
       return "LOCAL_SERVICE_UNAVAILABLE";
     }
     return "LOCAL_API_ERROR";
@@ -233,6 +259,10 @@
   root.GetJobsBossScanSupport = Object.freeze({
     version: SUPPORT_VERSION,
     DEFAULT_TASK_TTL_MS,
+    DEEP_COLLECTION_MAX_DURATION_MS,
+    DEEP_COLLECTION_MAX_STAGNANT_ROUNDS,
+    deepCollectionBounds,
+    deepCollectionStopReason,
     DEGREE_NAME_BY_CODE,
     degreeNameForCode,
     isBossSecurityInstructionText,

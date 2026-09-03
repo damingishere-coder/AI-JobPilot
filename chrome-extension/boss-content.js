@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-08-01-consolidated-boss-api";
+  const EXTENSION_VERSION = "2026-09-03-keyword-deep-fill";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -619,11 +619,11 @@
       || SCAN_SUPPORT.classifyLocalApiFailure?.(error)
       || (/Invalid CORS request|cors/i.test(text) ? "CORS_REJECTED"
         : /超时|timeout|abort/i.test(text) ? "LOCAL_API_TIMEOUT"
-          : /无法连接|Failed to fetch|NetworkError|本地服务请求失败|6866端口/i.test(text) ? "LOCAL_SERVICE_UNAVAILABLE"
+          : /无法连接|Failed to fetch|NetworkError|本地服务请求失败|(?:8888|6866)端口/i.test(text) ? "LOCAL_SERVICE_UNAVAILABLE"
             : "LOCAL_API_ERROR");
     const catalog = {
       CORS_REJECTED: ["Chrome扩展请求被后端CORS规则拒绝", "岗位已采集但本批尚未入库，扫描断点已保留。", "重启更新后的本地服务并重新加载Chrome扩展，然后继续扫描。"],
-      LOCAL_SERVICE_UNAVAILABLE: ["无法连接本地服务", "岗位暂时无法入库，扫描断点已保留。", "确认投递牛马本地服务和6866端口正常后，再次点击扫描继续。"],
+      LOCAL_SERVICE_UNAVAILABLE: ["无法连接本地服务", "岗位暂时无法入库，扫描断点已保留。", "确认投递牛马本地后端和8888端口正常后，再次点击扫描继续。"],
       LOCAL_API_TIMEOUT: ["本地服务响应超时", "当前提交批次未确认完成，扫描断点已保留。", "确认本地服务仍在运行后继续扫描，系统会从当前批次恢复。"],
       LOCAL_API_FORBIDDEN: ["本地接口拒绝访问", "当前提交批次未入库。", "重新加载扩展并确认使用的是本项目本地页面。"],
       LOCAL_API_NOT_FOUND: ["本地接口不存在或版本不匹配", "扩展无法提交岗位。", "重启最新版本的本地服务并重新加载扩展。"],
@@ -1145,8 +1145,24 @@
         invalidDetailCandidates,
         searchJobLimit,
         discoveryRounds: discoveryResult.rounds,
-        stoppedByStagnation: discoveryResult.stoppedByStagnation
+        stoppedByStagnation: discoveryResult.stoppedByStagnation,
+        stopReason: discoveryResult.stopReason,
+        stopReasonLabel: collectionStopReasonLabel(discoveryResult.stopReason),
+        elapsedMs: discoveryResult.elapsedMs
       });
+      if (jobs.length < searchJobLimit) {
+        postProgress(task, "warning", `Boss关键词 ${keyword} 未补足目标：新岗位 ${jobs.length}/${searchJobLimit}，停止原因：${collectionStopReasonLabel(discoveryResult.stopReason)}。`, {
+          ...baseMeta,
+          stage: "dedupe",
+          candidateCount: discoveryResult.candidateCount,
+          conditionFiltered: discoveryResult.filteredCount,
+          duplicates: discoveryResult.duplicateCount,
+          fresh: jobs.length,
+          discoveryRounds: discoveryResult.rounds,
+          stopReason: discoveryResult.stopReason,
+          elapsedMs: discoveryResult.elapsedMs
+        });
+      }
       if (!jobs.length && !historicalCandidates.length) {
         postProgress(task, "warning", `Boss关键词 ${keyword} 已继续向下采集，但没有找到新的可分析岗位，跳过本关键词。`, {
           ...baseMeta,
@@ -1193,15 +1209,6 @@
     }
 
     if (isStopRequested(runId)) stopRequested = true;
-
-    if (!stopRequested && shouldAppendAiKeywords(task) && !task.aiKeywordsLoaded) {
-      const aiResult = await appendAiKeywords(task, keywords);
-      task = aiResult.task;
-      keywords = aiResult.keywords;
-      if (Number(task.currentIndex || 0) < keywords.length) {
-        return runScanInternal(task);
-      }
-    }
 
     if (!stopRequested) {
       advanceKeywordCursor(task, userKeywordCount(task), "");
@@ -1486,8 +1493,12 @@
 
   async function collectFreshJobsForKeyword(keyword, message, baseMeta, searchJobLimit, initialCandidates = []) {
     const target = normalizeSearchJobLimit(searchJobLimit);
-    const maxRounds = bossDiscoveryMaxRounds(target);
-    const maxCandidates = bossDiscoveryCandidateLimit(target);
+    const bounds = typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(target)
+      : { target, maxRounds: 30, maxCandidates: 500, maxDurationMs: 180000, maxStagnantRounds: 5 };
+    const maxRounds = bounds.maxRounds;
+    const maxCandidates = bounds.maxCandidates;
+    const startedAt = Date.now();
     const allCandidates = new Map();
     const processableJobs = new Map();
     const duplicateKeys = new Set();
@@ -1500,6 +1511,7 @@
     let stagnantRounds = 0;
     let stoppedByStagnation = false;
     let roundsRan = 0;
+    let stopReason = "";
 
     addUniqueJobs(allCandidates, initialCandidates, maxCandidates);
 
@@ -1561,10 +1573,40 @@
         });
       }
 
-      if (stagnantRounds >= 2) {
-        stoppedByStagnation = true;
+      const elapsedMs = Date.now() - startedAt;
+      const stopState = {
+        target,
+        fresh: processableJobs.size,
+        candidates: allCandidates.size,
+        rounds: round + 1,
+        stagnantRounds,
+        elapsedMs,
+        platformExhausted: bossPlatformExhausted(),
+        stopped: isStopRequested()
+      };
+      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
+        ? SCAN_SUPPORT.deepCollectionStopReason(stopState)
+        : (processableJobs.size >= target ? "target_reached" : stagnantRounds >= bounds.maxStagnantRounds ? "stagnation_safety_cap" : "");
+      if (stopReason) {
+        stoppedByStagnation = stopReason === "stagnation_safety_cap";
         break;
       }
+    }
+
+    if (!stopReason) {
+      const finalState = {
+        target,
+        fresh: processableJobs.size,
+        candidates: allCandidates.size,
+        rounds: roundsRan,
+        stagnantRounds,
+        elapsedMs: Date.now() - startedAt,
+        platformExhausted: bossPlatformExhausted(),
+        stopped: isStopRequested()
+      };
+      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
+        ? SCAN_SUPPORT.deepCollectionStopReason(finalState)
+        : "round_safety_cap";
     }
 
     resetBossScrollPosition();
@@ -1578,7 +1620,9 @@
       enrichCount: enrichKeys.size,
       skipCount: skipKeys.size,
       rounds: roundsRan,
-      stoppedByStagnation
+      stoppedByStagnation,
+      stopReason: stopReason || "round_safety_cap",
+      elapsedMs: Date.now() - startedAt
     };
   }
 
@@ -1640,12 +1684,41 @@
 
   function bossDiscoveryCandidateLimit(searchJobLimit) {
     const limit = normalizeSearchJobLimit(searchJobLimit);
-    return Math.min(300, Math.max(80, limit * 8));
+    return typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(limit).maxCandidates
+      : 500;
   }
 
   function bossDiscoveryMaxRounds(searchJobLimit) {
     const limit = normalizeSearchJobLimit(searchJobLimit);
-    return Math.min(18, Math.max(6, Math.ceil(limit / 5) + 5));
+    return typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(limit).maxRounds
+      : 30;
+  }
+
+  function bossPlatformExhausted() {
+    const bodyText = compact(document.body?.innerText || document.body?.textContent || "");
+    if (!/(没有更多|暂无更多|已经到底|到底了|全部加载完)/.test(bodyText.slice(-3000))) return false;
+    const pageHeight = Number(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0);
+    const windowAtBottom = Number(window.scrollY || 0) + Number(window.innerHeight || 0) >= pageHeight - 40;
+    const containers = bossScrollableContainers();
+    const containersAtBottom = !containers.length || containers.some((target) =>
+      Number(target.scrollTop || 0) + Number(target.clientHeight || 0) >= Number(target.scrollHeight || 0) - 40);
+    return windowAtBottom || containersAtBottom;
+  }
+
+  function collectionStopReasonLabel(reason) {
+    return ({
+      target_reached: "已达到目标",
+      platform_exhausted: "平台结果已到底",
+      stagnation_safety_cap: "连续5轮没有新增",
+      timeout_safety_cap: "单关键词采集达到180秒",
+      candidate_safety_cap: "候选岗位达到500个安全上限",
+      round_safety_cap: "滚动达到30轮安全上限",
+      page_safety_cap: "翻页达到安全上限",
+      blocked: "平台安全验证或页面阻断",
+      stopped: "用户停止扫描"
+    })[String(reason || "")] || "安全边界已触发";
   }
 
   async function scrollForMoreBossCards(round = 0) {

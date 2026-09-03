@@ -29,6 +29,9 @@ public class ResumeProfileEntity {
     @TableField("parse_message")
     private String parseMessage;
 
+    @TableField("recommended_job_keywords")
+    private String recommendedJobKeywords;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 

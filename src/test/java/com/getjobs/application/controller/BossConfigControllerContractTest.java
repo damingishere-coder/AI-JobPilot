@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -54,5 +55,25 @@ class BossConfigControllerContractTest {
         assertThat(response).containsEntry("success", true)
                 .containsEntry("data", saved)
                 .containsEntry("message", "Boss配置保存成功");
+    }
+
+    @Test
+    void putPreservesMissingKeywordsForSelectiveUpdates() {
+        when(bossService.saveOrUpdateFirstSelective(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Map<String, Object> response = controller.updateConfig(new BossConfigEntity());
+
+        BossConfigEntity data = (BossConfigEntity) response.get("data");
+        assertThat(data.getKeywords()).isNull();
+    }
+
+    @Test
+    void putRejectsMoreThanEightKeywords() {
+        BossConfigEntity incoming = new BossConfigEntity();
+        incoming.setKeywords("[\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\"]");
+
+        assertThatThrownBy(() -> controller.updateConfig(incoming))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("最多选择8个");
     }
 }

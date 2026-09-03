@@ -256,17 +256,18 @@ public class AiService {
     /**
      * 根据简历生成 AI 配置草稿。这里只返回生成结果，不写数据库。
      */
-    public Map<String, String> generateResumeAiConfig(String resumeText) {
+    public Map<String, Object> generateResumeAiConfig(String resumeText) {
         if (resumeText == null || resumeText.trim().isEmpty()) {
             throw new IllegalArgumentException("简历内容不能为空，请先上传或粘贴简历内容");
         }
 
-        String prompt = "你是求职自动化工具的配置助手。请根据候选人简历生成三段中文配置文案。\n" +
-                "只返回JSON，不要使用Markdown代码块，不要添加解释。JSON字段必须包含 introduce, prompt, sayHi。\n" +
+        String prompt = "你是求职自动化工具的配置助手。请根据候选人简历生成中文配置文案和岗位搜索关键词。\n" +
+                "只返回JSON，不要使用Markdown代码块，不要添加解释。JSON字段必须包含 introduce, prompt, sayHi, recommendedKeywords。\n" +
                 "字段要求：\n" +
                 "1. introduce：第一人称技能介绍，120到260字，突出技术栈、经验、方向和优势。\n" +
                 "2. prompt：用于生成Boss直聘打招呼语的模板，必须且只能包含5个%s占位符，顺序分别是技能介绍、期望岗位方向、岗位名称、岗位要求、默认打招呼语。模板要说明不匹配时只返回false。\n" +
-                "3. sayHi：默认打招呼语，60字以内，第一人称，礼貌直接，适合发给HR。\n\n" +
+                "3. sayHi：默认打招呼语，60字以内，第一人称，礼貌直接，适合发给HR。\n" +
+                "4. recommendedKeywords：1到8个中文岗位名称组成的JSON数组，可直接用于Boss直聘和智联招聘搜索；每项优先2到12个字，覆盖候选人的核心方向并避免同义重复。\n\n" +
                 "简历内容：\n" + limit(resumeText, 6000);
 
         String raw = sendRequest(prompt);
@@ -274,18 +275,29 @@ public class AiService {
         String introduce = normalizeGeneratedText(obj.optString("introduce", ""));
         String promptTemplate = normalizePromptTemplate(obj.optString("prompt", ""));
         String sayHi = normalizeGeneratedText(obj.optString("sayHi", ""));
+        Object keywordValue = obj.opt("recommendedKeywords");
+        if (!(keywordValue instanceof JSONArray keywordArray)) {
+            throw new IllegalStateException("AI返回岗位关键词格式不正确，请稍后重试");
+        }
+        List<String> recommendedKeywords = new java.util.ArrayList<>();
+        for (int index = 0; index < keywordArray.length(); index++) {
+            Object keyword = keywordArray.opt(index);
+            if (keyword instanceof String) recommendedKeywords.add((String) keyword);
+        }
+        recommendedKeywords = JobKeywordCodec.normalize(recommendedKeywords, JobKeywordCodec.MAX_SELECTED);
 
-        if (introduce.isEmpty() || sayHi.isEmpty()) {
+        if (introduce.isEmpty() || sayHi.isEmpty() || recommendedKeywords.isEmpty()) {
             throw new IllegalStateException("AI返回内容不完整，请稍后重试");
         }
         if (countPlaceholders(promptTemplate) != 5) {
             promptTemplate = DEFAULT_GREETING_PROMPT_TEMPLATE;
         }
 
-        Map<String, String> result = new LinkedHashMap<>();
+        Map<String, Object> result = new LinkedHashMap<>();
         result.put("introduce", introduce);
         result.put("prompt", promptTemplate);
         result.put("sayHi", sayHi);
+        result.put("recommendedKeywords", recommendedKeywords);
         return result;
     }
 

@@ -37,6 +37,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -68,16 +69,19 @@ public class JobAiAnalysisService {
         Long profileId = profileService.getCurrentProfileId();
         ResumeProfileEntity current = getResumeProfile();
         LocalDateTime now = LocalDateTime.now();
+        String nextResumeText = resumeText == null ? "" : resumeText;
+        boolean resumeChanged = current == null || !Objects.equals(current.getResumeText(), nextResumeText);
         if (current == null) {
             current = new ResumeProfileEntity();
             current.setProfileId(profileId);
             current.setCreatedAt(now);
         }
         current.setProfileId(profileId);
-        current.setResumeText(resumeText == null ? "" : resumeText);
+        current.setResumeText(nextResumeText);
         current.setSourceFilename(sourceFilename);
         current.setParseStatus(status == null ? "manual" : status);
         current.setParseMessage(message);
+        if (resumeChanged) current.setRecommendedJobKeywords(null);
         current.setUpdatedAt(now);
         if (current.getId() == null) {
             resumeProfileMapper.insert(current);
@@ -85,6 +89,29 @@ public class JobAiAnalysisService {
             resumeProfileMapper.updateById(current);
         }
         return current;
+    }
+
+    @Transactional
+    public List<String> saveRecommendedJobKeywords(List<String> keywords) {
+        List<String> normalized = JobKeywordCodec.normalize(keywords, JobKeywordCodec.MAX_SELECTED);
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException("AI未生成有效的岗位关键词");
+        }
+        ResumeProfileEntity current = getResumeProfile();
+        if (current == null || current.getId() == null) {
+            throw new IllegalArgumentException("请先保存当前档案的简历内容");
+        }
+        ResumeProfileEntity update = new ResumeProfileEntity();
+        update.setId(current.getId());
+        update.setRecommendedJobKeywords(JobKeywordCodec.serialize(normalized));
+        update.setUpdatedAt(LocalDateTime.now());
+        resumeProfileMapper.updateById(update);
+        return normalized;
+    }
+
+    public List<String> getRecommendedJobKeywords() {
+        ResumeProfileEntity current = getResumeProfile();
+        return current == null ? List.of() : JobKeywordCodec.parse(current.getRecommendedJobKeywords());
     }
 
     public ResumeProfileEntity getResumeProfile() {
@@ -290,7 +317,7 @@ public class JobAiAnalysisService {
     }
 
     public List<String> generateBossSearchKeywords(List<String> existingKeywords, int limitCount) {
-        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, 5));
+        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, JobKeywordCodec.MAX_SELECTED));
         ResumeProfileEntity resume = getResumeProfile();
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {

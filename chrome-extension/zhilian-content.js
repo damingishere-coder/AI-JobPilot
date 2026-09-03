@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-07-29-zhilian-security-resume-fix";
+  const EXTENSION_VERSION = "2026-09-03-keyword-deep-fill";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -701,11 +701,26 @@
     const seenJobUrls = new Set(collectedJobs.map((job) => normalizeJobUrlKey(job)).filter(Boolean));
     let pageNumber = Math.max(1, Number(task.searchPage || currentSearchPageNumber() || 1));
     let pagesScanned = Number(task.pagesScanned || 0);
+    let stagnantPages = Number(task.stagnantPages || 0);
+    let historyDuplicateCount = Number(task.historyDuplicateCount || 0);
+    let candidateCount = Number(task.candidateCount || collectedJobs.length);
+    const collectionStartedAt = Number(task.collectionStartedAt || Date.now());
+    const maxPages = Number(SCAN_SUPPORT.DEEP_COLLECTION_MAX_PAGES || 50);
     let lastDiagnostics = null;
+    let platformExhausted = false;
+    let stopReason = "";
 
-    while (collectedJobs.length < searchJobLimit && pagesScanned < 50) {
+    while (collectedJobs.length < searchJobLimit && pagesScanned < maxPages) {
+      stopReason = zhilianCollectionStopReason({
+        target: searchJobLimit,
+        fresh: collectedJobs.length,
+        pages: pagesScanned,
+        stagnantPages,
+        elapsedMs: Date.now() - collectionStartedAt
+      });
+      if (stopReason) break;
       if (await hasStopRequested()) {
-        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount, freshCount: collectedJobs.length, historyDuplicateCount, pagesScanned, stopReason: "stopped" };
       }
 
       if (!isCurrentSearchPage(keyword, config, pageNumber)) {
@@ -723,6 +738,10 @@
           phase: "collecting",
           searchPage: pageNumber,
           pagesScanned,
+          stagnantPages,
+          historyDuplicateCount,
+          candidateCount,
+          collectionStartedAt,
           collectedJobs,
           totalSaved
         });
@@ -768,8 +787,15 @@
       }
 
       const collectResult = collectJobs(keyword, task, { ...baseMeta, pageNumber });
+      const pendingJobs = collectResult.jobs.filter((job) => {
+        const key = normalizeJobUrlKey(job);
+        return key && !seenJobUrls.has(key);
+      });
+      candidateCount += pendingJobs.length;
+      const dedupeResult = await filterZhilianDuplicateJobs(pendingJobs, task, keyword);
+      historyDuplicateCount += dedupeResult.duplicateCount;
       let added = 0;
-      for (const job of collectResult.jobs) {
+      for (const job of dedupeResult.jobs) {
         const key = normalizeJobUrlKey(job);
         if (!key || seenJobUrls.has(key)) continue;
         seenJobUrls.add(key);
@@ -778,8 +804,20 @@
         if (collectedJobs.length >= searchJobLimit) break;
       }
       pagesScanned += 1;
+      stagnantPages = added > 0 ? 0 : stagnantPages + 1;
+      const nextPageNumber = pageNumber + 1;
+      const hasNextPage = hasNextSearchPage(nextPageNumber);
+      platformExhausted = !hasNextPage;
+      stopReason = zhilianCollectionStopReason({
+        target: searchJobLimit,
+        fresh: collectedJobs.length,
+        pages: pagesScanned,
+        stagnantPages,
+        elapsedMs: Date.now() - collectionStartedAt,
+        platformExhausted
+      });
 
-      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，首屏数据 ${collectResult.initialStateParsed || 0} 个，成功 ${collectResult.parsed} 个，本页新增 ${added} 个，累计 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个，重复 ${collectResult.duplicated} 个。`, {
+      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，首屏数据 ${collectResult.initialStateParsed || 0} 个，解析 ${collectResult.parsed} 个，历史重复 ${dedupeResult.duplicateCount} 个，本页新增 ${added} 个，累计新增 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个。${stopReason ? ` 停止原因：${collectionStopReasonLabel(stopReason)}。` : ""}`, {
         ...baseMeta,
         stage: "collecting",
         pageNumber,
@@ -789,7 +827,13 @@
         parsed: collectResult.parsed,
         added,
         skipped: collectResult.skipped,
+        conditionFiltered: 0,
         duplicated: collectResult.duplicated,
+        historyDuplicates: historyDuplicateCount,
+        candidateCount,
+        fresh: collectedJobs.length,
+        stagnantPages,
+        stopReason,
         initialStateParsed: collectResult.initialStateParsed || 0,
         errorCount: collectResult.errorCount,
         pagesScanned
@@ -800,25 +844,44 @@
         phase: "collecting",
         searchPage: pageNumber,
         pagesScanned,
+        stagnantPages,
+        historyDuplicateCount,
+        candidateCount,
+        collectionStartedAt,
         collectedJobs,
         totalSaved
       });
 
-      if (collectedJobs.length >= searchJobLimit) break;
-
-      const nextPageNumber = pageNumber + 1;
-      if (!hasNextSearchPage(nextPageNumber)) {
-        postProgress(task, "info", `智联 Chrome已无下一页，本关键词采集结束：累计 ${collectedJobs.length}/${searchJobLimit} 个岗位进入详情/AI流程。`, {
-          ...baseMeta,
-          stage: "collecting",
-          collected: collectedJobs.length,
-          searchJobLimit,
-          pageNumber,
-          pagesScanned
-        });
-        break;
-      }
+      if (stopReason) break;
       pageNumber = nextPageNumber;
+    }
+
+    if (!stopReason) {
+      stopReason = zhilianCollectionStopReason({
+        target: searchJobLimit,
+        fresh: collectedJobs.length,
+        pages: pagesScanned,
+        stagnantPages,
+        elapsedMs: Date.now() - collectionStartedAt,
+        platformExhausted
+      }) || "page_safety_cap";
+    }
+
+    if (collectedJobs.length < searchJobLimit) {
+      postProgress(task, "warning", `智联关键词 ${keyword} 未补足目标：新增岗位 ${collectedJobs.length}/${searchJobLimit}，候选 ${candidateCount} 个，历史重复 ${historyDuplicateCount} 个，停止原因：${collectionStopReasonLabel(stopReason)}。`, {
+        ...baseMeta,
+        stage: "collecting",
+        collected: collectedJobs.length,
+        candidateCount,
+        conditionFiltered: 0,
+        historyDuplicates: historyDuplicateCount,
+        fresh: collectedJobs.length,
+        searchJobLimit,
+        pagesScanned,
+        stagnantPages,
+        stopReason,
+        elapsedMs: Date.now() - collectionStartedAt
+      });
     }
 
     const jobs = collectedJobs.slice(0, searchJobLimit);
@@ -842,10 +905,60 @@
         searchJobLimit,
         ...diagnostics
       });
-      return { empty: true, jobs: [], candidateCount: 0, pagesScanned };
+      return { empty: true, jobs: [], candidateCount, freshCount: 0, historyDuplicateCount, pagesScanned, stopReason };
     }
 
-    return { jobs, candidateCount: collectedJobs.length, pagesScanned, empty: false };
+    return { jobs, candidateCount, freshCount: jobs.length, historyDuplicateCount, pagesScanned, stopReason, empty: false };
+  }
+
+  async function filterZhilianDuplicateJobs(jobs, task, keyword) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    if (!list.length) return { jobs: [], duplicateCount: 0 };
+    const data = await requestZhilianLocalApi("chrome-jobs-dedupe", {
+      body: { runId: task?.runId, keyword, jobs: list },
+      pageTabId: task?.pageTabId
+    });
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (items.length !== list.length) {
+      throw new Error("智联查重接口未完整返回全部岗位决策");
+    }
+    const decisions = new Map();
+    for (const item of items) {
+      const key = normalizeJobUrlKey(item);
+      if (!key || typeof item?.duplicate !== "boolean" || decisions.has(key)) {
+        throw new Error("智联查重接口返回了无效或重复的岗位决策");
+      }
+      decisions.set(key, item.duplicate);
+    }
+    if (list.some((job) => !decisions.has(normalizeJobUrlKey(job)))) {
+      throw new Error("智联查重接口没有覆盖全部候选岗位");
+    }
+    const freshJobs = list.filter((job) => decisions.get(normalizeJobUrlKey(job)) === false);
+    return { jobs: freshJobs, duplicateCount: list.length - freshJobs.length };
+  }
+
+  function zhilianCollectionStopReason(state) {
+    if (typeof SCAN_SUPPORT.deepCollectionStopReason === "function") {
+      return SCAN_SUPPORT.deepCollectionStopReason(state);
+    }
+    if (Number(state?.fresh || 0) >= Number(state?.target || 20)) return "target_reached";
+    if (state?.platformExhausted) return "platform_exhausted";
+    if (Number(state?.stagnantPages || 0) >= 5) return "stagnation_safety_cap";
+    if (Number(state?.elapsedMs || 0) >= 180000) return "timeout_safety_cap";
+    if (Number(state?.pages || 0) >= 50) return "page_safety_cap";
+    return "";
+  }
+
+  function collectionStopReasonLabel(reason) {
+    return ({
+      target_reached: "已达到目标",
+      platform_exhausted: "平台结果已到底",
+      stagnation_safety_cap: "连续5页没有新增",
+      timeout_safety_cap: "单关键词采集达到180秒",
+      page_safety_cap: "翻页达到50页安全上限",
+      blocked: "平台安全验证或页面阻断",
+      stopped: "用户停止扫描"
+    })[String(reason || "")] || "安全边界已触发";
   }
 
   function normalizeCollectedJobs(value) {

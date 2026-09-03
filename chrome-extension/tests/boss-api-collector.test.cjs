@@ -9,6 +9,7 @@ function loadCollector() {
   window.window = window;
   const context = vm.createContext({
     window,
+    URL,
     URLSearchParams,
     console,
     Set

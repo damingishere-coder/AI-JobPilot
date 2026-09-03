@@ -11,6 +11,7 @@ import com.getjobs.application.service.CookieService;
 import com.getjobs.application.service.ConfigService;
 import com.getjobs.application.service.DeliveryStatus;
 import com.getjobs.application.service.JobAiAnalysisService;
+import com.getjobs.application.service.JobKeywordCodec;
 import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.boss.Boss;
 import com.getjobs.worker.boss.BossConfig;
@@ -416,7 +417,7 @@ public class BossController {
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "keywords", keywords,
-                    "limit", Math.min(Math.max(limit, 1), 5)
+                    "limit", Math.min(Math.max(limit, 1), JobKeywordCodec.MAX_SELECTED)
             ));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of(

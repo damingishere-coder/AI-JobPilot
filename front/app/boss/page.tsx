@@ -14,8 +14,10 @@ import { Select } from '@/components/ui/select'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 import { hasBossScanResult, readBossScanRunId } from '@/app/boss/scan-result'
+import { MAX_JOB_KEYWORDS, parseJobKeywords, serializeJobKeywords } from '@/lib/job-keywords'
 
 interface BossConfig {
   id?: number
@@ -45,6 +47,12 @@ type BossConfigEnvelope = ApiEnvelope<never> & {
   blacklist?: BlacklistItem[]
   currentProfile?: CurrentProfile | null
   hasProfile?: boolean
+}
+
+type JobKeywordRecommendations = {
+  keywords?: string[]
+  maxSelected?: number
+  recommendedSelectionCount?: number
 }
 
 interface BossOption {
@@ -191,8 +199,8 @@ export default function BossPage() {
     filterDeadHr: 0,
     autoDeliver: 0,
   })
-  // 关键词显示用（无括号无引号，逗号分隔）
-  const [keywordsDisplay, setKeywordsDisplay] = useState<string>('')
+  const [keywordsDisplay, setKeywordsDisplay] = useState<string[]>([])
+  const [recommendedKeywords, setRecommendedKeywords] = useState<string[]>([])
   // 多选选中的代码集合（按括号列表保存）
   const [selectedIndustry, setSelectedIndustry] = useState<string[]>([])
   const [selectedExperience, setSelectedExperience] = useState<string[]>([])
@@ -524,8 +532,17 @@ export default function BossPage() {
   const fetchAllData = async () => {
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE}/api/boss/config`)
+      const [response, recommendationResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/boss/config`),
+        fetch(`${API_BASE}/api/ai/job-keywords`).catch(() => null),
+      ])
       const data = await readApiResponse<never>(response, 'Boss配置加载失败') as BossConfigEnvelope
+      if (recommendationResponse?.ok) {
+        const recommendationResult = await readApiResponse<JobKeywordRecommendations>(recommendationResponse, '岗位关键词推荐加载失败')
+        setRecommendedKeywords(parseJobKeywords(recommendationResult.data?.keywords))
+      } else {
+        setRecommendedKeywords([])
+      }
 
       console.log('Fetched data:', data)
       console.log('Blacklist:', data.blacklist)
@@ -555,31 +572,7 @@ export default function BossPage() {
           searchJobLimit,
           autoDeliver: 0,
         })
-        // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
-        const toDisplayKeywords = (raw?: string): string => {
-          if (!raw) return ''
-          const s = raw.trim()
-          // 尝试作为 JSON 数组解析
-          if (s.startsWith('[') && s.endsWith(']')) {
-            try {
-              const arr = JSON.parse(s)
-              if (Array.isArray(arr)) {
-                return arr.map((v) => String(v).trim()).filter((v) => v.length > 0).join(', ')
-              }
-            } catch (_) {
-              // 非严格 JSON，如 [a,b]，走拆括号与逗号分隔
-              const inner = s.slice(1, -1)
-              return inner
-                .split(',')
-                .map((v) => v.trim().replace(/^"|"$/g, ''))
-                .filter((v) => v.length > 0)
-                .join(', ')
-            }
-          }
-          // 普通文本：直接返回，去掉多余空格
-          return s
-        }
-        setKeywordsDisplay(toDisplayKeywords(data.config.keywords))
+        setKeywordsDisplay(parseJobKeywords(data.config.keywords))
         // 解析括号列表为数组
         setSelectedIndustry(parseListString(data.config.industry))
         setSelectedExperience(parseListString(data.config.experience))
@@ -748,6 +741,17 @@ export default function BossPage() {
       setShowSaveDialog(true)
       return
     }
+    if (!keywordsDisplay.length || keywordsDisplay.length > MAX_JOB_KEYWORDS) {
+      setSaveDialogKind('save')
+      setSaveResult({
+        success: false,
+        message: !keywordsDisplay.length
+          ? '请至少选择一个搜索关键词。'
+          : `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再保存。`,
+      })
+      setShowSaveDialog(true)
+      return
+    }
     try {
       const searchJobLimit = commitSearchJobLimit(overrides?.searchJobLimit)
       // 组装要保存的负载：多选使用括号列表
@@ -755,8 +759,7 @@ export default function BossPage() {
         ...config,
         // 覆盖字段（用于失焦时使用当前控件值，避免异步状态滞后）
         ...(overrides || {}),
-        // 关键词：前端发送逗号分隔的纯文本，后端统一组装为 JSON 列表
-        keywords: keywordsDisplay,
+        keywords: serializeJobKeywords(keywordsDisplay),
         searchJobLimit,
         industry: toBracketList(selectedIndustry),
         experience: toBracketList(selectedExperience),
@@ -865,6 +868,14 @@ export default function BossPage() {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
         alert('请先在简历配置页新建档案。')
+        return
+      }
+      if (!keywordsDisplay.length || keywordsDisplay.length > MAX_JOB_KEYWORDS) {
+        const message = !keywordsDisplay.length
+          ? '请至少选择一个搜索关键词。'
+          : `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再开始扫描。`
+        appendProgressLog({ type: 'error', message })
+        alert(message)
         return
       }
       focusLogSection()
@@ -980,7 +991,7 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_COLLECT_CURRENT_PAGE',
         platform: 'boss',
-        keyword: keywordsDisplay,
+        keyword: keywordsDisplay.join(', '),
         runId: `boss-list-${Date.now()}`,
       }, 70000) as BossCurrentPageCollectResponse
 
@@ -1038,12 +1049,7 @@ export default function BossPage() {
       return
     }
 
-    const keywords = Array.from(new Set(
-      keywordsDisplay
-        .split(/[,，;；\n\r]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ))
+    const keywords = parseJobKeywords(keywordsDisplay)
     if (keywords.length !== 1) {
       appendProgressLog({ type: 'error', message: 'Boss API POC 仅支持一个关键词，请把关键词配置改为恰好一个后再测试。' })
       return
@@ -1246,14 +1252,14 @@ export default function BossPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
+              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
+            <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -1314,15 +1320,13 @@ export default function BossPage() {
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
-                  <Label htmlFor="keywords">搜索关键词</Label>
-                  <Input
-                    id="keywords"
+                  <Label>搜索关键词</Label>
+                  <KeywordTagInput
                     value={keywordsDisplay}
-                    onChange={(e) => setKeywordsDisplay(e.target.value)}
-                    placeholder="例如：Java开发工程师"
+                    onChange={setKeywordsDisplay}
+                    recommendations={recommendedKeywords}
                     disabled={!hasProfile}
                   />
-                  <p className="text-xs text-muted-foreground">职位搜索的关键词</p>
                 </div>
 
                 <div className="space-y-2">

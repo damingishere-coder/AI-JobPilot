@@ -12,6 +12,24 @@ function loadSupport() {
   return window.GetJobsBossScanSupport;
 }
 
+test("uses the agreed Boss deep collection safety bounds", () => {
+  const support = loadSupport();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(support.deepCollectionBounds(40))),
+    { target: 40, maxRounds: 30, maxCandidates: 500, maxDurationMs: 180000, maxStagnantRounds: 5 }
+  );
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 40 }), "target_reached");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, stagnantRounds: 4 }), "");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, stagnantRounds: 5 }), "stagnation_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, elapsedMs: 180000 }), "timeout_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, platformExhausted: true }), "platform_exhausted");
+});
+
+test("does not auto append AI keywords after a Boss scan", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+  assert.doesNotMatch(source, /await appendAiKeywords\(task, keywords\)/);
+});
+
 test("keeps an unfinished Boss checkpoint for 24 hours", () => {
   const support = loadSupport();
   const now = Date.now();
@@ -242,7 +260,7 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
     "CORS_REJECTED"
   );
   assert.equal(
-    support.classifyLocalApiFailure(new Error("无法连接本地服务，请确认6866端口正常")),
+    support.classifyLocalApiFailure(new Error("无法连接本地服务，请确认8888端口正常")),
     "LOCAL_SERVICE_UNAVAILABLE"
   );
 });

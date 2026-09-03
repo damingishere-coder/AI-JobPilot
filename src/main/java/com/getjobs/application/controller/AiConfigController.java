@@ -318,9 +318,15 @@ public class AiConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
+            Map<String, Object> generated = aiService.generateResumeAiConfig(resumeText);
+            Object rawKeywords = generated.get("recommendedKeywords");
+            List<String> keywords = rawKeywords instanceof List<?> list
+                    ? list.stream().filter(String.class::isInstance).map(String.class::cast).toList()
+                    : List.of();
+            generated.put("recommendedKeywords", jobAiAnalysisService.saveRecommendedJobKeywords(keywords));
             response.put("success", true);
-            response.put("data", aiService.generateResumeAiConfig(resumeText));
-            response.put("message", "AI文案生成成功");
+            response.put("data", generated);
+            response.put("message", "AI文案和岗位关键词生成成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("根据简历生成AI文案失败", e);
@@ -328,6 +334,20 @@ public class AiConfigController {
             response.put("message", "根据简历生成AI文案失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
+    }
+
+    @GetMapping("/job-keywords")
+    public ResponseEntity<Map<String, Object>> getRecommendedJobKeywords() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("data", Map.of(
+                "keywords", jobAiAnalysisService.getRecommendedJobKeywords(),
+                "maxSelected", com.getjobs.application.service.JobKeywordCodec.MAX_SELECTED,
+                "recommendedSelectionCount", com.getjobs.application.service.JobKeywordCodec.RECOMMENDED_SELECTION_COUNT
+        ));
+        response.put("currentProfile", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/companies/priority")
