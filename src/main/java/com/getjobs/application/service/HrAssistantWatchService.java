@@ -69,6 +69,12 @@ public class HrAssistantWatchService {
         return status();
     }
 
+    public WatchStatus prepareStart() {
+        if (watching.get()) return status();
+        gateway.prepareCurrentChatTabBinding();
+        return status();
+    }
+
     public WatchStatus stop() {
         watching.set(false);
         events.emit("watch-status", status());

@@ -44,6 +44,17 @@ class HrAssistantWatchServiceTest {
     }
 
     @Test
+    void preparesTheExistingSessionWithoutStartingAWatch() {
+        service = new HrAssistantWatchService(gateway, profileService, store, draftService, events, napCatGateway, 100, 60_000);
+
+        var status = service.prepareStart();
+
+        assertThat(status.watching()).isFalse();
+        verify(gateway).prepareCurrentChatTabBinding();
+        verify(gateway, times(0)).bindCurrentChatTab();
+    }
+
+    @Test
     void discoversSixteenUnreadConversationsOnceAndImmediateTicksDoNotOverlapOrRepeat() throws Exception {
         List<ChatSession> sessions = IntStream.rangeClosed(1, 16)
                 .mapToObj(index -> new ChatSession("uid-" + index, "security-" + index, "HR" + index,

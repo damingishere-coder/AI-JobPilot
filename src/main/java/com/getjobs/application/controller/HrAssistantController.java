@@ -70,6 +70,13 @@ public class HrAssistantController {
         return execute(watchService::start);
     }
 
+    @PostMapping("/watch/prepare")
+    public ResponseEntity<?> prepareStart(
+            @RequestHeader(value = LocalActionTokenService.HEADER_NAME, required = false) String actionToken) {
+        if (!localActionTokenService.isValid(actionToken)) return unauthorized();
+        return execute(watchService::prepareStart);
+    }
+
     @PostMapping("/watch/stop")
     public ResponseEntity<?> stop(
             @RequestHeader(value = LocalActionTokenService.HEADER_NAME, required = false) String actionToken) {

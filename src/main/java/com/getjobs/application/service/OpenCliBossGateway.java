@@ -107,12 +107,15 @@ public class OpenCliBossGateway {
     }
 
     public void bindCurrentChatTab() {
-        requireSuccess(commandRunner.run(List.of("browser", sessionName, "unbind"), timeout), "释放旧 OpenCLI 浏览器会话");
         requireSuccess(commandRunner.run(List.of("browser", sessionName, "bind"), timeout), "绑定当前 Chrome 标签页");
         String url = requireSuccess(commandRunner.run(List.of("browser", sessionName, "get", "url"), timeout), "读取当前标签页地址");
         if (!url.contains("zhipin.com/web/geek/chat")) {
             throw new IllegalStateException("当前标签页不是 BOSS 求职者聊天页，请先打开聊天页再开始值守");
         }
+    }
+
+    public void prepareCurrentChatTabBinding() {
+        requireSuccess(commandRunner.run(List.of("browser", sessionName, "unbind"), timeout), "释放旧 OpenCLI 浏览器会话");
     }
 
     public void openUnreadTab() {

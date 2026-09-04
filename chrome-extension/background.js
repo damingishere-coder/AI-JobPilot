@@ -106,7 +106,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起的本地接口请求" });
       return;
     }
-    handleBossLocalApiRequest(message).then(sendResponse).catch((error) => {
+    handleBossLocalApiRequest(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
     return true;
@@ -374,24 +374,62 @@ async function handleZhilianContentNavigation(message, sender) {
   return { success: true, url: targetUrl, navigationType };
 }
 
-async function handleBossLocalApiRequest(message) {
+async function handleBossLocalApiRequest(message, sender) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
   if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
     return profileRequiredResponse();
   }
 
-  const result = await requestLocalApi(endpoint.path, {
-    operation: String(message.operation || ""),
-    method: endpoint.method,
-    body: message.body,
+  const operation = String(message.operation || "");
+  const requestContext = {
+    operation,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
-    pageTabId: message.pageTabId,
+    pageTabId: sender?.tab?.id || message.pageTabId,
     platform: "boss",
     requireActionToken: endpoint.requireActionToken === true
+  };
+  if (operation === "hr-start") {
+    if (!isBossChatUrl(sender?.tab?.url || sender?.url || "")) {
+      return { success: false, message: "请在当前 BOSS 求职者聊天页点击开始值守" };
+    }
+    const prepared = await requestLocalApi("/api/hr-assistant/watch/prepare", {
+      ...requestContext,
+      method: "POST"
+    });
+    if (!prepared.success) return prepared;
+    const focused = await focusBossHrSenderTab(sender);
+    if (!focused.success) return focused;
+  }
+
+  const result = await requestLocalApi(endpoint.path, {
+    ...requestContext,
+    method: endpoint.method,
+    body: message.body
   });
   console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
   return result;
+}
+
+async function focusBossHrSenderTab(sender) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId)) return { success: false, message: "无法识别当前 BOSS 聊天标签页" };
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isBossChatUrl(tab?.url || "")) {
+      return { success: false, message: "当前标签页已离开 BOSS 求职者聊天页，请返回聊天页后重试" };
+    }
+    await chrome.tabs.update(tabId, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await sleep(80);
+    const confirmed = await chrome.tabs.get(tabId);
+    if (!isBossChatUrl(confirmed?.url || "")) {
+      return { success: false, message: "聚焦期间 BOSS 聊天页发生变化，已停止绑定" };
+    }
+    return { success: true, tabId };
+  } catch (error) {
+    return { success: false, message: `无法重新聚焦 BOSS 聊天标签页：${error?.message || String(error)}` };
+  }
 }
 
 async function handleZhilianLocalApiRequest(message) {
@@ -573,10 +611,10 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 
 async function parseLocalApiResponse(response) {
   const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
-  if (!contentType.includes("application/json")) {
+  const text = await response.text();
+  if (contentType && !contentType.includes("application/json")) {
     throw new Error(`本地接口契约不匹配：Content-Type=${contentType || "missing"}`);
   }
-  const text = await response.text();
   if (!text) throw new Error("本地接口契约不匹配：JSON 响应为空");
   let data;
   try {

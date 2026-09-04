@@ -20,6 +20,26 @@ import static org.mockito.Mockito.when;
 
 class HrAssistantControllerTest {
     @Test
+    void preparesOpenCliBindingOnlyWithFreshLocalActionToken() {
+        ProfileService profiles = mock(ProfileService.class);
+        HrAssistantStore store = mock(HrAssistantStore.class);
+        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
+        HrReplyActionService actions = mock(HrReplyActionService.class);
+        HrAssistantEventService events = mock(HrAssistantEventService.class);
+        LocalActionTokenService tokens = new LocalActionTokenService();
+        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
+        when(watcher.prepareStart()).thenReturn(mock(com.getjobs.application.hr.HrAssistantTypes.WatchStatus.class));
+
+        var rejected = controller.prepareStart("invalid-token");
+        var accepted = controller.prepareStart(tokens.issueToken());
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        verify(watcher).prepareStart();
+        verifyNoInteractions(actions, profiles, store, events);
+    }
+
+    @Test
     void rejectsSendWithoutFreshLocalActionToken() {
         ProfileService profiles = mock(ProfileService.class);
         HrAssistantStore store = mock(HrAssistantStore.class);

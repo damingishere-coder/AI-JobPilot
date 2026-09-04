@@ -43,6 +43,8 @@ function loadBackground({
   const storage = {};
   const sentMessages = [];
   const executedScripts = [];
+  const tabUpdates = [];
+  const windowUpdates = [];
   const tabList = tabs.map((tab) => ({ ...tab }));
   let currentContentReady = contentReady;
   let currentBossContentVersion = bossContentVersion;
@@ -75,6 +77,7 @@ function loadBackground({
         return { ...tab };
       },
       async update(tabId, updates) {
+        tabUpdates.push({ tabId, updates: { ...updates } });
         const tab = tabList.find((item) => item.id === tabId);
         Object.assign(tab, updates);
         return { ...tab };
@@ -103,7 +106,9 @@ function loadBackground({
       }
     },
     windows: {
-      async update() {}
+      async update(windowId, updates) {
+        windowUpdates.push({ windowId, updates: { ...updates } });
+      }
     },
     scripting: {
       async executeScript(options) {
@@ -164,7 +169,10 @@ function loadBackground({
       if (keepChannelOpen !== true) setImmediate(() => resolve(undefined));
     });
   }
-  return { context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList, dispatchRuntimeMessage };
+  return {
+    context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList,
+    tabUpdates, windowUpdates, dispatchRuntimeMessage
+  };
 }
 
 function dispatchRuntimeMessage(listener, message, sender) {
@@ -367,6 +375,59 @@ test("treats HTTP 200 business rejection as a failed local API request", async (
   assert.equal(result.success, false);
   assert.equal(result.errorType, "BUSINESS_REJECTED");
   assert.equal(result.message, "状态已变化");
+});
+
+test("accepts a valid local JSON envelope when Chrome hides the Content-Type header", async () => {
+  const { context } = loadBackground({ tabs: [] });
+  const response = {
+    ok: true,
+    status: 200,
+    headers: { get() { return null; } },
+    async text() { return JSON.stringify({ success: true, data: { watching: false } }); }
+  };
+
+  const parsed = await context.parseLocalApiResponse(response);
+
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data.watching, false);
+});
+
+test("prepares the OpenCLI session and refocuses the initiating Boss chat before starting", async () => {
+  const requests = [];
+  const { dispatchRuntimeMessage, tabUpdates, windowUpdates } = loadBackground({
+    tabs: [{ id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url.endsWith("/api/local-auth/action-token")) {
+        return jsonResponse({ success: true, data: { token: "test-action-token" } });
+      }
+      if (url.endsWith("/api/hr-assistant/watch/prepare")) {
+        return jsonResponse({ success: true, data: { watching: false } });
+      }
+      if (url.endsWith("/api/hr-assistant/watch/start")) {
+        return jsonResponse({ success: true, data: { watching: true } });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    }
+  });
+
+  const response = await dispatchRuntimeMessage({
+    source: "GET_JOBS_BOSS_CONTENT",
+    type: "BOSS_LOCAL_API",
+    operation: "hr-start",
+    timeoutMs: 30000
+  }, {
+    tab: { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat" }
+  });
+
+  assert.equal(response.success, true);
+  assert.deepEqual(requests.map((url) => new URL(url).pathname), [
+    "/api/local-auth/action-token",
+    "/api/hr-assistant/watch/prepare",
+    "/api/hr-assistant/watch/start"
+  ]);
+  assert.deepEqual(tabUpdates.at(-1), { tabId: 7, updates: { active: true } });
+  assert.deepEqual(windowUpdates.at(-1), { windowId: 3, updates: { focused: true } });
 });
 
 test("preserves backend profile errors and rejects unscoped job submission locally", async () => {

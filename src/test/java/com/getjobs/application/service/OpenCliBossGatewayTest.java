@@ -73,10 +73,11 @@ class OpenCliBossGatewayTest {
     }
 
     @Test
-    void releasesStaleOwnedSessionBeforeBindingCurrentBossTab() {
+    void preparesThenBindsTheRefocusedCurrentBossTab() {
         FakeRunner runner = new FakeRunner();
         OpenCliBossGateway gateway = gateway(runner);
 
+        gateway.prepareCurrentChatTabBinding();
         gateway.bindCurrentChatTab();
 
         assertThat(runner.calls).containsExactly(
