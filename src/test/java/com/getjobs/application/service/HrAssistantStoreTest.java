@@ -7,6 +7,7 @@ import com.getjobs.application.hr.HrAssistantTypes.ChatSession;
 import com.getjobs.application.hr.HrAssistantTypes.Classification;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalStatus;
+import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +44,7 @@ class HrAssistantStoreTest {
         CommunicationProfile communication = new CommunicationProfile(
                 "期望薪资二十五K", "深圳南山", "两周到岗", "周三下午", "QQ", "礼貌", "不透露身份证");
         store.saveSettings(1L, communication, true, "ws://127.0.0.1:3001",
-                "napcat-secret-token", "123456789", 30);
+                "napcat-secret-token", QqTargetType.PRIVATE, "123456789", "", 30);
         ChatSession session = new ChatSession("uid-sensitive-100", "security", "胡女士", "秘密公司",
                 "产品运营", "HR", "明天下午面试吗", "11:02");
         long conversationId = store.upsertConversation(1L, session);
@@ -66,7 +67,7 @@ class HrAssistantStoreTest {
 
         store.markFinal(proposalId, ProposalStatus.SEND_UNKNOWN, "发送超时结果未知");
         String raw = String.join("|",
-                scalar("SELECT communication_profile_cipher || napcat_token_cipher || qq_target_cipher FROM hr_assistant_settings"),
+                scalar("SELECT communication_profile_cipher || napcat_token_cipher || qq_target_cipher || qq_operator_cipher FROM hr_assistant_settings"),
                 scalar("SELECT external_uid_cipher || hr_name_cipher || company_name_cipher || job_name_cipher FROM hr_conversation"),
                 scalar("SELECT fingerprint || body_cipher FROM hr_message"),
                 scalar("SELECT confirmation_code_hash || confirmation_code_cipher || draft_cipher || summary_cipher FROM hr_reply_proposal"),
@@ -139,6 +140,42 @@ class HrAssistantStoreTest {
         store.updateLastInbound(conversationId, store.sourceFingerprint(conversationId, second));
 
         assertThat(store.getProposalView(1L, firstProposal).status()).isEqualTo("EXPIRED");
+    }
+
+    @Test
+    void storesGroupTargetAndOptionalOperatorEncrypted() {
+        var view = store.saveSettings(1L, CommunicationProfile.empty(), true, "ws://127.0.0.1:3001",
+                "group-token-secret", QqTargetType.GROUP, "987654321", "123456789", 30);
+
+        assertThat(view.qqTargetType()).isEqualTo(QqTargetType.GROUP);
+        assertThat(view.qqTargetMasked()).isEqualTo("98***21");
+        assertThat(view.qqOperatorMasked()).isEqualTo("12***89");
+        assertThat(view.qqOperatorConfigured()).isTrue();
+        assertThat(store.loadSettingsSecret(1L))
+                .satisfies(secret -> {
+                    assertThat(secret.qqTargetType()).isEqualTo(QqTargetType.GROUP);
+                    assertThat(secret.qqTarget()).isEqualTo("987654321");
+                    assertThat(secret.qqOperator()).isEqualTo("123456789");
+                });
+        assertThat(scalar("SELECT qq_target_cipher || qq_operator_cipher || napcat_token_cipher FROM hr_assistant_settings"))
+                .doesNotContain("987654321", "123456789", "group-token-secret");
+
+        store.saveSettings(1L, CommunicationProfile.empty(), true, "ws://127.0.0.1:3001",
+                "", QqTargetType.GROUP, "", "", 30);
+        assertThat(store.loadSettingsSecret(1L).qqOperator()).isEmpty();
+    }
+
+    @Test
+    void groupNotificationCanBeEnabledWithoutOperatorButRejectsInvalidOperator() {
+        var view = store.saveSettings(1L, CommunicationProfile.empty(), true, "ws://127.0.0.1:3001",
+                "group-token-secret", QqTargetType.GROUP, "987654321", "", 30);
+
+        assertThat(view.qqOperatorConfigured()).isFalse();
+        assertThat(store.loadSettingsSecret(1L).qqOperator()).isEmpty();
+        assertThatThrownBy(() -> store.saveSettings(1L, CommunicationProfile.empty(), true,
+                "ws://127.0.0.1:3001", "", QqTargetType.GROUP, "", "not-a-qq", 30))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("操作人 QQ");
     }
 
     private String scalar(String sql) {

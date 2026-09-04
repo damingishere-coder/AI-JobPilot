@@ -34,6 +34,11 @@ public final class HrAssistantTypes {
         SUSPICIOUS
     }
 
+    public enum QqTargetType {
+        PRIVATE,
+        GROUP
+    }
+
     public record GatewayStatus(boolean ready, String version, String detail) {
     }
 
@@ -91,7 +96,10 @@ public final class HrAssistantTypes {
             CommunicationProfile communicationProfile,
             boolean qqEnabled,
             String napcatWsUrl,
+            QqTargetType qqTargetType,
             String qqTargetMasked,
+            String qqOperatorMasked,
+            boolean qqOperatorConfigured,
             boolean napcatTokenConfigured,
             int retentionDays,
             boolean fullAutoLocked

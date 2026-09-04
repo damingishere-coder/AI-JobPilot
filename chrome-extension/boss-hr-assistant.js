@@ -22,7 +22,7 @@
     *{box-sizing:border-box}.panel{width:370px;max-height:78vh;background:#fff;color:#172033;border:1px solid #cbd5e1;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.24);overflow:hidden}
     header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff}.title{font-weight:750;flex:1}.dot{width:9px;height:9px;border-radius:50%;background:#f59e0b}.dot.on{background:#4ade80}.toggle{border:0;background:rgba(255,255,255,.18);color:#fff;border-radius:8px;padding:5px 9px;cursor:pointer}
     .body{padding:12px;overflow:auto;max-height:calc(78vh - 48px)}.status{font-size:12px;line-height:1.55;background:#f8fafc;border-radius:10px;padding:9px;margin-bottom:9px}.error{color:#b91c1c}.actions{display:flex;gap:7px;margin-bottom:10px}.btn{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:8px;padding:7px 10px;cursor:pointer;font-size:12px}.btn.primary{background:#0f766e;color:#fff;border-color:#0f766e}.btn.danger{color:#b91c1c}.btn:disabled{opacity:.48;cursor:not-allowed}.locked{flex:1;background:#e2e8f0;color:#64748b}
-    details{border:1px solid #e2e8f0;border-radius:10px;margin-bottom:10px}summary{cursor:pointer;padding:9px 10px;font-weight:650;font-size:13px}.settings{padding:0 10px 10px;display:grid;grid-template-columns:1fr 1fr;gap:7px}.wide{grid-column:1/-1}label{font-size:11px;color:#64748b;display:block;margin-bottom:3px}input,textarea{width:100%;border:1px solid #cbd5e1;border-radius:7px;padding:7px;font:inherit;font-size:12px}textarea{resize:vertical;min-height:58px}.check{display:flex;gap:6px;align-items:center;font-size:12px}.check input{width:auto}
+    details{border:1px solid #e2e8f0;border-radius:10px;margin-bottom:10px}summary{cursor:pointer;padding:9px 10px;font-weight:650;font-size:13px}.settings{padding:0 10px 10px;display:grid;grid-template-columns:1fr 1fr;gap:7px}.wide{grid-column:1/-1}label{font-size:11px;color:#64748b;display:block;margin-bottom:3px}input,textarea,select{width:100%;border:1px solid #cbd5e1;border-radius:7px;padding:7px;font:inherit;font-size:12px;background:#fff}textarea{resize:vertical;min-height:58px}.check{display:flex;gap:6px;align-items:center;font-size:12px}.check input{width:auto}
     .section-title{font-size:13px;font-weight:700;margin:9px 0}.empty{font-size:12px;color:#64748b;text-align:center;padding:18px}.card{border:1px solid #e2e8f0;border-radius:11px;padding:10px;margin-bottom:9px;background:#fff}.meta{display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:#64748b}.code{font-weight:800;color:#0f766e}.source{font-size:12px;background:#f8fafc;border-radius:7px;padding:7px;margin:7px 0;white-space:pre-wrap}.card-actions{display:flex;gap:6px;margin-top:7px}.card-actions .btn{padding:6px 9px}.high{border-color:#f59e0b}.tag{background:#fff7ed;color:#9a3412;border-radius:999px;padding:2px 6px}.hidden{display:none!important}
   `;
   root.appendChild(style);
@@ -114,14 +114,44 @@
     ];
     fields.forEach(([name, label, value, wide]) => form.appendChild(inputField(name, label, value, Boolean(wide))));
     form.appendChild(inputField("napcatWsUrl", "NapCat WebSocket", latestSettings?.napcatWsUrl || "ws://127.0.0.1:3001", true));
-    form.appendChild(inputField("qqTarget", "私人 QQ", "", false, latestSettings?.qqTargetMasked || "仅保存加密值"));
+    const typeWrap = element("div");
+    const typeLabel = document.createElement("label");
+    typeLabel.textContent = "QQ 通知方式";
+    const targetType = document.createElement("select");
+    targetType.name = "qqTargetType";
+    [["PRIVATE", "私人 QQ"], ["GROUP", "指定群聊"]].forEach(([value, text]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      targetType.appendChild(option);
+    });
+    targetType.value = latestSettings?.qqTargetType || "PRIVATE";
+    typeWrap.append(typeLabel, targetType);
+    form.appendChild(typeWrap);
+    const targetWrap = inputField("qqTarget", "目标 QQ", "", false, latestSettings?.qqTargetMasked || "仅保存加密值");
+    const operatorWrap = inputField("qqOperator", "群内操作人 QQ（可选）", "", true,
+      latestSettings?.qqOperatorConfigured ? `${latestSettings.qqOperatorMasked}，留空不修改` : "不填则群聊仅接收通知");
+    const clearOperatorWrap = element("label", "check wide");
+    const clearOperator = document.createElement("input");
+    clearOperator.type = "checkbox";
+    clearOperator.name = "qqOperatorClear";
+    clearOperatorWrap.append(clearOperator, document.createTextNode("清除已配置的群内操作人，改为仅通知"));
+    const updateTargetMode = () => {
+      const groupMode = targetType.value === "GROUP";
+      targetWrap.querySelector("label").textContent = groupMode ? "目标群号" : "目标私人 QQ";
+      operatorWrap.classList.toggle("hidden", !groupMode);
+      clearOperatorWrap.classList.toggle("hidden", !groupMode || !latestSettings?.qqOperatorConfigured);
+    };
+    targetType.addEventListener("change", updateTargetMode);
+    form.append(targetWrap, operatorWrap, clearOperatorWrap);
+    updateTargetMode();
     form.appendChild(inputField("napcatToken", "NapCat Token", "", false, latestSettings?.napcatTokenConfigured ? "已配置，留空不修改" : "必填"));
     const checkWrap = element("label", "check wide");
     const check = document.createElement("input");
     check.type = "checkbox";
     check.name = "qqEnabled";
     check.checked = Boolean(latestSettings?.qqEnabled);
-    checkWrap.append(check, document.createTextNode("仅将高价值消息通知到上述私人 QQ"));
+    checkWrap.append(check, document.createTextNode("仅将高价值消息通知到上述 QQ 目标"));
     form.appendChild(checkWrap);
     const save = button("保存设置", "btn primary wide");
     save.addEventListener("click", () => saveSettings(form));
@@ -177,7 +207,10 @@
     await mutate("hr-settings-save", null, {
       communicationProfile,
       qqEnabled: Boolean(form.querySelector('[name="qqEnabled"]')?.checked),
-      napcatWsUrl: read("napcatWsUrl"), napcatToken: read("napcatToken"), qqTarget: read("qqTarget"), retentionDays: 30
+      napcatWsUrl: read("napcatWsUrl"), napcatToken: read("napcatToken"),
+      qqTargetType: read("qqTargetType") || "PRIVATE", qqTarget: read("qqTarget"),
+      qqOperator: read("qqOperator") || (form.querySelector('[name="qqOperatorClear"]')?.checked ? "" : null),
+      retentionDays: 30
     });
   }
 

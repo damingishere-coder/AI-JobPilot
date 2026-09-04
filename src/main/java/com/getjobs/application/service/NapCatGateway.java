@@ -3,6 +3,7 @@ package com.getjobs.application.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
+import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -56,7 +57,8 @@ public class NapCatGateway {
             closeSocket();
             return;
         }
-        String fingerprint = settings.napcatWsUrl() + "|" + storeHash(settings.napcatToken()) + "|" + storeHash(settings.qqTarget());
+        String fingerprint = settings.napcatWsUrl() + "|" + storeHash(settings.napcatToken()) + "|"
+                + settings.qqTargetType() + "|" + storeHash(settings.qqTarget()) + "|" + storeHash(settings.qqOperator());
         if (isConnected() && fingerprint.equals(connectionFingerprint)) return;
         if (isConnected()) closeSocket();
         connect(profileId, settings, fingerprint);
@@ -68,15 +70,18 @@ public class NapCatGateway {
         String text = "【BOSS HR 待确认】\n" + proposal.companyName() + " / " + proposal.jobName() + " / " + proposal.hrName() +
                 "\nHR：" + truncate(proposal.sourceMessage(), 180) +
                 "\n建议：" + truncate(proposal.draft().isBlank() ? "需要你补充信息或人工查看" : proposal.draft(), 300) +
-                "\n确认码：" + proposal.confirmationCode() +
-                "\n命令：发送 " + proposal.confirmationCode() + "｜修改 " + proposal.confirmationCode() + " 新文本｜跳过 " + proposal.confirmationCode();
-        return sendPrivate(settings.qqTarget(), text);
+                "\n确认码：" + proposal.confirmationCode();
+        text += commandsEnabled(settings)
+                ? "\n命令：发送 " + proposal.confirmationCode() + "｜修改 " + proposal.confirmationCode()
+                        + " 新文本｜跳过 " + proposal.confirmationCode()
+                : "\n该群仅用于通知，请回到 BOSS 页面处理。";
+        return sendConfigured(settings, text);
     }
 
     public boolean notifySystemFault(Long profileId, String message) {
         HrAssistantStore.SettingsSecret settings = store.loadSettingsSecret(profileId);
         if (!settings.qqEnabled() || !isConnected()) return false;
-        return sendPrivate(settings.qqTarget(), "【BOSS HR 值守已暂停】\n" + truncate(message, 500) + "\n请回到 BOSS 页面人工检查。");
+        return sendConfigured(settings, "【BOSS HR 值守已暂停】\n" + truncate(message, 500) + "\n请回到 BOSS 页面人工检查。");
     }
 
     private void connect(Long profileId, HrAssistantStore.SettingsSecret settings, String fingerprint) {
@@ -85,7 +90,7 @@ public class NapCatGateway {
             httpClient.newWebSocketBuilder()
                     .header("Authorization", "Bearer " + settings.napcatToken())
                     .connectTimeout(Duration.ofSeconds(10))
-                    .buildAsync(URI.create(settings.napcatWsUrl()), new Listener(profileId, settings.qqTarget()))
+                    .buildAsync(URI.create(settings.napcatWsUrl()), new Listener(profileId))
                     .whenComplete((webSocket, error) -> {
                         connecting.set(false);
                         if (error != null) {
@@ -101,14 +106,19 @@ public class NapCatGateway {
         }
     }
 
-    void handleIncoming(Long profileId, String allowedQq, String payload) {
+    void handleIncoming(Long profileId, String payload) {
+        String operatorQq = "";
         try {
+            HrAssistantStore.SettingsSecret settings = store.loadSettingsSecret(profileId);
+            if (!settings.qqEnabled()) return;
             JsonNode root = objectMapper.readTree(payload);
-            if (!"message".equals(root.path("post_type").asText()) || !"private".equals(root.path("message_type").asText())) return;
+            if (!"message".equals(root.path("post_type").asText())) return;
             String sender = root.path("user_id").asText("");
             if (sender.equals(root.path("self_id").asText(""))) return;
-            if (!allowedQq.equals(sender)) return;
+            operatorQq = commandOperator(settings);
+            if (operatorQq.isBlank() || !operatorQq.equals(sender) || !matchesCommandChannel(settings, root)) return;
             String messageId = root.path("message_id").asText("");
+            if (messageId.isBlank()) return;
             String commandText = root.path("raw_message").asText("").trim();
             if (commandText.isBlank()) return;
 
@@ -121,7 +131,7 @@ public class NapCatGateway {
             ProposalView result;
             if (revise.matches()) {
                 result = actions.reviseByCode(profileId, revise.group(1), revise.group(2));
-                sendPrivate(allowedQq, "已更新草稿【" + result.confirmationCode() + "】：" + truncate(result.draft(), 300));
+                sendPrivate(operatorQq, "已更新草稿【" + result.confirmationCode() + "】：" + truncate(result.draft(), 300));
                 return;
             }
             String code = simple.group(2);
@@ -131,12 +141,28 @@ public class NapCatGateway {
                 case "详情" -> actions.detailByCode(profileId, code);
                 default -> throw new IllegalArgumentException("不支持的 QQ 指令");
             };
-            sendPrivate(allowedQq, formatCommandResult(simple.group(1), result));
+            sendPrivate(operatorQq, formatCommandResult(simple.group(1), result));
         } catch (RuntimeException e) {
-            sendPrivate(allowedQq, "操作未执行：" + safeMessage(e));
+            if (!operatorQq.isBlank()) sendPrivate(operatorQq, "操作未执行：" + safeMessage(e));
         } catch (Exception e) {
             log.warn("NapCat 消息解析失败: {}", safeMessage(e));
         }
+    }
+
+    private boolean matchesCommandChannel(HrAssistantStore.SettingsSecret settings, JsonNode root) {
+        String messageType = root.path("message_type").asText("");
+        if (settings.qqTargetType() == QqTargetType.PRIVATE) {
+            return "private".equals(messageType);
+        }
+        return "group".equals(messageType) && settings.qqTarget().equals(root.path("group_id").asText(""));
+    }
+
+    private String commandOperator(HrAssistantStore.SettingsSecret settings) {
+        return settings.qqTargetType() == QqTargetType.PRIVATE ? settings.qqTarget() : settings.qqOperator();
+    }
+
+    private boolean commandsEnabled(HrAssistantStore.SettingsSecret settings) {
+        return !commandOperator(settings).isBlank();
     }
 
     private String formatCommandResult(String command, ProposalView proposal) {
@@ -149,19 +175,51 @@ public class NapCatGateway {
     }
 
     private boolean sendPrivate(String qqTarget, String message) {
-        WebSocket current = socket;
-        if (current == null || current.isOutputClosed() || !qqTarget.matches("\\d{5,15}")) return false;
+        return sendPayload(buildPrivatePayload(qqTarget, message), "NapCat 私聊通知发送失败");
+    }
+
+    private boolean sendConfigured(HrAssistantStore.SettingsSecret settings, String message) {
+        return sendPayload(buildNotificationPayload(settings, message), "NapCat QQ 通知发送失败");
+    }
+
+    String buildNotificationPayload(HrAssistantStore.SettingsSecret settings, String message) {
+        if (settings == null || !validQqId(settings.qqTarget())) return "";
+        String action = settings.qqTargetType() == QqTargetType.GROUP ? "send_group_msg" : "send_private_msg";
+        String targetKey = settings.qqTargetType() == QqTargetType.GROUP ? "group_id" : "user_id";
+        return buildPayload(action, targetKey, settings.qqTarget(), message);
+    }
+
+    private String buildPrivatePayload(String qqTarget, String message) {
+        if (!validQqId(qqTarget)) return "";
+        return buildPayload("send_private_msg", "user_id", qqTarget, message);
+    }
+
+    private String buildPayload(String action, String targetKey, String target, String message) {
         try {
-            String payload = objectMapper.writeValueAsString(java.util.Map.of(
-                    "action", "send_private_msg",
-                    "params", java.util.Map.of("user_id", Long.parseLong(qqTarget), "message", message),
+            return objectMapper.writeValueAsString(java.util.Map.of(
+                    "action", action,
+                    "params", java.util.Map.of(targetKey, Long.parseLong(target), "message", message),
                     "echo", "hr-assistant-" + System.nanoTime()));
+        } catch (Exception e) {
+            log.warn("NapCat 消息序列化失败: {}", safeMessage(e));
+            return "";
+        }
+    }
+
+    private boolean sendPayload(String payload, String failureMessage) {
+        WebSocket current = socket;
+        if (current == null || current.isOutputClosed() || payload.isBlank()) return false;
+        try {
             current.sendText(payload, true);
             return true;
         } catch (Exception e) {
-            log.warn("NapCat 私聊通知发送失败: {}", safeMessage(e));
+            log.warn("{}: {}", failureMessage, safeMessage(e));
             return false;
         }
+    }
+
+    private boolean validQqId(String value) {
+        return value != null && value.matches("\\d{5,15}");
     }
 
     private void closeSocket() {
@@ -192,12 +250,10 @@ public class NapCatGateway {
 
     private final class Listener implements WebSocket.Listener {
         private final Long profileId;
-        private final String allowedQq;
         private final StringBuilder fragments = new StringBuilder();
 
-        private Listener(Long profileId, String allowedQq) {
+        private Listener(Long profileId) {
             this.profileId = profileId;
-            this.allowedQq = allowedQq;
         }
 
         @Override
@@ -211,7 +267,7 @@ public class NapCatGateway {
             if (last) {
                 String payload = fragments.toString();
                 fragments.setLength(0);
-                handleIncoming(profileId, allowedQq, payload);
+                handleIncoming(profileId, payload);
             }
             webSocket.request(1);
             return java.util.concurrent.CompletableFuture.completedFuture(null);

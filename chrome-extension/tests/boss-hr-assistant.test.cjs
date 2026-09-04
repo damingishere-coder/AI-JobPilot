@@ -28,6 +28,16 @@ test('assistant keeps full auto locked and sends only after explicit confirmatio
   assert.doesNotMatch(assistant, /screenX|screenY|clientX|clientY|elementFromPoint/);
 });
 
+test('QQ settings support encrypted group notification and optional operator mode', () => {
+  const assistant = source('chrome-extension/boss-hr-assistant.js');
+  assert.match(assistant, /\[\["PRIVATE", "私人 QQ"\], \["GROUP", "指定群聊"\]\]/);
+  assert.match(assistant, /群内操作人 QQ（可选）/);
+  assert.match(assistant, /不填则群聊仅接收通知/);
+  assert.match(assistant, /qqTargetType: read\("qqTargetType"\)/);
+  assert.match(assistant, /qqOperator: read\("qqOperator"\)/);
+  assert.match(assistant, /qqOperatorClear/);
+});
+
 test('backend contract fixes scanning at no less than sixty seconds and never retries HR send', () => {
   const watcher = source('src/main/java/com/getjobs/application/service/HrAssistantWatchService.java');
   const background = source('chrome-extension/background.js');

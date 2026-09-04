@@ -1,6 +1,7 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
+import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
 import com.getjobs.application.service.HrAssistantEventService;
 import com.getjobs.application.service.HrAssistantStore;
 import com.getjobs.application.service.HrAssistantWatchService;
@@ -47,8 +48,8 @@ public class HrAssistantController {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("设置请求不能为空");
         return execute(() -> store.saveSettings(profileService.getCurrentProfileId(), request.getCommunicationProfile(),
-                request.isQqEnabled(), request.getNapcatWsUrl(), request.getNapcatToken(), request.getQqTarget(),
-                request.getRetentionDays()));
+                request.isQqEnabled(), request.getNapcatWsUrl(), request.getNapcatToken(), request.getQqTargetType(),
+                request.getQqTarget(), request.getQqOperator(), request.getRetentionDays()));
     }
 
     @GetMapping("/status")
@@ -142,7 +143,9 @@ public class HrAssistantController {
         private boolean qqEnabled;
         private String napcatWsUrl;
         private String napcatToken;
+        private QqTargetType qqTargetType;
         private String qqTarget;
+        private String qqOperator;
         private int retentionDays = 30;
     }
 

@@ -7,6 +7,7 @@ import com.getjobs.application.hr.HrAssistantTypes.ChatSession;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalStatus;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
+import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
 import com.getjobs.application.hr.HrAssistantTypes.SettingsView;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.DependsOn;
@@ -41,26 +42,30 @@ public class HrAssistantStore {
     public SettingsSecret loadSettingsSecret(Long profileId) {
         List<SettingsSecret> rows = jdbcTemplate.query("""
                 SELECT communication_profile_cipher, napcat_ws_url, napcat_token_cipher,
-                       qq_target_cipher, qq_enabled, retention_days
+                       qq_target_cipher, qq_target_type, qq_operator_cipher, qq_enabled, retention_days
                   FROM hr_assistant_settings WHERE profile_id=?
                 """, (rs, rowNum) -> {
             String aad = settingsAad(profileId);
             CommunicationProfile profile = parseProfile(crypto.decrypt(rs.getString("communication_profile_cipher"), aad + ":profile"));
             String token = crypto.decrypt(rs.getString("napcat_token_cipher"), aad + ":token");
             String qqTarget = crypto.decrypt(rs.getString("qq_target_cipher"), aad + ":qq");
+            String qqOperator = crypto.decrypt(rs.getString("qq_operator_cipher"), aad + ":operator");
             return new SettingsSecret(profileId, profile, rs.getInt("qq_enabled") == 1,
                     emptyToDefault(rs.getString("napcat_ws_url"), "ws://127.0.0.1:3001"), token,
-                    qqTarget, clampRetention(rs.getInt("retention_days")));
+                    readQqTargetType(rs.getString("qq_target_type")), qqTarget, qqOperator,
+                    clampRetention(rs.getInt("retention_days")));
         }, profileId);
         return rows.isEmpty()
-                ? new SettingsSecret(profileId, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "", "", 30)
+                ? new SettingsSecret(profileId, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
+                        QqTargetType.PRIVATE, "", "", 30)
                 : rows.get(0);
     }
 
     public SettingsView loadSettings(Long profileId) {
         SettingsSecret secret = loadSettingsSecret(profileId);
         return new SettingsView(profileId, secret.communicationProfile(), secret.qqEnabled(), secret.napcatWsUrl(),
-                maskQq(secret.qqTarget()), !secret.napcatToken().isBlank(), secret.retentionDays(), true);
+                secret.qqTargetType(), maskQq(secret.qqTarget()), maskQq(secret.qqOperator()),
+                !secret.qqOperator().isBlank(), !secret.napcatToken().isBlank(), secret.retentionDays(), true);
     }
 
     @Transactional
@@ -69,15 +74,25 @@ public class HrAssistantStore {
                                      boolean qqEnabled,
                                      String napcatWsUrl,
                                      String napcatToken,
+                                     QqTargetType qqTargetType,
                                      String qqTarget,
+                                     String qqOperator,
                                      int retentionDays) {
         SettingsSecret current = loadSettingsSecret(profileId);
         CommunicationProfile normalizedProfile = communicationProfile == null ? CommunicationProfile.empty() : communicationProfile;
         String normalizedUrl = validateNapcatUrl(emptyToDefault(napcatWsUrl, current.napcatWsUrl()));
         String normalizedToken = napcatToken == null || napcatToken.isBlank() ? current.napcatToken() : napcatToken.trim();
-        String normalizedTarget = qqTarget == null || qqTarget.isBlank() ? current.qqTarget() : qqTarget.trim();
+        QqTargetType normalizedTargetType = qqTargetType == null ? current.qqTargetType() : qqTargetType;
+        boolean targetTypeChanged = normalizedTargetType != current.qqTargetType();
+        String normalizedTarget = qqTarget == null || qqTarget.isBlank()
+                ? targetTypeChanged ? "" : current.qqTarget()
+                : qqTarget.trim();
+        String normalizedOperator = qqOperator == null ? current.qqOperator() : qqOperator.trim();
         if (qqEnabled && (normalizedToken.isBlank() || !normalizedTarget.matches("\\d{5,15}"))) {
-            throw new IllegalArgumentException("启用 QQ 通知前必须填写 NapCat Token 和 5-15 位私人 QQ 号");
+            throw new IllegalArgumentException("启用 QQ 通知前必须填写 NapCat Token 和 5-15 位目标 QQ/群号");
+        }
+        if (!normalizedOperator.isBlank() && !normalizedOperator.matches("\\d{5,15}")) {
+            throw new IllegalArgumentException("群内操作人 QQ 必须是 5-15 位数字");
         }
         int safeRetention = clampRetention(retentionDays);
         String aad = settingsAad(profileId);
@@ -85,18 +100,21 @@ public class HrAssistantStore {
         jdbcTemplate.update("""
                 INSERT INTO hr_assistant_settings(
                     profile_id, communication_profile_cipher, napcat_ws_url, napcat_token_cipher,
-                    qq_target_cipher, qq_enabled, retention_days, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    qq_target_cipher, qq_target_type, qq_operator_cipher, qq_enabled, retention_days, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(profile_id) DO UPDATE SET
                     communication_profile_cipher=excluded.communication_profile_cipher,
                     napcat_ws_url=excluded.napcat_ws_url,
                     napcat_token_cipher=excluded.napcat_token_cipher,
                     qq_target_cipher=excluded.qq_target_cipher,
+                    qq_target_type=excluded.qq_target_type,
+                    qq_operator_cipher=excluded.qq_operator_cipher,
                     qq_enabled=excluded.qq_enabled,
                     retention_days=excluded.retention_days,
                     updated_at=CURRENT_TIMESTAMP
                 """, profileId, crypto.encrypt(profileJson, aad + ":profile"), normalizedUrl,
                 crypto.encrypt(normalizedToken, aad + ":token"), crypto.encrypt(normalizedTarget, aad + ":qq"),
+                normalizedTargetType.name(), crypto.encrypt(normalizedOperator, aad + ":operator"),
                 qqEnabled ? 1 : 0, safeRetention);
         return loadSettings(profileId);
     }
@@ -497,6 +515,15 @@ public class HrAssistantStore {
         return value == null || value.isBlank() ? fallback : value.trim();
     }
 
+    private QqTargetType readQqTargetType(String value) {
+        if (value == null || value.isBlank()) return QqTargetType.PRIVATE;
+        try {
+            return QqTargetType.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return QqTargetType.PRIVATE;
+        }
+    }
+
     private LocalDateTime readDateTime(String value) {
         if (value == null || value.isBlank()) return LocalDateTime.MIN;
         String normalized = value.trim().replace(' ', 'T');
@@ -512,7 +539,9 @@ public class HrAssistantStore {
                                  boolean qqEnabled,
                                  String napcatWsUrl,
                                  String napcatToken,
+                                 QqTargetType qqTargetType,
                                  String qqTarget,
+                                 String qqOperator,
                                  int retentionDays) {
     }
 

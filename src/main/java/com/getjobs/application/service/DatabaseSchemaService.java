@@ -638,7 +638,7 @@ public class DatabaseSchemaService {
                     "greeting_evidence", "requested_at", "resolved_at", "updated_at"));
             requiredColumns.put("hr_assistant_settings", Set.of(
                     "profile_id", "communication_profile_cipher", "napcat_ws_url", "napcat_token_cipher",
-                    "qq_target_cipher", "qq_enabled", "retention_days"));
+                    "qq_target_cipher", "qq_target_type", "qq_operator_cipher", "qq_enabled", "retention_days"));
             requiredColumns.put("hr_conversation", Set.of(
                     "profile_id", "platform", "external_uid_hash", "external_uid_cipher", "hr_name_cipher",
                     "company_name_cipher", "job_name_cipher", "last_inbound_fingerprint"));

@@ -7,6 +7,7 @@ import com.getjobs.application.hr.HrAssistantTypes.Classification;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.GatewayStatus;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
+import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
 import com.getjobs.application.hr.HrAssistantTypes.UnreadConversation;
 import com.getjobs.application.hr.HrAssistantTypes.UnreadSnapshot;
 import org.junit.jupiter.api.AfterEach;
@@ -53,7 +54,8 @@ class HrAssistantWatchServiceTest {
         when(gateway.status()).thenReturn(new GatewayStatus(true, "1.8.2", "ready"));
         when(profileService.getCurrentProfileId()).thenReturn(1L);
         when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
-                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "", "", 30));
+                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
+                QqTargetType.PRIVATE, "", "", 30));
         when(gateway.listChats(100)).thenReturn(sessions);
         when(gateway.readUnreadSnapshot()).thenAnswer(ignored -> {
             int index = snapshots.getAndIncrement();
@@ -104,7 +106,8 @@ class HrAssistantWatchServiceTest {
         when(gateway.status()).thenReturn(new GatewayStatus(true, "1.8.2", "ready"));
         when(profileService.getCurrentProfileId()).thenReturn(1L);
         when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
-                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "", "", 30));
+                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
+                QqTargetType.PRIVATE, "", "", 30));
         when(gateway.listChats(100)).thenReturn(List.of(session));
         when(gateway.readUnreadSnapshot()).thenAnswer(ignored -> switch (snapshots.getAndIncrement()) {
             case 0 -> new UnreadSnapshot(1, List.of());
