@@ -109,6 +109,18 @@ public class JobAiAnalysisService {
               "additionalProperties": false
             }
             """;
+    private static final String BOSS_GREETING_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "greeting": {"type": "string", "minLength": 20, "maxLength": 120},
+                "jobEvidence": {"type": "string", "minLength": 2},
+                "resumeEvidence": {"type": "string", "minLength": 2}
+              },
+              "required": ["greeting", "jobEvidence", "resumeEvidence"],
+              "additionalProperties": false
+            }
+            """;
     private static final List<DimensionSpec> DIMENSION_SPECS = List.of(
             new DimensionSpec("CORE_SKILLS", "核心职责与技能", 35),
             new DimensionSpec("RELEVANT_EXPERIENCE", "相关经历", 25),
@@ -119,6 +131,10 @@ public class JobAiAnalysisService {
     );
     private static final Map<String, DimensionSpec> DIMENSION_BY_KEY = DIMENSION_SPECS.stream()
             .collect(Collectors.toUnmodifiableMap(DimensionSpec::key, spec -> spec));
+    private static final Set<String> GENERIC_GREETING_EVIDENCE_FRAGMENTS = Set.of(
+            "岗位", "职位", "工作", "要求", "负责", "经验", "熟悉", "相关", "能力", "项目",
+            "沟通", "希望", "您好", "你好", "进一步", "开发"
+    );
     public static final int DEFAULT_APPLY_THRESHOLD = 75;
     public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
@@ -380,13 +396,17 @@ public class JobAiAnalysisService {
         }
 
         String prompt = buildBatchPrompt(resumeText, prepared);
+        List<Long> expectedTaskIds = prepared.stream().map(job -> job.job().taskId()).toList();
+        Set<Long> bossTaskIds = prepared.stream()
+                .filter(job -> "boss".equalsIgnoreCase(job.job().request().getPlatform()))
+                .map(job -> job.job().taskId())
+                .collect(Collectors.toSet());
         String raw = null;
         try {
             raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
             BatchParse parsed;
             try {
-                parsed = parseBatchResults(raw, prepared.stream()
-                        .map(job -> job.job().taskId()).toList());
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             } catch (AiOutputException outputError) {
                 if (!isWholeBatchFormatError(outputError)) throw outputError;
                 if (prepared.stream().noneMatch(job -> isLeaseCurrent(job.job().leaseIsCurrent()))) {
@@ -400,8 +420,7 @@ public class JobAiAnalysisService {
                         prompt + "\n\n重要：上一次输出不是有效的批量 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
                         JOB_ANALYSIS_OUTPUT_SCHEMA
                 );
-                parsed = parseBatchResults(raw, prepared.stream()
-                        .map(job -> job.job().taskId()).toList());
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             }
 
             Map<Long, PreparedJob> byTaskId = prepared.stream().collect(Collectors.toMap(
@@ -410,6 +429,7 @@ public class JobAiAnalysisService {
                 PreparedJob job = byTaskId.get(entry.getKey());
                 if (job != null) {
                     verifyQuotedEvidence(entry.getValue(), job.job().request(), resumeText);
+                    ensureBossGreeting(entry.getValue(), job, resumeText);
                     completed.put(entry.getKey(), finalizeResult(
                             job, entry.getValue(), responseDiagnostic(raw), true));
                 }
@@ -441,12 +461,16 @@ public class JobAiAnalysisService {
             String retryPrompt = buildBatchPrompt(resumeText, List.of(job))
                     + "\n\n重要：上一次批量结果中这个岗位缺失或字段无效。本次只返回这个 taskId 的完整结果。";
             String retryRaw = aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
-            BatchParse retried = parseBatchResults(retryRaw, List.of(job.job().taskId()));
+            Set<Long> bossTaskIds = "boss".equalsIgnoreCase(job.job().request().getPlatform())
+                    ? Set.of(job.job().taskId())
+                    : Set.of();
+            BatchParse retried = parseBatchResults(retryRaw, List.of(job.job().taskId()), bossTaskIds);
             AnalysisResult result = retried.results().get(job.job().taskId());
             if (result == null) {
                 throw retried.errors().getOrDefault(job.job().taskId(), initialError);
             }
             verifyQuotedEvidence(result, job.job().request(), resumeText);
+            ensureBossGreeting(result, job, resumeText);
             return finalizeResult(job, result, responseDiagnostic(retryRaw), true);
         } catch (Exception e) {
             return finalizeFailure(job, e, true);
@@ -556,6 +580,8 @@ public class JobAiAnalysisService {
     }
 
     private String buildBatchPrompt(String resumeText, List<PreparedJob> jobs) {
+        boolean bossBatch = jobs.stream()
+                .allMatch(prepared -> "boss".equalsIgnoreCase(prepared.job().request().getPlatform()));
         JSONArray jobArray = new JSONArray();
         for (PreparedJob prepared : jobs) {
             JobAnalysisRequest request = prepared.job().request();
@@ -570,9 +596,15 @@ public class JobAiAnalysisService {
             job.put("experience", safe(request.getExperience()));
             job.put("degree", safe(request.getDegree()));
             job.put("companyInfo", limit(safe(request.getCompanyInfo()), 2000));
-            job.put("jobDescription", limit(safe(request.getJobDescription()), 5000));
+            job.put("jobDescription", bossBatch
+                    ? safe(request.getJobDescription())
+                    : limit(safe(request.getJobDescription()), 5000));
             jobArray.put(job);
         }
+        String greetingInstruction = bossBatch
+                ? "greeting 必须是20到120字的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n\n"
+                : "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n";
+        String promptResume = bossBatch ? safe(resumeText) : limit(resumeText, 6000);
         return "你是求职岗位证据分析助手。请比较一份候选人简历和多个岗位，但不要计算分数，也不要给出 APPLY/SKIP 决策。\n" +
                 "只返回符合 Schema 的 JSON，不要使用 Markdown 或额外解释。每个输入 taskId 必须且只能返回一次。\n" +
                 "六个维度必须各返回一次：CORE_SKILLS、RELEVANT_EXPERIENCE、ACHIEVEMENTS_COMPLEXITY、INDUSTRY_TRANSFER、EDUCATION_TENURE、LOCATION_SALARY。\n" +
@@ -580,12 +612,14 @@ public class JobAiAnalysisService {
                 "采用宁可多投原则：简历没有写明的信息只能判 UNKNOWN，不能推断为不具备；只有岗位明确要求且简历明确冲突时才能判 CONFLICT。\n" +
                 "jobEvidence 和 resumeEvidence 必须摘录对应原文短句。硬冲突必须同时具有岗位原文和简历原文，并复用对应 CONFLICT 分项中的双方证据；证据不足的差异放入 unknowns，不得放入 hardConflicts。\n" +
                 "summary 用一句自然中文给出总体结论，不要提分数、阈值或投递决策；matches 写具体匹配证据，gaps 只写有明确证据的差距，unknowns 写待核实信息。\n" +
-                "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n" +
-                "候选人简历（本批岗位共用，只出现一次）：\n" + limit(resumeText, 6000) + "\n\n" +
+                greetingInstruction +
+                "候选人简历（本批岗位共用，只出现一次）：\n" + promptResume + "\n\n" +
                 "待分析岗位 JSON：\n" + jobArray;
     }
 
-    private BatchParse parseBatchResults(String raw, List<Long> expectedTaskIds) {
+    private BatchParse parseBatchResults(String raw,
+                                         List<Long> expectedTaskIds,
+                                         Set<Long> bossTaskIds) {
         JSONObject root = new JSONObject(repairJsonObject(extractJson(raw)));
         if (!(root.opt("results") instanceof JSONArray values)) {
             throw outputError("AI_OUTPUT_INVALID_BATCH", "AI 返回缺少 results 数组", raw);
@@ -609,7 +643,7 @@ public class JobAiAnalysisService {
                 continue;
             }
             try {
-                results.put(taskId, parseEvidenceResult(item, raw));
+                results.put(taskId, parseEvidenceResult(item, raw, bossTaskIds.contains(taskId)));
             } catch (AiOutputException e) {
                 errors.put(taskId, e);
             }
@@ -623,9 +657,11 @@ public class JobAiAnalysisService {
         return new BatchParse(results, errors);
     }
 
-    private AnalysisResult parseEvidenceResult(JSONObject item, String raw) {
-        for (String field : List.of(
-                "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts", "greeting")) {
+    private AnalysisResult parseEvidenceResult(JSONObject item, String raw, boolean allowMissingGreeting) {
+        List<String> requiredFields = new ArrayList<>(List.of(
+                "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts"));
+        if (!allowMissingGreeting) requiredFields.add("greeting");
+        for (String field : requiredFields) {
             if (!item.has(field) || item.isNull(field)) {
                 throw outputError("AI_OUTPUT_MISSING_FIELD", "AI 返回缺少字段: " + field, raw);
             }
@@ -638,7 +674,7 @@ public class JobAiAnalysisService {
                 || !(item.opt("unknowns") instanceof JSONArray unknowns)
                 || !(item.opt("dimensions") instanceof JSONArray dimensions)
                 || !(item.opt("hardConflicts") instanceof JSONArray hardConflicts)
-                || !(item.opt("greeting") instanceof String greeting)
+                || (!allowMissingGreeting && !(item.opt("greeting") instanceof String))
                 || !containsOnlyStrings(matches)
                 || !containsOnlyStrings(gaps)
                 || !containsOnlyStrings(unknowns)) {
@@ -663,8 +699,99 @@ public class JobAiAnalysisService {
         result.setHardConflicts(validHardConflicts);
         result.setStrengths(result.getMatches());
         result.setRisks(result.getGaps());
-        result.setGreeting(greeting.trim());
+        result.setGreeting(item.opt("greeting") instanceof String greeting ? greeting.trim() : "");
         return result;
+    }
+
+    private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText) {
+        JobAnalysisRequest request = prepared.job().request();
+        if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
+        String jobDescription = safe(request.getJobDescription()).trim();
+        if (jobDescription.length() < 20) {
+            log.warn("Boss岗位 {} 缺少可用 JD，无法生成岗位定制打招呼语，将使用档案默认兜底", request.getJobKey());
+            result.setGreeting("");
+            return;
+        }
+        if (isUsableBossGreeting(result.getGreeting())
+                && greetingReferencesVerifiedEvidence(result.getGreeting(), result.getDimensions())) return;
+        if (!isLeaseCurrent(prepared.job().leaseIsCurrent())) {
+            result.setGreeting("");
+            return;
+        }
+        try {
+            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到120字的中文招呼语。\n" +
+                    "必须明确结合一项岗位 JD 要求和一项候选人简历中的真实匹配经历；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
+                    "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
+                    "公司：" + safe(request.getCompanyName()) + "\n" +
+                    "岗位：" + safe(request.getJobName()) + "\n" +
+                    "岗位 JD：\n" + jobDescription + "\n\n" +
+                    "候选人简历：\n" + safe(resumeText);
+            String raw = aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA);
+            JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
+            String greeting = parsed.optString("greeting", "").trim();
+            String jobEvidence = parsed.optString("jobEvidence", "").trim();
+            String resumeEvidence = parsed.optString("resumeEvidence", "").trim();
+            if (!isUsableBossGreeting(greeting)
+                    || !quotesExist(List.of(jobEvidence), jobDescription)
+                    || !quotesExist(List.of(resumeEvidence), resumeText)
+                    || !sharesMeaningfulGreetingPhrase(greeting, jobEvidence)
+                    || !sharesMeaningfulGreetingPhrase(greeting, resumeEvidence)) {
+                throw outputError("AI_GREETING_INVALID", "AI 返回的 BOSS 话术缺少可核验的 JD 或简历依据", raw);
+            }
+            result.setGreeting(greeting);
+        } catch (Exception error) {
+            log.warn("Boss岗位 {} 的定制打招呼语重试失败，将使用档案默认兜底: {}",
+                    request.getJobKey(), error.getMessage());
+            result.setGreeting("");
+        }
+    }
+
+    private boolean isUsableBossGreeting(String greeting) {
+        String normalized = safe(greeting).replaceAll("\\s+", "").trim();
+        if (normalized.length() < 20 || normalized.length() > 120) return false;
+        String withoutPunctuation = normalized.replaceAll("[，。！？、,.!?~～]", "");
+        if (Set.of(
+                "您好我对这个岗位很感兴趣希望可以进一步沟通谢谢",
+                "您好我对贵司岗位很感兴趣期待与您进一步沟通",
+                "BOSS好我对这份工作很感兴趣你看我有机会深入沟通下吗",
+                "你好我对这个职位很感兴趣可以聊聊吗"
+        ).contains(withoutPunctuation)) return false;
+        String meaningful = withoutPunctuation.replaceAll(
+                "(?i)boss|您好|你好|贵司|这份|这个|这个岗位|该岗位|该职位|职位|岗位|工作|"
+                        + "很|非常|十分|比较|真的|我|您|对|喜欢|感兴趣|希望|期待|想|可以|有机会|"
+                        + "进一步|深入|沟通|交流|聊聊|一下|下|谢谢|感谢|请问|吗|呀|啊|的|了",
+                "").replaceAll("[^\\p{L}\\p{N}]", "");
+        return meaningful.length() >= 4;
+    }
+
+    private boolean greetingReferencesVerifiedEvidence(String greeting, List<DimensionScore> dimensions) {
+        if (dimensions == null || dimensions.isEmpty()) return false;
+        boolean jobGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getJobEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        boolean resumeGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getResumeEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        return jobGrounded && resumeGrounded;
+    }
+
+    private List<String> safeStrings(List<String> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private boolean sharesMeaningfulGreetingPhrase(String greeting, String evidence) {
+        String normalizedGreeting = normalizeEvidence(greeting);
+        String normalizedEvidence = normalizeEvidence(evidence);
+        int maxLength = Math.min(12, normalizedEvidence.length());
+        for (int length = maxLength; length >= 2; length--) {
+            for (int start = 0; start + length <= normalizedEvidence.length(); start++) {
+                String fragment = normalizedEvidence.substring(start, start + length);
+                boolean asciiOnly = fragment.codePoints().allMatch(codePoint -> codePoint <= 0x7f);
+                if (GENERIC_GREETING_EVIDENCE_FRAGMENTS.contains(fragment) || (asciiOnly && fragment.length() < 4)) continue;
+                if (normalizedGreeting.contains(fragment)) return true;
+            }
+        }
+        return false;
     }
 
     private List<DimensionScore> parseDimensions(JSONArray dimensions,

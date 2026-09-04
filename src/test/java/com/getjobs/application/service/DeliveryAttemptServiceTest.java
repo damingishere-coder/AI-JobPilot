@@ -42,15 +42,18 @@ class DeliveryAttemptServiceTest {
         assertThat(requested.created()).isTrue();
         assertThat(status("boss_data", 10)).isEqualTo(DeliveryStatus.DELIVERY_REQUESTED);
 
-        DeliveryAttemptService.ResolutionResult confirmed = service.resolve(
-                "boss", 1L, 10, requested.requestKey(), DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "页面显示已沟通", null, null);
-        DeliveryAttemptService.ResolutionResult duplicate = service.resolve(
-                "boss", 1L, 10, requested.requestKey(), DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "重复回调", null, null);
-        DeliveryAttemptService.ResolutionResult lateFailure = service.resolve(
-                "boss", 1L, 10, requested.requestKey(), DeliveryAttemptService.State.FAILED,
-                DeliveryAttemptService.PLATFORM_ERROR, "延迟失败", "NETWORK_ERROR", "延迟失败");
+        DeliveryAttemptService.ResolutionResult confirmed = service.resolveBoss(
+                1L, 10, requested.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "页面显示已沟通", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT);
+        DeliveryAttemptService.ResolutionResult duplicate = service.resolveBoss(
+                1L, 10, requested.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "重复回调", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT);
+        DeliveryAttemptService.ResolutionResult lateFailure = service.resolveBoss(
+                1L, 10, requested.requestKey(), DeliveryAttemptService.State.FAILED,
+                DeliveryAttemptService.PLATFORM_ERROR, "延迟失败", "NETWORK_ERROR", "延迟失败",
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT, "PRE_ACTION_ERROR");
 
         assertThat(confirmed.accepted()).isTrue();
         assertThat(duplicate.accepted()).isTrue();
@@ -58,6 +61,9 @@ class DeliveryAttemptServiceTest {
         assertThat(lateFailure.accepted()).isFalse();
         assertThat(status("boss_data", 10)).isEqualTo(DeliveryStatus.DELIVERED);
         assertThat(attemptState(requested.requestKey())).isEqualTo("CONFIRMED");
+        DeliveryAttemptService.AttemptView audit = service.listRecentForCurrentProfile("boss", 1).getFirst();
+        assertThat(audit.greetingOutcome()).isEqualTo("CONFIRMED");
+        assertThat(audit.greetingEvidence()).isEqualTo(DeliveryAttemptService.GREETING_RENDERED_EXACT);
     }
 
     @Test
@@ -93,12 +99,14 @@ class DeliveryAttemptServiceTest {
         DeliveryAttemptService.RequestResult first = service.requestBoss(30, 1, "boss-30", false);
         DeliveryAttemptService.RequestResult duplicate = service.requestBoss(30, 1, "boss-30", false);
 
-        DeliveryAttemptService.ResolutionResult wrongProfile = service.resolve(
-                "boss", 2L, 30, first.requestKey(), DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "错误档案", null, null);
-        DeliveryAttemptService.ResolutionResult missingKey = service.resolve(
-                "boss", 1L, 30, null, DeliveryAttemptService.State.FAILED,
-                DeliveryAttemptService.PRE_ACTION_ERROR, "无任务绑定", null, null);
+        DeliveryAttemptService.ResolutionResult wrongProfile = service.resolveBoss(
+                2L, 30, first.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "错误档案", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT);
+        DeliveryAttemptService.ResolutionResult missingKey = service.resolveBoss(
+                1L, 30, null, DeliveryAttemptService.State.FAILED,
+                DeliveryAttemptService.PRE_ACTION_ERROR, "无任务绑定", null, null,
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT, "PRE_ACTION_ERROR");
 
         assertThat(first.created()).isTrue();
         assertThat(duplicate.accepted()).isTrue();
@@ -116,14 +124,55 @@ class DeliveryAttemptServiceTest {
         insertBoss(35, DeliveryStatus.WAITING_CONFIRM);
         DeliveryAttemptService.RequestResult requested = service.requestBoss(35, 1, "boss-35", false);
 
-        String first = service.snapshotGreeting(requested.requestKey(), "首次确认的话术");
-        String resumed = service.snapshotGreeting(requested.requestKey(), "后来修改的话术");
+        String first = service.snapshotGreeting(requested.requestKey(), "首次确认的话术", "AI_GREETING");
+        String resumed = service.snapshotGreeting(requested.requestKey(), "后来修改的话术", "USER_EDITED");
 
         assertThat(first).isEqualTo("首次确认的话术");
         assertThat(resumed).isEqualTo("首次确认的话术");
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
                 String.class, requested.requestKey())).isEqualTo("首次确认的话术");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT greeting_source FROM delivery_attempt WHERE request_key=?",
+                String.class, requested.requestKey())).isEqualTo("AI_GREETING");
+    }
+
+    @Test
+    void bossCannotConfirmWithoutExactGreetingEvidence() {
+        insertBoss(36, DeliveryStatus.WAITING_CONFIRM);
+        DeliveryAttemptService.RequestResult requested = service.requestBoss(36, 1, "boss-36", false);
+        service.snapshotGreeting(requested.requestKey(), "岗位定制话术", "AI_GREETING");
+
+        DeliveryAttemptService.ResolutionResult rejected = service.resolveBoss(
+                1L, 36, requested.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "只确认平台状态", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, "GREETING_RENDER_UNCONFIRMED");
+
+        assertThat(rejected.accepted()).isFalse();
+        assertThat(rejected.message()).contains("话术尚未精确确认");
+        assertThat(attemptState(requested.requestKey())).isEqualTo("REQUESTED");
+        assertThat(status("boss_data", 36)).isEqualTo(DeliveryStatus.DELIVERY_REQUESTED);
+    }
+
+    @Test
+    void batchHaltAuditKeepsUntouchedBossJobReadyForLaterConfirmation() {
+        insertBoss(37, DeliveryStatus.WAITING_CONFIRM);
+        DeliveryAttemptService.RequestResult requested = service.requestBoss(37, 1, "boss-37", false);
+
+        DeliveryAttemptService.ResolutionResult halted = service.resolveBoss(
+                1L, 37, requested.requestKey(), DeliveryAttemptService.State.FAILED,
+                DeliveryAttemptService.BATCH_HALTED_BEFORE_ACTION, "前一岗位结果待确认，本岗位未触达",
+                DeliveryAttemptService.BATCH_HALTED_BEFORE_ACTION, "本岗位未触达",
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT,
+                DeliveryAttemptService.BATCH_HALTED_BEFORE_ACTION);
+
+        assertThat(halted.accepted()).isTrue();
+        assertThat(status("boss_data", 37)).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+
+        DeliveryAttemptService.RequestResult next = service.requestBoss(37, 1, "boss-37", false);
+        assertThat(status("boss_data", 37)).isEqualTo(DeliveryStatus.DELIVERY_REQUESTED);
+        assertThat(next.created()).isTrue();
+        assertThat(next.requestKey()).isNotEqualTo(requested.requestKey());
     }
 
     @Test
@@ -136,15 +185,18 @@ class DeliveryAttemptServiceTest {
                         "(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
                         "VALUES ('newer-request', 'boss', 1, 'boss-40', 40, 'REQUESTED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
 
-        DeliveryAttemptService.ResolutionResult stale = service.resolve(
-                "boss", 1L, 40, first.requestKey(), DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "旧任务延迟成功", null, null);
-        DeliveryAttemptService.ResolutionResult failed = service.resolve(
-                "boss", 1L, 40, "newer-request", DeliveryAttemptService.State.FAILED,
-                DeliveryAttemptService.PLATFORM_ERROR, "平台明确失败", "PLATFORM_ERROR", "平台明确失败");
-        DeliveryAttemptService.ResolutionResult lateSuccess = service.resolve(
-                "boss", 1L, 40, "newer-request", DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "延迟成功", null, null);
+        DeliveryAttemptService.ResolutionResult stale = service.resolveBoss(
+                1L, 40, first.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "旧任务延迟成功", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT);
+        DeliveryAttemptService.ResolutionResult failed = service.resolveBoss(
+                1L, 40, "newer-request", DeliveryAttemptService.State.FAILED,
+                DeliveryAttemptService.PLATFORM_ERROR, "平台明确失败", "PLATFORM_ERROR", "平台明确失败",
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT, "PRE_ACTION_ERROR");
+        DeliveryAttemptService.ResolutionResult lateSuccess = service.resolveBoss(
+                1L, 40, "newer-request", DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "延迟成功", null, null,
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT);
 
         assertThat(stale.accepted()).isFalse();
         assertThat(failed.accepted()).isTrue();
@@ -157,9 +209,10 @@ class DeliveryAttemptServiceTest {
     void unknownCanBeManuallyReconciledAndRetryCreatesANewRequestKey() {
         insertBoss(50, DeliveryStatus.WAITING_CONFIRM);
         DeliveryAttemptService.RequestResult first = service.requestBoss(50, 1, "boss-50", false);
-        assertThat(service.resolve(
-                "boss", 1L, 50, first.requestKey(), DeliveryAttemptService.State.UNKNOWN,
-                DeliveryAttemptService.NO_CONFIRMATION, "响应丢失", null, null).accepted()).isTrue();
+        assertThat(service.resolveBoss(
+                1L, 50, first.requestKey(), DeliveryAttemptService.State.UNKNOWN,
+                DeliveryAttemptService.NO_CONFIRMATION, "响应丢失", null, null,
+                DeliveryAttemptService.GreetingOutcome.UNKNOWN, "GREETING_UNCONFIRMED").accepted()).isTrue();
 
         DeliveryAttemptService.RequestResult retry = service.retryBoss(50, 1, "boss-50");
 
@@ -175,13 +228,17 @@ class DeliveryAttemptServiceTest {
                 "SELECT COUNT(*) FROM delivery_attempt WHERE platform='boss' AND job_row_id=50", Integer.class))
                 .isEqualTo(2);
 
-        assertThat(service.resolve(
-                "boss", 1L, 50, retry.requestKey(), DeliveryAttemptService.State.UNKNOWN,
-                DeliveryAttemptService.NO_CONFIRMATION, "第二次结果未知", null, null).accepted()).isTrue();
+        assertThat(service.resolveBoss(
+                1L, 50, retry.requestKey(), DeliveryAttemptService.State.UNKNOWN,
+                DeliveryAttemptService.NO_CONFIRMATION, "第二次结果未知", null, null,
+                DeliveryAttemptService.GreetingOutcome.UNKNOWN, "GREETING_UNCONFIRMED").accepted()).isTrue();
         DeliveryAttemptService.ResolutionResult reconciled = service.reconcileLatest(
                 "boss", 1L, 50, "boss-50", DeliveryAttemptService.State.CONFIRMED, "人工核对已投递");
         assertThat(reconciled.accepted()).isTrue();
         assertThat(status("boss_data", 50)).isEqualTo(DeliveryStatus.DELIVERED);
+        DeliveryAttemptService.AttemptView audit = service.listRecentForCurrentProfile("boss", 1).getFirst();
+        assertThat(audit.greetingOutcome()).isEqualTo("UNKNOWN");
+        assertThat(audit.greetingEvidence()).isEqualTo(DeliveryAttemptService.GREETING_MANUAL_RECONCILIATION);
     }
 
     @Test

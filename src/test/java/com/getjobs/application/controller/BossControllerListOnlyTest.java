@@ -241,9 +241,11 @@ class BossControllerListOnlyTest {
         request.setJobs(List.of(dto));
 
         BossJobDataEntity existing = savedJob(31L, dto, DeliveryStatus.AI_NOT_MATCH);
+        existing.setJobDescription("负责完整岗位需求采集与分析，要求具备 Java 后端项目经验和系统设计能力。");
         existing.setAiScore(58);
         existing.setAiReason("历史分析结果");
         BossJobDataEntity restored = savedJob(31L, dto, DeliveryStatus.AI_NOT_MATCH);
+        restored.setJobDescription(existing.getJobDescription());
         restored.setAiScore(58);
         restored.setAiReason("历史分析结果");
         restored.setScanRunId("boss-current");
@@ -356,6 +358,39 @@ class BossControllerListOnlyTest {
         assertThat(response.getBody()).containsEntry("rejectedCount", 1);
         verify(bossService, never()).findExistingChromeBossJobs(any(), any(), any());
         verify(bossService, never()).reuseHistoricalBossJob(any(), any(), any());
+        verify(queueService, never()).enqueue(any());
+    }
+
+    @Test
+    void keepsBossJobOutOfAiQueueUntilACompleteJdIsCollected() {
+        BossService bossService = mock(BossService.class);
+        ProfileService profileService = mock(ProfileService.class);
+        ChromeJobAnalysisQueueService queueService = mock(ChromeJobAnalysisQueueService.class);
+        JobRunCoordinator jobRunCoordinator = mock(JobRunCoordinator.class);
+        BossController controller = controller(bossService, profileService, queueService, jobRunCoordinator);
+
+        ChromeJobDto dto = chromeJob("job-without-jd", "测试公司", "Java工程师");
+        ChromeJobBatchRequest request = new ChromeJobBatchRequest();
+        request.setProfileId(1L);
+        request.setRunId("boss-jd-required");
+        request.setJobs(List.of(dto));
+        BossJobDataEntity saved = savedJob(51L, dto, DeliveryStatus.NOT_DELIVERED);
+        BossJobDataEntity insufficient = savedJob(51L, dto, DeliveryStatus.COLLECTION_INSUFFICIENT);
+
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
+        when(jobRunCoordinator.isCancelRequested("boss-jd-required")).thenReturn(false);
+        when(bossService.upsertChromeBossJob(any(BossJobDataEntity.class), eq("boss-jd-required"), eq(1L)))
+                .thenReturn(saved);
+        when(bossService.markBossJobCollectionInsufficient(eq(51L), any())).thenReturn(insufficient);
+        when(queueService.queueSize()).thenReturn(0);
+
+        ResponseEntity<Map<String, Object>> response = controller.receiveChromeJobs(request);
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody())
+                .containsEntry("queued", 0)
+                .containsEntry("insufficient", 1);
+        verify(bossService).markBossJobCollectionInsufficient(eq(51L), eq(List.of("岗位JD")));
         verify(queueService, never()).enqueue(any());
     }
 

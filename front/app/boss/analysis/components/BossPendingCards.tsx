@@ -100,7 +100,7 @@ function PendingJobCard({
         >
           <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
             <span>最终沟通话术</span>
-            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "AI 原稿" : job.greetingSource === "PROFILE_DEFAULT" ? "档案默认" : "空白警告"}</span>
+            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "岗位 JD 定制" : job.greetingSource === "PROFILE_DEFAULT" ? "AI 失败兜底（档案默认）" : "空白警告"}</span>
           </div>
           <div className="line-clamp-2 leading-6">{job.finalGreeting || "暂无可用话术，请先编辑后再确认"}</div>
         </button>

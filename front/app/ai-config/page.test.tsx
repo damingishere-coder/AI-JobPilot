@@ -33,7 +33,7 @@ function readyResponse() {
 function profileResponse(url: string, id: number, name: string) {
   const profile = { id, name }
   const payload = url.includes('/api/boss/config')
-    ? { success: true, currentProfile: profile, hasProfile: true, config: { enableAi: 1, sayHi: `${name} hi` } }
+    ? { success: true, currentProfile: profile, hasProfile: true, config: { enableAi: 1, sayHi: `${name} hi`, nativeGreetingDisabledConfirmed: 1 } }
     : url.includes('/api/ai/resume')
       ? { success: true, currentProfile: profile, hasProfile: true, data: { resumeText: `${name} resume` } }
       : url.includes('/api/ai/companies/priority')
@@ -110,6 +110,33 @@ describe('AI config profile snapshot', () => {
     await screen.findByText(/请先在上方新建档案/)
     expect(screen.queryByText('当前正在编辑：A')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /保存配置/ })).toBeDisabled()
+  })
+
+  it('加载并保存关闭 BOSS 平台默认话术确认', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/ready')) return Promise.resolve(readyResponse())
+      return Promise.resolve(profileResponse(url, 1, 'A'))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('alert', vi.fn())
+
+    render(<AiConfigPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '切换A' }))
+    await screen.findByText('当前正在编辑：A')
+
+    const confirmation = screen.getByRole('checkbox', { name: /我已关闭 BOSS 平台自带打招呼语/ })
+    expect(confirmation).toBeChecked()
+    fireEvent.click(confirmation)
+    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }))
+
+    await waitFor(() => {
+      const saveCall = fetchMock.mock.calls.find(([url, init]) =>
+        String(url).includes('/api/boss/config') && (init as RequestInit | undefined)?.method === 'PUT')
+      expect(saveCall).toBeTruthy()
+      const body = JSON.parse(String((saveCall?.[1] as RequestInit).body))
+      expect(body).toMatchObject({ nativeGreetingDisabledConfirmed: 0 })
+    })
   })
 
   it('文件先本地识别为可编辑预览，不会直接保存', async () => {

@@ -65,6 +65,9 @@ class DatabaseMigrationRehearsalTest {
                     "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='9'"))
                     .isEqualTo(1L);
             assertThat(scalarLong(connection,
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='14'"))
+                    .isEqualTo(1L);
+            assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_attempt'"))
                     .isEqualTo(1L);
             assertThat(scalarLong(connection,
@@ -78,6 +81,12 @@ class DatabaseMigrationRehearsalTest {
                     .isEqualTo(1L);
             assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_snapshot'"))
+                    .isEqualTo(1L);
+            assertThat(scalarLong(connection,
+                    "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_outcome'"))
+                    .isEqualTo(1L);
+            assertThat(scalarLong(connection,
+                    "SELECT COUNT(*) FROM pragma_table_info('boss_config') WHERE name='native_greeting_disabled_confirmed'"))
                     .isEqualTo(1L);
         }
         assertThat(tableCounts(rehearsalUrl)).containsAllEntriesOf(countsBefore);

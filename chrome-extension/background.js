@@ -32,12 +32,12 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-03-boss-navigation-loop-fix";
+const BACKGROUND_VERSION = "2026-09-04-boss-greeting-proof";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-greeting-proof";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -836,6 +836,9 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   let failed = 0;
   let unknown = 0;
   const results = [];
+  let halted = false;
+  let haltedJobId = null;
+  let unprocessedCount = 0;
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
@@ -857,16 +860,52 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
     if (outcome === "CONFIRMED") success += 1;
     else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
-    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+    if (outcome === "UNKNOWN") {
+      halted = true;
+      haltedJobId = task?.id || null;
+      const remaining = tasks.slice(index + 1);
+      unprocessedCount = remaining.length;
+      for (const skippedTask of remaining) {
+        const skippedMessage = `前一岗位 ${task?.id || "-"} 的发送结果待确认，批量任务已暂停，本岗位未触达`;
+        let persisted = false;
+        await postBossDeliveryResult(
+          skippedTask,
+          false,
+          { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+          "BATCH_HALTED_BEFORE_ACTION",
+          "NOT_SENT",
+          "BATCH_HALTED_BEFORE_ACTION"
+        ).then(() => { persisted = true; }).catch(() => {});
+        results.push({
+          id: skippedTask?.id,
+          requestKey: skippedTask?.requestKey,
+          outcome: "FAILED",
+          evidence: "BATCH_HALTED_BEFORE_ACTION",
+          greetingOutcome: "NOT_SENT",
+          greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+          persisted,
+          skipped: true,
+          message: skippedMessage
+        });
+      }
+      break;
+    }
   }
 
+  const summary = halted
+    ? `Boss批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+    : `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
   return {
-    success: failed === 0 && unknown === 0,
+    success: !halted && failed === 0 && unknown === 0,
     partial: success > 0 && (failed > 0 || unknown > 0),
-    message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+    message: summary,
     successCount: success,
     unknownCount: unknown,
     failedCount: failed,
+    halted,
+    haltedJobId,
+    unprocessedCount,
     results
   };
 }
@@ -913,6 +952,8 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
       success: false,
       outcome: "UNKNOWN",
       evidence: "NO_CONFIRMATION",
+      greetingOutcome: "UNKNOWN",
+      greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
       persisted,
       message: failure.failureReason,
       failureType: failure.failureType
@@ -921,30 +962,20 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
 }
 
 async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, total) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        ...message,
-        type: "BOSS_DELIVER_CURRENT_V2",
-        source: "GET_JOBS_BACKGROUND",
-        task,
-        pageTabId,
-        deliveryIndex: index,
-        deliveryTotal: total
-      });
-      if (response) {
-        const recorded = await recordBossDeliveryResponse(task, response);
-        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
-      }
-      const fallback = await inferBossDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
-    } catch (error) {
-      lastError = error;
-      await sleep(500);
-    }
+  const response = await chrome.tabs.sendMessage(tabId, {
+    ...message,
+    type: "BOSS_DELIVER_CURRENT_V2",
+    source: "GET_JOBS_BACKGROUND",
+    task,
+    pageTabId,
+    deliveryIndex: index,
+    deliveryTotal: total
+  });
+  if (response) {
+    const recorded = await recordBossDeliveryResponse(task, response);
+    return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
   }
-  throw lastError || new Error("Boss投递请求发送失败");
+  return await inferBossDeliveryAfterEmptyResponse(tabId, task);
 }
 
 async function handleZhilianDeliver(tab, config, message, pageTabId) {
@@ -1132,6 +1163,8 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
         success: false,
         outcome: "UNKNOWN",
         evidence: "CHAT_SURFACE_ONLY",
+        greetingOutcome: "UNKNOWN",
+        greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
         persisted,
         message: "Boss已进入沟通页，但未收到明确成功状态，已标记待确认。"
       };
@@ -1142,7 +1175,7 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
   }
 }
 
-async function postBossDeliveryResult(task, success, message, evidence) {
+async function postBossDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
   if (!task?.id) return;
   const failure = success === false ? normalizeFailurePayload(message) : null;
   const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
@@ -1156,7 +1189,9 @@ async function postBossDeliveryResult(task, success, message, evidence) {
       success,
       message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
-      failureReason: failure?.failureReason
+      failureReason: failure?.failureReason,
+      greetingOutcome: greetingOutcome || (outcome === "CONFIRMED" ? "CONFIRMED" : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN"),
+      greetingEvidence: greetingEvidence || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     },
     platform: "boss"
   });
@@ -1165,12 +1200,38 @@ async function postBossDeliveryResult(task, success, message, evidence) {
 }
 
 async function recordBossDeliveryResponse(task, response) {
-  const outcome = deliveryOutcomeOf(response);
+  let outcome = deliveryOutcomeOf(response);
+  const responseGreetingOutcome = String(response?.greetingOutcome || "").toUpperCase();
+  const responseGreetingEvidence = String(response?.greetingEvidence || "").toUpperCase();
+  const greetingConfirmed = responseGreetingOutcome === "CONFIRMED"
+    && responseGreetingEvidence === "GREETING_RENDERED_EXACT";
+  if (outcome === "CONFIRMED" && !greetingConfirmed) outcome = "UNKNOWN";
   const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
   const evidence = response?.evidence
-    || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
-  await postBossDeliveryResult(task, success, response?.message || "Boss投递结果回写", evidence);
-  return { outcome, evidence, persisted: true };
+    || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  const greetingOutcome = greetingConfirmed
+    ? "CONFIRMED"
+    : ["UNKNOWN", "NOT_SENT"].includes(responseGreetingOutcome)
+      ? responseGreetingOutcome
+      : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN";
+  const greetingEvidence = greetingConfirmed
+    ? "GREETING_RENDERED_EXACT"
+    : responseGreetingEvidence || "GREETING_UNCONFIRMED";
+  await postBossDeliveryResult(
+    task,
+    success,
+    response?.message || "Boss投递结果回写",
+    evidence,
+    greetingOutcome,
+    greetingEvidence
+  );
+  return {
+    outcome,
+    evidence,
+    greetingOutcome,
+    greetingEvidence,
+    persisted: true
+  };
 }
 
 async function postZhilianDeliveryResult(task, success, message, evidence) {
@@ -1214,7 +1275,7 @@ function deliveryOutcomeOf(result) {
 }
 
 function isExplicitConfirmationEvidence(evidence) {
-  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION"]
+  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION", "GREETING_RENDERED_EXACT"]
     .includes(String(evidence || "").toUpperCase());
 }
 

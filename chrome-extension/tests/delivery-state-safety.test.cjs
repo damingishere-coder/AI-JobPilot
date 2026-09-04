@@ -44,3 +44,22 @@ test("delivery-result persistence is explicit so the frontend can compensate fai
   assert.match(boss, /persisted:\s*false/);
   assert.match(zhilian, /persisted:\s*false/);
 });
+
+test("Boss confirms only an exact rendered greeting and stops the batch on unknown", () => {
+  const background = source("background.js");
+  const boss = source("boss-content.js");
+
+  assert.match(boss, /readChatInput\(input\)\s*!==\s*greeting/);
+  assert.match(boss, /function normalizeGreetingText/);
+  assert.match(boss, /countRenderedGreetingMessages\(greeting, input\)\s*>\s*beforeCount/);
+  assert.match(boss, /greetingEvidence:\s*greetingResult\?\.evidence/);
+  assert.match(boss, /GREETING_INPUT_MISSING/);
+  assert.match(boss, /GREETING_SEND_BUTTON_MISSING/);
+  assert.match(boss, /GREETING_RENDER_UNCONFIRMED/);
+  assert.match(background, /GREETING_RENDERED_EXACT/);
+  assert.match(background, /if \(outcome === "UNKNOWN"\)/);
+  assert.match(background, /unprocessedCount/);
+  assert.match(background, /skipped:\s*true/);
+  assert.doesNotMatch(boss, /return findClickable\(\["发送"\]\)/);
+  assert.doesNotMatch(background, /for \(let attempt = 0; attempt < 3; attempt\+\+\) \{\s*try \{\s*const response = await chrome\.tabs\.sendMessage\(tabId, \{\s*\.\.\.message,\s*type: "BOSS_DELIVER_CURRENT_V2"/s);
+});

@@ -42,6 +42,8 @@ class BossConfigControllerContractTest {
                 .containsEntry("message", "Boss配置加载成功")
                 .containsKeys("config", "options", "blacklist", "currentProfile", "hasProfile");
         assertThat(response.get("hasProfile")).isEqualTo(false);
+        assertThat(((BossConfigEntity) response.get("config")).getNativeGreetingDisabledConfirmed())
+                .isZero();
     }
 
     @Test

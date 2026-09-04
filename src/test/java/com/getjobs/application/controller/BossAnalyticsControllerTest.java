@@ -39,7 +39,8 @@ class BossAnalyticsControllerTest {
         greetingDraftService = mock(GreetingDraftService.class);
         when(greetingDraftService.resolveForJob(anyString(), anyLong())).thenReturn(
                 new GreetingDraftService.GreetingView("AI 原稿", "", GreetingDraftService.AI_GREETING, null, "你好，很高兴沟通"));
-        when(deliveryAttemptService.snapshotGreeting(anyString(), anyString()))
+        when(bossService.isNativeGreetingDisabledConfirmed()).thenReturn(true);
+        when(deliveryAttemptService.snapshotGreeting(anyString(), anyString(), anyString()))
                 .thenAnswer(invocation -> invocation.getArgument(1));
         controller = new BossAnalyticsController(
                 bossService, mock(BossStatsService.class), deliveryAttemptService, greetingDraftService);
@@ -131,17 +132,20 @@ class BossAnalyticsControllerTest {
     void deliveryCallbackPassesRequestIdentityAndEvidenceToAttemptService() {
         BossJobDataEntity current = job(5L, DeliveryStatus.DELIVERY_REQUESTED, "https://www.zhipin.com/job_detail/5.html");
         when(bossService.getBossJobById(5L)).thenReturn(current);
-        when(deliveryAttemptService.resolve(
-                "boss", 1L, 5L, "request-5", DeliveryAttemptService.State.CONFIRMED,
-                DeliveryAttemptService.PLATFORM_STATUS_TEXT, "页面显示已沟通", null, "页面显示已沟通"
+        when(deliveryAttemptService.resolveBoss(
+                1L, 5L, "request-5", DeliveryAttemptService.State.CONFIRMED,
+                DeliveryAttemptService.GREETING_RENDERED_EXACT, "页面显示已沟通", null, "页面显示已沟通",
+                DeliveryAttemptService.GreetingOutcome.CONFIRMED, DeliveryAttemptService.GREETING_RENDERED_EXACT
         )).thenReturn(new DeliveryAttemptService.ResolutionResult(
                 true, false, DeliveryAttemptService.State.CONFIRMED, "投递结果已写入"));
 
         DeliveryResultRequest request = new DeliveryResultRequest();
         request.setRequestKey("request-5");
         request.setOutcome("CONFIRMED");
-        request.setEvidence(DeliveryAttemptService.PLATFORM_STATUS_TEXT);
+        request.setEvidence(DeliveryAttemptService.GREETING_RENDERED_EXACT);
         request.setMessage("页面显示已沟通");
+        request.setGreetingOutcome("CONFIRMED");
+        request.setGreetingEvidence(DeliveryAttemptService.GREETING_RENDERED_EXACT);
 
         Map<String, Object> response = controller.updateDeliveryResult(5L, request);
 
@@ -183,6 +187,19 @@ class BossAnalyticsControllerTest {
         assertThat(response)
                 .containsEntry("success", false)
                 .containsEntry("greetingChanged", true);
+        verify(deliveryAttemptService, org.mockito.Mockito.never())
+                .requestBoss(anyLong(), anyLong(), anyString(), anyBoolean());
+    }
+
+    @Test
+    void confirmRequiresNativeBossGreetingToBeDisabled() {
+        when(bossService.isNativeGreetingDisabledConfirmed()).thenReturn(false);
+
+        Map<String, Object> response = controller.confirmPendingJob(7L, new GreetingConfirmationRequest());
+
+        assertThat(response)
+                .containsEntry("success", false)
+                .containsEntry("nativeGreetingConfirmationRequired", true);
         verify(deliveryAttemptService, org.mockito.Mockito.never())
                 .requestBoss(anyLong(), anyLong(), anyString(), anyBoolean());
     }
