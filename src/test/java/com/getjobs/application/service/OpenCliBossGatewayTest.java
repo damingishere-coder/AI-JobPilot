@@ -59,6 +59,20 @@ class OpenCliBossGatewayTest {
     }
 
     @Test
+    void opensUnreadTabEvenWhenBossHidesTheZeroCountSuffix() {
+        FakeRunner runner = new FakeRunner();
+        runner.failCountedUnreadClick = true;
+        OpenCliBossGateway gateway = gateway(runner);
+
+        gateway.openUnreadTab();
+
+        assertThat(runner.calls).containsExactly(
+                List.of("browser", "boss-hr", "state"),
+                List.of("browser", "boss-hr", "click", "--text", "未读("),
+                List.of("browser", "boss-hr", "click", "--text", "未读"));
+    }
+
+    @Test
     void sendsThroughSelectorFillAndEnterInsteadOfRecruiterAdapter() {
         FakeRunner runner = new FakeRunner();
         OpenCliBossGateway gateway = gateway(runner);
@@ -73,6 +87,18 @@ class OpenCliBossGatewayTest {
         assertThat(runner.calls.stream().flatMap(List::stream)).doesNotContain("send");
     }
 
+    @Test
+    void refusesToSendWhenTheChatInputSelectorIsNotUnique() {
+        FakeRunner runner = new FakeRunner();
+        runner.fillOutput = "{\"filled\":true,\"verified\":true,\"matches_n\":2,\"match_level\":\"exact\"}";
+        OpenCliBossGateway gateway = gateway(runner);
+
+        assertThatThrownBy(() -> gateway.fillAndSend("不会被提交"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("唯一命中");
+        assertThat(runner.calls.stream().flatMap(List::stream)).doesNotContain("Enter");
+    }
+
     private OpenCliBossGateway gateway(OpenCliCommandRunner runner) {
         return new OpenCliBossGateway(runner, new ObjectMapper(), "boss-hr", 30);
     }
@@ -80,16 +106,22 @@ class OpenCliBossGatewayTest {
     private static final class FakeRunner implements OpenCliCommandRunner {
         private final List<List<String>> calls = new ArrayList<>();
         private String evalOutput = "{\"totalUnread\":0,\"rows\":[]}";
+        private String fillOutput = "{\"filled\":true,\"verified\":true,\"matches_n\":1,\"match_level\":\"exact\"}";
+        private boolean failCountedUnreadClick;
 
         @Override
         public CommandResult run(List<String> arguments, Duration timeout) {
             calls.add(List.copyOf(arguments));
             if (arguments.contains("eval")) return new CommandResult(0, evalOutput, "", false);
-            if (arguments.contains("fill")) return new CommandResult(0,
-                    "{\"filled\":true,\"verified\":true,\"matches_n\":1,\"match_level\":\"exact\"}", "", false);
+            if (arguments.contains("fill")) return new CommandResult(0, fillOutput, "", false);
             if (arguments.contains("focus")) return new CommandResult(0,
                     "{\"focused\":true,\"matches_n\":1,\"match_level\":\"exact\"}", "", false);
             if (arguments.contains("keys")) return new CommandResult(0, "Pressed: Enter", "", false);
+            if (failCountedUnreadClick && arguments.contains("未读(")) {
+                return new CommandResult(1, "", "No element found", false);
+            }
+            if (arguments.contains("click")) return new CommandResult(0,
+                    "{\"clicked\":true,\"matches_n\":1,\"match_level\":\"exact\"}", "", false);
             return new CommandResult(0, "{}", "", false);
         }
     }

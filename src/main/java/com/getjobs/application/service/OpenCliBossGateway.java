@@ -117,6 +117,9 @@ public class OpenCliBossGateway {
     public void openUnreadTab() {
         requireSuccess(commandRunner.run(List.of("browser", sessionName, "state"), timeout), "检查 BOSS 页面状态");
         var result = commandRunner.run(List.of("browser", sessionName, "click", "--text", "未读("), timeout);
+        if (!result.success()) {
+            result = commandRunner.run(List.of("browser", sessionName, "click", "--text", "未读"), timeout);
+        }
         requireSuccess(result, "切换 BOSS 未读选项卡");
         requireExactWriteEnvelope(result.stdout(), "clicked");
     }
@@ -196,6 +199,7 @@ public class OpenCliBossGateway {
         requireSuccess(commandRunner.run(List.of("browser", sessionName, "state"), timeout), "发送前检查 BOSS 页面状态");
         var fill = commandRunner.run(List.of("browser", sessionName, "fill", "#chat-input", text), timeout);
         requireSuccess(fill, "填写 BOSS 回复");
+        requireExactWriteEnvelope(fill.stdout(), "filled");
         JsonNode fillEnvelope = parseJson(fill.stdout());
         if (!fillEnvelope.path("filled").asBoolean(false) || !fillEnvelope.path("verified").asBoolean(false)) {
             throw new IllegalStateException("BOSS 输入框未通过填写校验");
