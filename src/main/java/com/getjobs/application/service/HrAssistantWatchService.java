@@ -105,13 +105,19 @@ public class HrAssistantWatchService {
             HrAssistantStore.SettingsSecret settings = store.loadSettingsSecret(profileId);
             List<ChatSession> sessions = gateway.listChats(maxConversations);
             int processed = 0;
+            int consecutiveScrollsWithoutVisibleUnread = 0;
             while (processed < maxConversations && watching.get()) {
                 gateway.openUnreadTab();
                 UnreadSnapshot snapshot = gateway.readUnreadSnapshot();
                 if (snapshot.totalUnread() == 0) break;
                 if (snapshot.conversations().isEmpty()) {
+                    if (consecutiveScrollsWithoutVisibleUnread < 20 && gateway.scrollUnreadList()) {
+                        consecutiveScrollsWithoutVisibleUnread++;
+                        continue;
+                    }
                     throw new IllegalStateException("BOSS 显示有未读消息，但 OpenCLI 没有找到头像红点；可能是页面结构已变化");
                 }
+                consecutiveScrollsWithoutVisibleUnread = 0;
                 UnreadConversation unread = snapshot.conversations().get(0);
                 try {
                     processUnread(profileId, settings, sessions, unread);

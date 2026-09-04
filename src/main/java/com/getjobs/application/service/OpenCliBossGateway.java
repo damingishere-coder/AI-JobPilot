@@ -56,6 +56,29 @@ public class OpenCliBossGateway {
               return { totalUnread, rows };
             })()
             """;
+    static final String SCROLL_CHAT_LIST_SCRIPT = """
+            (() => {
+              const rows = [...document.querySelectorAll("li[role='listitem'], .chat-list li, [class*='chat-list'] li")];
+              let scroller = rows[0]?.parentElement || null;
+              while (scroller && scroller !== document.body) {
+                if (scroller.scrollHeight > scroller.clientHeight + 2) break;
+                scroller = scroller.parentElement;
+              }
+              if (!scroller || scroller === document.body) {
+                return { scrolled: false, reason: 'scroll-container-not-found' };
+              }
+              const before = scroller.scrollTop;
+              const amount = Math.max(400, Math.floor(scroller.clientHeight * 0.8));
+              scroller.scrollTop = Math.min(scroller.scrollHeight, before + amount);
+              scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+              return {
+                scrolled: scroller.scrollTop > before,
+                before,
+                after: scroller.scrollTop,
+                atEnd: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
+              };
+            })()
+            """;
 
     private final OpenCliCommandRunner commandRunner;
     private final ObjectMapper objectMapper;
@@ -109,6 +132,15 @@ public class OpenCliBossGateway {
             rows.add(toUnreadConversation(node));
         }
         return new UnreadSnapshot(total, rows);
+    }
+
+    public boolean scrollUnreadList() {
+        JsonNode result = parseJson(requireSuccess(commandRunner.run(
+                List.of("browser", sessionName, "eval", SCROLL_CHAT_LIST_SCRIPT), timeout), "滚动 BOSS 未读会话列表"));
+        if (!result.path("scrolled").asBoolean(false)) return false;
+        requireSuccess(commandRunner.run(List.of("browser", sessionName, "wait", "time", "1"), timeout),
+                "等待 BOSS 未读会话加载");
+        return true;
     }
 
     public List<ChatSession> listChats(int limit) {

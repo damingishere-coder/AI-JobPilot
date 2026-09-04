@@ -96,6 +96,38 @@ class HrAssistantWatchServiceTest {
         verify(gateway, times(1)).listChats(100);
     }
 
+    @Test
+    void scrollsWhenUnreadBadgesAreBelowTheVisibleVirtualList() throws Exception {
+        ChatSession session = new ChatSession("uid-1", "security-1", "HR1",
+                "公司1", "岗位1", "HR", "消息1", "11:02");
+        AtomicInteger snapshots = new AtomicInteger();
+        when(gateway.status()).thenReturn(new GatewayStatus(true, "1.8.2", "ready"));
+        when(profileService.getCurrentProfileId()).thenReturn(1L);
+        when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
+                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "", "", 30));
+        when(gateway.listChats(100)).thenReturn(List.of(session));
+        when(gateway.readUnreadSnapshot()).thenAnswer(ignored -> switch (snapshots.getAndIncrement()) {
+            case 0 -> new UnreadSnapshot(1, List.of());
+            case 1 -> new UnreadSnapshot(1, List.of(new UnreadConversation(
+                    0, 1, session.hrName(), session.companyName(), session.jobName(), session.lastMessage(), session.lastTime())));
+            default -> new UnreadSnapshot(0, List.of());
+        });
+        when(gateway.scrollUnreadList()).thenReturn(true);
+        when(gateway.matchUnique(any(UnreadConversation.class), anyList())).thenReturn(session);
+        when(gateway.readMessages(session.uid())).thenReturn(List.of(new ChatMessage("对方", "文本", "消息1", "11:02")));
+        when(store.upsertConversation(1L, session)).thenReturn(1L);
+        when(store.sourceFingerprint(anyLong(), any(ChatMessage.class))).thenReturn("fp-1");
+        when(store.hasProposalForSource(1L, "fp-1")).thenReturn(true);
+
+        service = new HrAssistantWatchService(gateway, profileService, store, draftService, events, napCatGateway, 100, 60_000);
+        service.start();
+        waitForCompletedScan();
+
+        assertThat(service.status().lastError()).isEmpty();
+        verify(gateway, times(1)).scrollUnreadList();
+        verify(gateway, times(3)).readUnreadSnapshot();
+    }
+
     private void waitForCompletedScan() throws InterruptedException {
         long deadline = System.nanoTime() + 5_000_000_000L;
         while (service.status().lastScanAt() == null && System.nanoTime() < deadline) Thread.sleep(20);

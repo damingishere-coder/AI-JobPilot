@@ -47,6 +47,18 @@ class OpenCliBossGatewayTest {
     }
 
     @Test
+    void scrollsTheDomChatListAndWaitsForVirtualRowsToLoad() {
+        FakeRunner runner = new FakeRunner();
+        runner.evalOutput = "{\"scrolled\":true,\"before\":0,\"after\":480,\"atEnd\":false}";
+        OpenCliBossGateway gateway = gateway(runner);
+
+        assertThat(gateway.scrollUnreadList()).isTrue();
+        assertThat(runner.calls).containsExactly(
+                List.of("browser", "boss-hr", "eval", OpenCliBossGateway.SCROLL_CHAT_LIST_SCRIPT),
+                List.of("browser", "boss-hr", "wait", "time", "1"));
+    }
+
+    @Test
     void sendsThroughSelectorFillAndEnterInsteadOfRecruiterAdapter() {
         FakeRunner runner = new FakeRunner();
         OpenCliBossGateway gateway = gateway(runner);

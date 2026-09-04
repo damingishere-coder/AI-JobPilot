@@ -51,5 +51,8 @@ test('unread extraction requires numeric per-conversation badges and checks tota
   assert.match(gateway, /\^未读\\\\\(\\\\d\+\\\\\)\$/);
   assert.match(gateway, /unreadCount/);
   assert.match(gateway, /if \(unread <= 0\) continue/);
+  assert.match(gateway, /SCROLL_CHAT_LIST_SCRIPT/);
+  assert.match(gateway, /scrollTop = Math\.min/);
+  assert.match(watcher, /gateway\.scrollUnreadList\(\)/);
   assert.match(watcher, /BOSS 显示有未读消息/);
 });
