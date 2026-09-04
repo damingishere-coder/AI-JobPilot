@@ -36,7 +36,10 @@ public class ProfileService {
             "job_ai_analysis",
             "job_greeting_draft",
             "job_analysis_task",
-            "priority_company"
+            "priority_company",
+            "hr_reply_proposal",
+            "hr_conversation",
+            "hr_assistant_settings"
     );
 
     private final ProfileMapper profileMapper;

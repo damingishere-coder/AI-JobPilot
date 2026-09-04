@@ -33,7 +33,8 @@ public class BossPlatformAdapter implements PlatformAdapter {
 
     @Override
     public PlatformCapability capability() {
-        return new PlatformCapability(platform(), "TIER_1", "CHROME_BRIDGE", true, true, "CHROME_BRIDGE");
+        return new PlatformCapability(platform(), "TIER_1", "CHROME_BRIDGE", true, true, "CHROME_BRIDGE",
+                true, true, "HUMAN_CONFIRMATION");
     }
 
     @Override

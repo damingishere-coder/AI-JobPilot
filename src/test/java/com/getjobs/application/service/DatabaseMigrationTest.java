@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV13AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV14AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -32,6 +32,9 @@ class DatabaseMigrationTest {
                     "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='13'"))
                     .isEqualTo(1L);
             assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='14'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_boss_data_profile_encrypt_id'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "resume_profile")).contains("recommended_job_keywords");
@@ -41,6 +44,18 @@ class DatabaseMigrationTest {
             assertThat(columns(connection, "liepin_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(columns(connection, "job51_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(tableExists(connection, "delivery_attempt")).isTrue();
+            assertThat(tableExists(connection, "hr_assistant_settings")).isTrue();
+            assertThat(tableExists(connection, "hr_conversation")).isTrue();
+            assertThat(tableExists(connection, "hr_message")).isTrue();
+            assertThat(tableExists(connection, "hr_reply_proposal")).isTrue();
+            assertThat(tableExists(connection, "hr_reply_attempt")).isTrue();
+            assertThat(tableExists(connection, "hr_qq_command")).isTrue();
+            assertThat(columns(connection, "hr_conversation"))
+                    .contains("external_uid_cipher", "hr_name_cipher", "company_name_cipher", "job_name_cipher")
+                    .doesNotContain("hr_name", "company_name", "job_name");
+            assertThat(columns(connection, "hr_reply_proposal"))
+                    .contains("confirmation_code_hash", "confirmation_code_cipher")
+                    .doesNotContain("confirmation_code");
             assertThat(columns(connection, "job_analysis_task"))
                     .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
                             "lease_owner", "lease_expires_at", "last_error", "started_at", "completed_at");

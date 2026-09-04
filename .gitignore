@@ -54,6 +54,8 @@ cookie.json
 !.env.example
 .env.local
 front/.env.local
+secrets/
+**/hr-chat.key
 chromedriver
 *.jpg
 chrome-profile/

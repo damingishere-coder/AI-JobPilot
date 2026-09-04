@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-03-boss-navigation-loop-fix";
+  const EXTENSION_VERSION = "2026-09-04-boss-hr-assistant";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;

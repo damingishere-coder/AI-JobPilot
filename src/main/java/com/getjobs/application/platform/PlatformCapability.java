@@ -6,6 +6,9 @@ public record PlatformCapability(
         String collectionMode,
         boolean analysisSupported,
         boolean confirmationSupported,
-        String deliveryMode
+        String deliveryMode,
+        boolean chatReadSupported,
+        boolean replyDraftSupported,
+        String replySendMode
 ) {
 }

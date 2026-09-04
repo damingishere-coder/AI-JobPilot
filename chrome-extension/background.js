@@ -10,7 +10,8 @@ const PLATFORM_CONFIG = {
       "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
-      "boss-content.js"
+      "boss-content.js",
+      "boss-hr-assistant.js"
     ]
   },
   zhilian: {
@@ -32,16 +33,18 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-03-boss-navigation-loop-fix";
+const BACKGROUND_VERSION = "2026-09-04-boss-hr-assistant";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-assistant";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-04-boss-hr-assistant";
 const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
+let localActionToken = "";
+let localActionBaseUrl = "";
 const ALLOWED_PAGE_ORIGINS = new Set([
   "http://localhost:6866",
   "http://127.0.0.1:6866"
@@ -384,7 +387,8 @@ async function handleBossLocalApiRequest(message) {
     body: message.body,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
     pageTabId: message.pageTabId,
-    platform: "boss"
+    platform: "boss",
+    requireActionToken: endpoint.requireActionToken === true
   });
   console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
   return result;
@@ -411,6 +415,18 @@ async function handleZhilianLocalApiRequest(message) {
 
 function resolveBossLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "hr-status") return { success: true, method: "GET", path: "/api/hr-assistant/status" };
+  if (operation === "hr-settings") return { success: true, method: "GET", path: "/api/hr-assistant/settings" };
+  if (operation === "hr-settings-save") return { success: true, method: "PUT", path: "/api/hr-assistant/settings", requireActionToken: true };
+  if (operation === "hr-proposals") return { success: true, method: "GET", path: "/api/hr-assistant/proposals" };
+  if (operation === "hr-start") return { success: true, method: "POST", path: "/api/hr-assistant/watch/start", requireActionToken: true };
+  if (operation === "hr-stop") return { success: true, method: "POST", path: "/api/hr-assistant/watch/stop", requireActionToken: true };
+  if (["hr-revise", "hr-send", "hr-skip"].includes(operation)) {
+    const id = String(message?.params?.id || "").trim();
+    if (!/^[1-9]\d*$/.test(id)) return { success: false, message: "HR 回复任务缺少有效 ID" };
+    const action = operation.replace("hr-", "");
+    return { success: true, method: "POST", path: `/api/hr-assistant/proposals/${id}/${action}`, requireActionToken: true };
+  }
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs/dedupe" };
   }
@@ -455,14 +471,27 @@ async function requestLocalApi(path, options = {}) {
   const requestOptions = {
     method,
     headers: { "Content-Type": "application/json" },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    body: method === "GET" || options.body === undefined ? undefined : JSON.stringify(options.body)
   };
+  if (options.requireActionToken) {
+    requestOptions.headers["X-Local-Action-Token"] = await getLocalActionToken();
+  }
+  const baseUrls = options.requireActionToken
+    ? [localActionBaseUrl || LOCAL_API_BASE_URLS[0]]
+    : LOCAL_API_BASE_URLS;
+  const maxAttempts = ["hr-start", "hr-stop", "hr-settings-save", "hr-revise", "hr-send", "hr-skip"].includes(options.operation)
+    ? 1
+    : BOSS_LOCAL_API_MAX_ATTEMPTS;
 
-  for (let attempt = 1; attempt <= BOSS_LOCAL_API_MAX_ATTEMPTS; attempt++) {
-    for (const baseUrl of LOCAL_API_BASE_URLS) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (const baseUrl of baseUrls) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
         const data = await parseLocalApiResponse(response);
+        if (response.status === 401 && options.requireActionToken) {
+          localActionToken = null;
+          localActionBaseUrl = "";
+        }
         if (data.success === false) {
           return {
             success: false,
@@ -496,17 +525,40 @@ async function requestLocalApi(path, options = {}) {
       }
     }
 
-    if (attempt < BOSS_LOCAL_API_MAX_ATTEMPTS) {
-      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
+    if (attempt < maxAttempts) {
+      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, maxAttempts, lastError);
       await sleep(350 * attempt);
     }
   }
 
   return {
     success: false,
-    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`,
+    message: options.operation === "hr-send"
+      ? `本地服务请求失败，发送结果未知且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : maxAttempts === 1
+        ? `本地服务请求失败且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : `本地服务请求失败，已自动重试 ${maxAttempts} 次：${friendlyLocalApiError(lastError)}`,
     errorType: classifyLocalApiError(0, lastError?.message || String(lastError || ""))
   };
+}
+
+async function getLocalActionToken() {
+  if (localActionToken) return localActionToken;
+  let lastError = null;
+  for (const baseUrl of LOCAL_API_BASE_URLS) {
+    try {
+      const response = await fetchWithTimeout(`${baseUrl}/api/local-auth/action-token`, { method: "GET" }, 5000);
+      const data = await parseLocalApiResponse(response);
+      const token = String(data?.data?.token || "").trim();
+      if (!response.ok || !token) throw new Error("本地操作令牌响应无效");
+      localActionToken = token;
+      localActionBaseUrl = baseUrl;
+      return token;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`无法获取本地操作令牌：${friendlyLocalApiError(lastError)}`);
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
