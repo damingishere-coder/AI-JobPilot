@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-08-01-consolidated-boss-api";
+  const EXTENSION_VERSION = "2026-09-04-boss-greeting-proof";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -42,22 +42,34 @@
       return;
     }
     if (message?.type === "BOSS_SCAN_STOP") {
+      const profileId = normalizeProfileId(message?.profileId);
+      if (!profileId) {
+        sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描停止请求缺少档案 ID" });
+        return;
+      }
+      const storedProfileId = normalizeProfileId(readStoredScanTask()?.profileId);
+      if (storedProfileId && storedProfileId !== profileId) {
+        clearStoredScanTask();
+        writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "已清除其他档案的 Boss 扫描断点" });
+        sendResponse({ success: true, message: "已清除其他档案的 Boss 扫描断点", profileId });
+        return;
+      }
       const runId = normalizeScanRunId(message?.runId || activeScanRunId || readStoredScanTask()?.runId);
       activeScanRunId = runId || activeScanRunId;
       stopRequested = true;
       storeStopRequested(runId);
       clearStoredScanTask();
-      writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "已请求停止Boss扫描", runId });
+      writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", profileId, message: "已请求停止Boss扫描", runId });
       postProgress(message, "warning", "Boss Chrome扫描停止请求已接收，正在中断当前任务。", {
         operation: "scan",
         stage: "stopping",
         runId
       });
-      sendResponse({ success: true, message: "已请求停止Boss扫描" });
+      sendResponse({ success: true, message: "已请求停止Boss扫描", profileId });
       return;
     }
     if (message?.type === "BOSS_SCAN_STATUS") {
-      handleScanStatusMessage(sendResponse);
+      handleScanStatusMessage(message, sendResponse);
       return true;
     }
     if (message?.type === "BOSS_PAGE_STATUS") {
@@ -193,7 +205,7 @@
 
     // 关键检查：必须在Boss搜索结果页才能采集
     if (!diagnostics.isSearchPage) {
-      const text = `当前不是Boss岗位搜索结果页，无法采集。请在Chrome中打开Boss搜索页（如 https://www.zhipin.com/web/geek/job?city=101280600&query=Java），再重新采集。当前页面：${diagnostics.currentUrl || window.location.href}`;
+      const text = `当前不是Boss岗位搜索结果页，无法采集。请在Chrome中打开Boss搜索页（如 https://www.zhipin.com/web/geek/jobs?city=101280600&query=Java），再重新采集。当前页面：${diagnostics.currentUrl || window.location.href}`;
       postProgress(message, "warning", text, {
         operation: "listCollect",
         stage: "blocked",
@@ -249,9 +261,9 @@
       operation: "listCollect",
       keyword: result.keyword
     });
-    const jobsToSave = dedupeResult.jobs;
+    const jobsToSave = [...dedupeResult.jobs, ...(dedupeResult.reusedJobs || [])];
     if (!jobsToSave.length) {
-      const messageText = `Boss当前页采集完成：识别 ${result.parsedCount} 个岗位，全部属于无需补全的历史岗位，本次未新增数据。`;
+      const messageText = `Boss当前页采集完成：识别 ${result.parsedCount} 个岗位，没有可入库或可恢复的岗位。`;
       postProgress(message, "info", messageText, {
         operation: "listCollect",
         stage: "dedupe",
@@ -274,6 +286,7 @@
       };
     }
     const data = await callBossLocalApi("chrome-jobs", {
+      profileId: normalizeProfileId(message?.profileId),
       runId,
       keyword: result.keyword,
       collectionMode: "LIST_ONLY",
@@ -292,7 +305,7 @@
       .filter(([, count]) => Number(count) > 0)
       .map(([field, count]) => `${field}=${count}`)
       .join("，");
-    const successMessage = `Boss当前页采集完成：识别候选 ${result.candidateCount} 个，成功解析 ${result.parsedCount} 个，历史跳过 ${dedupeResult.skipCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入AI分析。${missingMessage ? ` 缺失字段统计：${missingMessage}。` : ""}`;
+    const successMessage = `Boss当前页采集完成：识别候选 ${result.candidateCount} 个，成功解析 ${result.parsedCount} 个，恢复历史结果 ${numberValue(data.restored)} 个，后端入库 ${numberValue(data.saved)} 个，新岗位状态 LIST_COLLECTED，不进入AI分析。${missingMessage ? ` 缺失字段统计：${missingMessage}。` : ""}`;
     postProgress(message, "success", successMessage, {
       operation: "listCollect",
       stage: "listCollected",
@@ -426,8 +439,9 @@
     }
 
     const dedupeResult = await filterDuplicateJobs(candidates, { ...message, runId }, baseMeta);
-    if (!dedupeResult.jobs.length) {
-      const messageText = `${diagnosticText} 识别 ${candidates.length} 个岗位，全部为无需补全的历史岗位，本次未新增。`;
+    const jobsToSave = [...dedupeResult.jobs, ...(dedupeResult.reusedJobs || [])];
+    if (!jobsToSave.length) {
+      const messageText = `${diagnosticText} 识别 ${candidates.length} 个岗位，没有可入库或可恢复的岗位。`;
       postProgress(message, "info", messageText, {
         ...baseMeta,
         stage: "dedupe",
@@ -455,18 +469,19 @@
     }
 
     const data = await callBossLocalApi("chrome-jobs", {
+      profileId: normalizeProfileId(message?.profileId),
       runId,
       keyword,
       collectionMode: "LIST_ONLY",
       autoDeliver: false,
-      jobs: dedupeResult.jobs
+      jobs: jobsToSave
     }, {
       pageTabId: message?.pageTabId,
       timeoutMs: 60000
     });
     if (!data.success) throw new Error(data.message || "后端未接受 Boss API POC 岗位数据");
 
-    const successMessage = `${diagnosticText} 候选 ${candidates.length} 个，历史跳过 ${dedupeResult.skipCount} 个，后端入库 ${numberValue(data.saved)} 个，状态 LIST_COLLECTED，不进入 AI 分析。`;
+    const successMessage = `${diagnosticText} 候选 ${candidates.length} 个，恢复历史结果 ${numberValue(data.restored)} 个，后端入库 ${numberValue(data.saved)} 个，新岗位状态 LIST_COLLECTED，不进入 AI 分析。`;
     postProgress(message, "success", successMessage, {
       ...baseMeta,
       stage: "listCollected",
@@ -618,7 +633,7 @@
       || SCAN_SUPPORT.classifyLocalApiFailure?.(error)
       || (/Invalid CORS request|cors/i.test(text) ? "CORS_REJECTED"
         : /超时|timeout|abort/i.test(text) ? "LOCAL_API_TIMEOUT"
-          : /无法连接|Failed to fetch|NetworkError|本地服务请求失败|6866端口/i.test(text) ? "LOCAL_SERVICE_UNAVAILABLE"
+          : /无法连接|Failed to fetch|NetworkError|本地服务请求失败|(?:8888|6866)端口/i.test(text) ? "LOCAL_SERVICE_UNAVAILABLE"
             : "LOCAL_API_ERROR");
     const catalog = {
       CORS_REJECTED: ["Chrome扩展请求被后端CORS规则拒绝", "岗位已采集但本批尚未入库，扫描断点已保留。", "重启更新后的本地服务并重新加载Chrome扩展，然后继续扫描。"],
@@ -651,9 +666,21 @@
     };
   }
 
-  async function handleScanStatusMessage(sendResponse) {
-    const task = await readStoredScanTaskFromAnyStorage();
-    const status = readScanStatus();
+  async function handleScanStatusMessage(message, sendResponse) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) {
+      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描状态请求缺少档案 ID", isRunning: false, hasStoredTask: false });
+      return;
+    }
+    let task = await readStoredScanTaskFromAnyStorage();
+    let status = readScanStatus();
+    if ((task && normalizeProfileId(task.profileId) !== profileId)
+        || (normalizeProfileId(status.profileId) && normalizeProfileId(status.profileId) !== profileId)) {
+      clearStoredScanTask();
+      writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "Boss档案已变化，旧扫描断点已清理" });
+      task = null;
+      status = readScanStatus();
+    }
     const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable));
     const hasFreshTask = Boolean(task && isFreshScanTask(task));
     const hasResumableTask = Boolean(hasFreshTask || paused);
@@ -663,6 +690,10 @@
         isRunning: false,
         stopRequested: false,
         stage: "idle",
+        paused: false,
+        resumable: false,
+        profileId,
+        runId: "",
         message: "Boss旧扫描任务已清理"
       });
     }
@@ -675,11 +706,17 @@
       resumable: Boolean(nextStatus.resumable || hasResumableTask),
       runId: nextStatus.runId || task?.runId || "",
       scanOwnerToken: task?.scanOwnerToken || "",
+      profileId,
       hasStoredTask: hasResumableTask
     });
   }
 
   async function handleScanStartMessage(message, sendResponse) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) {
+      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
+      return;
+    }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     const incomingTask = normalizeScanTask(message);
@@ -689,15 +726,18 @@
         && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
     );
     const sameRun = isSameScanRun(existingTask, incomingTask);
-    const shouldDiscardExisting = Boolean(existingTask && (!sameRun || configChanged));
+    const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
+    const shouldDiscardExisting = Boolean(existingTask && (profileChanged || !sameRun || configChanged));
     if (shouldDiscardExisting) {
       clearStoredScanTask();
-      postProgress(message, "warning", configChanged
+      postProgress(message, "warning", profileChanged
+        ? "Boss档案已变化，其他档案或旧版扫描断点已放弃，将从第一个关键词重新开始。"
+        : configChanged
         ? "Boss扫描配置已变化，旧断点已放弃，将按新配置重新开始。"
         : "Boss检测到新的扫描任务，旧断点已清理，将按新关键词重新开始。", {
         operation: "scan",
         stage: "checkpointReset",
-        diagnosticType: configChanged ? "CONFIG_CHANGED" : "NEW_RUN_DISCARDED_CHECKPOINT",
+        diagnosticType: profileChanged ? "PROFILE_CHANGED" : configChanged ? "CONFIG_CHANGED" : "NEW_RUN_DISCARDED_CHECKPOINT",
         previousRunId: existingTask?.runId || "",
         runId: incomingTask.runId || ""
       });
@@ -722,7 +762,7 @@
           updatedAt: Date.now()
         });
       });
-      sendResponse({ success: true, message: "Boss Chrome扫描任务已恢复。", resumed: true, runId: activeScanRunId });
+      sendResponse({ success: true, message: "Boss Chrome扫描任务已恢复。", resumed: true, runId: activeScanRunId, profileId });
       return;
     }
 
@@ -732,7 +772,7 @@
     stopRequestedRunId = "";
     clearStopRequested();
     startScan({ ...incomingTask, runId });
-    sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId });
+    sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId, profileId });
   }
 
   function startScan(message) {
@@ -743,7 +783,10 @@
       isRunning: true,
       stopRequested: false,
       stage: "received",
+      paused: false,
+      resumable: false,
       message: "Boss Chrome扫描任务已接收",
+      profileId: task.profileId,
       runId: task.runId,
       startedAt: task.startedAt,
       updatedAt: Date.now()
@@ -758,7 +801,7 @@
     }
     if (keywords.length) {
       const startIndex = normalizeKeywordIndex(task.currentIndex, keywords.length);
-      postProgress(task, "info", `Boss关键词历史：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
+      postProgress(task, "info", `Boss本档案关键词进度：本次从第 ${startIndex + 1}/${keywords.length} 个关键词继续：${keywords[startIndex]}`, {
         operation: "scan",
         stage: "keywordCursor",
         keyword: keywords[startIndex],
@@ -908,6 +951,7 @@
     const city = first(config.cityCode, "101280600");
     let currentIndex = normalizeTaskIndex(task.currentIndex, keywords.length);
     let totalSaved = Number(task.totalSaved || 0);
+    let totalRestored = Number(task.totalRestored || 0);
 
     if (!keywords.length) {
       throw new Error("Boss扫描缺少关键词，请先在Boss配置中填写关键词。");
@@ -927,13 +971,14 @@
       markKeywordCursorCurrent(task, index, keyword);
       const url = buildSearchUrl(keyword, city, config);
       const navigationKey = buildNavigationKey(keyword, city);
-      const navigationAttempts = task.navigationKey === navigationKey ? Number(task.navigationAttempts || 0) : 0;
+      const navigationAttempts = bossSearchNavigationAttempts(task, navigationKey);
       const nextNavigationAttempts = navigationAttempts + 1;
       const searchTaskState = {
         ...task,
         phase: "searching",
         currentIndex: index,
         totalSaved,
+        totalRestored,
         navigationKey,
         navigationAttempts: nextNavigationAttempts,
         navigationStartedAt: Date.now(),
@@ -945,7 +990,8 @@
         keyword,
         keywordIndex: index + 1,
         keywordTotal: keywords.length,
-        totalSaved
+        totalSaved,
+        totalRestored
       };
       writeScanStatus({
         isRunning: true,
@@ -957,6 +1003,7 @@
         keywordIndex: index + 1,
         keywordTotal: keywords.length,
         totalSaved,
+        totalRestored,
         startedAt: task.startedAt,
         updatedAt: Date.now()
       });
@@ -968,15 +1015,19 @@
         }
         const detailResult = await continueBossDetailScan(task, keyword, runId, baseMeta);
         if (detailResult.pendingNavigation || detailResult.blocked) return detailResult;
+        if (detailResult.success === false || detailResult.resumable) return detailResult;
         totalSaved = detailResult.totalSaved;
+        totalRestored = Number(detailResult.totalRestored ?? task.totalRestored ?? totalRestored ?? 0);
         if (!stopRequested) advanceKeywordCursor(task, index + 1, keyword);
         task = {
           ...task,
           phase: "nextKeyword",
           jobs: [],
+          historicalJobs: [],
           detailIndex: 0,
           currentIndex: index + 1,
-          totalSaved
+          totalSaved,
+          totalRestored
         };
         storeScanTask(task);
         continue;
@@ -1007,7 +1058,11 @@
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
 
-      storeScanTask({ ...searchTaskState, phase: "collecting", navigationAttempts: 0, navigationStartedAt: 0 });
+      const collectingTaskState = beginBossSearchCollection({
+        ...searchTaskState,
+        navigationAttempts
+      });
+      storeScanTask(collectingTaskState);
       postProgress(task, "info", `Boss Chrome开始搜索：${keyword}，当前URL：${window.location.href}`, {
         ...baseMeta,
         stage: "searching",
@@ -1030,6 +1085,23 @@
       }
       if (handleBlockingState(task, waitState.diagnostics, baseMeta)) {
         return { success: true, saved: totalSaved, blocked: true };
+      }
+      if (!isCurrentSearchPage(keyword, city, url)) {
+        if (isBossSearchNavigationExhausted(collectingTaskState)) {
+          return stopSearchNavigationFailure(collectingTaskState, url);
+        }
+        const retryTaskState = retryBossSearchNavigation(collectingTaskState);
+        postProgress(task, "warning", `Boss搜索页在列表加载期间被重定向，准备重新打开：${keyword}（第 ${retryTaskState.navigationAttempts} 次导航），目标URL：${url}，当前URL：${window.location.href}`, {
+          ...baseMeta,
+          stage: "searching",
+          currentUrl: window.location.href,
+          targetUrl: url,
+          navigationAttempts: retryTaskState.navigationAttempts,
+          diagnosticType: "SEARCH_PAGE_REDIRECTED"
+        });
+        storeScanTask(retryTaskState);
+        openSearchPage(url, retryTaskState);
+        return { success: true, saved: totalSaved, pendingNavigation: true };
       }
       postProgress(task, "info", `Boss岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，搜索结果容器 ${waitState.diagnostics.resultContainers} 个。`, {
         ...baseMeta,
@@ -1120,6 +1192,7 @@
       const discoveryResult = await collectFreshJobsForKeyword(keyword, task, baseMeta, searchJobLimit, candidates);
       candidates = discoveryResult.candidates;
       const freshCandidates = discoveryResult.jobs;
+      const historicalCandidates = discoveryResult.historicalJobs || [];
       const detailReadyCandidates = freshCandidates.filter(isDetailQueueJob);
       const invalidDetailCandidates = Math.max(0, freshCandidates.length - detailReadyCandidates.length);
       const jobs = detailReadyCandidates.slice(0, searchJobLimit);
@@ -1135,9 +1208,25 @@
         invalidDetailCandidates,
         searchJobLimit,
         discoveryRounds: discoveryResult.rounds,
-        stoppedByStagnation: discoveryResult.stoppedByStagnation
+        stoppedByStagnation: discoveryResult.stoppedByStagnation,
+        stopReason: discoveryResult.stopReason,
+        stopReasonLabel: collectionStopReasonLabel(discoveryResult.stopReason),
+        elapsedMs: discoveryResult.elapsedMs
       });
-      if (!jobs.length) {
+      if (jobs.length < searchJobLimit) {
+        postProgress(task, "warning", `Boss关键词 ${keyword} 未补足目标：新岗位 ${jobs.length}/${searchJobLimit}，停止原因：${collectionStopReasonLabel(discoveryResult.stopReason)}。`, {
+          ...baseMeta,
+          stage: "dedupe",
+          candidateCount: discoveryResult.candidateCount,
+          conditionFiltered: discoveryResult.filteredCount,
+          duplicates: discoveryResult.duplicateCount,
+          fresh: jobs.length,
+          discoveryRounds: discoveryResult.rounds,
+          stopReason: discoveryResult.stopReason,
+          elapsedMs: discoveryResult.elapsedMs
+        });
+      }
+      if (!jobs.length && !historicalCandidates.length) {
         postProgress(task, "warning", `Boss关键词 ${keyword} 已继续向下采集，但没有找到新的可分析岗位，跳过本关键词。`, {
           ...baseMeta,
           stage: "dedupe",
@@ -1153,7 +1242,7 @@
       }
 
       const diagnostics = buildListDiagnostics();
-      postProgress(task, "info", `Boss Chrome采集到 ${discoveryResult.candidateCount} 个候选岗位，学历过滤 ${discoveryResult.filteredCount} 个，历史跳过 ${discoveryResult.skipCount} 个，剩余 ${freshCandidates.length} 个可分析岗位，将进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
+      postProgress(task, "info", `Boss Chrome采集到 ${discoveryResult.candidateCount} 个候选岗位，学历过滤 ${discoveryResult.filteredCount} 个，历史结果 ${historicalCandidates.length} 个，剩余 ${freshCandidates.length} 个可分析岗位，将进入前 ${jobs.length}/${searchJobLimit} 个详情页做AI比对。详情链接 ${diagnostics.detailLinks} 个。`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
@@ -1175,6 +1264,7 @@
         phase: "detail",
         detailIndex: 0,
         jobs,
+        historicalJobs: historicalCandidates,
         searchUrl: url
       };
       storeScanTask(detailTask);
@@ -1182,15 +1272,6 @@
     }
 
     if (isStopRequested(runId)) stopRequested = true;
-
-    if (!stopRequested && shouldAppendAiKeywords(task) && !task.aiKeywordsLoaded) {
-      const aiResult = await appendAiKeywords(task, keywords);
-      task = aiResult.task;
-      keywords = aiResult.keywords;
-      if (Number(task.currentIndex || 0) < keywords.length) {
-        return runScanInternal(task);
-      }
-    }
 
     if (!stopRequested) {
       advanceKeywordCursor(task, userKeywordCount(task), "");
@@ -1202,22 +1283,29 @@
       isRunning: false,
       stopRequested: stopped,
       stage: stopped ? "stopped" : "complete",
-      message: stopped ? `Boss Chrome扫描已停止，已提交 ${totalSaved} 个岗位` : `Boss Chrome扫描完成，已提交 ${totalSaved} 个岗位`,
+      message: stopped
+        ? `Boss Chrome扫描已停止：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`
+        : `Boss Chrome扫描完成：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`,
       runId,
       keywordTotal: keywords.length,
       totalSaved,
+      totalRestored,
       saved: totalSaved,
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task, stopped ? "warning" : "success", stopped ? `Boss Chrome扫描已停止，已提交 ${totalSaved} 个岗位` : `Boss Chrome扫描完成，已提交 ${totalSaved} 个岗位`, {
+    postProgress(task, stopped ? "warning" : "success", stopped
+      ? `Boss Chrome扫描已停止：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`
+      : `Boss Chrome扫描完成：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`, {
       operation: "scan",
       stage: stopped ? "stopped" : "complete",
       keywordTotal: keywords.length,
       totalSaved,
+      totalRestored,
+      restored: totalRestored,
       saved: totalSaved
     });
-    return { success: true, saved: totalSaved };
+    return { success: true, saved: totalSaved, restored: totalRestored };
   }
 
   function buildSearchUrl(keyword, city, config) {
@@ -1231,7 +1319,7 @@
     addList(params, "industry", config.industry);
     addList(params, "stage", config.stage);
     params.set("query", keyword);
-    return `https://www.zhipin.com/web/geek/job?${params.toString()}`;
+    return `https://www.zhipin.com/web/geek/jobs?${params.toString()}`;
   }
 
   function collectJobs(keyword, message, baseMeta, options = {}) {
@@ -1468,19 +1556,25 @@
 
   async function collectFreshJobsForKeyword(keyword, message, baseMeta, searchJobLimit, initialCandidates = []) {
     const target = normalizeSearchJobLimit(searchJobLimit);
-    const maxRounds = bossDiscoveryMaxRounds(target);
-    const maxCandidates = bossDiscoveryCandidateLimit(target);
+    const bounds = typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(target)
+      : { target, maxRounds: 30, maxCandidates: 500, maxDurationMs: 180000, maxStagnantRounds: 5 };
+    const maxRounds = bounds.maxRounds;
+    const maxCandidates = bounds.maxCandidates;
+    const startedAt = Date.now();
     const allCandidates = new Map();
     const processableJobs = new Map();
     const duplicateKeys = new Set();
     const enrichKeys = new Set();
     const skipKeys = new Set();
+    const historicalJobs = new Map();
     const conditionFilteredKeys = new Set();
     let lastUniqueCount = -1;
     let lastScrollSignature = "";
     let stagnantRounds = 0;
     let stoppedByStagnation = false;
     let roundsRan = 0;
+    let stopReason = "";
 
     addUniqueJobs(allCandidates, initialCandidates, maxCandidates);
 
@@ -1517,9 +1611,10 @@
         if (action === "ENRICH") enrichKeys.add(key);
         if (action === "SKIP") {
           skipKeys.add(key);
+          historicalJobs.set(key, { ...job, collectionAction: "REUSE_HISTORY" });
           return;
         }
-        processableJobs.set(key, job);
+        processableJobs.set(key, { ...job, collectionAction: "ANALYZE" });
       });
 
       const currentScrollSignature = bossScrollSignature();
@@ -1541,23 +1636,56 @@
         });
       }
 
-      if (stagnantRounds >= 2) {
-        stoppedByStagnation = true;
+      const elapsedMs = Date.now() - startedAt;
+      const stopState = {
+        target,
+        fresh: processableJobs.size,
+        candidates: allCandidates.size,
+        rounds: round + 1,
+        stagnantRounds,
+        elapsedMs,
+        platformExhausted: bossPlatformExhausted(),
+        stopped: isStopRequested()
+      };
+      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
+        ? SCAN_SUPPORT.deepCollectionStopReason(stopState)
+        : (processableJobs.size >= target ? "target_reached" : stagnantRounds >= bounds.maxStagnantRounds ? "stagnation_safety_cap" : "");
+      if (stopReason) {
+        stoppedByStagnation = stopReason === "stagnation_safety_cap";
         break;
       }
+    }
+
+    if (!stopReason) {
+      const finalState = {
+        target,
+        fresh: processableJobs.size,
+        candidates: allCandidates.size,
+        rounds: roundsRan,
+        stagnantRounds,
+        elapsedMs: Date.now() - startedAt,
+        platformExhausted: bossPlatformExhausted(),
+        stopped: isStopRequested()
+      };
+      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
+        ? SCAN_SUPPORT.deepCollectionStopReason(finalState)
+        : "round_safety_cap";
     }
 
     resetBossScrollPosition();
     return {
       candidates: Array.from(allCandidates.values()),
       jobs: Array.from(processableJobs.values()).slice(0, target),
+      historicalJobs: Array.from(historicalJobs.values()).slice(0, target),
       candidateCount: allCandidates.size,
       filteredCount: conditionFilteredKeys.size,
       duplicateCount: duplicateKeys.size,
       enrichCount: enrichKeys.size,
       skipCount: skipKeys.size,
       rounds: roundsRan,
-      stoppedByStagnation
+      stoppedByStagnation,
+      stopReason: stopReason || "round_safety_cap",
+      elapsedMs: Date.now() - startedAt
     };
   }
 
@@ -1619,12 +1747,41 @@
 
   function bossDiscoveryCandidateLimit(searchJobLimit) {
     const limit = normalizeSearchJobLimit(searchJobLimit);
-    return Math.min(300, Math.max(80, limit * 8));
+    return typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(limit).maxCandidates
+      : 500;
   }
 
   function bossDiscoveryMaxRounds(searchJobLimit) {
     const limit = normalizeSearchJobLimit(searchJobLimit);
-    return Math.min(18, Math.max(6, Math.ceil(limit / 5) + 5));
+    return typeof SCAN_SUPPORT.deepCollectionBounds === "function"
+      ? SCAN_SUPPORT.deepCollectionBounds(limit).maxRounds
+      : 30;
+  }
+
+  function bossPlatformExhausted() {
+    const bodyText = compact(document.body?.innerText || document.body?.textContent || "");
+    if (!/(没有更多|暂无更多|已经到底|到底了|全部加载完)/.test(bodyText.slice(-3000))) return false;
+    const pageHeight = Number(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0);
+    const windowAtBottom = Number(window.scrollY || 0) + Number(window.innerHeight || 0) >= pageHeight - 40;
+    const containers = bossScrollableContainers();
+    const containersAtBottom = !containers.length || containers.some((target) =>
+      Number(target.scrollTop || 0) + Number(target.clientHeight || 0) >= Number(target.scrollHeight || 0) - 40);
+    return windowAtBottom || containersAtBottom;
+  }
+
+  function collectionStopReasonLabel(reason) {
+    return ({
+      target_reached: "已达到目标",
+      platform_exhausted: "平台结果已到底",
+      stagnation_safety_cap: "连续5轮没有新增",
+      timeout_safety_cap: "单关键词采集达到180秒",
+      candidate_safety_cap: "候选岗位达到500个安全上限",
+      round_safety_cap: "滚动达到30轮安全上限",
+      page_safety_cap: "翻页达到安全上限",
+      blocked: "平台安全验证或页面阻断",
+      stopped: "用户停止扫描"
+    })[String(reason || "")] || "安全边界已触发";
   }
 
   async function scrollForMoreBossCards(round = 0) {
@@ -1640,47 +1797,35 @@
 
   async function filterDuplicateJobs(jobs, message, baseMeta) {
     const list = Array.isArray(jobs) ? jobs : [];
-    if (!list.length) return { jobs: [], duplicateCount: 0, enrichCount: 0, skipCount: 0, items: [] };
+    if (!list.length) return { jobs: [], reusedJobs: [], duplicateCount: 0, enrichCount: 0, skipCount: 0, items: [] };
 
     try {
       const data = await callBossLocalApi("chrome-jobs-dedupe", {
+        profileId: normalizeProfileId(message?.profileId),
         runId: message?.runId,
         keyword: baseMeta.keyword,
         jobs: list.map(normalizeJobForDedupe)
       }, {
         pageTabId: message?.pageTabId
       });
-      if (!data.success || !Array.isArray(data.items)) throw new Error(data.message || "查重接口返回异常");
+      if (data.success !== true || !Array.isArray(data.items)) throw new Error(data.message || "查重接口返回异常");
 
-      const decisions = new Map(data.items.map((item) => [dedupeItemKey(item), String(item.action || (item.duplicate ? "SKIP" : "NEW"))]));
-      const freshJobs = list.filter((job) => decisions.get(dedupeJobKey(job)) !== "SKIP");
+      const partition = SCAN_SUPPORT.partitionDedupeJobs(list, data.items);
       return {
-        jobs: freshJobs,
+        jobs: partition.detailJobs,
+        reusedJobs: partition.historicalJobs,
         duplicateCount: Number(data.duplicateCount ?? 0),
         enrichCount: Number(data.enrichCount ?? data.items.filter((item) => item.action === "ENRICH").length),
         skipCount: Number(data.skipCount ?? data.items.filter((item) => item.action === "SKIP").length),
         items: data.items
       };
     } catch (error) {
-      postProgress(message, "warning", `Boss重复岗位检查失败，将继续扫描本页岗位：${error.message || String(error)}`, {
+      postProgress(message, "error", `Boss重复岗位检查失败，已停止本轮岗位入队：${error.message || String(error)}`, {
         ...baseMeta,
         stage: "dedupe",
         collected: list.length
       });
-      return {
-        jobs: list,
-        duplicateCount: 0,
-        enrichCount: 0,
-        skipCount: 0,
-        items: list.map((job) => ({
-          id: job?.id || extractBossId(job?.url),
-          url: job?.url || "",
-          title: job?.title || "",
-          company: job?.company || "",
-          duplicate: false,
-          action: "NEW"
-        }))
-      };
+      throw new Error(`Boss重复岗位检查失败，未执行入队：${error.message || String(error)}`);
     }
   }
 
@@ -2024,6 +2169,7 @@
 
   async function continueBossDetailScan(message, keyword, runId, baseMeta) {
     const jobs = Array.isArray(message.jobs) ? message.jobs : [];
+    const historicalJobs = Array.isArray(message.historicalJobs) ? message.historicalJobs : [];
     const detailIndex = Number(message.detailIndex || 0);
     const totalSaved = Number(message.totalSaved || 0);
 
@@ -2035,15 +2181,30 @@
       return { success: true, totalSaved };
     }
 
-    if (!jobs.length) {
-      advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
-      storeScanTask({ ...message, phase: "", currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
-      return { success: true, totalSaved };
+    if (message.phase === "submitting") {
+      const submitJobs = [...jobs, ...historicalJobs].filter(isSubmittableJob).map(normalizeJobForSubmit);
+      return submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved);
     }
 
-    if (message.phase === "submitting") {
-      const submitJobs = jobs.filter(isSubmittableJob).map(normalizeJobForSubmit);
-      return submitCollectedBossJobs(submitJobs, message, keyword, runId, baseMeta, totalSaved);
+    if (!jobs.length) {
+      const submitJobs = historicalJobs.filter(isSubmittableJob).map(normalizeJobForSubmit);
+      if (!submitJobs.length) {
+        advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
+        storeScanTask({ ...message, phase: "", historicalJobs: [], currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
+        return { success: true, totalSaved };
+      }
+      const submittingTask = {
+        ...message,
+        phase: "submitting",
+        jobs: [],
+        historicalJobs,
+        detailIndex: 0,
+        submitBatchIndex: 0,
+        submitSummary: null,
+        totalSaved
+      };
+      storeScanTask(submittingTask);
+      return submitCollectedBossJobs(submitJobs, submittingTask, keyword, runId, baseMeta, totalSaved);
     }
 
     const currentJob = jobs[detailIndex];
@@ -2226,7 +2387,7 @@
     }
 
     const detailSummary = summarizeJobCollection(jobs);
-    const submitJobs = jobs.filter(isSubmittableJob).map(normalizeJobForSubmit);
+    const submitJobs = [...jobs, ...historicalJobs].filter(isSubmittableJob).map(normalizeJobForSubmit);
     if (isStopRequested(runId)) {
       stopRequested = true;
       clearStoredScanTask();
@@ -2253,6 +2414,7 @@
         ...message,
         phase: "nextKeyword",
         jobs: [],
+        historicalJobs: [],
         detailIndex: 0,
         currentIndex: Number(message.currentIndex || 0) + 1,
         totalSaved
@@ -2264,6 +2426,7 @@
       ...message,
       phase: "submitting",
       jobs,
+      historicalJobs,
       detailIndex: jobs.length - 1,
       detailNavigationKey: "",
       detailNavigationAttempts: 0,
@@ -2368,13 +2531,43 @@
       keyword,
       autoDeliver: isAutoDeliverEnabled(message)
     });
-    if (!data.success) throw new Error(data.message || "Boss岗位提交失败");
+    if (data.success !== true) {
+      const storedTask = readStoredScanTask() || message;
+      const diagnosticType = String(storedTask?.lastSubmitError?.type || "LOCAL_API_ERROR");
+      const failureMessage = data.message || "Boss岗位提交失败";
+      writeScanStatus({
+        isRunning: false,
+        stopRequested: false,
+        stage: "blocked",
+        paused: true,
+        resumable: true,
+        diagnosticType,
+        message: `${failureMessage} 扫描断点将在24小时内保留。`,
+        runId: storedTask?.runId || runId,
+        totalSaved,
+        totalRestored: numberValue(message.totalRestored),
+        startedAt: storedTask?.startedAt || message?.startedAt,
+        updatedAt: Date.now()
+      });
+      return {
+        ...data,
+        totalSaved,
+        totalRestored: numberValue(message.totalRestored),
+        success: false,
+        resumable: true
+      };
+    }
     if (data.cancelled || isStopRequested(runId)) {
       stopRequested = true;
       clearStoredScanTask();
-      return { success: true, totalSaved: totalSaved + (data.saved || 0) };
+      return {
+        success: true,
+        totalSaved: totalSaved + numberValue(data.saved),
+        totalRestored: numberValue(message.totalRestored) + numberValue(data.restored)
+      };
     }
     const nextTotalSaved = totalSaved + (data.saved || 0);
+    const nextTotalRestored = numberValue(message.totalRestored) + numberValue(data.restored);
     postProgress(message, "success", `Boss Chrome已提交后台AI队列：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
       ...baseMeta,
       stage: "submitted",
@@ -2385,7 +2578,8 @@
       restored: data.restored ?? 0,
       insufficient: data.insufficient ?? 0,
       queueSize: data.queueSize ?? 0,
-      totalSaved: nextTotalSaved
+      totalSaved: nextTotalSaved,
+      totalRestored: nextTotalRestored
     });
     if (isAutoDeliverEnabled(message)) {
       postProgress(message, "warning", "扫描优先模式已启用：Boss扫描期间不会自动投递，AI通过岗位会进入待确认列表。", {
@@ -2397,14 +2591,16 @@
       ...message,
       phase: "nextKeyword",
       jobs: [],
+      historicalJobs: [],
       detailIndex: 0,
       submitBatchIndex: 0,
       submitSummary: null,
       currentIndex: Number(message.currentIndex || 0) + 1,
-      totalSaved: nextTotalSaved
+      totalSaved: nextTotalSaved,
+      totalRestored: nextTotalRestored
     });
     advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
-    return { success: true, totalSaved: nextTotalSaved };
+    return { success: true, totalSaved: nextTotalSaved, totalRestored: nextTotalRestored };
   }
 
   async function submitBossJobsInBatches(jobs, message, baseMeta, options) {
@@ -2457,6 +2653,7 @@
         batchAttempt++;
         try {
           data = await callBossLocalApi("chrome-jobs", {
+            profileId: normalizeProfileId(message?.profileId),
             runId,
             keyword: options.keyword,
             jobs: batch,
@@ -2467,6 +2664,10 @@
           });
           break; // 成功，跳出重试循环
         } catch (error) {
+          if (["PROFILE_REQUIRED", "PROFILE_CHANGED"].includes(String(error?.code || ""))) {
+            clearStoredScanTask();
+            throw error;
+          }
           if (batchAttempt < maxBatchAttempts) {
             postProgress(message, "warning", `Boss岗位提交第 ${index + 1}/${batches.length} 批失败，正在重试（${batchAttempt}/${maxBatchAttempts}）：${safeErrorMessage(error)}`, {
               ...baseMeta,
@@ -2478,53 +2679,54 @@
             await humanPause(800, 1500);
             continue;
           }
-          // 最终失败：记录错误但跳过本批，继续提交其他批次
+          // 最终失败：保留当前批次检查点并停止，恢复后从原批次重试。
           const reason = safeErrorMessage(error);
           const diagnostic = buildLocalApiDiagnostic(error, "submitting");
-          postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批提交失败（已重试），跳过本批继续：${diagnostic.message}`, {
+          postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批提交失败（已重试），已保留断点：${diagnostic.message}`, {
             ...baseMeta,
-            stage: "submitBatchSkipped",
+            stage: "submitBatchFailed",
             diagnosticType: diagnostic.type,
             batchIndex: index + 1,
             batchTotal: batches.length
           });
-          storeScanTask({
-            ...message,
-            phase: "submitting",
-            jobs: message.jobs,
-            submitBatchIndex: index + 1,
-            submitSummary: checkpointSubmitSummary(summary),
-            lastSubmitError: { type: diagnostic.type, message: reason, failedAt: Date.now() }
-          });
-          // 跳过本批，继续下一个批次
-          data = null;
-          break;
+          storeScanTask(SCAN_SUPPORT.buildFailedSubmitCheckpoint(
+            { ...message, jobs: message.jobs },
+            index,
+            checkpointSubmitSummary(summary),
+            { type: diagnostic.type, message: reason }
+          ));
+          return {
+            ...summary,
+            success: false,
+            failedBatchIndex: index,
+            resumable: true,
+            message: reason
+          };
         }
       }
 
-      if (!data) {
-        // 本批已跳过，继续下一批
-        continue;
-      }
-
-      if (!data.success) {
+      if (data.success !== true) {
         const diagnostic = buildLocalApiDiagnostic(new Error(data.message || "后台未返回原因"), "submitting");
-        postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批后台处理失败，跳过本批继续：${diagnostic.message}`, {
+        postProgress(message, "error", `Boss岗位第 ${index + 1}/${batches.length} 批后台处理失败，已保留断点：${diagnostic.message}`, {
           ...baseMeta,
-          stage: "submitBatchSkipped",
+          stage: "submitBatchFailed",
           diagnosticType: diagnostic.type,
           batchIndex: index + 1,
           batchTotal: batches.length
         });
-        storeScanTask({
-          ...message,
-          phase: "submitting",
-          jobs: message.jobs,
-          submitBatchIndex: index + 1,
-          submitSummary: checkpointSubmitSummary(summary),
-          lastSubmitError: { type: diagnostic.type, message: data.message || "后台未返回原因", failedAt: Date.now() }
-        });
-        continue;
+        storeScanTask(SCAN_SUPPORT.buildFailedSubmitCheckpoint(
+          { ...message, jobs: message.jobs },
+          index,
+          checkpointSubmitSummary(summary),
+          { type: diagnostic.type, message: data.message || "后台未返回原因" }
+        ));
+        return {
+          ...summary,
+          success: false,
+          failedBatchIndex: index,
+          resumable: true,
+          message: data.message || "后台未返回原因"
+        };
       }
 
       summary.received += numberValue(data.received);
@@ -2544,12 +2746,13 @@
         lastSubmitError: null
       });
 
-      postProgress(message, "info", `Boss Chrome第 ${index + 1}/${batches.length} 批已提交：入库 ${numberValue(data.saved)} 个，入队 ${numberValue(data.queued)} 个。`, {
+      postProgress(message, "info", `Boss Chrome第 ${index + 1}/${batches.length} 批已提交：入库 ${numberValue(data.saved)} 个，恢复历史结果 ${numberValue(data.restored)} 个，入队 ${numberValue(data.queued)} 个。`, {
         ...baseMeta,
         stage: "submitting",
         batchIndex: index + 1,
         batchTotal: batches.length,
         saved: summary.saved,
+        restored: summary.restored,
         queued: summary.queued,
         skipped: summary.skipped,
         insufficient: summary.insufficient
@@ -2800,14 +3003,30 @@
       await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
       return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
+    const configuredGreeting = normalizeGreetingText(task?.greeting || "");
+    if (!configuredGreeting) {
+      const failure = classifyDeliveryFailure("投递任务缺少已确认的沟通话术");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR", "NOT_SENT", "GREETING_EMPTY");
+      return {
+        success: false,
+        outcome: "FAILED",
+        evidence: "PRE_ACTION_ERROR",
+        greetingOutcome: "NOT_SENT",
+        greetingEvidence: "GREETING_EMPTY",
+        message: failure.failureReason,
+        failureType: failure.failureType
+      };
+    }
     await sleep(1500);
     if (detectBossDeliveryStatus(document)) {
-      const messageText = "Boss岗位页面已显示沟通或投递状态";
-      await postDeliveryResult(task, true, messageText, "PLATFORM_STATUS_TEXT");
+      const messageText = "Boss岗位页面已存在沟通或投递状态，本次未补发话术，请人工核对";
+      await postDeliveryResult(task, null, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
       return {
-        success: true,
-        outcome: "CONFIRMED",
-        evidence: "PLATFORM_STATUS_TEXT",
+        success: false,
+        outcome: "UNKNOWN",
+        evidence: "EXISTING_CONVERSATION",
+        greetingOutcome: "NOT_SENT",
+        greetingEvidence: "ALREADY_CONTACTED",
         message: messageText
       };
     }
@@ -2862,18 +3081,24 @@
       return { ...deliveryCheck, message: failure.failureReason, failureType: failure.failureType };
     }
     const greetingResult = await sendConfiguredGreeting(task, message);
-    const finalMessage = greetingResult?.sent ? `${successMessage}，已发送开场白` : successMessage;
-    const confirmed = deliveryCheck.outcome === "CONFIRMED";
+    const confirmed = greetingResult?.sent === true;
+    const finalMessage = confirmed
+      ? `${successMessage}，已精确确认发送岗位话术`
+      : `${successMessage}，但${greetingResult?.message || "话术发送未确认"}`;
     await postDeliveryResult(
       task,
       confirmed ? true : null,
-      confirmed ? finalMessage : `${finalMessage}，但未检测到明确平台成功状态`,
-      deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY")
+      confirmed ? finalMessage : `${finalMessage}，已标记待人工确认`,
+      confirmed ? "GREETING_RENDERED_EXACT" : (deliveryCheck.evidence || "CHAT_SURFACE_ONLY"),
+      confirmed ? "CONFIRMED" : "UNKNOWN",
+      greetingResult?.evidence || (confirmed ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     );
     const result = {
       success: confirmed,
       outcome: confirmed ? "CONFIRMED" : "UNKNOWN",
-      evidence: deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY"),
+      evidence: confirmed ? "GREETING_RENDERED_EXACT" : (deliveryCheck.evidence || "CHAT_SURFACE_ONLY"),
+      greetingOutcome: confirmed ? "CONFIRMED" : "UNKNOWN",
+      greetingEvidence: greetingResult?.evidence || (confirmed ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED"),
       message: confirmed ? finalMessage : `${finalMessage}，结果待人工确认`
     };
     earlyRespond?.({ ...result, early: true });
@@ -2888,30 +3113,65 @@
   }
 
   async function sendConfiguredGreeting(task, message) {
-    const greeting = compact(task?.greeting || "");
-    if (!greeting) return { attempted: false, sent: false, message: "未配置开场白" };
+    const greeting = normalizeGreetingText(task?.greeting || "");
+    if (!greeting) return { attempted: false, sent: false, evidence: "GREETING_EMPTY", message: "未配置开场白" };
 
-    const input = await waitForChatInput(4500);
-    if (!input) return { attempted: false, sent: false, message: "未出现聊天输入框" };
+    const input = await waitForChatInput(12000);
+    if (!input) return { attempted: false, sent: false, evidence: "GREETING_INPUT_MISSING", message: "未出现聊天输入框" };
 
     writeChatInput(input, greeting);
     await sleep(400);
-    const sendButton = findSendButton();
+    if (readChatInput(input) !== greeting) {
+      return { attempted: true, sent: false, evidence: "GREETING_INPUT_MISMATCH", message: "聊天输入框内容与确认话术不一致" };
+    }
+    const sendButton = findSendButton(input);
     if (!sendButton) {
       postProgress(message, "warning", "Boss Chrome已填入配置开场白，但未找到发送按钮。", {
         operation: "deliver",
         stage: "submitting"
       });
-      return { attempted: true, sent: false, message: "未找到发送按钮" };
+      return { attempted: true, sent: false, evidence: "GREETING_SEND_BUTTON_MISSING", message: "未找到发送按钮" };
     }
 
+    const messageCountBefore = countRenderedGreetingMessages(greeting, input);
     clickElement(sendButton);
-    await sleep(600);
-    postProgress(message, "info", "Boss Chrome已发送配置开场白。", {
+    const sent = await waitForGreetingConfirmation(greeting, input, messageCountBefore, 6000);
+    postProgress(message, sent ? "info" : "warning", sent
+      ? "Boss Chrome已精确确认发送岗位话术。"
+      : "Boss Chrome已点击发送，但未检测到精确话术出现在聊天记录。", {
       operation: "deliver",
       stage: "submitting"
     });
-    return { attempted: true, sent: true, message: "已发送配置开场白" };
+    return {
+      attempted: true,
+      sent,
+      evidence: sent ? "GREETING_RENDERED_EXACT" : "GREETING_RENDER_UNCONFIRMED",
+      message: sent ? "已精确确认发送岗位话术" : "点击发送后未检测到精确话术"
+    };
+  }
+
+  async function waitForGreetingConfirmation(greeting, input, beforeCount, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (countRenderedGreetingMessages(greeting, input) > beforeCount) return true;
+      await sleep(200);
+    }
+    return false;
+  }
+
+  function countRenderedGreetingMessages(greeting, input) {
+    const selectors = [
+      ".message-item",
+      ".chat-message",
+      ".message-content",
+      "[class*='message-item']",
+      "[class*='message-content']",
+      "[class*='chat-record'] [class*='text']"
+    ];
+    const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
+    return nodes.filter((node) => node !== input
+      && !node.contains?.(input)
+      && normalizeGreetingText(node.innerText || node.textContent || "") === greeting).length;
   }
 
   function buildDeliverySuccessMessage(favoriteButton, greetingResult) {
@@ -2936,21 +3196,34 @@
       "div#chat-input.chat-input[contenteditable='true']",
       "[contenteditable='true'].chat-input",
       "[contenteditable='true'][id*='chat']",
-      "textarea.input-area",
-      "textarea"
+      "[class*='chat-input'] [contenteditable='true']",
+      "[class*='chat'] textarea.input-area",
+      "[class*='chat'] textarea"
     ];
     for (const selector of selectors) {
-      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
+      const node = Array.from(document.querySelectorAll(selector)).find(isVisibleChatInput);
       if (node) return node;
     }
     return null;
+  }
+
+  function isVisibleChatInput(element) {
+    if (!element || element.offsetParent === null) return false;
+    const hint = compact([
+      element.getAttribute?.("placeholder"),
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title")
+    ].filter(Boolean).join(" "));
+    return !/(搜索|职位搜索|公司搜索)/.test(hint);
   }
 
   function writeChatInput(input, text) {
     input.focus?.();
     input.click?.();
     if (String(input.tagName || "").toLowerCase() === "textarea") {
-      input.value = text;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement?.prototype || {}, "value")?.set;
+      if (setter) setter.call(input, text);
+      else input.value = text;
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
       return;
@@ -2960,7 +3233,18 @@
     input.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
   }
 
-  function findSendButton() {
+  function readChatInput(input) {
+    if (!input) return "";
+    return normalizeGreetingText(String(input.tagName || "").toLowerCase() === "textarea"
+      ? input.value || ""
+      : input.innerText || input.textContent || "");
+  }
+
+  function normalizeGreetingText(value) {
+    return String(value || "").replace(/\r\n?/g, "\n").trim();
+  }
+
+  function findSendButton(input) {
     const selectors = [
       "div.send-message",
       "button[type='send'].btn-send",
@@ -2968,11 +3252,24 @@
       "[class*='send-message']",
       "[class*='btn-send']"
     ];
-    for (const selector of selectors) {
-      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
-      if (node) return node;
+    const scopes = [];
+    let scope = input;
+    for (let depth = 0; scope && depth < 6; depth++) {
+      if (scope.querySelectorAll) scopes.push(scope);
+      scope = scope.parentElement;
     }
-    return findClickable(["发送"]);
+    for (const current of scopes) {
+      for (const selector of selectors) {
+        const node = Array.from(current.querySelectorAll(selector))
+          .find((el) => el.offsetParent !== null);
+        if (node) return node;
+      }
+      const textButton = Array.from(current.querySelectorAll("button, [role='button']"))
+        .find((el) => el.offsetParent !== null
+          && normalizeGreetingText(el.textContent || el.innerText || "") === "发送");
+      if (textButton) return textButton;
+    }
+    return null;
   }
 
   async function deliverBatch(tasks, message) {
@@ -2980,6 +3277,9 @@
     let failed = 0;
     let unknown = 0;
     const results = [];
+    let halted = false;
+    let haltedJobId = null;
+    let unprocessedCount = 0;
     postProgress(message, "info", `Boss Chrome批量投递开始，共 ${tasks.length} 个待确认岗位。`, {
       operation: "deliver",
       stage: "received",
@@ -3010,26 +3310,62 @@
       if (outcome === "CONFIRMED") success += 1;
       else if (outcome === "UNKNOWN") unknown += 1;
       else failed += 1;
-      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+      if (outcome === "UNKNOWN") {
+        halted = true;
+        haltedJobId = task?.id || null;
+        const remaining = tasks.slice(index + 1);
+        unprocessedCount = remaining.length;
+        for (const skippedTask of remaining) {
+          const skippedMessage = `前一岗位 ${task?.id || "-"} 的发送结果待确认，批量任务已暂停，本岗位未触达`;
+          let persisted = false;
+          await postDeliveryResult(
+            skippedTask,
+            false,
+            { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+            "BATCH_HALTED_BEFORE_ACTION",
+            "NOT_SENT",
+            "BATCH_HALTED_BEFORE_ACTION"
+          ).then(() => { persisted = true; }).catch(() => {});
+          results.push({
+            id: skippedTask?.id,
+            requestKey: skippedTask?.requestKey,
+            outcome: "FAILED",
+            evidence: "BATCH_HALTED_BEFORE_ACTION",
+            greetingOutcome: "NOT_SENT",
+            greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+            persisted,
+            skipped: true,
+            message: skippedMessage
+          });
+        }
+        break;
+      }
     }
-    postProgress(message, failed || unknown ? "warning" : "success", `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`, {
+    const summary = halted
+      ? `Boss批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+      : `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
+    postProgress(message, failed || unknown ? "warning" : "success", summary, {
       operation: "deliver",
       stage: "complete",
       keywordTotal: tasks.length,
       saved: success
     });
     return {
-      success: failed === 0 && unknown === 0,
+      success: !halted && failed === 0 && unknown === 0,
       partial: success > 0 && (failed > 0 || unknown > 0),
-      message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+      message: summary,
       successCount: success,
       unknownCount: unknown,
       failedCount: failed,
+      halted,
+      haltedJobId,
+      unprocessedCount,
       results
     };
   }
 
-  async function postDeliveryResult(task, success, message, evidence) {
+  async function postDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
     const failure = success === false ? normalizeFailurePayload(message) : null;
     const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await callBossLocalApi("delivery-result", {
@@ -3039,7 +3375,9 @@
       success,
       message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
-      failureReason: failure?.failureReason
+      failureReason: failure?.failureReason,
+      greetingOutcome: greetingOutcome || (outcome === "CONFIRMED" ? "CONFIRMED" : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN"),
+      greetingEvidence: greetingEvidence || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     }, {
       params: { id: task.id },
       pageTabId: task?.pageTabId,
@@ -3059,7 +3397,7 @@
     });
     if (!response?.success) {
       const error = new Error(response?.message || "Boss本地服务请求失败");
-      error.code = response?.errorType || "LOCAL_API_ERROR";
+      error.code = response?.data?.errorCode || response?.errorType || "LOCAL_API_ERROR";
       error.httpStatus = response?.httpStatus;
       throw error;
     }
@@ -3091,6 +3429,7 @@
       pageTabId: message.pageTabId,
       payload: {
         platform: "boss",
+        profileId: normalizeProfileId(message?.profileId),
         type,
         message: text,
         timestamp: Date.now(),
@@ -3109,6 +3448,7 @@
     const cursorState = resolveKeywordCursor(message, cursorKeywords, hasExplicitIndex);
     return {
       ...message,
+      profileId: normalizeProfileId(message?.profileId),
       config: { ...config, keywords, searchJobLimit },
       keywords,
       cursorKeywords,
@@ -3116,9 +3456,11 @@
       type: "BOSS_SCAN_START",
       currentIndex: cursorState.currentIndex,
       totalSaved: Number(message.totalSaved || 0),
+      totalRestored: Number(message.totalRestored || 0),
       phase: message.phase || "searching",
       detailIndex: Number(message.detailIndex || 0),
       jobs: Array.isArray(message.jobs) ? message.jobs : [],
+      historicalJobs: Array.isArray(message.historicalJobs) ? message.historicalJobs : [],
       aiKeywordsLoaded: Boolean(message.aiKeywordsLoaded),
       autoDeliver: isAutoDeliverEnabled(message),
       startedAt: message.startedAt || Date.now(),
@@ -3295,6 +3637,7 @@
     const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
     return stableKey({
       platform: "boss",
+      profileId: normalizeProfileId(message?.profileId),
       keywords: uniqueStrings(keywords || message?.cursorKeywords || []),
       cityCode: normalizedList(config.cityCode),
       jobType: compact(config.jobType || ""),
@@ -3379,6 +3722,7 @@
   }
 
   function isFreshScanTask(task) {
+    if (!normalizeProfileId(task?.profileId)) return false;
     if (SCAN_SUPPORT.isFreshTask) {
       return SCAN_SUPPORT.isFreshTask(task, Date.now(), SCAN_TASK_TTL_MS);
     }
@@ -3545,6 +3889,11 @@
 
   function normalizeScanRunId(value) {
     return String(value || "").trim();
+  }
+
+  function normalizeProfileId(value) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   function writeScanStatus(nextStatus) {
@@ -3898,6 +4247,40 @@
     } catch {
       return false;
     }
+  }
+
+  function bossSearchNavigationAttempts(task, navigationKey) {
+    return SCAN_SUPPORT.bossSearchNavigationAttempts
+      ? SCAN_SUPPORT.bossSearchNavigationAttempts(task, navigationKey)
+      : task?.navigationKey === navigationKey
+        ? Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0))
+        : 0;
+  }
+
+  function beginBossSearchCollection(task) {
+    if (SCAN_SUPPORT.beginBossSearchCollection) return SCAN_SUPPORT.beginBossSearchCollection(task);
+    return {
+      ...(task || {}),
+      phase: "collecting",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)),
+      navigationStartedAt: 0
+    };
+  }
+
+  function retryBossSearchNavigation(task) {
+    if (SCAN_SUPPORT.retryBossSearchNavigation) return SCAN_SUPPORT.retryBossSearchNavigation(task);
+    return {
+      ...(task || {}),
+      phase: "searching",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) + 1,
+      navigationStartedAt: Date.now()
+    };
+  }
+
+  function isBossSearchNavigationExhausted(task) {
+    return SCAN_SUPPORT.isBossSearchNavigationExhausted
+      ? SCAN_SUPPORT.isBossSearchNavigationExhausted(task, SEARCH_NAVIGATION_MAX_ATTEMPTS)
+      : Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) >= SEARCH_NAVIGATION_MAX_ATTEMPTS;
   }
 
   function isSameSearchUrl(left, right) {

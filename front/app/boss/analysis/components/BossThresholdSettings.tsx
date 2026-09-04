@@ -14,6 +14,11 @@ const DEFAULT_PRIORITY_APPLY_THRESHOLD = 65
 type ThresholdConfig = {
   applyThreshold: number
   priorityApplyThreshold: number
+  bossHistoricalPromotedCount?: number
+}
+
+type BossThresholdSettingsProps = {
+  onApplied?: () => void | Promise<void>
 }
 
 const parseThreshold = (value: unknown, fallback: number) => {
@@ -21,7 +26,7 @@ const parseThreshold = (value: unknown, fallback: number) => {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 100 ? parsed : fallback
 }
 
-export function BossThresholdSettings() {
+export function BossThresholdSettings({ onApplied }: BossThresholdSettingsProps) {
   const [thresholds, setThresholds] = useState<ThresholdConfig>({
     applyThreshold: DEFAULT_APPLY_THRESHOLD,
     priorityApplyThreshold: DEFAULT_PRIORITY_APPLY_THRESHOLD,
@@ -91,8 +96,18 @@ export function BossThresholdSettings() {
           thresholds.priorityApplyThreshold,
         ),
       }
+      const promotedCount = Math.max(0, Math.trunc(Number(result.data?.bossHistoricalPromotedCount) || 0))
       setThresholds(savedThresholds)
-      setMessage(`已保存：普通公司${savedThresholds.applyThreshold}分，优先公司${savedThresholds.priorityApplyThreshold}分`)
+      const successMessage = `已保存：普通公司${savedThresholds.applyThreshold}分，优先公司${savedThresholds.priorityApplyThreshold}分；${promotedCount}个历史岗位已改为“待确认”`
+      setMessage(successMessage)
+      if (onApplied) {
+        try {
+          await onApplied()
+        } catch (refreshError) {
+          console.error("分数线保存后刷新Boss岗位失败:", refreshError)
+          setError("分数线和历史岗位已经更新，但列表刷新失败，请点击“刷新”重新加载。")
+        }
+      }
     } catch (saveError) {
       console.error("保存AI投递分数线失败:", saveError)
       setError(friendlyApiError(saveError, "分数线保存失败"))
@@ -164,7 +179,7 @@ export function BossThresholdSettings() {
       </div>
 
       <p className="mt-2 text-xs text-muted-foreground">
-        AI分数达到或超过对应分数线后进入“待确认”，仍需你确认才会实际投递。
+        保存后，历史“AI不匹配”岗位也会按已有AI分数自动更新；进入“待确认”后仍需你确认才会实际投递。
       </p>
       {message ? <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">{message}</p> : null}
       {error ? <p className="mt-1 text-xs text-red-600 dark:text-red-300">{error}</p> : null}

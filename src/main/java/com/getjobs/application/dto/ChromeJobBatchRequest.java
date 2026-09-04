@@ -6,6 +6,7 @@ import java.util.List;
 
 @Data
 public class ChromeJobBatchRequest {
+    private Long profileId;
     private String runId;
     private String keyword;
     private String collectionMode;

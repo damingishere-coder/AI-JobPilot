@@ -19,6 +19,7 @@ public class ChromeJobDto {
     private String hrActive;
     private String description;
     private String deliveryStatus;
+    private String collectionAction;
     private String url;
     private String recruitmentStatus;
     private String companyAddress;

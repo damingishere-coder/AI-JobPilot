@@ -32,14 +32,14 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-08-01-consolidated-scan-fix";
+const BACKGROUND_VERSION = "2026-09-04-boss-greeting-proof";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-08-01-consolidated-boss-api";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-29-zhilian-security-resume-fix";
-const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-greeting-proof";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
+const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
 const ALLOWED_PAGE_ORIGINS = new Set([
@@ -176,6 +176,13 @@ async function forwardPlatformEvent(message, sender) {
     ...message.payload,
     platform: message.payload?.platform || platform
   };
+  if (payload.operation === "scan") {
+    const profileId = normalizeProfileId(payload.profileId);
+    if (!profileId) return;
+    const session = await readScanSession(platform);
+    if (session && normalizeProfileId(session.profileId) !== profileId) return;
+    payload.profileId = profileId;
+  }
   await updateScanSessionFromEvent(platform, sender.tab?.id, payload);
   await broadcastPlatformEvent(payload, message.pageTabId);
 }
@@ -367,6 +374,9 @@ async function handleZhilianContentNavigation(message, sender) {
 async function handleBossLocalApiRequest(message) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
 
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
@@ -383,6 +393,9 @@ async function handleBossLocalApiRequest(message) {
 async function handleZhilianLocalApiRequest(message) {
   const endpoint = resolveZhilianLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
 
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
@@ -419,6 +432,9 @@ function resolveBossLocalApiEndpoint(message) {
 
 function resolveZhilianLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "chrome-jobs-dedupe") {
+    return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs/dedupe" };
+  }
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs" };
   }
@@ -447,18 +463,20 @@ async function requestLocalApi(path, options = {}) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
         const data = await parseLocalApiResponse(response);
+        if (data.success === false) {
+          return {
+            success: false,
+            httpStatus: response.status,
+            data,
+            message: data.message || "本地接口拒绝了本次请求",
+            errorType: data.errorCode || "BUSINESS_REJECTED",
+            attempt,
+            baseUrl
+          };
+        }
+        const expectedState = options.expectedState || String(options.body?.outcome || "").toUpperCase();
+        assertExpectedLocalApiPayload(data, options.operation, expectedState);
         if (response.ok) {
-          if (data && data.success === false) {
-            return {
-              success: false,
-              httpStatus: response.status,
-              data,
-              message: data.message || "本地接口拒绝了本次请求",
-              errorType: "BUSINESS_REJECTED",
-              attempt,
-              baseUrl
-            };
-          }
           return { success: true, httpStatus: response.status, data, attempt, baseUrl };
         }
         lastError = new Error(data?.message || `本地接口返回 HTTP ${response.status}`);
@@ -502,12 +520,39 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function parseLocalApiResponse(response) {
+  const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    throw new Error(`本地接口契约不匹配：Content-Type=${contentType || "missing"}`);
+  }
   const text = await response.text();
-  if (!text) return {};
+  if (!text) throw new Error("本地接口契约不匹配：JSON 响应为空");
+  let data;
   try {
-    return JSON.parse(text);
+    data = JSON.parse(text);
   } catch {
-    return { message: text };
+    throw new Error("本地接口契约不匹配：响应不是合法 JSON");
+  }
+  if (!data || Array.isArray(data) || typeof data !== "object" || typeof data.success !== "boolean") {
+    throw new Error("本地接口契约不匹配：缺少 success 业务字段");
+  }
+  return data;
+}
+
+function assertExpectedLocalApiPayload(data, operation, expectedState) {
+  const name = String(operation || "");
+  if (name === "chrome-jobs" && !["received", "saved", "queued"].every((field) => Number.isFinite(Number(data[field])))) {
+    throw new Error("本地接口契约不匹配：岗位批次响应缺少 received/saved/queued");
+  }
+  if (name === "chrome-jobs-dedupe" && !Array.isArray(data.items)) {
+    throw new Error("本地接口契约不匹配：岗位查重响应缺少 items");
+  }
+  if (name === "ai-keywords" && !Array.isArray(data.keywords)) {
+    throw new Error("本地接口契约不匹配：AI 关键词响应缺少 keywords");
+  }
+  if (name === "delivery-result"
+      && (data.accepted !== true || !["CONFIRMED", "FAILED", "UNKNOWN"].includes(expectedState)
+        || data.state !== expectedState)) {
+    throw new Error("本地接口契约不匹配：投递回写必须 accepted=true 且 state 与请求一致");
   }
 }
 
@@ -564,6 +609,12 @@ async function handlePageMessage(message, sender) {
     return { success: false, message: "未知平台" };
   }
 
+  if (isProfileScopedScanMessage(message.type)) {
+    const profileId = normalizeProfileId(message.profileId);
+    if (!profileId) return profileRequiredResponse();
+    message = { ...message, profileId };
+  }
+
   if (platform === "zhilian" && message.type === "ZHILIAN_SCAN_START" && !normalizeZhilianKeywordList(readZhilianKeywordInput(message)).length) {
     return { success: false, message: "请至少填写一个搜索关键词" };
   }
@@ -608,7 +659,7 @@ async function handlePageMessage(message, sender) {
   try {
     let scanSession = null;
     if (isScanStartMessage(message.type)) {
-      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken);
+      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken, message.profileId);
     }
     const response = await chrome.tabs.sendMessage(tab.id, {
       ...toPlatformContentMessage(message, platform),
@@ -703,6 +754,34 @@ function isScanStartMessage(type) {
   return type === "BOSS_SCAN_START" || type === "ZHILIAN_SCAN_START";
 }
 
+function isProfileScopedScanMessage(type) {
+  return type === "BOSS_SCAN_START"
+    || type === "BOSS_SCAN_STATUS"
+    || type === "BOSS_SCAN_STOP"
+    || type === "ZHILIAN_SCAN_START"
+    || type === "ZHILIAN_SCAN_STATUS"
+    || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isProfileScopedLocalApiOperation(operation) {
+  return operation === "chrome-jobs" || operation === "chrome-jobs-dedupe";
+}
+
+function profileRequiredResponse() {
+  return {
+    success: false,
+    httpStatus: 400,
+    errorCode: "PROFILE_REQUIRED",
+    errorType: "PROFILE_REQUIRED",
+    message: "缺少有效档案ID，请刷新本地页面后重新开始扫描"
+  };
+}
+
+function normalizeProfileId(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function isBossDeliverMessage(type) {
   return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH";
 }
@@ -757,6 +836,9 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   let failed = 0;
   let unknown = 0;
   const results = [];
+  let halted = false;
+  let haltedJobId = null;
+  let unprocessedCount = 0;
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
@@ -778,16 +860,52 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
     if (outcome === "CONFIRMED") success += 1;
     else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
-    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+    if (outcome === "UNKNOWN") {
+      halted = true;
+      haltedJobId = task?.id || null;
+      const remaining = tasks.slice(index + 1);
+      unprocessedCount = remaining.length;
+      for (const skippedTask of remaining) {
+        const skippedMessage = `前一岗位 ${task?.id || "-"} 的发送结果待确认，批量任务已暂停，本岗位未触达`;
+        let persisted = false;
+        await postBossDeliveryResult(
+          skippedTask,
+          false,
+          { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+          "BATCH_HALTED_BEFORE_ACTION",
+          "NOT_SENT",
+          "BATCH_HALTED_BEFORE_ACTION"
+        ).then(() => { persisted = true; }).catch(() => {});
+        results.push({
+          id: skippedTask?.id,
+          requestKey: skippedTask?.requestKey,
+          outcome: "FAILED",
+          evidence: "BATCH_HALTED_BEFORE_ACTION",
+          greetingOutcome: "NOT_SENT",
+          greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+          persisted,
+          skipped: true,
+          message: skippedMessage
+        });
+      }
+      break;
+    }
   }
 
+  const summary = halted
+    ? `Boss批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+    : `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
   return {
-    success: failed === 0 && unknown === 0,
+    success: !halted && failed === 0 && unknown === 0,
     partial: success > 0 && (failed > 0 || unknown > 0),
-    message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+    message: summary,
     successCount: success,
     unknownCount: unknown,
     failedCount: failed,
+    halted,
+    haltedJobId,
+    unprocessedCount,
     results
   };
 }
@@ -834,6 +952,8 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
       success: false,
       outcome: "UNKNOWN",
       evidence: "NO_CONFIRMATION",
+      greetingOutcome: "UNKNOWN",
+      greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
       persisted,
       message: failure.failureReason,
       failureType: failure.failureType
@@ -842,30 +962,20 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
 }
 
 async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, total) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        ...message,
-        type: "BOSS_DELIVER_CURRENT_V2",
-        source: "GET_JOBS_BACKGROUND",
-        task,
-        pageTabId,
-        deliveryIndex: index,
-        deliveryTotal: total
-      });
-      if (response) {
-        const recorded = await recordBossDeliveryResponse(task, response);
-        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
-      }
-      const fallback = await inferBossDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
-    } catch (error) {
-      lastError = error;
-      await sleep(500);
-    }
+  const response = await chrome.tabs.sendMessage(tabId, {
+    ...message,
+    type: "BOSS_DELIVER_CURRENT_V2",
+    source: "GET_JOBS_BACKGROUND",
+    task,
+    pageTabId,
+    deliveryIndex: index,
+    deliveryTotal: total
+  });
+  if (response) {
+    const recorded = await recordBossDeliveryResponse(task, response);
+    return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
   }
-  throw lastError || new Error("Boss投递请求发送失败");
+  return await inferBossDeliveryAfterEmptyResponse(tabId, task);
 }
 
 async function handleZhilianDeliver(tab, config, message, pageTabId) {
@@ -1053,6 +1163,8 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
         success: false,
         outcome: "UNKNOWN",
         evidence: "CHAT_SURFACE_ONLY",
+        greetingOutcome: "UNKNOWN",
+        greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
         persisted,
         message: "Boss已进入沟通页，但未收到明确成功状态，已标记待确认。"
       };
@@ -1063,7 +1175,7 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
   }
 }
 
-async function postBossDeliveryResult(task, success, message, evidence) {
+async function postBossDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
   if (!task?.id) return;
   const failure = success === false ? normalizeFailurePayload(message) : null;
   const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
@@ -1077,7 +1189,9 @@ async function postBossDeliveryResult(task, success, message, evidence) {
       success,
       message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
-      failureReason: failure?.failureReason
+      failureReason: failure?.failureReason,
+      greetingOutcome: greetingOutcome || (outcome === "CONFIRMED" ? "CONFIRMED" : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN"),
+      greetingEvidence: greetingEvidence || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     },
     platform: "boss"
   });
@@ -1086,12 +1200,38 @@ async function postBossDeliveryResult(task, success, message, evidence) {
 }
 
 async function recordBossDeliveryResponse(task, response) {
-  const outcome = deliveryOutcomeOf(response);
+  let outcome = deliveryOutcomeOf(response);
+  const responseGreetingOutcome = String(response?.greetingOutcome || "").toUpperCase();
+  const responseGreetingEvidence = String(response?.greetingEvidence || "").toUpperCase();
+  const greetingConfirmed = responseGreetingOutcome === "CONFIRMED"
+    && responseGreetingEvidence === "GREETING_RENDERED_EXACT";
+  if (outcome === "CONFIRMED" && !greetingConfirmed) outcome = "UNKNOWN";
   const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
   const evidence = response?.evidence
-    || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
-  await postBossDeliveryResult(task, success, response?.message || "Boss投递结果回写", evidence);
-  return { outcome, evidence, persisted: true };
+    || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  const greetingOutcome = greetingConfirmed
+    ? "CONFIRMED"
+    : ["UNKNOWN", "NOT_SENT"].includes(responseGreetingOutcome)
+      ? responseGreetingOutcome
+      : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN";
+  const greetingEvidence = greetingConfirmed
+    ? "GREETING_RENDERED_EXACT"
+    : responseGreetingEvidence || "GREETING_UNCONFIRMED";
+  await postBossDeliveryResult(
+    task,
+    success,
+    response?.message || "Boss投递结果回写",
+    evidence,
+    greetingOutcome,
+    greetingEvidence
+  );
+  return {
+    outcome,
+    evidence,
+    greetingOutcome,
+    greetingEvidence,
+    persisted: true
+  };
 }
 
 async function postZhilianDeliveryResult(task, success, message, evidence) {
@@ -1135,7 +1275,7 @@ function deliveryOutcomeOf(result) {
 }
 
 function isExplicitConfirmationEvidence(evidence) {
-  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION"]
+  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION", "GREETING_RENDERED_EXACT"]
     .includes(String(evidence || "").toUpperCase());
 }
 
@@ -1248,6 +1388,7 @@ async function buildRegisteredNavigationStatus(platform, tabId) {
     temporaryUnavailable: true,
     stage: "navigating",
     runId: session.runId || "",
+    profileId: normalizeProfileId(session.profileId) || null,
     message: `${platform === "boss" ? "Boss" : "智联"}扫描页面正在跳转，任务仍在后台继续。`
   };
 }
@@ -1286,13 +1427,13 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
 
 async function resolvePlatformTab(platform, message) {
   if (isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type)) {
-    return await findRegisteredOrRunningScanTab(platform);
+    return await findRegisteredOrRunningScanTab(platform, message.profileId);
   }
   if (isDeliverMessage(platform, message.type)) {
     return await findDeliveryPlatformTab(platform, platformStartUrl(message));
   }
   if (isScanStartMessage(message.type)) {
-    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId);
+    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId, message.profileId);
   }
   if (isNoCreatePlatformMessage(message.type)) {
     return await findPlatformTab(platform);
@@ -1300,25 +1441,28 @@ async function resolvePlatformTab(platform, message) {
   return await findOrCreatePlatformTab(platform, platformStartUrl(message));
 }
 
-async function findScanPlatformTab(platform, startUrl, requestedRunId = "") {
-  const registered = await getRegisteredScanTab(platform, requestedRunId);
+async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, requestedRunId, requestedProfileId);
   if (registered) return registered;
 
-  const running = await findRunningPlatformTab(platform, requestedRunId);
+  const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
   if (running) return running;
 
   return await findOrCreatePlatformTab(platform, startUrl);
 }
 
-async function findRegisteredOrRunningScanTab(platform) {
-  const registered = await getRegisteredScanTab(platform);
+async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, "", requestedProfileId);
   if (registered) return registered;
-  return await findRunningPlatformTab(platform);
+  return await findRunningPlatformTab(platform, "", requestedProfileId);
 }
 
 async function findDeliveryPlatformTab(platform, startUrl) {
   const scanTab = await findRegisteredOrRunningScanTab(platform);
-  const scanStatus = scanTab?.id ? await probePlatformScanStatus(scanTab.id, platform) : null;
+  const session = await readScanSession(platform);
+  const scanStatus = scanTab?.id
+    ? await probePlatformScanStatus(scanTab.id, platform, session?.profileId)
+    : null;
   const scanIsActive = isActiveScanStatus(scanStatus);
   const excludedTabIds = scanIsActive && scanTab?.id ? [scanTab.id] : [];
 
@@ -1352,30 +1496,36 @@ async function findPlatformTab(platform) {
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
-async function findRunningPlatformTab(platform, requestedRunId = "") {
+async function findRunningPlatformTab(platform, requestedRunId = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
     .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config));
 
   for (const tab of tabs) {
     if (!tab.id) continue;
-    const status = await probePlatformScanStatus(tab.id, platform);
+    const status = await probePlatformScanStatus(tab.id, platform, profileId);
     if (isActiveScanStatus(status)) {
       if (requestedRunId && !scanRunMatches(status?.runId, requestedRunId)) continue;
-      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken);
+      if (normalizeProfileId(status?.profileId) !== profileId) continue;
+      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken, profileId);
       return tab;
     }
   }
   return null;
 }
 
-async function probePlatformScanStatus(tabId, platform) {
+async function probePlatformScanStatus(tabId, platform, requestedProfileId) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   if (!await pingContentScript(tabId)) return null;
   try {
     const type = platform === "boss" ? "BOSS_SCAN_STATUS" : "ZHILIAN_SCAN_STATUS_V2";
     return await chrome.tabs.sendMessage(tabId, {
       source: "GET_JOBS_BACKGROUND",
-      type
+      type,
+      profileId
     });
   } catch {
     return null;
@@ -1410,22 +1560,26 @@ async function handleScanOwnerStatus(platform, sender) {
     isOwner: Boolean(session && tabId && session.tabId === tabId),
     ownerToken: session?.ownerToken || "",
     runId: session?.runId || "",
+    profileId: normalizeProfileId(session?.profileId) || null,
     tabId: session?.tabId || null
   };
 }
 
-async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "") {
-  if (!platform || !tabId) return null;
+async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!platform || !tabId || !profileId) return null;
   return await mutateScanSessions((sessions) => {
     const existing = sessions[platform];
+    const sameProfile = normalizeProfileId(existing?.profileId) === profileId;
     const session = {
       platform,
       tabId,
-      runId: String(runId || existing?.runId || ""),
-      pageTabId: pageTabId || existing?.pageTabId || null,
+      profileId,
+      runId: String(runId || (sameProfile ? existing?.runId : "") || ""),
+      pageTabId: pageTabId || (sameProfile ? existing?.pageTabId : null) || null,
       ownerToken: String(
         ownerToken
-          || (existing?.tabId === tabId ? existing?.ownerToken : "")
+          || (sameProfile && existing?.tabId === tabId ? existing?.ownerToken : "")
           || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
       ),
       updatedAt: Date.now()
@@ -1439,6 +1593,10 @@ async function readScanSession(platform) {
   const sessions = await readScanSessions();
   const session = sessions[platform];
   if (!session) return null;
+  if (!normalizeProfileId(session.profileId)) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (Date.now() - Number(session.updatedAt || 0) > SCAN_SESSION_TTL_MS) {
     await clearScanSession(platform, session.tabId);
     return null;
@@ -1456,9 +1614,14 @@ async function readScanSessions() {
   }
 }
 
-async function getRegisteredScanTab(platform, requestedRunId = "") {
+async function getRegisteredScanTab(platform, requestedRunId = "", requestedProfileId = 0) {
   const session = await readScanSession(platform);
   if (!session?.tabId) return null;
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (profileId && normalizeProfileId(session.profileId) !== profileId) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (requestedRunId && !scanRunMatches(session.runId, requestedRunId)) {
     await cleanupPlatformScanState(platform, session.tabId);
     return null;
@@ -1507,13 +1670,15 @@ async function mutateScanSessions(mutator) {
 
 async function updateScanSessionFromEvent(platform, tabId, payload) {
   if (!tabId || payload?.operation !== "scan") return;
+  const profileId = normalizeProfileId(payload.profileId);
+  if (!profileId) return;
+  const session = await readScanSession(platform);
+  if (!session || session.tabId !== tabId || normalizeProfileId(session.profileId) !== profileId) return;
   if (["complete", "stopped", "error"].includes(String(payload.stage || ""))) {
     await clearScanSession(platform, tabId);
     return;
   }
-  const session = await readScanSession(platform);
-  if (!session || session.tabId !== tabId) return;
-  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken);
+  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken, profileId);
 }
 
 async function broadcastPlatformEvent(payload, preferredPageTabId = null) {

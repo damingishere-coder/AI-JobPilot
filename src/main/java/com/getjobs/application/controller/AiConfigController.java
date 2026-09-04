@@ -142,13 +142,16 @@ public class AiConfigController {
     public ResponseEntity<Map<String, Object>> saveAiThresholds(@RequestBody AiThresholdRequest requestBody) {
         Map<String, Object> response = new HashMap<>();
         try {
-            AiEntity aiEntity = aiService.saveOrUpdateAiThresholds(
+            JobAiAnalysisService.ThresholdApplicationResult result =
+                    jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(
                     requestBody.getApplyThreshold(),
                     requestBody.getPriorityApplyThreshold()
             );
+            Map<String, Object> data = thresholdData(result.thresholds());
+            data.put("bossHistoricalPromotedCount", result.bossHistoricalPromotedCount());
             response.put("success", true);
-            response.put("data", thresholdData(aiEntity));
-            response.put("message", "AI投递分数线已保存");
+            response.put("data", data);
+            response.put("message", "AI投递分数线已保存，历史Boss岗位已更新");
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
             log.warn("AI投递分数线参数不合法: {}", e.getMessage());
@@ -318,9 +321,15 @@ public class AiConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
+            Map<String, Object> generated = aiService.generateResumeAiConfig(resumeText);
+            Object rawKeywords = generated.get("recommendedKeywords");
+            List<String> keywords = rawKeywords instanceof List<?> list
+                    ? list.stream().filter(String.class::isInstance).map(String.class::cast).toList()
+                    : List.of();
+            generated.put("recommendedKeywords", jobAiAnalysisService.saveRecommendedJobKeywords(keywords));
             response.put("success", true);
-            response.put("data", aiService.generateResumeAiConfig(resumeText));
-            response.put("message", "AI文案生成成功");
+            response.put("data", generated);
+            response.put("message", "AI文案和岗位关键词生成成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("根据简历生成AI文案失败", e);
@@ -328,6 +337,20 @@ public class AiConfigController {
             response.put("message", "根据简历生成AI文案失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
+    }
+
+    @GetMapping("/job-keywords")
+    public ResponseEntity<Map<String, Object>> getRecommendedJobKeywords() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("data", Map.of(
+                "keywords", jobAiAnalysisService.getRecommendedJobKeywords(),
+                "maxSelected", com.getjobs.application.service.JobKeywordCodec.MAX_SELECTED,
+                "recommendedSelectionCount", com.getjobs.application.service.JobKeywordCodec.RECOMMENDED_SELECTION_COUNT
+        ));
+        response.put("currentProfile", profileService.getCurrentProfile());
+        response.put("hasProfile", profileService.hasProfiles());
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/companies/priority")
@@ -379,14 +402,17 @@ public class AiConfigController {
 
     @GetMapping("/job-analysis/tasks")
     public ResponseEntity<Map<String, Object>> listJobAnalysisTasks(
-            @RequestParam(name = "limit", defaultValue = "50") int limit
+            @RequestParam(name = "limit", defaultValue = "50") int limit,
+            @RequestParam(name = "platform", required = false) String platform
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
             long profileId = profileService.getCurrentProfileId();
             response.put("success", true);
-            response.put("data", chromeJobAnalysisQueueService.listTasks(profileId, limit));
-            response.put("queueSize", chromeJobAnalysisQueueService.queueSize(profileId));
+            response.put("data", chromeJobAnalysisQueueService.listTasks(profileId, platform, limit));
+            response.put("queueSize", chromeJobAnalysisQueueService.queueSize(profileId, platform));
+            response.put("pendingCount", chromeJobAnalysisQueueService.pendingCount(profileId, platform));
+            response.put("processingCount", chromeJobAnalysisQueueService.processingCount(profileId, platform));
             response.put("message", "AI 分析任务读取成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {

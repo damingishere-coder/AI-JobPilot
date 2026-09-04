@@ -17,8 +17,26 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-07-29-zhilian-security-resume-fix");
+  assert.equal(support.version, "2026-09-03-keyword-deep-fill");
   assert.equal(typeof support.isZhilianUrl, "function");
+});
+
+test("uses history-aware deep collection safety bounds for Zhilian", () => {
+  const support = loadSupport();
+  assert.equal(support.DEEP_COLLECTION_MAX_PAGES, 50);
+  assert.equal(support.DEEP_COLLECTION_MAX_DURATION_MS, 180000);
+  assert.equal(support.DEEP_COLLECTION_MAX_STAGNANT_PAGES, 5);
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 20 }), "target_reached");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 4 }), "");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 5 }), "stagnation_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, platformExhausted: true }), "platform_exhausted");
+});
+
+test("routes Zhilian history dedupe before adding page candidates", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", "zhilian-content.js"), "utf8");
+  assert.match(source, /requestZhilianLocalApi\("chrome-jobs-dedupe"/);
+  assert.match(source, /historyDuplicateCount/);
+  assert.match(source, /stagnantPages/);
 });
 
 test("does not treat normal Zhilian job descriptions as security verification", () => {

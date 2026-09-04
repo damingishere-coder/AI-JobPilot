@@ -39,7 +39,7 @@ spring:
 # 服务器配置
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
-  port: ${SERVER_PORT:8888}  # 后端 API 固定端口
+  port: ${SERVER_PORT:6866}  # 页面与 API 共用单一端口
 
 app:
   auto-open-browser: ${APP_AUTO_OPEN_BROWSER:false}

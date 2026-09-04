@@ -48,6 +48,22 @@ class CodexCliServiceTest {
     }
 
     @Test
+    void structuredCommandPassesOutputSchemaWithoutChangingOtherRequests() {
+        CodexCliService service = new CodexCliService();
+        Path cwd = Path.of("work");
+        Path output = cwd.resolve("final.txt");
+        Path schema = cwd.resolve("output-schema.json");
+
+        List<String> command = service.buildCommandWithImages(
+                "codex", "gpt-5.6-sol", cwd, output, List.of(), schema);
+
+        assertThat(command).containsSubsequence("--output-schema", schema.toString());
+        assertThat(command).containsSubsequence("--output-last-message", output.toString(), "-");
+        assertThat(service.buildCommand("codex", "gpt-5.6-sol", cwd, output, null))
+                .doesNotContain("--output-schema");
+    }
+
+    @Test
     void commandWrapsWindowsCmdLauncher() {
         CodexCliService service = new CodexCliService();
         Path cwd = Path.of("work");

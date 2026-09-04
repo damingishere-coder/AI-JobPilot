@@ -42,6 +42,7 @@ function Get-JavaMajorVersion {
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $GradlewBat = Join-Path $ProjectRoot "gradlew.bat"
+$FrontDir = Join-Path $ProjectRoot "front"
 $DbDir = Join-Path $ProjectRoot "db"
 $DataDir = Join-Path $ProjectRoot "data"
 $OutputDir = Join-Path $ProjectRoot "output"
@@ -60,9 +61,16 @@ if (-not (Test-Path -LiteralPath $GradlewBat)) {
     Fail-WithHelp "没有找到 $GradlewBat。" "请确认 Alter 的工作目录指向项目根目录。"
 }
 
-$portOwner = Get-PortOwnerDescription -Port 8888
+if ($null -eq (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
+    Fail-WithHelp "没有找到 pnpm。" "请安装或启用 pnpm，统一服务启动前需要构建前端静态文件。"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $FrontDir "node_modules"))) {
+    Fail-WithHelp "前端依赖尚未安装。" "请在 $FrontDir 执行 pnpm install。"
+}
+
+$portOwner = Get-PortOwnerDescription -Port 6866
 if ($portOwner) {
-    Fail-WithHelp "后端端口 8888 已被占用：$portOwner" "请先在 Alter 停止旧 Backend，确认端口释放后再启动。"
+    Fail-WithHelp "统一端口 6866 已被占用：$portOwner" "请先在 Alter 停止旧 Frontend/Backend，确认端口释放后再启动统一 Backend。"
 }
 
 foreach ($dir in @($DbDir, $DataDir, $OutputDir, $CacheDir, $LogDir, $ChromeProfileDir)) {
@@ -75,6 +83,7 @@ if (-not $env:SPRING_DATASOURCE_URL) {
 if (-not $env:SERVER_ADDRESS) {
     $env:SERVER_ADDRESS = "127.0.0.1"
 }
+$env:SERVER_PORT = "6866"
 if (-not $env:APP_DATA_DIR) {
     $env:APP_DATA_DIR = $DataDir
 }
@@ -99,9 +108,7 @@ if (-not $env:APP_AUTO_OPEN_BROWSER) {
 if (-not $env:APP_BROWSER_INITIALIZE_ON_STARTUP) {
     $env:APP_BROWSER_INITIALIZE_ON_STARTUP = "false"
 }
-if (-not $env:APP_STATIC_SERVER_ENABLED) {
-    $env:APP_STATIC_SERVER_ENABLED = "false"
-}
+$env:APP_STATIC_SERVER_ENABLED = "true"
 
 $encodingOptions = "-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 if ([string]::IsNullOrWhiteSpace($env:JAVA_TOOL_OPTIONS)) {
@@ -110,8 +117,20 @@ if ([string]::IsNullOrWhiteSpace($env:JAVA_TOOL_OPTIONS)) {
     $env:JAVA_TOOL_OPTIONS = "$($env:JAVA_TOOL_OPTIONS) $encodingOptions"
 }
 
-Write-Host "启动投递牛马后端：$ProjectRoot"
-Write-Host "健康检查：http://127.0.0.1:8888/api/health"
+Write-Host "构建统一服务前端静态文件：$FrontDir"
+Push-Location $FrontDir
+try {
+    & pnpm build:prod
+    if ($LASTEXITCODE -ne 0) {
+        Fail-WithHelp "前端静态构建失败。" "请查看上方 pnpm build:prod 输出并修复后重试。"
+    }
+} finally {
+    Pop-Location
+}
+
+Write-Host "启动投递牛马统一服务：$ProjectRoot"
+Write-Host "页面地址：http://127.0.0.1:6866"
+Write-Host "健康检查：http://127.0.0.1:6866/api/health"
 Write-Host "启动阶段不会打开管理页或招聘网站；使用平台功能时浏览器会按需启动。"
 
 Push-Location $ProjectRoot

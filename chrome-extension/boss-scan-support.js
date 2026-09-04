@@ -1,8 +1,10 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-07-18-boss-security-resume-fix";
+  const SUPPORT_VERSION = "2026-09-03-boss-navigation-loop-fix";
   if (root.GetJobsBossScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;
+  const DEEP_COLLECTION_MAX_DURATION_MS = 180 * 1000;
+  const DEEP_COLLECTION_MAX_STAGNANT_ROUNDS = 5;
   const DEGREE_NAME_BY_CODE = Object.freeze({
     "0": "不限",
     "209": "初中及以下",
@@ -16,6 +18,30 @@
 
   function degreeNameForCode(value) {
     return DEGREE_NAME_BY_CODE[String(value ?? "").trim()] || "";
+  }
+
+  function deepCollectionBounds(targetValue) {
+    const target = Math.max(1, Math.min(200, Math.floor(Number(targetValue) || 20)));
+    return {
+      target,
+      maxRounds: 30,
+      maxCandidates: 500,
+      maxDurationMs: DEEP_COLLECTION_MAX_DURATION_MS,
+      maxStagnantRounds: DEEP_COLLECTION_MAX_STAGNANT_ROUNDS
+    };
+  }
+
+  function deepCollectionStopReason(state = {}) {
+    const bounds = deepCollectionBounds(state.target);
+    if (state.stopped) return "stopped";
+    if (Number(state.fresh || 0) >= bounds.target) return "target_reached";
+    if (state.blocked) return "blocked";
+    if (state.platformExhausted) return "platform_exhausted";
+    if (Number(state.elapsedMs || 0) >= bounds.maxDurationMs) return "timeout_safety_cap";
+    if (Number(state.candidates || 0) >= bounds.maxCandidates) return "candidate_safety_cap";
+    if (Number(state.stagnantRounds || 0) >= bounds.maxStagnantRounds) return "stagnation_safety_cap";
+    if (Number(state.rounds || 0) >= bounds.maxRounds) return "round_safety_cap";
+    return "";
   }
 
   function isBossSecurityInstructionText(value) {
@@ -85,6 +111,33 @@
     if (!isFreshTask(existingTask, options.now || Date.now(), options.ttlMs || DEFAULT_TASK_TTL_MS)) return false;
     if (options.resumable === false && !status?.resumable && status?.stage !== "blocked") return false;
     return true;
+  }
+
+  function bossSearchNavigationAttempts(task, navigationKey) {
+    if (!task || task.navigationKey !== navigationKey) return 0;
+    return Math.max(0, Math.floor(Number(task.navigationAttempts) || 0));
+  }
+
+  function beginBossSearchCollection(task) {
+    return {
+      ...(task || {}),
+      phase: "collecting",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)),
+      navigationStartedAt: 0
+    };
+  }
+
+  function retryBossSearchNavigation(task, now = Date.now()) {
+    return {
+      ...(task || {}),
+      phase: "searching",
+      navigationAttempts: Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) + 1,
+      navigationStartedAt: Number(now)
+    };
+  }
+
+  function isBossSearchNavigationExhausted(task, maxAttempts = 5) {
+    return Math.max(0, Math.floor(Number(task?.navigationAttempts) || 0)) >= Math.max(1, Math.floor(Number(maxAttempts) || 5));
   }
 
   function normalizeRunId(value) {
@@ -162,13 +215,65 @@
     return Math.min(parsed, total);
   }
 
+  function buildFailedSubmitCheckpoint(task, batchIndex, submitSummary, lastSubmitError, now = Date.now()) {
+    return {
+      ...(task || {}),
+      phase: "submitting",
+      submitBatchIndex: Math.max(0, Math.floor(Number(batchIndex) || 0)),
+      submitSummary: { ...(submitSummary || {}) },
+      lastSubmitError: {
+        ...(lastSubmitError || {}),
+        failedAt: Number(lastSubmitError?.failedAt || now)
+      }
+    };
+  }
+
+  function partitionDedupeJobs(jobs, items) {
+    const jobList = Array.isArray(jobs) ? jobs : [];
+    const decisionItems = Array.isArray(items) ? items : [];
+    const jobKeys = jobList.map(dedupeDecisionKey);
+    const itemKeys = decisionItems.map(dedupeDecisionKey);
+    const allowedActions = new Set(["NEW", "ENRICH", "SKIP"]);
+    const uniqueJobKeys = new Set(jobKeys);
+    const uniqueItemKeys = new Set(itemKeys);
+    const complete = jobKeys.every((key) => key && uniqueItemKeys.has(key))
+      && itemKeys.every((key) => key && uniqueJobKeys.has(key))
+      && uniqueJobKeys.size === jobKeys.length
+      && uniqueItemKeys.size === itemKeys.length
+      && itemKeys.length === jobKeys.length
+      && decisionItems.every((item) => allowedActions.has(String(item?.action || "").trim().toUpperCase()));
+    if (!complete) throw new Error("Boss查重接口未完整返回全部岗位决策");
+
+    const decisionByKey = new Map(decisionItems.map((item) => [
+      dedupeDecisionKey(item),
+      String(item.action).trim().toUpperCase()
+    ]));
+    const detailJobs = [];
+    const historicalJobs = [];
+    jobList.forEach((job) => {
+      const action = decisionByKey.get(dedupeDecisionKey(job));
+      if (action === "SKIP") {
+        historicalJobs.push({ ...job, collectionAction: "REUSE_HISTORY" });
+      } else {
+        detailJobs.push({ ...job, collectionAction: "ANALYZE" });
+      }
+    });
+    return { detailJobs, historicalJobs };
+  }
+
+  function dedupeDecisionKey(item) {
+    const id = compact(item?.id || extractBossJobId(item?.url));
+    if (id) return `id:${id}`;
+    return `ct:${compact(item?.company).toLowerCase()}::${compact(item?.title).toLowerCase()}`;
+  }
+
   function classifyLocalApiFailure(error) {
     const explicit = String(error?.code || "");
     if (explicit) return explicit;
     const text = String(error?.message || error || "");
     if (/Invalid CORS request|cors/i.test(text)) return "CORS_REJECTED";
     if (/超时|timeout|abort/i.test(text)) return "LOCAL_API_TIMEOUT";
-    if (/无法连接|Failed to fetch|NetworkError|本地服务请求失败|6866端口/i.test(text)) {
+    if (/无法连接|Failed to fetch|NetworkError|本地服务请求失败|(?:8888|6866)端口/i.test(text)) {
       return "LOCAL_SERVICE_UNAVAILABLE";
     }
     return "LOCAL_API_ERROR";
@@ -181,6 +286,10 @@
   root.GetJobsBossScanSupport = Object.freeze({
     version: SUPPORT_VERSION,
     DEFAULT_TASK_TTL_MS,
+    DEEP_COLLECTION_MAX_DURATION_MS,
+    DEEP_COLLECTION_MAX_STAGNANT_ROUNDS,
+    deepCollectionBounds,
+    deepCollectionStopReason,
     DEGREE_NAME_BY_CODE,
     degreeNameForCode,
     isBossSecurityInstructionText,
@@ -190,6 +299,10 @@
     isFreshTask,
     sameScanRun,
     canResumeScanTask,
+    bossSearchNavigationAttempts,
+    beginBossSearchCollection,
+    retryBossSearchNavigation,
+    isBossSearchNavigationExhausted,
     normalizeBossJobUrl,
     extractBossJobId,
     isBossJobDetailUrl,
@@ -197,6 +310,8 @@
     isNonJobNavigationTitle,
     classifyBossDetailNavigation,
     normalizeBatchIndex,
+    buildFailedSubmitCheckpoint,
+    partitionDedupeJobs,
     classifyLocalApiFailure
   });
 })(typeof window !== "undefined" ? window : globalThis);

@@ -58,4 +58,25 @@ class ZhilianServiceCrossRunUpsertTest {
         assertThat(updated.getAiReason()).isEqualTo("匹配");
         assertThat(updated.getPriorityCompany()).isEqualTo(1);
     }
+
+    @Test
+    void differentStableIdsWithSameCompanyAndTitleCreateSeparateRows() {
+        ProfileService profileService = mock(ProfileService.class);
+        ZhilianJobDataMapper mapper = mock(ZhilianJobDataMapper.class);
+        ZhilianService service = new ZhilianService(null, null, mapper, null, profileService);
+        when(mapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(mapper.insert(any(ZhilianJobDataEntity.class))).thenReturn(1);
+
+        ZhilianJobDataEntity incoming = new ZhilianJobDataEntity();
+        incoming.setJobId("stable-new");
+        incoming.setJobTitle("相同岗位");
+        incoming.setCompanyName("相同公司");
+
+        ZhilianJobDataEntity saved = service.upsertChromeJob(incoming, "run-new", 7L);
+
+        verify(mapper).insert(incoming);
+        verify(mapper, never()).updateById(any(ZhilianJobDataEntity.class));
+        assertThat(saved.getJobId()).isEqualTo("stable-new");
+        assertThat(saved.getProfileId()).isEqualTo(7L);
+    }
 }

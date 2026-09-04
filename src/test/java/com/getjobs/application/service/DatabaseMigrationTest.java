@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV8AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV14AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -29,17 +29,151 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='8'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='14'"))
                     .isEqualTo(1L);
+            assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_boss_data_profile_encrypt_id'"))
+                    .isEqualTo(1L);
+            assertThat(columns(connection, "resume_profile")).contains("recommended_job_keywords");
             assertThat(columns(connection, "ai")).contains("apply_threshold", "priority_apply_threshold");
             assertThat(columns(connection, "boss_data"))
-                    .contains("source_keyword", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
+                    .contains("source_keyword", "scan_result_source", "salary_min_k", "salary_max_k", "salary_median_k", "salary_months");
             assertThat(columns(connection, "liepin_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(columns(connection, "job51_data")).contains("id", "profile_id", "job_id", "delivery_status");
             assertThat(tableExists(connection, "delivery_attempt")).isTrue();
+            assertThat(columns(connection, "boss_config")).contains("native_greeting_disabled_confirmed");
+            assertThat(columns(connection, "delivery_attempt"))
+                    .contains("greeting_snapshot", "greeting_source", "greeting_outcome", "greeting_evidence");
             assertThat(columns(connection, "job_analysis_task"))
                     .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
                             "lease_owner", "lease_expires_at", "last_error", "started_at", "completed_at");
+        }
+    }
+
+    @Test
+    void v14BackfillsBossGreetingAuditWithoutClaimingHistoricalSuccess() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("boss-greeting-audit.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("13")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO boss_config(id, profile_id, say_hi) VALUES (1, 1, '档案默认话术')");
+            statement.execute("INSERT INTO delivery_attempt(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
+                    "VALUES ('pending', 'boss', 1, 'boss-1', 1, 'REQUESTED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+            statement.execute("INSERT INTO delivery_attempt(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
+                    "VALUES ('historical', 'boss', 1, 'boss-2', 2, 'CONFIRMED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertThat(scalar(connection, "SELECT native_greeting_disabled_confirmed FROM boss_config WHERE id=1"))
+                    .isZero();
+            assertThat(text(connection, "SELECT greeting_outcome FROM delivery_attempt WHERE request_key='pending'"))
+                    .isEqualTo("PENDING");
+            assertThat(text(connection, "SELECT greeting_outcome FROM delivery_attempt WHERE request_key='historical'"))
+                    .isEqualTo("UNKNOWN");
+        }
+    }
+
+    @Test
+    void v11BackfillsHistoricalBossRowsWithoutChangingBusinessTimestamps() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("boss-scan-source.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("9")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO boss_data(id, profile_id, encrypt_id, company_name, job_name, scan_run_id, created_at, updated_at) " +
+                    "VALUES (99, 1, 'history-job', '历史公司', '历史岗位', 'boss-old', '2026-07-18 10:00:00', '2026-08-24 20:00:00')");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT scan_result_source, created_at, updated_at FROM boss_data WHERE id=99")) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getString("scan_result_source")).isEqualTo("CURRENT_SCAN");
+            assertThat(result.getString("created_at")).isEqualTo("2026-07-18 10:00:00");
+            assertThat(result.getString("updated_at")).isEqualTo("2026-08-24 20:00:00");
+        }
+    }
+
+    @Test
+    void v12AddsRecommendationsWithoutChangingExistingResume() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("resume-keywords.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("11")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO resume_profile(id, profile_id, resume_text, source_filename) " +
+                    "VALUES (5, 1, '原有简历内容', 'resume.pdf')");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery(
+                     "SELECT resume_text, source_filename, recommended_job_keywords FROM resume_profile WHERE id=5")) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getString("resume_text")).isEqualTo("原有简历内容");
+            assertThat(result.getString("source_filename")).isEqualTo("resume.pdf");
+            assertThat(result.getString("recommended_job_keywords")).isNull();
+        }
+    }
+
+    @Test
+    void v13AllowsSameBossJobAcrossProfilesAndRejectsDuplicatesWithinOneProfile() throws Exception {
+        String validUrl = sqliteUrl(tempDir.resolve("boss-unique-valid.db"));
+        Flyway.configure()
+                .dataSource(validUrl, null, null)
+                .locations("classpath:db/migration")
+                .target("12")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(validUrl); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'one', 1), (2, 'two', 0)");
+            statement.execute("INSERT INTO boss_data(profile_id, encrypt_id, company_name, job_name) VALUES " +
+                    "(1, 'shared-job', 'A', '岗位'), (2, 'shared-job', 'A', '岗位')");
+        }
+        flyway(validUrl).migrate();
+        try (Connection connection = DriverManager.getConnection(validUrl)) {
+            assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM boss_data WHERE encrypt_id='shared-job'"))
+                    .isEqualTo(2L);
+        }
+
+        String duplicateUrl = sqliteUrl(tempDir.resolve("boss-unique-duplicate.db"));
+        Flyway.configure()
+                .dataSource(duplicateUrl, null, null)
+                .locations("classpath:db/migration")
+                .target("12")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(duplicateUrl); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'duplicate', 1)");
+            statement.execute("INSERT INTO boss_data(profile_id, encrypt_id, company_name, job_name) VALUES " +
+                    "(1, ' duplicate-job ', 'A', '岗位'), (1, 'duplicate-job', 'A', '岗位')");
+        }
+
+        assertThatThrownBy(() -> flyway(duplicateUrl).migrate())
+                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasStackTraceContaining("profile_id=1")
+                .hasStackTraceContaining("duplicate-job")
+                .hasStackTraceContaining("ids=");
+        try (Connection connection = DriverManager.getConnection(duplicateUrl)) {
+            assertThat(scalar(connection, "SELECT COUNT(*) FROM boss_data")).isEqualTo(2L);
         }
     }
 
@@ -316,6 +450,12 @@ class DatabaseMigrationTest {
     private long scalar(Connection connection, String sql) throws Exception {
         try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
             return resultSet.next() ? resultSet.getLong(1) : 0L;
+        }
+    }
+
+    private String text(Connection connection, String sql) throws Exception {
+        try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
+            return resultSet.next() ? resultSet.getString(1) : null;
         }
     }
 

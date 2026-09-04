@@ -12,4 +12,6 @@ public class DeliveryResultRequest {
     private String message;
     private String failureType;
     private String failureReason;
+    private String greetingOutcome;
+    private String greetingEvidence;
 }

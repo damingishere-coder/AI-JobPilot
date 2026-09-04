@@ -4,6 +4,7 @@ import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,12 +12,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -117,6 +120,22 @@ class BossServiceDedupeTest {
     }
 
     @Test
+    void batchDedupeDoesNotFallbackToCompanyTitleWhenStableIdMismatches() {
+        ChromeJobDto spoofed = chromeJob("spoofed-id", null, "相同公司", "相同岗位");
+        BossJobDataEntity companyTitleMatched = bossJob(13L, "real-id", "相同公司", "相同岗位");
+        when(bossJobDataMapper.selectExistingChromeBossJobs(
+                eq(1L),
+                org.mockito.ArgumentMatchers.anyList(),
+                org.mockito.ArgumentMatchers.anyList(),
+                org.mockito.ArgumentMatchers.anyList()
+        )).thenReturn(List.of(companyTitleMatched));
+
+        Map<Integer, BossJobDataEntity> result = bossService.findExistingChromeBossJobs(1L, List.of(spoofed), null);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
     void upsertUpdatesHistoricalJobAcrossScanRunsInsteadOfCreatingDuplicateRow() {
         BossJobDataEntity existing = bossJob(21L, "job-history", "历史公司", "Java工程师");
         existing.setDeliveryStatus(DeliveryStatus.LIST_COLLECTED);
@@ -138,8 +157,59 @@ class BossServiceDedupeTest {
         BossJobDataEntity updated = updateCaptor.getValue();
         assertThat(updated.getId()).isEqualTo(21L);
         assertThat(updated.getScanRunId()).isEqualTo("run-new");
+        assertThat(updated.getScanResultSource()).isEqualTo(BossService.SCAN_RESULT_CURRENT);
         assertThat(updated.getJobDescription()).contains("完整岗位要求");
         verify(bossJobDataMapper, never()).insert(any(BossJobDataEntity.class));
+    }
+
+    @Test
+    void upsertDoesNotMergeDifferentStableIdsWithSameCompanyAndTitle() {
+        BossJobDataEntity incoming = bossJob(null, "stable-new", "相同公司", "相同岗位");
+        when(bossJobDataMapper.selectOne(any(QueryWrapper.class))).thenReturn(null);
+        when(bossJobDataMapper.insert(any(BossJobDataEntity.class))).thenReturn(1);
+
+        BossJobDataEntity saved = bossService.upsertChromeBossJob(incoming, "run-new", 1L);
+
+        verify(bossJobDataMapper).insert(incoming);
+        verify(bossJobDataMapper, never()).updateById(any(BossJobDataEntity.class));
+        assertThat(saved.getEncryptId()).isEqualTo("stable-new");
+        assertThat(saved.getProfileId()).isEqualTo(1L);
+    }
+
+    @Test
+    void reuseHistoricalJobOnlyUpdatesScanOwnershipFields() {
+        LocalDateTime createdAt = LocalDateTime.of(2026, 7, 18, 10, 0);
+        LocalDateTime updatedAt = LocalDateTime.of(2026, 8, 24, 20, 0);
+        BossJobDataEntity existing = bossJob(31L, "history-job", "历史公司", "历史岗位");
+        existing.setCreatedAt(createdAt);
+        existing.setUpdatedAt(updatedAt);
+        existing.setAiScore(58);
+        existing.setAiReason("历史分析结果");
+        when(bossJobDataMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
+        when(bossJobDataMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
+
+        BossJobDataEntity restored = bossService.reuseHistoricalBossJob(31L, 1L, " boss-new ");
+
+        ArgumentCaptor<UpdateWrapper<BossJobDataEntity>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(bossJobDataMapper).update(isNull(), wrapperCaptor.capture());
+        String sqlSet = wrapperCaptor.getValue().getSqlSet();
+        assertThat(sqlSet).contains("scan_run_id", "scan_result_source").doesNotContain("updated_at", "created_at", "ai_");
+        assertThat(wrapperCaptor.getValue().getParamNameValuePairs().values())
+                .contains("boss-new", BossService.SCAN_RESULT_HISTORICAL);
+        assertThat(restored.getCreatedAt()).isEqualTo(createdAt);
+        assertThat(restored.getUpdatedAt()).isEqualTo(updatedAt);
+        assertThat(restored.getAiScore()).isEqualTo(58);
+        assertThat(restored.getAiReason()).isEqualTo("历史分析结果");
+    }
+
+    @Test
+    void reuseHistoricalJobRejectsConcurrentStateChangeWithoutReturningData() {
+        when(bossJobDataMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(0);
+
+        BossJobDataEntity restored = bossService.reuseHistoricalBossJob(31L, 1L, "boss-new");
+
+        assertThat(restored).isNull();
+        verify(bossJobDataMapper, never()).selectOne(any(QueryWrapper.class));
     }
 
     private ChromeJobDto chromeJob(String id, String url, String company, String title) {

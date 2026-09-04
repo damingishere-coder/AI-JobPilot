@@ -48,6 +48,23 @@ class AiServiceProviderTest {
     }
 
     @Test
+    void structuredRequestUsesCodexOutputSchema() {
+        Map<String, String> config = Map.of(
+                "AI_PROVIDER", "codex",
+                "CODEX_PATH", "codex",
+                "CODEX_MODEL", "gpt-5.6-sol"
+        );
+        String schema = "{\"type\":\"object\"}";
+        when(configService.getAiConfigs()).thenReturn(config);
+        when(codexCliService.generateStructuredText("岗位分析", schema, config))
+                .thenReturn("{\"decision\":\"SKIP\"}");
+
+        assertThat(service.sendStructuredRequest("岗位分析", schema))
+                .isEqualTo("{\"decision\":\"SKIP\"}");
+        verify(codexCliService).generateStructuredText("岗位分析", schema, config);
+    }
+
+    @Test
     void imageResumeUsesCodexImageAttachment() {
         Map<String, String> config = Map.of("AI_PROVIDER", "codex");
         byte[] image = new byte[]{1, 2, 3};

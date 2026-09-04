@@ -256,77 +256,46 @@ if (-not $env:APP_AUTO_OPEN_BROWSER) {
 if (-not $env:APP_BROWSER_INITIALIZE_ON_STARTUP) {
     $env:APP_BROWSER_INITIALIZE_ON_STARTUP = "false"
 }
-if (-not $env:APP_STATIC_SERVER_ENABLED) {
-    $env:APP_STATIC_SERVER_ENABLED = "false"
-}
+$env:SERVER_PORT = "6866"
+$env:APP_STATIC_SERVER_ENABLED = "true"
 $env:JAVA_TOOL_OPTIONS = "-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 
-$BackendLog = Join-Path $LogDir "windows-backend.log"
-$FrontendLog = Join-Path $LogDir "windows-frontend.log"
+$BackendLog = Join-Path $LogDir "windows-unified.log"
 
 $backendLogLiteral = ConvertTo-PowerShellLiteral $BackendLog
-$frontendLogLiteral = ConvertTo-PowerShellLiteral $FrontendLog
 $backendScriptLiteral = ConvertTo-PowerShellLiteral (Join-Path $ProjectRoot "scripts\run_backend.ps1")
-$frontendScriptLiteral = ConvertTo-PowerShellLiteral (Join-Path $ProjectRoot "scripts\run_frontend.ps1")
-$FrontendUrl = "http://127.0.0.1:6866/"
-$BackendHealthUrl = "http://127.0.0.1:8888/api/health"
+$BackendHealthUrl = "http://127.0.0.1:6866/api/ready"
 
-Write-Section "5. 启动前端"
-if ((Test-HttpEndpoint -Url $FrontendUrl) -and
-    (Test-PortOwnedByProject -Port 6866 -ProjectRoot $ProjectRoot -ExpectedProcessPattern '^node(\.exe)?$')) {
-    Write-Host "当前项目的前端已经正常运行，跳过重复启动。" -ForegroundColor Green
+Write-Section "5. 启动统一服务"
+if ((Test-HttpEndpoint -Url $BackendHealthUrl) -and
+    (Test-PortOwnedByProject -Port 6866 -ProjectRoot $ProjectRoot -ExpectedProcessPattern '^java(\.exe)?$')) {
+    Write-Host "当前项目的统一服务已经正常运行，跳过重复启动。" -ForegroundColor Green
 } elseif (Test-PortOpen -Port 6866) {
     $owner = Get-PortOwnerDescription -Port 6866
     Fail-WithHelp `
-        "前端端口 6866 已被占用，但不是当前项目可复用的健康前端：$owner" `
-        "请先停止占用 6866 的旧进程，再重新运行本启动器。"
-} else {
-    $FrontendCommand = @"
-& $frontendScriptLiteral *>> $frontendLogLiteral
-exit `$LASTEXITCODE
-"@
-    $frontendProcess = Start-BackgroundPowerShell -Command $FrontendCommand
-    Write-Host "前端启动进程：$($frontendProcess.Id)"
-    Write-Host "前端日志：$FrontendLog"
-
-    if (-not (Wait-ForHttpEndpoint -Url $FrontendUrl -TimeoutSeconds 60)) {
-        Fail-WithHelp `
-            "前端在 60 秒内未能通过 HTTP 健康检查。" `
-            "请查看日志：$FrontendLog"
-    }
-    Write-Host "前端 HTTP 服务已就绪。" -ForegroundColor Green
-}
-
-Write-Section "6. 启动后端"
-if ((Test-HttpEndpoint -Url $BackendHealthUrl) -and
-    (Test-PortOwnedByProject -Port 8888 -ProjectRoot $ProjectRoot -ExpectedProcessPattern '^java(\.exe)?$')) {
-    Write-Host "当前项目的后端已经正常运行，跳过重复启动。" -ForegroundColor Green
-} elseif (Test-PortOpen -Port 8888) {
-    $owner = Get-PortOwnerDescription -Port 8888
-    Fail-WithHelp `
-        "后端端口 8888 已被占用，但不是当前项目可复用的健康后端：$owner" `
-        "请先停止占用 8888 的旧进程，再重新运行本启动器。"
+        "统一端口 6866 已被占用，但不是当前项目可复用的健康服务：$owner" `
+        "请先停止占用 6866 的旧 Frontend/Backend，再重新运行本启动器。"
 } else {
     $BackendCommand = @"
 & $backendScriptLiteral *>> $backendLogLiteral
 exit `$LASTEXITCODE
 "@
     $backendProcess = Start-BackgroundPowerShell -Command $BackendCommand
-    Write-Host "后端启动进程：$($backendProcess.Id)"
-    Write-Host "后端日志：$BackendLog"
+    Write-Host "统一服务启动进程：$($backendProcess.Id)"
+    Write-Host "统一服务日志：$BackendLog"
 
     if (-not (Wait-ForHttpEndpoint -Url $BackendHealthUrl -TimeoutSeconds 120)) {
         Fail-WithHelp `
-            "后端在 120 秒内未能通过健康检查。" `
+            "统一服务在 120 秒内未能通过健康检查。" `
             "请查看日志：$BackendLog"
     }
-    Write-Host "后端健康检查已通过。" -ForegroundColor Green
+    Write-Host "统一服务健康检查已通过。" -ForegroundColor Green
 }
 
-Write-Section "7. 启动完成"
-Write-Host "前端：http://localhost:6866"
+Write-Section "6. 启动完成"
+Write-Host "页面与 API：http://localhost:6866"
 Write-Host "环境配置：http://localhost:6866/env-config"
-Write-Host "后端健康检查：http://localhost:8888/api/health"
+Write-Host "健康检查：http://localhost:6866/api/ready"
 Write-Host ""
 Write-Host "如果页面没有自动刷新，请在浏览器中按 Ctrl+R。"
 exit 0

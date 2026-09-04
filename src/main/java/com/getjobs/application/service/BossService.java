@@ -50,6 +50,19 @@ public class BossService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
     public static final int MAX_SEARCH_JOB_LIMIT = 200;
+    public static final String SCAN_RESULT_CURRENT = "CURRENT_SCAN";
+    public static final String SCAN_RESULT_HISTORICAL = "HISTORICAL_REUSED";
+    private static final Set<String> HISTORICAL_REUSE_STATUSES = Set.of(
+            DeliveryStatus.AI_ANALYZING,
+            DeliveryStatus.WAITING_CONFIRM,
+            DeliveryStatus.DELIVERED,
+            DeliveryStatus.SKIPPED,
+            DeliveryStatus.AI_NOT_MATCH,
+            DeliveryStatus.AI_ANALYSIS_FAILED,
+            DeliveryStatus.DELIVERY_FAILED,
+            DeliveryStatus.DELIVERY_REQUESTED,
+            DeliveryStatus.DELIVERY_UNKNOWN
+    );
 
     private final BossOptionMapper bossOptionMapper;
     private final BossIndustryMapper bossIndustryMapper;
@@ -229,6 +242,10 @@ public class BossService {
      * - 若表为空：插入新记录
      */
     public BossConfigEntity saveOrUpdateFirstSelective(BossConfigEntity partial) {
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            partial.setNativeGreetingDisabledConfirmed(
+                    partial.getNativeGreetingDisabledConfirmed() == 1 ? 1 : 0);
+        }
         BossConfigEntity existing = getFirstConfig();
         LocalDateTime now = LocalDateTime.now();
 
@@ -245,6 +262,9 @@ public class BossService {
         existing.setProfileId(profileService.getCurrentProfileId());
         // 选择性合并：仅当请求体字段非空时才覆盖
         if (partial.getSayHi() != null) existing.setSayHi(partial.getSayHi());
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            existing.setNativeGreetingDisabledConfirmed(partial.getNativeGreetingDisabledConfirmed());
+        }
         if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
@@ -275,6 +295,11 @@ public class BossService {
         existing.setUpdatedAt(now);
         bossConfigMapper.updateById(existing);
         return existing;
+    }
+
+    public boolean isNativeGreetingDisabledConfirmed() {
+        BossConfigEntity config = getFirstConfig();
+        return config != null && Integer.valueOf(1).equals(config.getNativeGreetingDisabledConfirmed());
     }
 
     /**
@@ -585,26 +610,36 @@ public class BossService {
     }
 
     public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
+        return upsertChromeBossJob(entity, scanRunId, profileService.getCurrentProfileId());
+    }
+
+    public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity,
+                                                               String scanRunId,
+                                                               Long profileId) {
         if (entity == null) return null;
-        Long profileId = profileService.getCurrentProfileId();
+        if (profileId == null || profileId <= 0) {
+            throw new IllegalArgumentException("Boss 岗位入库缺少有效档案 ID");
+        }
         entity.setProfileId(profileId);
         if (scanRunId != null && !scanRunId.isBlank()) {
             entity.setScanRunId(scanRunId.trim());
+            entity.setScanResultSource(SCAN_RESULT_CURRENT);
         }
-        String encryptId = entity.getEncryptId();
+        String encryptId = entity.getEncryptId() == null ? null : entity.getEncryptId().trim();
+        entity.setEncryptId(encryptId);
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId, null);
-            if (existing == null) {
-                QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-                wrapper.eq("profile_id", profileId)
-                        .eq("encrypt_id", encryptId);
-                wrapper.last("LIMIT 1");
-                existing = bossJobDataMapper.selectOne(wrapper);
-            }
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("profile_id", profileId)
+                    .apply("TRIM(encrypt_id) = {0}", encryptId);
+            wrapper.last("LIMIT 1");
+            existing = bossJobDataMapper.selectOne(wrapper);
         }
-        if (existing == null && entity.getCompanyName() != null && entity.getJobName() != null) {
+        if ((encryptId == null || encryptId.isBlank())
+                && existing == null
+                && entity.getCompanyName() != null
+                && entity.getJobName() != null) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("profile_id", profileId)
                     .eq("company_name", entity.getCompanyName())
@@ -676,6 +711,7 @@ public class BossService {
         merged.setCompanyScale(firstNonBlank(incoming.getCompanyScale(), existing.getCompanyScale()));
         merged.setSourceKeyword(firstNonBlank(incoming.getSourceKeyword(), existing.getSourceKeyword()));
         merged.setScanRunId(firstNonBlank(incoming.getScanRunId(), existing.getScanRunId()));
+        merged.setScanResultSource(firstNonBlank(incoming.getScanResultSource(), existing.getScanResultSource(), SCAN_RESULT_CURRENT));
         merged.setAiScore(existing.getAiScore());
         merged.setAiDecision(existing.getAiDecision());
         merged.setAiReason(existing.getAiReason());
@@ -783,6 +819,28 @@ public class BossService {
         return bossJobDataMapper.selectOne(wrapper);
     }
 
+    /**
+     * 将已有完整分析关联到本次扫描。只更新扫描归属，不触碰岗位详情、分析结果或时间字段。
+     */
+    public BossJobDataEntity reuseHistoricalBossJob(Long id, Long profileId, String scanRunId) {
+        if (id == null || profileId == null || scanRunId == null || scanRunId.isBlank()) return null;
+        com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> wrapper =
+                new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
+        wrapper.eq("id", id)
+                .eq("profile_id", profileId)
+                .in("delivery_status", HISTORICAL_REUSE_STATUSES)
+                .isNotNull("job_name")
+                .apply("TRIM(job_name) <> ''")
+                .isNotNull("company_name")
+                .apply("TRIM(company_name) <> ''")
+                .isNotNull("job_url")
+                .apply("TRIM(job_url) <> ''")
+                .set("scan_run_id", scanRunId.trim())
+                .set("scan_result_source", SCAN_RESULT_HISTORICAL);
+        if (bossJobDataMapper.update(null, wrapper) != 1) return null;
+        return getBossJobById(id, profileId);
+    }
+
     public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName) {
         return findExistingChromeBossJob(encryptId, companyName, jobName, null);
     }
@@ -845,7 +903,8 @@ public class BossService {
             if (!isBlank(lookup.encryptId())) {
                 existing = byEncryptId.get(lookup.encryptId());
             }
-            if (existing == null && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
+            if (existing == null && isBlank(lookup.encryptId())
+                    && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
                 existing = byCompanyAndTitle.get(companyTitleKey(lookup.companyName(), lookup.jobName()));
             }
             if (existing != null) {

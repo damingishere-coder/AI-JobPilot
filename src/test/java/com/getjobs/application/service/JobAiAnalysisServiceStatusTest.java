@@ -22,13 +22,17 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
@@ -100,6 +104,68 @@ class JobAiAnalysisServiceStatusTest {
         service.updatePlatformCache(bossRequest(), analysis("SKIP"));
 
         assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_NOT_MATCH);
+    }
+
+    @Test
+    void reasonTextUsesVersionTwoWithoutDatabaseMigration() {
+        JobAiAnalysisService.AnalysisResult result = analysis("APPLY");
+        result.setMatches(List.of("岗位和简历均包含 Java"));
+        result.setUnknowns(List.of("到岗时间待核实"));
+        result.setThreshold(75);
+
+        JSONObject reason = new JSONObject(result.toReasonText());
+
+        assertThat(reason.getInt("schemaVersion")).isEqualTo(2);
+        assertThat(reason.getJSONArray("matches").getString(0)).contains("Java");
+        assertThat(reason.getJSONArray("unknowns").getString(0)).contains("待核实");
+    }
+
+    @Test
+    void savingThresholdsPromotesOnlyCurrentProfileBossAiNotMatchRowsThatMeetStoredPriorityRules() {
+        AiEntity saved = new AiEntity();
+        saved.setProfileId(PROFILE_ID);
+        saved.setApplyThreshold(60);
+        saved.setPriorityApplyThreshold(50);
+        when(aiService.saveOrUpdateAiThresholds(60, 50)).thenReturn(saved);
+        when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(4);
+
+        JobAiAnalysisService.ThresholdApplicationResult result =
+                service.saveThresholdsAndPromoteBossHistory(60, 50);
+
+        assertThat(result.thresholds()).isSameAs(saved);
+        assertThat(result.bossHistoricalPromotedCount()).isEqualTo(4);
+
+        ArgumentCaptor<BossJobDataEntity> updateCaptor = ArgumentCaptor.forClass(BossJobDataEntity.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<BossJobDataEntity>> wrapperCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(bossJobDataMapper).update(updateCaptor.capture(), wrapperCaptor.capture());
+
+        assertThat(updateCaptor.getValue().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        assertThat(updateCaptor.getValue().getAiDecision()).isEqualTo("APPLY");
+        assertThat(updateCaptor.getValue().getAiScore()).isNull();
+        assertThat(updateCaptor.getValue().getAiReason()).isNull();
+        assertThat(updateCaptor.getValue().getUpdatedAt()).isNotNull();
+
+        UpdateWrapper<BossJobDataEntity> wrapper = wrapperCaptor.getValue();
+        assertThat(wrapper.getSqlSegment())
+                .contains("profile_id", "delivery_status", "ai_score", "priority_company")
+                .contains("IS NOT NULL", "OR");
+        assertThat(wrapper.getParamNameValuePairs().values())
+                .contains(PROFILE_ID, DeliveryStatus.AI_NOT_MATCH, 1, 50, 60);
+        verify(aiService, never()).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void thresholdValidationFailureDoesNotAttemptHistoricalBossUpdate() {
+        when(aiService.saveOrUpdateAiThresholds(60, 70))
+                .thenThrow(new IllegalArgumentException("优先公司分数线不能高于普通公司分数线"));
+
+        assertThatThrownBy(() -> service.saveThresholdsAndPromoteBossHistory(60, 70))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("优先公司分数线");
+
+        verify(bossJobDataMapper, never()).update(any(), any(UpdateWrapper.class));
     }
 
     @Test
@@ -223,7 +289,7 @@ class JobAiAnalysisServiceStatusTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(result.getSummary()).contains("未调用 AI Provider");
-        verify(aiService, never()).sendRequest(any());
+        verify(aiService, never()).sendStructuredRequest(any(), any());
     }
 
     @Test
@@ -232,9 +298,7 @@ class JobAiAnalysisServiceStatusTest {
         request.setJobRowId(99L);
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1);
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":90,"decision":"APPLY","summary":"旧租约结果","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("旧租约结果"));
         AtomicInteger guardedWrites = new AtomicInteger();
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(
@@ -250,7 +314,7 @@ class JobAiAnalysisServiceStatusTest {
         );
 
         assertThat(result.isStaleLease()).isTrue();
-        verify(aiService).sendRequest(any());
+        verify(aiService).sendStructuredRequest(any(), any());
         verify(jobAiAnalysisMapper, never()).insert(any(com.getjobs.application.entity.JobAiAnalysisEntity.class));
         verify(bossJobDataMapper, times(1)).update(any(), any(UpdateWrapper.class));
     }
@@ -259,9 +323,7 @@ class JobAiAnalysisServiceStatusTest {
     void manualZhilianAnalyzeApplyEndsWaitingConfirm() {
         when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":90,"decision":"APPLY","summary":"匹配","strengths":["经验匹配"],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("匹配"));
 
         service.analyzeJob(zhilianRequest());
 
@@ -272,13 +334,27 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void nonBossAnalysisStillRequiresGreetingField() {
+        when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(missingGreetingBatch(), missingGreetingBatch());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(zhilianRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_MISSING_FIELD");
+        assertThat(lastZhilianUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
     void customThresholdAcceptsScoreExactlyAtSixty() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":60,"decision":"SKIP","summary":"达到自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult(
+                "达到自定义分数线", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"));
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -287,8 +363,12 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(result.getDecision()).isEqualTo("APPLY");
         assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-        verify(aiService).sendRequest(prompt.capture());
-        assertThat(prompt.getValue()).contains("当前阈值为60");
+        ArgumentCaptor<String> schema = ArgumentCaptor.forClass(String.class);
+        verify(aiService).sendStructuredRequest(prompt.capture(), schema.capture());
+        assertThat(prompt.getValue()).doesNotContain("当前阈值为60");
+        assertThat(schema.getValue())
+                .contains("\"required\"", "\"dimensions\"", "\"hardConflicts\"", "\"additionalProperties\": false")
+                .doesNotContain("\"score\"", "\"decision\"");
     }
 
     @Test
@@ -296,9 +376,8 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":59,"decision":"APPLY","summary":"低于自定义分数线","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult(
+                "低于自定义分数线", "CONFLICT", "PARTIAL", "MATCH", "MATCH", "MATCH", "MATCH"));
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -314,16 +393,134 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.getAiConfig(PROFILE_ID)).thenReturn(aiConfig(60, 50));
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":50,"decision":"SKIP","summary":"达到优先公司分数线","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult(
+                "达到优先公司分数线", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"));
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
         assertThat(result.getPriorityCompany()).isTrue();
+        assertThat(result.getScore()).isEqualTo(60);
         assertThat(result.getThreshold()).isEqualTo(50);
         assertThat(result.getDecision()).isEqualTo("APPLY");
         assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+    }
+
+    @Test
+    void verifiedHardConflictForcesSkipEvenWhenRemainingScoreReachesThreshold() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchWithHardConflict(true));
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getScore()).isEqualTo(75);
+        assertThat(result.getDecision()).isEqualTo("SKIP");
+        assertThat(result.getHardConflicts()).hasSize(1);
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_NOT_MATCH);
+    }
+
+    @Test
+    void unverifiedHardConflictIsDowngradedToUnknown() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchWithHardConflict(false));
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getHardConflicts()).isEmpty();
+        assertThat(result.getUnknowns()).anyMatch(value -> value.contains("降级为待核实"));
+    }
+
+    @Test
+    void hardConflictMustReuseEvidenceFromAConflictDimension() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject root = new JSONObject(batchResult("模型给出了不一致的硬冲突"));
+        JSONObject conflict = new JSONObject();
+        conflict.put("requirement", "经验年限不符");
+        conflict.put("jobEvidence", new JSONArray(List.of("3-5年")));
+        conflict.put("resumeEvidence", new JSONArray(List.of("仅1年 Java 后端开发经验")));
+        root.getJSONArray("results").getJSONObject(0)
+                .put("hardConflicts", new JSONArray().put(conflict));
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(root.toString());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getHardConflicts()).isEmpty();
+        assertThat(result.getUnknowns()).anyMatch(value -> value.contains("冲突分项不一致"));
+    }
+
+    @Test
+    void fiveJobBatchMapsByTaskIdAndRetriesOnlyMissingItem() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(batchResultForTaskIds(List.of(5L, 3L, 1L, 4L), "批量结果"))
+                .thenReturn(batchResultForTaskIds(List.of(2L), "单岗重试"));
+        List<JobAiAnalysisService.BatchAnalysisJob> jobs = java.util.stream.LongStream.rangeClosed(1, 5)
+                .mapToObj(id -> batchJob(id, bossRequest()))
+                .toList();
+
+        java.util.Map<Long, JobAiAnalysisService.AnalysisResult> results = service.analyzeJobs(jobs);
+
+        assertThat(results).hasSize(5);
+        assertThat(results.get(2L).getSummary()).isEqualTo("单岗重试");
+        assertThat(results.values()).allMatch(result -> !result.isFailure());
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
+        String firstPrompt = prompts.getAllValues().get(0);
+        assertThat(firstPrompt.indexOf(resume().getResumeText()))
+                .isEqualTo(firstPrompt.lastIndexOf(resume().getResumeText()));
+    }
+
+    @Test
+    void permanentlyInvalidItemDoesNotFailOtherBatchResults() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject first = new JSONObject(batchResultForTaskIds(
+                List.of(1L, 2L, 3L, 4L, 5L), "批量结果"));
+        first.getJSONArray("results").getJSONObject(1)
+                .getJSONArray("dimensions").getJSONObject(0).put("status", "MAYBE");
+        JSONObject retry = new JSONObject(invalidStatusBatch());
+        retry.getJSONArray("results").getJSONObject(0).put("taskId", 2L);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(first.toString(), retry.toString());
+        List<JobAiAnalysisService.BatchAnalysisJob> jobs = java.util.stream.LongStream.rangeClosed(1, 5)
+                .mapToObj(id -> batchJob(id, bossRequest()))
+                .toList();
+
+        java.util.Map<Long, JobAiAnalysisService.AnalysisResult> results = service.analyzeJobs(jobs);
+
+        assertThat(results.get(2L).isFailure()).isTrue();
+        assertThat(results.get(2L).getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
+        assertThat(results.entrySet()).filteredOn(entry -> entry.getKey() != 2L)
+                .allMatch(entry -> !entry.getValue().isFailure());
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void fiftyNormalJobsUseTenProviderCalls() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        AtomicInteger providerBatch = new AtomicInteger();
+        when(aiService.sendStructuredRequest(any(), any())).thenAnswer(invocation -> {
+            long firstId = providerBatch.getAndIncrement() * 5L + 1L;
+            return batchResultForTaskIds(java.util.stream.LongStream.range(firstId, firstId + 5)
+                    .boxed().toList(), "批量结果");
+        });
+
+        for (int batch = 0; batch < 10; batch++) {
+            long firstId = batch * 5L + 1L;
+            List<JobAiAnalysisService.BatchAnalysisJob> jobs = java.util.stream.LongStream
+                    .range(firstId, firstId + 5)
+                    .mapToObj(id -> batchJob(id, bossRequest()))
+                    .toList();
+            assertThat(service.analyzeJobs(jobs)).hasSize(5);
+        }
+
+        assertThat(providerBatch.get()).isEqualTo(10);
+        verify(aiService, times(10)).sendStructuredRequest(any(), any());
     }
 
     @Test
@@ -347,25 +544,35 @@ class JobAiAnalysisServiceStatusTest {
     void repairsMarkdownWrappedAiJsonAndKeepsWaitingConfirmFlow() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
-                ```json
-                {score:88, decision:"APPLY", summary:"匹配", strengths:["Java"], risks:[], greeting:"你好",}
-                ```
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(
+                "```json\n" + batchResult("匹配") + "\n```");
 
         service.analyzeJob(bossRequest());
 
         BossJobDataEntity update = lastBossUpdate();
-        assertThat(update.getAiScore()).isEqualTo(88);
+        assertThat(update.getAiScore()).isEqualTo(100);
         assertThat(update.getAiDecision()).isEqualTo("APPLY");
         assertThat(update.getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+    }
+
+    @Test
+    void keepsChineseCurlyQuotesInsideValidJsonString() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("岗位要求“3年以上”经验"));
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getSummary()).isEqualTo("岗位要求“3年以上”经验");
+        verify(aiService).sendStructuredRequest(any(), any());
     }
 
     @Test
     void emptyProviderOutputBecomesExplicitAiFailureInsteadOfSkip() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("   ");
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("   ");
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -376,54 +583,150 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
-    void missingRequiredOutputFieldBecomesExplicitAiFailure() {
+    void missingGreetingRetriesOnlyGreetingAndKeepsAnalysisResult() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":80,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[]}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(
+                missingGreetingBatch(), groundedGreetingResult());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getGreeting()).contains("Spring Boot", "后端系统设计");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
+        assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt)
+                .contains("负责后端系统设计开发，要求 Java Spring Boot 经验。")
+                .contains("仅1年 Java 后端开发经验，熟悉 Spring Boot 和招聘业务系统。"));
+    }
+
+    @Test
+    void invalidGreetingRetryFailureFallsBackWithoutDiscardingMatchDecision() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject generic = new JSONObject(batchResult("匹配"));
+        generic.getJSONArray("results").getJSONObject(0)
+                .put("greeting", "BOSS好😝，我对这份工作很感兴趣，你看我有机会深入沟通下吗？");
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(generic.toString(), "not-json");
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getGreeting()).isEmpty();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void greetingRetryRejectsEvidenceThatCannotBeFoundInJobOrResume() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject fabricatedEvidence = new JSONObject(groundedGreetingResult())
+                .put("jobEvidence", "负责千万级电商交易平台")
+                .put("resumeEvidence", "带领二十人技术团队");
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(missingGreetingBatch(), fabricatedEvidence.toString());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getGreeting()).isEmpty();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void invalidDimensionStatusAndArrayElementTypesAreRetriedThenRejected() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(invalidStatusBatch(), invalidStatusBatch())
+                .thenReturn(invalidMatchesBatch(), invalidMatchesBatch());
+
+        JobAiAnalysisService.AnalysisResult invalidStatus = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult invalidArray = service.analyzeJob(bossRequest());
+
+        assertThat(invalidStatus.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
+        assertThat(invalidArray.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
+        verify(aiService, times(4)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void invalidJsonRetriesOnceWithSameSchemaAndCanSucceed() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn("not-json-at-all")
+                .thenReturn(batchResult("重试成功"));
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getSummary()).isEqualTo("重试成功");
+        ArgumentCaptor<String> schema = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(any(), schema.capture());
+        assertThat(schema.getAllValues()).hasSize(2).allMatch(schema.getAllValues().get(0)::equals);
+    }
+
+    @Test
+    void oneExpiredLeaseDoesNotDiscardOtherJobsDuringWholeBatchRetry() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        AtomicBoolean secondLeaseCurrent = new AtomicBoolean(true);
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenAnswer(invocation -> {
+                    secondLeaseCurrent.set(false);
+                    return "not-json-at-all";
+                })
+                .thenReturn(batchResultForTaskIds(List.of(1L, 2L), "重试后有效"));
+        JobAiAnalysisService.BatchAnalysisJob first = batchJob(1L, bossRequest());
+        JobAiAnalysisService.BatchAnalysisJob second = new JobAiAnalysisService.BatchAnalysisJob(
+                2L,
+                bossRequest(),
+                secondLeaseCurrent::get,
+                action -> {
+                    action.run();
+                    return true;
+                }
+        );
+
+        java.util.Map<Long, JobAiAnalysisService.AnalysisResult> results =
+                service.analyzeJobs(List.of(first, second));
+
+        assertThat(results.get(1L).isFailure()).isFalse();
+        assertThat(results.get(1L).getSummary()).isEqualTo("重试后有效");
+        assertThat(results.get(2L).isStaleLease()).isTrue();
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void invalidJsonFailsAfterExactlyOneRetry() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn("bad-json", "still-bad-json");
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
         assertThat(result.isFailure()).isTrue();
-        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_MISSING_FIELD");
-        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_JSON");
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
     @Test
-    void invalidScoreAndArrayElementTypesAreRejected() {
+    void invalidDimensionStatusRetriesOnlyThatJobOnce() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any()))
-                .thenReturn("""
-                        {"score":101,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
-                        """)
-                .thenReturn("""
-                        {"score":80,"decision":"APPLY","summary":"匹配","strengths":[1],"risks":[],"greeting":"你好"}
-                        """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(
+                invalidStatusBatch(), invalidStatusBatch());
 
-        JobAiAnalysisService.AnalysisResult invalidScore = service.analyzeJob(bossRequest());
-        JobAiAnalysisService.AnalysisResult invalidArray = service.analyzeJob(bossRequest());
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
-        assertThat(invalidScore.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCORE");
-        assertThat(invalidArray.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
-    }
-
-    @Test
-    void invalidJsonAndDecisionAreRejected() {
-        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
-        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any()))
-                .thenReturn("not-json-at-all")
-                .thenReturn("""
-                        {"score":80,"decision":"MAYBE","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
-                        """);
-
-        JobAiAnalysisService.AnalysisResult invalidJson = service.analyzeJob(bossRequest());
-        JobAiAnalysisService.AnalysisResult invalidDecision = service.analyzeJob(bossRequest());
-
-        assertThat(invalidJson.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_JSON");
-        assertThat(invalidDecision.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_DECISION");
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_INVALID_SCHEMA");
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
     @Test
@@ -431,9 +734,7 @@ class JobAiAnalysisServiceStatusTest {
         String marker = "sensitive-response-marker";
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":88,"decision":"APPLY","summary":"sensitive-response-marker","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult(marker));
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -451,9 +752,7 @@ class JobAiAnalysisServiceStatusTest {
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(jobAiAnalysisMapper.insert(any(JobAiAnalysisEntity.class))).thenReturn(0);
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1);
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("匹配"));
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
@@ -468,9 +767,7 @@ class JobAiAnalysisServiceStatusTest {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.AI_ANALYZING));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(bossJobDataMapper.update(any(), any(UpdateWrapper.class))).thenReturn(1, 0, 1, 1, 1);
-        when(aiService.sendRequest(any())).thenReturn("""
-                {"score":88,"decision":"APPLY","summary":"匹配","strengths":[],"risks":[],"greeting":"你好"}
-                """);
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("匹配"));
 
         JobAiAnalysisService.AnalysisResult firstResult = service.analyzeJob(bossRequest());
         JobAiAnalysisService.AnalysisResult confirmedRetryResult = service.analyzeJob(bossRequest());
@@ -488,14 +785,14 @@ class JobAiAnalysisServiceStatusTest {
                         DeliveryStatus.AI_ANALYZING,
                         DeliveryStatus.WAITING_CONFIRM
                 );
-        verify(aiService, times(2)).sendRequest(any());
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
     @Test
     void providerTimeoutIsPersistedAsUnknownOutcome() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
-        when(aiService.sendRequest(any())).thenThrow(new AiProviderException(
+        when(aiService.sendStructuredRequest(any(), any())).thenThrow(new AiProviderException(
                 AiProviderException.Code.TIMEOUT,
                 "AI Provider 请求超时（requestId=test-request）",
                 null,
@@ -585,6 +882,98 @@ class JobAiAnalysisServiceStatusTest {
         return result;
     }
 
+    private JobAiAnalysisService.BatchAnalysisJob batchJob(
+            long taskId, JobAiAnalysisService.JobAnalysisRequest request) {
+        return new JobAiAnalysisService.BatchAnalysisJob(taskId, request, () -> true, action -> {
+            action.run();
+            return true;
+        });
+    }
+
+    private String batchResult(String summary, String... statuses) {
+        return batchResultForTaskIds(List.of(1L), summary, statuses);
+    }
+
+    private String batchResultForTaskIds(List<Long> taskIds, String summary, String... statuses) {
+        List<String> keys = List.of(
+                "CORE_SKILLS",
+                "RELEVANT_EXPERIENCE",
+                "ACHIEVEMENTS_COMPLEXITY",
+                "INDUSTRY_TRANSFER",
+                "EDUCATION_TENURE",
+                "LOCATION_SALARY"
+        );
+        JSONArray results = new JSONArray();
+        for (Long taskId : taskIds) {
+            JSONObject item = new JSONObject();
+            item.put("taskId", taskId);
+            item.put("summary", summary);
+            item.put("matches", new JSONArray(List.of("岗位与简历均提到 Java")));
+            item.put("gaps", new JSONArray());
+            item.put("unknowns", new JSONArray());
+            JSONArray dimensions = new JSONArray();
+            for (int index = 0; index < keys.size(); index++) {
+                JSONObject dimension = new JSONObject();
+                dimension.put("key", keys.get(index));
+                dimension.put("status", index < statuses.length ? statuses[index] : "MATCH");
+                dimension.put("jobEvidence", new JSONArray(List.of("Java")));
+                dimension.put("resumeEvidence", new JSONArray(List.of("Java")));
+                dimension.put("note", "证据说明");
+                dimensions.put(dimension);
+            }
+            item.put("dimensions", dimensions);
+            item.put("hardConflicts", new JSONArray());
+            item.put("greeting", "您好，我有 Java 和 Spring Boot 后端经验，希望进一步了解该岗位的系统设计工作。");
+            results.put(item);
+        }
+        return new JSONObject().put("results", results).toString();
+    }
+
+    private String batchWithHardConflict(boolean withResumeEvidence) {
+        JSONObject root = new JSONObject(batchResult("存在硬性条件差异"));
+        JSONObject experienceDimension = root.getJSONArray("results").getJSONObject(0)
+                .getJSONArray("dimensions").getJSONObject(1);
+        experienceDimension.put("status", "CONFLICT");
+        experienceDimension.put("jobEvidence", new JSONArray(List.of("3-5年")));
+        experienceDimension.put("resumeEvidence", new JSONArray(List.of("仅1年 Java 后端开发经验")));
+        JSONObject conflict = new JSONObject();
+        conflict.put("requirement", "经验年限不符");
+        conflict.put("jobEvidence", new JSONArray(List.of("3-5年")));
+        conflict.put("resumeEvidence", withResumeEvidence
+                ? new JSONArray(List.of("仅1年 Java 后端开发经验"))
+                : new JSONArray());
+        root.getJSONArray("results").getJSONObject(0)
+                .put("hardConflicts", new JSONArray().put(conflict));
+        return root.toString();
+    }
+
+    private String missingGreetingBatch() {
+        JSONObject root = new JSONObject(batchResult("缺少字段"));
+        root.getJSONArray("results").getJSONObject(0).remove("greeting");
+        return root.toString();
+    }
+
+    private String groundedGreetingResult() {
+        return new JSONObject()
+                .put("greeting", "您好，我有 Spring Boot 后端经验，希望进一步了解该岗位的后端系统设计工作。")
+                .put("jobEvidence", "后端系统设计开发")
+                .put("resumeEvidence", "熟悉 Spring Boot")
+                .toString();
+    }
+
+    private String invalidStatusBatch() {
+        JSONObject root = new JSONObject(batchResult("状态非法"));
+        root.getJSONArray("results").getJSONObject(0)
+                .getJSONArray("dimensions").getJSONObject(0).put("status", "MAYBE");
+        return root.toString();
+    }
+
+    private String invalidMatchesBatch() {
+        JSONObject root = new JSONObject(batchResult("数组非法"));
+        root.getJSONArray("results").getJSONObject(0).put("matches", new JSONArray().put(1));
+        return root.toString();
+    }
+
     private BossJobDataEntity bossJob(String status) {
         BossJobDataEntity job = new BossJobDataEntity();
         job.setId(1L);
@@ -610,7 +999,7 @@ class JobAiAnalysisServiceStatusTest {
     private ResumeProfileEntity resume() {
         ResumeProfileEntity resume = new ResumeProfileEntity();
         resume.setProfileId(PROFILE_ID);
-        resume.setResumeText("多年 Java 后端开发经验，熟悉 Spring Boot 和招聘业务系统。");
+        resume.setResumeText("仅1年 Java 后端开发经验，熟悉 Spring Boot 和招聘业务系统。");
         return resume;
     }
 

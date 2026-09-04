@@ -30,11 +30,19 @@ public class StaticServerConfiguration {
     @Value("${app.static-server.enabled:true}")
     private boolean staticServerEnabled;
 
+    @Value("${server.port:6866}")
+    private int serverPort;
+
     @Bean
     public WebServerFactoryCustomizer<TomcatServletWebServerFactory> servletContainer() {
         return server -> {
             if (!staticServerEnabled) {
                 log.info("已关闭后端静态资源附加端口，6866 端口将只由前端服务使用");
+                return;
+            }
+
+            if (servesFrontendOnPrimaryPort(serverPort)) {
+                log.info("页面与 API 共用主端口 {}，无需创建额外连接器", FRONTEND_PORT);
                 return;
             }
 
@@ -60,6 +68,10 @@ public class StaticServerConfiguration {
                 log.warn("未检测到前端开发服务，也未找到静态资源");
             }
         };
+    }
+
+    static boolean servesFrontendOnPrimaryPort(int configuredServerPort) {
+        return configuredServerPort == FRONTEND_PORT;
     }
 
     /**

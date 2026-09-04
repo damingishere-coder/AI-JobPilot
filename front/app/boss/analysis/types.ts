@@ -71,12 +71,69 @@ export type BossJob = {
   priorityCompany?: number
   sourceKeyword?: string
   scanRunId?: string
+  scanResultSource?: "CURRENT_SCAN" | "HISTORICAL_REUSED"
   createdAt?: string
   aiGreeting?: string
   greetingDraft?: string
   greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
   greetingUpdatedAt?: string | null
   finalGreeting?: string
+}
+
+export type AiReasonDimension = {
+  key: string
+  label: string
+  weight: number
+  status: "MATCH" | "PARTIAL" | "UNKNOWN" | "CONFLICT" | string
+  awarded: number
+  jobEvidence: string[]
+  resumeEvidence: string[]
+  note: string
+}
+
+export type AiReasonHardConflict = {
+  requirement: string
+  jobEvidence: string[]
+  resumeEvidence: string[]
+}
+
+export type ParsedAiReason = {
+  schemaVersion: number
+  summary: string
+  matches: string[]
+  gaps: string[]
+  unknowns: string[]
+  dimensions: AiReasonDimension[]
+  hardConflicts: AiReasonHardConflict[]
+  threshold?: number
+  errorCode?: string
+  malformed: boolean
+}
+
+export type JobAnalysisTask = {
+  id: number
+  profileId: number
+  platform: string
+  jobKey: string
+  jobRowId: number
+  scanRunId?: string
+  status: "PENDING" | "LEASED" | "SUCCEEDED" | "FAILED" | "UNKNOWN"
+  attemptCount: number
+  leaseExpiresAt?: string | null
+  lastError?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
+}
+
+export type JobAnalysisTasksResponse = {
+  success: boolean
+  data?: JobAnalysisTask[]
+  queueSize?: number
+  pendingCount?: number
+  processingCount?: number
+  message?: string
 }
 
 export type PagedResult = {
@@ -115,8 +172,6 @@ export const EMPTY_FILTERS: FilterState = {
 }
 
 export const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
-export const LIST_COLLECTED_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["LIST_COLLECTED"] }
-
 export const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",
   PLATFORM_VERIFICATION: "平台验证",

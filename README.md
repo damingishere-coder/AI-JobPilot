@@ -139,9 +139,9 @@ start_windows.bat
 启动成功后打开：
 
 ```text
-前端：http://localhost:6866
-后端存活检查：http://localhost:8888/api/health
-后端就绪检查：http://localhost:8888/api/ready
+页面与 API：http://localhost:6866
+存活检查：http://localhost:6866/api/health
+就绪检查：http://localhost:6866/api/ready
 ```
 
 `/api/health` 返回 `UP` 只表示进程存活；首页检查项正常且 `/api/ready` 返回就绪，才表示数据库、Schema 和任务队列可用于业务操作。

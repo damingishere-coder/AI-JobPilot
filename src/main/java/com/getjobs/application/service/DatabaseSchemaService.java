@@ -14,6 +14,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -608,12 +609,17 @@ public class DatabaseSchemaService {
         requiredColumns.put("config", Set.of("config_key", "config_value"));
         requiredColumns.put("cookie", Set.of("platform", "cookie_value"));
         requiredColumns.put("ai", Set.of("profile_id", "apply_threshold", "priority_apply_threshold"));
+        requiredColumns.put("boss_config", requireV7TaskSchema
+                ? Set.of("profile_id", "native_greeting_disabled_confirmed")
+                : Set.of("profile_id"));
         requiredColumns.put("priority_company", Set.of("profile_id", "company_name"));
-        requiredColumns.put("boss_data", Set.of(
+        Set<String> bossDataColumns = new LinkedHashSet<>(Set.of(
                 "profile_id", "encrypt_id", "encrypt_user_id", "delivery_status", "failure_type",
                 "failure_reason", "scan_run_id", "source_keyword", "salary_min_k", "salary_max_k",
                 "salary_median_k", "salary_months"
         ));
+        if (requireV7TaskSchema) bossDataColumns.add("scan_result_source");
+        requiredColumns.put("boss_data", bossDataColumns);
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));
         requiredColumns.put("liepin_data", Set.of("job_id", "delivered"));
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
@@ -625,7 +631,8 @@ public class DatabaseSchemaService {
             requiredColumns.put("job51_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
             requiredColumns.put("delivery_attempt", Set.of(
                     "request_key", "platform", "profile_id", "job_key", "job_row_id", "state",
-                    "evidence", "message", "requested_at", "resolved_at", "updated_at"));
+                    "evidence", "message", "greeting_snapshot", "greeting_source", "greeting_outcome",
+                    "greeting_evidence", "requested_at", "resolved_at", "updated_at"));
         }
         requiredColumns.put("job_analysis_task", requireV7TaskSchema
                 ? Set.of(
@@ -652,6 +659,7 @@ public class DatabaseSchemaService {
         ));
         if (requireV7TaskSchema) {
             requiredIndexes.addAll(List.of(
+                    "idx_boss_data_profile_run_source",
                     "idx_job_analysis_task_task_key",
                     "idx_job_analysis_task_active_job",
                     "idx_job_analysis_task_dispatch",

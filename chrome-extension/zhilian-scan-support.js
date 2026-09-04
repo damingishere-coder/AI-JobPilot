@@ -1,9 +1,12 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-07-29-zhilian-security-resume-fix";
+  const SUPPORT_VERSION = "2026-09-03-keyword-deep-fill";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
   const DEFAULT_SALARY_CODE = "0000,9999999";
+  const DEEP_COLLECTION_MAX_PAGES = 50;
+  const DEEP_COLLECTION_MAX_DURATION_MS = 180 * 1000;
+  const DEEP_COLLECTION_MAX_STAGNANT_PAGES = 5;
   const OFFICIAL_SALARY_CODES = new Set([
     DEFAULT_SALARY_CODE,
     "0000,4000",
@@ -87,6 +90,18 @@
     const raw = first(value, DEFAULT_SALARY_CODE);
     if (!raw || raw === "0" || raw === "不限") return DEFAULT_SALARY_CODE;
     return OFFICIAL_SALARY_CODES.has(raw) ? raw : DEFAULT_SALARY_CODE;
+  }
+
+  function deepCollectionStopReason(state = {}) {
+    const target = Math.max(1, Math.min(200, Math.floor(Number(state.target) || 20)));
+    if (state.stopped) return "stopped";
+    if (Number(state.fresh || 0) >= target) return "target_reached";
+    if (state.blocked) return "blocked";
+    if (state.platformExhausted) return "platform_exhausted";
+    if (Number(state.elapsedMs || 0) >= DEEP_COLLECTION_MAX_DURATION_MS) return "timeout_safety_cap";
+    if (Number(state.stagnantPages || 0) >= DEEP_COLLECTION_MAX_STAGNANT_PAGES) return "stagnation_safety_cap";
+    if (Number(state.pages || 0) >= DEEP_COLLECTION_MAX_PAGES) return "page_safety_cap";
+    return "";
   }
 
   function isUnlimitedZhilianSalary(value) {
@@ -187,6 +202,10 @@
     version: SUPPORT_VERSION,
     DEFAULT_CITY_CODE,
     DEFAULT_SALARY_CODE,
+    DEEP_COLLECTION_MAX_PAGES,
+    DEEP_COLLECTION_MAX_DURATION_MS,
+    DEEP_COLLECTION_MAX_STAGNANT_PAGES,
+    deepCollectionStopReason,
     normalizeKeywordList,
     normalizeZhilianCityCode,
     normalizeZhilianSalaryCode,

@@ -12,6 +12,24 @@ function loadSupport() {
   return window.GetJobsBossScanSupport;
 }
 
+test("uses the agreed Boss deep collection safety bounds", () => {
+  const support = loadSupport();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(support.deepCollectionBounds(40))),
+    { target: 40, maxRounds: 30, maxCandidates: 500, maxDurationMs: 180000, maxStagnantRounds: 5 }
+  );
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 40 }), "target_reached");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, stagnantRounds: 4 }), "");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, stagnantRounds: 5 }), "stagnation_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, elapsedMs: 180000 }), "timeout_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 40, fresh: 12, platformExhausted: true }), "platform_exhausted");
+});
+
+test("does not auto append AI keywords after a Boss scan", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+  assert.doesNotMatch(source, /await appendAiKeywords\(task, keywords\)/);
+});
+
 test("keeps an unfinished Boss checkpoint for 24 hours", () => {
   const support = loadSupport();
   const now = Date.now();
@@ -245,4 +263,129 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
     support.classifyLocalApiFailure(new Error("无法连接本地服务，请确认6866端口正常")),
     "LOCAL_SERVICE_UNAVAILABLE"
   );
+});
+
+test("preserves Boss search attempts while collecting and increments after route drift", () => {
+  const support = loadSupport();
+  assert.equal(support.version, "2026-09-03-boss-navigation-loop-fix");
+  const collecting = support.beginBossSearchCollection({
+    type: "BOSS_SCAN_START",
+    navigationKey: "AIGC产品运营::101280600",
+    navigationAttempts: 3,
+    navigationStartedAt: 123
+  });
+  const retrying = support.retryBossSearchNavigation(collecting, 456);
+
+  assert.equal(collecting.phase, "collecting");
+  assert.equal(collecting.navigationAttempts, 3);
+  assert.equal(collecting.navigationStartedAt, 0);
+  assert.equal(retrying.phase, "searching");
+  assert.equal(retrying.navigationAttempts, 4);
+  assert.equal(retrying.navigationStartedAt, 456);
+});
+
+test("stops repeated Boss search redirects at five attempts and resets for the next keyword", () => {
+  const support = loadSupport();
+  const firstNavigationKey = "AIGC产品运营::101280600";
+  let task = {
+    type: "BOSS_SCAN_START",
+    navigationKey: firstNavigationKey,
+    navigationAttempts: 0
+  };
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    task = support.retryBossSearchNavigation(task, attempt);
+    assert.equal(task.navigationAttempts, attempt);
+    assert.equal(support.isBossSearchNavigationExhausted(task, 5), attempt === 5);
+  }
+
+  assert.equal(support.bossSearchNavigationAttempts(task, firstNavigationKey), 5);
+  assert.equal(support.bossSearchNavigationAttempts(task, "AI产品运营::101280600"), 0);
+});
+
+test("keeps singular and plural Boss search paths compatible while generating the canonical plural path", () => {
+  const content = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+
+  assert.match(content, /return `https:\/\/www\.zhipin\.com\/web\/geek\/jobs\?\$\{params\.toString\(\)\}`/);
+  assert.match(content, /pathname === "\/web\/geek\/job" \|\| pathname === "\/web\/geek\/jobs"/);
+});
+
+test("rechecks the Boss search URL after waiting for cards before collecting", () => {
+  const content = fs.readFileSync(path.resolve(__dirname, "..", "boss-content.js"), "utf8");
+  const waitIndex = content.indexOf("const waitState = await waitForJobCards();");
+  const redirectGuardIndex = content.indexOf("if (!isCurrentSearchPage(keyword, city, url))", waitIndex);
+  const collectIndex = content.indexOf("const collectResult = collectJobs", waitIndex);
+
+  assert.ok(waitIndex >= 0);
+  assert.ok(redirectGuardIndex > waitIndex);
+  assert.ok(collectIndex > redirectGuardIndex);
+  assert.match(content.slice(redirectGuardIndex, collectIndex), /retryBossSearchNavigation\(collectingTaskState\)/);
+  assert.match(content.slice(redirectGuardIndex, collectIndex), /stopSearchNavigationFailure\(collectingTaskState, url\)/);
+});
+
+test("partitions all historical Boss jobs for reuse without detail collection", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "history-1", company: "甲公司", title: "产品经理", url: "https://www.zhipin.com/job_detail/history-1.html" },
+    { id: "history-2", company: "乙公司", title: "运营经理", url: "https://www.zhipin.com/job_detail/history-2.html" },
+  ];
+  const partition = support.partitionDedupeJobs(jobs, jobs.map((job) => ({ ...job, duplicate: true, action: "SKIP" })));
+
+  assert.equal(partition.detailJobs.length, 0);
+  assert.equal(partition.historicalJobs.length, 2);
+  assert.deepEqual(Array.from(partition.historicalJobs, (job) => job.collectionAction), ["REUSE_HISTORY", "REUSE_HISTORY"]);
+});
+
+test("keeps new and enrich jobs in details while marking only skips as historical", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "new-1", company: "甲公司", title: "新岗位", url: "https://www.zhipin.com/job_detail/new-1.html" },
+    { id: "enrich-1", company: "乙公司", title: "补全岗位", url: "https://www.zhipin.com/job_detail/enrich-1.html" },
+    { id: "history-1", company: "丙公司", title: "历史岗位", url: "https://www.zhipin.com/job_detail/history-1.html" },
+  ];
+  const partition = support.partitionDedupeJobs(jobs, [
+    { ...jobs[0], action: "NEW" },
+    { ...jobs[1], action: "ENRICH", duplicate: true },
+    { ...jobs[2], action: "SKIP", duplicate: true },
+  ]);
+
+  assert.deepEqual(Array.from(partition.detailJobs, (job) => job.id), ["new-1", "enrich-1"]);
+  assert.deepEqual(Array.from(partition.historicalJobs, (job) => job.id), ["history-1"]);
+  assert.ok(partition.detailJobs.every((job) => job.collectionAction === "ANALYZE"));
+});
+
+test("rejects incomplete or invalid Boss dedupe decisions instead of treating them as new", () => {
+  const support = loadSupport();
+  const jobs = [
+    { id: "job-1", company: "甲公司", title: "岗位一" },
+    { id: "job-2", company: "乙公司", title: "岗位二" },
+  ];
+
+  assert.throws(
+    () => support.partitionDedupeJobs(jobs, [{ ...jobs[0], action: "NEW" }]),
+    /未完整返回/
+  );
+  assert.throws(
+    () => support.partitionDedupeJobs(jobs, jobs.map((job) => ({ ...job, action: "UNKNOWN" }))),
+    /未完整返回/
+  );
+});
+
+test("keeps the failed Boss submit batch index and prior success summary for resume", () => {
+  const support = loadSupport();
+  const checkpoint = support.buildFailedSubmitCheckpoint(
+    { type: "BOSS_SCAN_START", runId: "boss-submit-retry", jobs: [{ id: 1 }, { id: 2 }] },
+    2,
+    { received: 40, saved: 36, queued: 30 },
+    { type: "LOCAL_SERVICE_UNAVAILABLE", message: "database is locked" },
+    123456,
+  );
+
+  assert.equal(checkpoint.phase, "submitting");
+  assert.equal(checkpoint.submitBatchIndex, 2);
+  assert.equal(checkpoint.submitSummary.received, 40);
+  assert.equal(checkpoint.submitSummary.saved, 36);
+  assert.equal(checkpoint.submitSummary.queued, 30);
+  assert.equal(checkpoint.lastSubmitError.failedAt, 123456);
+  assert.equal(checkpoint.lastSubmitError.message, "database is locked");
 });

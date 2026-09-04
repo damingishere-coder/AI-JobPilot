@@ -99,6 +99,7 @@ public class JobAnalysisTaskStore {
         validateRequest(request);
         String platform = normalizePlatform(request.getPlatform());
         String jobKey = stableJobKey(request);
+        validateTargetJobIdentity(request, platform, jobKey);
         String taskKey = taskKey(request, platform, jobKey);
         String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
@@ -148,6 +149,7 @@ public class JobAnalysisTaskStore {
         validateRequest(request);
         String platform = normalizePlatform(request.getPlatform());
         String jobKey = stableJobKey(request);
+        validateTargetJobIdentity(request, platform, jobKey);
         String taskKey = taskKey(request, platform, jobKey);
         String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
@@ -218,6 +220,19 @@ public class JobAnalysisTaskStore {
                         "WHERE task_key IS NOT NULL AND request_json IS NOT NULL AND status='PENDING' " +
                         "AND (next_retry_at IS NULL OR next_retry_at<=?) ORDER BY id LIMIT ?",
                 TASK_MAPPER, dbTime(LocalDateTime.now()), safeLimit);
+    }
+
+    public List<TaskRecord> listCompatibleDuePending(long profileId, String platform, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, JobAiAnalysisService.MAX_BATCH_SIZE - 1));
+        return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                        "WHERE profile_id=? AND lower(platform)=? AND task_key IS NOT NULL " +
+                        "AND request_json IS NOT NULL AND status='PENDING' " +
+                        "AND (next_retry_at IS NULL OR next_retry_at<=?) ORDER BY id LIMIT ?",
+                TASK_MAPPER,
+                profileId,
+                normalizePlatform(platform),
+                dbTime(LocalDateTime.now()),
+                safeLimit);
     }
 
     public List<TaskRecord> listExpiredLeases(int limit) {
@@ -418,7 +433,18 @@ public class JobAnalysisTaskStore {
     }
 
     public List<TaskView> listRecent(long profileId, int limit) {
+        return listRecent(profileId, null, limit);
+    }
+
+    public List<TaskView> listRecent(long profileId, String platform, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 200));
+        if (platform != null && !platform.isBlank()) {
+            return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                            "WHERE profile_id=? AND lower(platform)=? AND task_key IS NOT NULL " +
+                            "ORDER BY id DESC LIMIT ?",
+                    TASK_MAPPER, profileId, normalizePlatform(platform), safeLimit)
+                    .stream().map(TaskRecord::toView).toList();
+        }
         return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
                         "WHERE profile_id=? AND task_key IS NOT NULL ORDER BY id DESC LIMIT ?",
                 TASK_MAPPER, profileId, safeLimit).stream().map(TaskRecord::toView).toList();
@@ -433,6 +459,20 @@ public class JobAnalysisTaskStore {
     }
 
     public int outstandingCount(long profileId) {
+        return outstandingCount(profileId, null);
+    }
+
+    public int outstandingCount(long profileId, String platform) {
+        if (platform != null && !platform.isBlank()) {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND lower(platform)=? " +
+                            "AND task_key IS NOT NULL AND status IN ('PENDING','LEASED')",
+                    Integer.class,
+                    profileId,
+                    normalizePlatform(platform)
+            );
+            return count == null ? 0 : count;
+        }
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND task_key IS NOT NULL " +
                         "AND status IN ('PENDING','LEASED')",
@@ -442,12 +482,61 @@ public class JobAnalysisTaskStore {
         return count == null ? 0 : count;
     }
 
+    public int pendingCount(long profileId) {
+        return pendingCount(profileId, null);
+    }
+
+    public int pendingCount(long profileId, String platform) {
+        return statusCount(profileId, platform, Status.PENDING);
+    }
+
+    public int processingCount(long profileId) {
+        return processingCount(profileId, null);
+    }
+
+    public int processingCount(long profileId, String platform) {
+        return statusCount(profileId, platform, Status.LEASED);
+    }
+
+    private int statusCount(long profileId, String platform, Status status) {
+        if (platform != null && !platform.isBlank()) {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND lower(platform)=? " +
+                            "AND task_key IS NOT NULL AND status=?",
+                    Integer.class,
+                    profileId,
+                    normalizePlatform(platform),
+                    status.name()
+            );
+            return count == null ? 0 : count;
+        }
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND task_key IS NOT NULL AND status=?",
+                Integer.class,
+                profileId,
+                status.name()
+        );
+        return count == null ? 0 : count;
+    }
+
     public JobAiAnalysisService.JobAnalysisRequest deserialize(TaskRecord task) {
         if (task == null || task.requestJson() == null || task.requestJson().isBlank()) {
             throw new IllegalArgumentException("任务缺少可恢复的请求快照");
         }
         try {
-            return objectMapper.readValue(task.requestJson(), JobAiAnalysisService.JobAnalysisRequest.class);
+            JobAiAnalysisService.JobAnalysisRequest request = objectMapper.readValue(
+                    task.requestJson(), JobAiAnalysisService.JobAnalysisRequest.class);
+            validateRequest(request);
+            String platform = normalizePlatform(request.getPlatform());
+            String jobKey = stableJobKey(request);
+            if (!java.util.Objects.equals(task.profileId(), request.getProfileId())
+                    || !java.util.Objects.equals(normalizePlatform(task.platform()), platform)
+                    || !java.util.Objects.equals(task.jobKey(), jobKey)
+                    || !java.util.Objects.equals(task.jobRowId(), request.getJobRowId())) {
+                throw new IllegalStateException("AI 分析任务快照与任务索引不一致");
+            }
+            validateTargetJobIdentity(request, platform, jobKey);
+            return request;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("AI 分析任务请求快照损坏", e);
         }
@@ -507,12 +596,23 @@ public class JobAnalysisTaskStore {
         inputs.put("degree", canonical(request.getDegree()));
         inputs.put("companyInfo", canonical(request.getCompanyInfo()));
         inputs.put("jobDescription", canonical(request.getJobDescription()));
+        inputs.put("resumeFingerprint", currentResumeFingerprint(request.getProfileId()));
         try {
             String digest = sha256(objectMapper.writeValueAsString(inputs));
-            return "ai:v1:" + request.getProfileId() + ":" + platform + ":" + digest;
+            return "ai:v2:" + request.getProfileId() + ":" + platform + ":" + digest;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("无法生成 AI 分析任务摘要", e);
         }
+    }
+
+    private String currentResumeFingerprint(Long profileId) {
+        List<String> rows = jdbcTemplate.query(
+                "SELECT COALESCE(resume_text, '') FROM resume_profile WHERE profile_id=? " +
+                        "ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                profileId
+        );
+        return sha256(rows.isEmpty() ? "" : rows.get(0));
     }
 
     private JobAiAnalysisService.JobAnalysisRequest analysisRequest(String platform,
@@ -564,6 +664,44 @@ public class JobAnalysisTaskStore {
         }
         if (stableJobKey(request).isBlank()) {
             throw new IllegalArgumentException("AI 分析任务缺少稳定岗位标识");
+        }
+        if (request.getJobRowId() == null || request.getJobRowId() <= 0) {
+            throw new IllegalArgumentException("AI 分析任务缺少有效岗位行 ID");
+        }
+    }
+
+    private void validateTargetJobIdentity(JobAiAnalysisService.JobAnalysisRequest request,
+                                           String platform,
+                                           String jobKey) {
+        String table = "boss".equals(platform) ? "boss_data" : "zhilian_data";
+        String stableIdColumn = "boss".equals(platform) ? "encrypt_id" : "job_id";
+        String jobNameColumn = "boss".equals(platform) ? "job_name" : "job_title";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT profile_id, " + stableIdColumn + " AS stable_id, company_name, "
+                        + jobNameColumn + " AS job_name FROM " + table + " WHERE id=?",
+                request.getJobRowId()
+        );
+        String storedKey = "";
+        Long storedProfileId = null;
+        if (rows.size() == 1) {
+            Map<String, Object> row = rows.get(0);
+            storedProfileId = nullableLong(row.get("profile_id"));
+            storedKey = firstNonBlank((String) row.get("stable_id"));
+            if (storedKey.isBlank()) {
+                String company = canonical((String) row.get("company_name"));
+                String jobName = canonical((String) row.get("job_name"));
+                storedKey = company.isBlank() && jobName.isBlank() ? "" : company + "::" + jobName;
+            }
+        }
+        if (rows.size() != 1
+                || !java.util.Objects.equals(storedProfileId, request.getProfileId())
+                || !java.util.Objects.equals(storedKey, jobKey)) {
+            throw new IllegalArgumentException(
+                    "AI 分析任务与目标岗位不一致：profileId=" + request.getProfileId()
+                            + ", platform=" + platform
+                            + ", jobRowId=" + request.getJobRowId()
+                            + ", jobKey=" + jobKey
+            );
         }
     }
 

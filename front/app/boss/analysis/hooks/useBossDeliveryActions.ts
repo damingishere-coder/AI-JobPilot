@@ -9,6 +9,13 @@ import type { BossJob, FilterState } from "../types"
 type ReservedTask = { id?: number; requestKey?: string }
 type BatchPreviewItem = { id?: number; companyName?: string; jobName?: string; greeting?: string; greetingSource?: string; empty?: boolean }
 
+function greetingSourceLabel(source?: string) {
+  if (source === "USER_EDITED") return "人工编辑稿"
+  if (source === "AI_GREETING") return "岗位 JD 定制"
+  if (source === "PROFILE_DEFAULT") return "AI 失败兜底（档案默认）"
+  return "空白警告"
+}
+
 function greetingSnapshots(items: BatchPreviewItem[]) {
   return Object.fromEntries(items
     .filter((item): item is BatchPreviewItem & { id: number; greeting: string } => (
@@ -51,10 +58,13 @@ function formatBatchDeliveryResult(result: Record<string, unknown>) {
   if (rows.length === 0) return summary
   const details = rows.slice(0, 50).map((row, index) => {
     const item = row && typeof row === "object"
-      ? row as { id?: unknown; requestKey?: unknown; outcome?: unknown; evidence?: unknown; persisted?: unknown; message?: unknown }
+      ? row as { id?: unknown; requestKey?: unknown; outcome?: unknown; evidence?: unknown; greetingOutcome?: unknown; greetingEvidence?: unknown; skipped?: unknown; persisted?: unknown; message?: unknown }
       : {}
     const persisted = item.persisted === true ? "已落库" : "待补偿"
-    return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
+    const action = item.skipped === true ? "未触达" : "已执行"
+    return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${action} · ${persisted}\n`
+      + `平台证据：${String(item.evidence || "-")}；话术结果：${String(item.greetingOutcome || "-")}；话术证据：${String(item.greetingEvidence || "-")}\n`
+      + String(item.message || "")
   })
   return `${summary}\n\n逐条结果：\n${details.join("\n")}`
 }
@@ -62,7 +72,7 @@ function formatBatchDeliveryResult(result: Record<string, unknown>) {
 function formatBatchGreetingPreview(items: BatchPreviewItem[], title: string) {
   const lines = items.map((item, index) => (
     `${index + 1}. ${item.companyName || "未知公司"} / ${item.jobName || "未命名岗位"}\n`
-    + `来源：${item.greetingSource || "EMPTY"}\n${item.greeting || "【空白】"}`
+    + `来源：${greetingSourceLabel(item.greetingSource)}\n${item.greeting || "【空白】"}`
   ))
   return `${title}\n\n将使用以下 ${items.length} 条沟通话术：\n\n${lines.join("\n\n")}\n\n确认后才会创建投递任务并交给 Chrome。`
 }
@@ -73,6 +83,7 @@ async function loadBatchPreview(body: unknown) {
     success: data.success !== false,
     message: String(data.message || ""),
     items: Array.isArray(data.items) ? data.items as BatchPreviewItem[] : [],
+    nativeGreetingDisabledConfirmed: data.nativeGreetingDisabledConfirmed === true,
   }
 }
 
@@ -86,6 +97,8 @@ async function markUnknownReservations(tasks: ReservedTask[], reason: string) {
         requestKey: task.requestKey,
         outcome: "UNKNOWN",
         evidence: "NO_CONFIRMATION",
+        greetingOutcome: "UNKNOWN",
+        greetingEvidence: "FRONTEND_RESULT_UNAVAILABLE",
         message: reason,
       }),
     })
@@ -179,7 +192,7 @@ export function useBossDeliveryActions({
 
   const handleReconcileJob = useCallback(async (job: BossJob) => {
     const answer = window.prompt(
-      "请先在 Boss 平台核对该岗位。输入“已投递”确认成功，输入“未投递”确认失败；其他内容不会修改状态。",
+      "请先在 Boss 平台核对该岗位是否已存在沟通。输入“已投递”确认沟通存在，输入“未投递”确认失败；这里只核对沟通状态，不会把话术标成精确确认，也不会补发。",
     )?.trim()
     if (answer !== "已投递" && answer !== "未投递") return
     try {
@@ -254,6 +267,10 @@ export function useBossDeliveryActions({
       setActingBatch(true)
       const body = currentBatchFilters()
       const preview = await loadBatchPreview(body)
+      if (!preview.nativeGreetingDisabledConfirmed) {
+        openTextDialog("批量投递预览", "请先到 AI 配置页确认已关闭 BOSS 平台自带打招呼语。")
+        return
+      }
       if (!preview.success || preview.items.length === 0) {
         openTextDialog("批量投递预览", preview.message || "当前筛选条件下没有待确认岗位。")
         return
@@ -303,6 +320,10 @@ export function useBossDeliveryActions({
         scanRunId: activeScanRunId || undefined,
       }
       const preview = await loadBatchPreview(body)
+      if (!preview.nativeGreetingDisabledConfirmed) {
+        openTextDialog("AI推荐投递预览", "请先到 AI 配置页确认已关闭 BOSS 平台自带打招呼语。")
+        return
+      }
       if (!preview.success || preview.items.length === 0) {
         openTextDialog("AI推荐投递预览", preview.message || "当前没有 AI 推荐的待确认岗位。")
         return
@@ -355,6 +376,10 @@ export function useBossDeliveryActions({
       setActingManualBatch(true)
       const body = { ids: uniqueIds, manualOverrideAiNotMatch: true }
       const preview = await loadBatchPreview(body)
+      if (!preview.nativeGreetingDisabledConfirmed) {
+        openTextDialog("人工投递预览", "请先到 AI 配置页确认已关闭 BOSS 平台自带打招呼语。")
+        return false
+      }
       if (!preview.success || preview.items.length === 0) {
         openTextDialog("人工投递预览", preview.message || "所选岗位中没有可人工投递的AI不匹配岗位。")
         return false

@@ -13,41 +13,48 @@ import java.util.List;
  */
 @Configuration
 public class CorsConfig {
+    public static final String CHROME_EXTENSION_ID = "igmjpelbjhlglhegjbgmdbgfcdflmigp";
+    public static final String CHROME_EXTENSION_ORIGIN = "chrome-extension://" + CHROME_EXTENSION_ID;
     private static final List<String> LOCAL_FRONTEND_ORIGINS = List.of(
             "http://localhost:6866",
             "http://127.0.0.1:6866"
     );
-    private static final List<String> BOSS_EXTENSION_API_PATHS = List.of(
+    private static final List<String> EXTENSION_API_PATHS = List.of(
             "/api/boss/chrome/**",
             "/api/boss/ai-keywords",
-            "/api/boss/jobs/*/delivery-result"
+            "/api/boss/jobs/*/delivery-result",
+            "/api/zhilian/chrome/**",
+            "/api/zhilian/jobs/*/delivery-result"
     );
 
     @Bean
     public CorsFilter corsFilter() {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
 
-        CorsConfiguration localFrontendConfig = baseConfiguration();
+        CorsConfiguration localFrontendConfig = baseConfiguration(true);
         localFrontendConfig.setAllowedOrigins(LOCAL_FRONTEND_ORIGINS);
 
-        CorsConfiguration bossExtensionConfig = baseConfiguration();
-        bossExtensionConfig.setAllowedOrigins(LOCAL_FRONTEND_ORIGINS);
-        // Chrome 扩展后台依靠 manifest host_permissions 访问本机 API；服务端不再信任任意扩展 ID。
+        CorsConfiguration extensionConfig = baseConfiguration(false);
+        extensionConfig.setAllowedOrigins(List.of(
+                LOCAL_FRONTEND_ORIGINS.get(0),
+                LOCAL_FRONTEND_ORIGINS.get(1),
+                CHROME_EXTENSION_ORIGIN
+        ));
 
         // 必须先注册更具体的扩展接口，再注册全局本地前端规则。
-        for (String path : BOSS_EXTENSION_API_PATHS) {
-            source.registerCorsConfiguration(path, bossExtensionConfig);
+        for (String path : EXTENSION_API_PATHS) {
+            source.registerCorsConfiguration(path, extensionConfig);
         }
         source.registerCorsConfiguration("/**", localFrontendConfig);
 
         return new CorsFilter(source);
     }
 
-    private CorsConfiguration baseConfiguration() {
+    private CorsConfiguration baseConfiguration(boolean allowCredentials) {
         CorsConfiguration config = new CorsConfiguration();
         config.addAllowedHeader("*");
         config.addAllowedMethod("*");
-        config.setAllowCredentials(true);
+        config.setAllowCredentials(allowCredentials);
         config.setMaxAge(3600L);
         return config;
     }

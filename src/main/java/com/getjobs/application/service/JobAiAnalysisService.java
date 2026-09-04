@@ -32,11 +32,14 @@ import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -49,6 +52,89 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
+    public static final int MAX_BATCH_SIZE = 5;
+    private static final String JOB_ANALYSIS_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "results": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "taskId": {"type": "integer"},
+                      "summary": {"type": "string"},
+                      "matches": {"type": "array", "items": {"type": "string"}},
+                      "gaps": {"type": "array", "items": {"type": "string"}},
+                      "unknowns": {"type": "array", "items": {"type": "string"}},
+                      "dimensions": {
+                        "type": "array",
+                        "minItems": 6,
+                        "maxItems": 6,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {"type": "string", "enum": ["CORE_SKILLS", "RELEVANT_EXPERIENCE", "ACHIEVEMENTS_COMPLEXITY", "INDUSTRY_TRANSFER", "EDUCATION_TENURE", "LOCATION_SALARY"]},
+                            "status": {"type": "string", "enum": ["MATCH", "PARTIAL", "UNKNOWN", "CONFLICT"]},
+                            "jobEvidence": {"type": "array", "items": {"type": "string"}},
+                            "resumeEvidence": {"type": "array", "items": {"type": "string"}},
+                            "note": {"type": "string"}
+                          },
+                          "required": ["key", "status", "jobEvidence", "resumeEvidence", "note"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "hardConflicts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "requirement": {"type": "string"},
+                            "jobEvidence": {"type": "array", "items": {"type": "string"}},
+                            "resumeEvidence": {"type": "array", "items": {"type": "string"}}
+                          },
+                          "required": ["requirement", "jobEvidence", "resumeEvidence"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "greeting": {"type": "string"}
+                    },
+                    "required": ["taskId", "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts", "greeting"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["results"],
+              "additionalProperties": false
+            }
+            """;
+    private static final String BOSS_GREETING_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "greeting": {"type": "string", "minLength": 20, "maxLength": 120},
+                "jobEvidence": {"type": "string", "minLength": 2},
+                "resumeEvidence": {"type": "string", "minLength": 2}
+              },
+              "required": ["greeting", "jobEvidence", "resumeEvidence"],
+              "additionalProperties": false
+            }
+            """;
+    private static final List<DimensionSpec> DIMENSION_SPECS = List.of(
+            new DimensionSpec("CORE_SKILLS", "核心职责与技能", 35),
+            new DimensionSpec("RELEVANT_EXPERIENCE", "相关经历", 25),
+            new DimensionSpec("ACHIEVEMENTS_COMPLEXITY", "成果与复杂度", 15),
+            new DimensionSpec("INDUSTRY_TRANSFER", "行业可迁移性", 10),
+            new DimensionSpec("EDUCATION_TENURE", "学历与年限", 10),
+            new DimensionSpec("LOCATION_SALARY", "地点与薪资", 5)
+    );
+    private static final Map<String, DimensionSpec> DIMENSION_BY_KEY = DIMENSION_SPECS.stream()
+            .collect(Collectors.toUnmodifiableMap(DimensionSpec::key, spec -> spec));
+    private static final Set<String> GENERIC_GREETING_EVIDENCE_FRAGMENTS = Set.of(
+            "岗位", "职位", "工作", "要求", "负责", "经验", "熟悉", "相关", "能力", "项目",
+            "沟通", "希望", "您好", "你好", "进一步", "开发"
+    );
     public static final int DEFAULT_APPLY_THRESHOLD = 75;
     public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
@@ -63,21 +149,63 @@ public class JobAiAnalysisService {
     private final Job51Mapper job51Mapper;
     private final ConcurrentMap<Long, List<PriorityCompanyEntity>> enabledPriorityCompanyCache = new ConcurrentHashMap<>();
 
+    /**
+     * 保存当前档案的投递分数线，并让历史 Boss AI 不匹配岗位应用新分数线。
+     * 这里只复用已经保存的 AI 分数，不重新调用 Provider，也不创建投递请求。
+     */
+    @Transactional
+    public ThresholdApplicationResult saveThresholdsAndPromoteBossHistory(
+            Integer applyThreshold,
+            Integer priorityApplyThreshold
+    ) {
+        AiEntity saved = aiService.saveOrUpdateAiThresholds(applyThreshold, priorityApplyThreshold);
+        if (saved == null || saved.getProfileId() == null) {
+            throw new IllegalStateException("AI分数线保存后缺少档案信息");
+        }
+
+        BossJobDataEntity update = new BossJobDataEntity();
+        update.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
+        update.setAiDecision("APPLY");
+        update.setUpdatedAt(LocalDateTime.now());
+
+        UpdateWrapper<BossJobDataEntity> wrapper = new UpdateWrapper<>();
+        wrapper.eq("profile_id", saved.getProfileId())
+                .eq("delivery_status", DeliveryStatus.AI_NOT_MATCH)
+                .isNotNull("ai_score")
+                .and(group -> group
+                        .eq("priority_company", 1)
+                        .ge("ai_score", saved.getPriorityApplyThreshold())
+                        .or(normal -> normal
+                                .and(priorityFlag -> priorityFlag
+                                        .isNull("priority_company")
+                                        .or()
+                                        .ne("priority_company", 1))
+                                .ge("ai_score", saved.getApplyThreshold())));
+
+        int promotedCount = bossJobDataMapper.update(update, wrapper);
+        log.info("Boss历史岗位已应用新分数线: profileId={}, promotedCount={}",
+                saved.getProfileId(), promotedCount);
+        return new ThresholdApplicationResult(saved, promotedCount);
+    }
+
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
         Long profileId = profileService.getCurrentProfileId();
         ResumeProfileEntity current = getResumeProfile();
         LocalDateTime now = LocalDateTime.now();
+        String nextResumeText = resumeText == null ? "" : resumeText;
+        boolean resumeChanged = current == null || !Objects.equals(current.getResumeText(), nextResumeText);
         if (current == null) {
             current = new ResumeProfileEntity();
             current.setProfileId(profileId);
             current.setCreatedAt(now);
         }
         current.setProfileId(profileId);
-        current.setResumeText(resumeText == null ? "" : resumeText);
+        current.setResumeText(nextResumeText);
         current.setSourceFilename(sourceFilename);
         current.setParseStatus(status == null ? "manual" : status);
         current.setParseMessage(message);
+        if (resumeChanged) current.setRecommendedJobKeywords(null);
         current.setUpdatedAt(now);
         if (current.getId() == null) {
             resumeProfileMapper.insert(current);
@@ -85,6 +213,29 @@ public class JobAiAnalysisService {
             resumeProfileMapper.updateById(current);
         }
         return current;
+    }
+
+    @Transactional
+    public List<String> saveRecommendedJobKeywords(List<String> keywords) {
+        List<String> normalized = JobKeywordCodec.normalize(keywords, JobKeywordCodec.MAX_SELECTED);
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException("AI未生成有效的岗位关键词");
+        }
+        ResumeProfileEntity current = getResumeProfile();
+        if (current == null || current.getId() == null) {
+            throw new IllegalArgumentException("请先保存当前档案的简历内容");
+        }
+        ResumeProfileEntity update = new ResumeProfileEntity();
+        update.setId(current.getId());
+        update.setRecommendedJobKeywords(JobKeywordCodec.serialize(normalized));
+        update.setUpdatedAt(LocalDateTime.now());
+        resumeProfileMapper.updateById(update);
+        return normalized;
+    }
+
+    public List<String> getRecommendedJobKeywords() {
+        ResumeProfileEntity current = getResumeProfile();
+        return current == null ? List.of() : JobKeywordCodec.parse(current.getRecommendedJobKeywords());
     }
 
     public ResumeProfileEntity getResumeProfile() {
@@ -188,84 +339,200 @@ public class JobAiAnalysisService {
     public AnalysisResult analyzeJob(JobAnalysisRequest request,
                                      BooleanSupplier leaseIsCurrent,
                                      LeaseWriteGuard leaseWriteGuard) {
-        if (request == null) throw new IllegalArgumentException("岗位分析请求不能为空");
-        if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-        Long profileId = resolveAnalysisProfileId(request);
-        request.setProfileId(profileId);
-        if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-        AtomicBoolean platformReserved = new AtomicBoolean();
-        if (!executeLeaseWrite(leaseWriteGuard,
-                () -> platformReserved.set(markPlatformAnalysisStarted(request)))) {
-            return AnalysisResult.staleLease();
+        BatchAnalysisJob job = new BatchAnalysisJob(1L, request, leaseIsCurrent, leaseWriteGuard);
+        return analyzeJobs(List.of(job)).getOrDefault(1L,
+                AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "AI 分析未返回结果"));
+    }
+
+    /**
+     * 同一档案、同一平台的岗位批量分析。模型只判断维度与证据，分数和决策始终由后端计算。
+     */
+    public Map<Long, AnalysisResult> analyzeJobs(List<BatchAnalysisJob> jobs) {
+        validateBatch(jobs);
+        Map<Long, AnalysisResult> completed = new LinkedHashMap<>();
+        List<PreparedJob> prepared = new ArrayList<>();
+
+        for (BatchAnalysisJob job : jobs) {
+            JobAnalysisRequest request = job.request();
+            if (!isLeaseCurrent(job.leaseIsCurrent())) {
+                completed.put(job.taskId(), AnalysisResult.staleLease());
+                continue;
+            }
+            Long profileId = resolveAnalysisProfileId(request);
+            request.setProfileId(profileId);
+            AtomicBoolean platformReserved = new AtomicBoolean();
+            if (!executeLeaseWrite(job.leaseWriteGuard(),
+                    () -> platformReserved.set(markPlatformAnalysisStarted(request)))) {
+                completed.put(job.taskId(), AnalysisResult.staleLease());
+                continue;
+            }
+            if (!platformReserved.get()) {
+                completed.put(job.taskId(), AnalysisResult.failed(
+                        DeliveryStatus.AI_ANALYSIS_FAILED,
+                        "岗位状态已变化或岗位不存在，未调用 AI Provider"));
+                continue;
+            }
+            boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
+            prepared.add(new PreparedJob(
+                    job,
+                    priority,
+                    resolveApplyThreshold(profileId, priority)
+            ));
         }
-        if (!platformReserved.get()) {
-            return AnalysisResult.failed(
-                    DeliveryStatus.AI_ANALYSIS_FAILED,
-                    "岗位状态已变化或岗位不存在，未调用 AI Provider"
-            );
-        }
-        boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
-        int threshold = resolveApplyThreshold(profileId, priority);
+
+        if (prepared.isEmpty()) return completed;
+        Long profileId = prepared.get(0).job().request().getProfileId();
         ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
-            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
-            result.setErrorCode("AI_RESUME_MISSING");
-            result.setPriorityCompany(priority);
-            AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
-            if (!executeLeaseWrite(leaseWriteGuard, () -> {
-                storedResult.set(persistAndUpdate(
-                        request, result, "{\"errorCode\":\"AI_RESUME_MISSING\"}", false));
-            })) {
-                return AnalysisResult.staleLease();
+            for (PreparedJob job : prepared) {
+                AnalysisResult failure = AnalysisResult.failed(
+                        DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
+                failure.setErrorCode("AI_RESUME_MISSING");
+                completed.put(job.job().taskId(), finalizeResult(
+                        job, failure, "{\"errorCode\":\"AI_RESUME_MISSING\"}", false));
             }
-            return storedResult.get();
+            return completed;
         }
 
-        String prompt = buildPrompt(resumeText, request, priority, threshold);
-        String raw;
+        String prompt = buildBatchPrompt(resumeText, prepared);
+        List<Long> expectedTaskIds = prepared.stream().map(job -> job.job().taskId()).toList();
+        Set<Long> bossTaskIds = prepared.stream()
+                .filter(job -> "boss".equalsIgnoreCase(job.job().request().getPlatform()))
+                .map(job -> job.job().taskId())
+                .collect(Collectors.toSet());
+        String raw = null;
         try {
-            raw = aiService.sendRequest(prompt);
-            AnalysisResult result = parseResult(raw);
-            result.setPriorityCompany(priority);
-            result.setThreshold(threshold);
-            if (result.getScore() == null) result.setScore(0);
-            if (result.getDecision() == null || result.getDecision().isBlank()) {
-                result.setDecision(result.getScore() >= threshold ? "APPLY" : "SKIP");
+            raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            BatchParse parsed;
+            try {
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
+            } catch (AiOutputException outputError) {
+                if (!isWholeBatchFormatError(outputError)) throw outputError;
+                if (prepared.stream().noneMatch(job -> isLeaseCurrent(job.job().leaseIsCurrent()))) {
+                    prepared.forEach(job -> completed.putIfAbsent(
+                            job.job().taskId(), AnalysisResult.staleLease()));
+                    return completed;
+                }
+                log.warn("AI岗位批量分析返回无效 JSON，将使用同一 Provider、模型和 Schema 重试一次: {}",
+                        outputError.getMessage());
+                raw = aiService.sendStructuredRequest(
+                        prompt + "\n\n重要：上一次输出不是有效的批量 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
+                        JOB_ANALYSIS_OUTPUT_SCHEMA
+                );
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             }
-            if (!"APPLY".equalsIgnoreCase(result.getDecision()) && result.getScore() >= threshold) {
-                result.setDecision("APPLY");
+
+            Map<Long, PreparedJob> byTaskId = prepared.stream().collect(Collectors.toMap(
+                    job -> job.job().taskId(), job -> job, (left, right) -> left, LinkedHashMap::new));
+            for (Map.Entry<Long, AnalysisResult> entry : parsed.results().entrySet()) {
+                PreparedJob job = byTaskId.get(entry.getKey());
+                if (job != null) {
+                    verifyQuotedEvidence(entry.getValue(), job.job().request(), resumeText);
+                    ensureBossGreeting(entry.getValue(), job, resumeText);
+                    completed.put(entry.getKey(), finalizeResult(
+                            job, entry.getValue(), responseDiagnostic(raw), true));
+                }
             }
-            if ("APPLY".equalsIgnoreCase(result.getDecision()) && result.getScore() < threshold) {
-                result.setDecision("SKIP");
+            for (Map.Entry<Long, AiOutputException> entry : parsed.errors().entrySet()) {
+                PreparedJob job = byTaskId.get(entry.getKey());
+                if (job == null || completed.containsKey(entry.getKey())) continue;
+                completed.put(entry.getKey(), retrySingleInvalidJob(
+                        resumeText, job, entry.getValue()));
             }
-            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-            AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
-            if (!executeLeaseWrite(leaseWriteGuard, () -> {
-                storedResult.set(persistAndUpdate(
-                        request, result, responseDiagnostic(raw), true));
-            })) {
-                return AnalysisResult.staleLease();
-            }
-            return storedResult.get();
+            return completed;
         } catch (Exception e) {
-            log.warn("AI岗位分析失败: {}", e.getMessage());
-            if (!isLeaseCurrent(leaseIsCurrent)) return AnalysisResult.staleLease();
-            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, e.getMessage());
-            result.setErrorCode(errorCode(e));
-            result.setProviderOutcomeUnknown(
-                    e instanceof AiProviderException providerError && providerError.isOutcomeUnknown());
-            result.setPriorityCompany(priority);
-            result.setThreshold(threshold);
-            AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
-            if (!executeLeaseWrite(leaseWriteGuard, () -> {
-                storedResult.set(persistAndUpdate(
-                        request, result, errorDiagnostic(e), true));
-            })) {
-                return AnalysisResult.staleLease();
+            log.warn("AI岗位批量分析失败: {}", e.getMessage());
+            for (PreparedJob job : prepared) {
+                if (completed.containsKey(job.job().taskId())) continue;
+                completed.put(job.job().taskId(), finalizeFailure(job, e, true));
             }
-            return storedResult.get();
+            return completed;
+        }
+    }
+
+    private AnalysisResult retrySingleInvalidJob(String resumeText,
+                                                 PreparedJob job,
+                                                 AiOutputException initialError) {
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        try {
+            log.warn("AI岗位批量结果中的任务 {} 缺失或无效，将只重试该岗位一次: {}",
+                    job.job().taskId(), initialError.getMessage());
+            String retryPrompt = buildBatchPrompt(resumeText, List.of(job))
+                    + "\n\n重要：上一次批量结果中这个岗位缺失或字段无效。本次只返回这个 taskId 的完整结果。";
+            String retryRaw = aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            Set<Long> bossTaskIds = "boss".equalsIgnoreCase(job.job().request().getPlatform())
+                    ? Set.of(job.job().taskId())
+                    : Set.of();
+            BatchParse retried = parseBatchResults(retryRaw, List.of(job.job().taskId()), bossTaskIds);
+            AnalysisResult result = retried.results().get(job.job().taskId());
+            if (result == null) {
+                throw retried.errors().getOrDefault(job.job().taskId(), initialError);
+            }
+            verifyQuotedEvidence(result, job.job().request(), resumeText);
+            ensureBossGreeting(result, job, resumeText);
+            return finalizeResult(job, result, responseDiagnostic(retryRaw), true);
+        } catch (Exception e) {
+            return finalizeFailure(job, e, true);
+        }
+    }
+
+    private AnalysisResult finalizeFailure(PreparedJob job, Exception error, boolean providerWasCalled) {
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        AnalysisResult result = AnalysisResult.failed(
+                DeliveryStatus.AI_ANALYSIS_FAILED,
+                error == null ? "AI 分析失败" : error.getMessage());
+        result.setErrorCode(errorCode(error));
+        result.setProviderOutcomeUnknown(
+                error instanceof AiProviderException providerError && providerError.isOutcomeUnknown());
+        return finalizeResult(job, result, errorDiagnostic(error), providerWasCalled);
+    }
+
+    private AnalysisResult finalizeResult(PreparedJob job,
+                                          AnalysisResult result,
+                                          String diagnostic,
+                                          boolean providerWasCalled) {
+        result.setPriorityCompany(job.priority());
+        result.setThreshold(job.threshold());
+        if (!result.isFailure() && !result.isStaleLease()) {
+            boolean hasHardConflict = result.getHardConflicts() != null
+                    && !result.getHardConflicts().isEmpty();
+            result.setDecision(!hasHardConflict && result.getScore() != null
+                    && result.getScore() >= job.threshold() ? "APPLY" : "SKIP");
+        }
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
+        if (!executeLeaseWrite(job.job().leaseWriteGuard(), () -> storedResult.set(persistAndUpdate(
+                job.job().request(), result, diagnostic, providerWasCalled)))) {
+            return AnalysisResult.staleLease();
+        }
+        return storedResult.get();
+    }
+
+    private boolean isWholeBatchFormatError(AiOutputException error) {
+        return error != null && Set.of(
+                "AI_OUTPUT_EMPTY", "AI_OUTPUT_INVALID_JSON", "AI_OUTPUT_INVALID_BATCH"
+        ).contains(error.code());
+    }
+
+    private void validateBatch(List<BatchAnalysisJob> jobs) {
+        if (jobs == null || jobs.isEmpty()) throw new IllegalArgumentException("岗位分析批次不能为空");
+        if (jobs.size() > MAX_BATCH_SIZE) throw new IllegalArgumentException("岗位分析批次最多包含5个岗位");
+        Set<Long> taskIds = new HashSet<>();
+        Long profileId = null;
+        String platform = null;
+        for (BatchAnalysisJob job : jobs) {
+            if (job == null || job.request() == null) throw new IllegalArgumentException("岗位分析请求不能为空");
+            if (job.taskId() <= 0 || !taskIds.add(job.taskId())) {
+                throw new IllegalArgumentException("岗位分析批次包含无效或重复的 taskId");
+            }
+            Long resolvedProfileId = resolveAnalysisProfileId(job.request());
+            String normalizedPlatform = safe(job.request().getPlatform()).trim().toLowerCase(Locale.ROOT);
+            if (profileId == null) profileId = resolvedProfileId;
+            if (platform == null) platform = normalizedPlatform;
+            if (!Objects.equals(profileId, resolvedProfileId) || !Objects.equals(platform, normalizedPlatform)) {
+                throw new IllegalArgumentException("岗位分析批次只能包含同一档案和同一平台的任务");
+            }
         }
     }
 
@@ -290,7 +557,7 @@ public class JobAiAnalysisService {
     }
 
     public List<String> generateBossSearchKeywords(List<String> existingKeywords, int limitCount) {
-        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, 5));
+        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, JobKeywordCodec.MAX_SELECTED));
         ResumeProfileEntity resume = getResumeProfile();
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
@@ -312,62 +579,378 @@ public class JobAiAnalysisService {
                 .collect(Collectors.toList());
     }
 
-    private String buildPrompt(String resumeText, JobAnalysisRequest request, boolean priority, int threshold) {
-        return "你是求职投递决策助手。请根据候选人简历和岗位信息判断是否值得自动投递。\n" +
-                "只返回JSON，不要使用Markdown代码块。JSON字段必须包含 score, decision, summary, strengths, risks, greeting。\n" +
-                "score 必须是0到100之间的整数，请综合评估核心技能、工作经验、学历、地点、薪资和岗位硬性要求，不要为了达到阈值而抬高分数。\n" +
-                "decision 只能是 APPLY 或 SKIP。当前公司" +
-                (priority ? "是" : "不是") + "优先公司，当前阈值为" + threshold + "。\n" +
-                "简历：\n" + limit(resumeText, 6000) + "\n\n" +
-                "平台：" + safe(request.getPlatform()) + "\n" +
-                "搜索关键词：" + safe(request.getKeyword()) + "\n" +
-                "公司：" + safe(request.getCompanyName()) + "\n" +
-                "岗位：" + safe(request.getJobName()) + "\n" +
-                "薪资：" + safe(request.getSalary()) + "\n" +
-                "地点：" + safe(request.getLocation()) + "\n" +
-                "经验：" + safe(request.getExperience()) + "\n" +
-                "学历：" + safe(request.getDegree()) + "\n" +
-                "公司信息：" + safe(request.getCompanyInfo()) + "\n" +
-                "岗位描述：\n" + limit(safe(request.getJobDescription()), 5000) + "\n";
+    private String buildBatchPrompt(String resumeText, List<PreparedJob> jobs) {
+        boolean bossBatch = jobs.stream()
+                .allMatch(prepared -> "boss".equalsIgnoreCase(prepared.job().request().getPlatform()));
+        JSONArray jobArray = new JSONArray();
+        for (PreparedJob prepared : jobs) {
+            JobAnalysisRequest request = prepared.job().request();
+            JSONObject job = new JSONObject();
+            job.put("taskId", prepared.job().taskId());
+            job.put("platform", safe(request.getPlatform()));
+            job.put("keyword", safe(request.getKeyword()));
+            job.put("companyName", safe(request.getCompanyName()));
+            job.put("jobName", safe(request.getJobName()));
+            job.put("salary", safe(request.getSalary()));
+            job.put("location", safe(request.getLocation()));
+            job.put("experience", safe(request.getExperience()));
+            job.put("degree", safe(request.getDegree()));
+            job.put("companyInfo", limit(safe(request.getCompanyInfo()), 2000));
+            job.put("jobDescription", bossBatch
+                    ? safe(request.getJobDescription())
+                    : limit(safe(request.getJobDescription()), 5000));
+            jobArray.put(job);
+        }
+        String greetingInstruction = bossBatch
+                ? "greeting 必须是20到120字的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n\n"
+                : "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n";
+        String promptResume = bossBatch ? safe(resumeText) : limit(resumeText, 6000);
+        return "你是求职岗位证据分析助手。请比较一份候选人简历和多个岗位，但不要计算分数，也不要给出 APPLY/SKIP 决策。\n" +
+                "只返回符合 Schema 的 JSON，不要使用 Markdown 或额外解释。每个输入 taskId 必须且只能返回一次。\n" +
+                "六个维度必须各返回一次：CORE_SKILLS、RELEVANT_EXPERIENCE、ACHIEVEMENTS_COMPLEXITY、INDUSTRY_TRANSFER、EDUCATION_TENURE、LOCATION_SALARY。\n" +
+                "每个维度的 status 只能是 MATCH、PARTIAL、UNKNOWN、CONFLICT。\n" +
+                "采用宁可多投原则：简历没有写明的信息只能判 UNKNOWN，不能推断为不具备；只有岗位明确要求且简历明确冲突时才能判 CONFLICT。\n" +
+                "jobEvidence 和 resumeEvidence 必须摘录对应原文短句。硬冲突必须同时具有岗位原文和简历原文，并复用对应 CONFLICT 分项中的双方证据；证据不足的差异放入 unknowns，不得放入 hardConflicts。\n" +
+                "summary 用一句自然中文给出总体结论，不要提分数、阈值或投递决策；matches 写具体匹配证据，gaps 只写有明确证据的差距，unknowns 写待核实信息。\n" +
+                greetingInstruction +
+                "候选人简历（本批岗位共用，只出现一次）：\n" + promptResume + "\n\n" +
+                "待分析岗位 JSON：\n" + jobArray;
     }
 
-    private AnalysisResult parseResult(String raw) {
-        JSONObject obj = new JSONObject(repairJsonObject(extractJson(raw)));
-        for (String field : List.of("score", "decision", "summary", "strengths", "risks", "greeting")) {
-            if (!obj.has(field) || obj.isNull(field)) {
+    private BatchParse parseBatchResults(String raw,
+                                         List<Long> expectedTaskIds,
+                                         Set<Long> bossTaskIds) {
+        JSONObject root = new JSONObject(repairJsonObject(extractJson(raw)));
+        if (!(root.opt("results") instanceof JSONArray values)) {
+            throw outputError("AI_OUTPUT_INVALID_BATCH", "AI 返回缺少 results 数组", raw);
+        }
+        Set<Long> expected = new HashSet<>(expectedTaskIds);
+        Set<Long> seen = new HashSet<>();
+        Map<Long, AnalysisResult> results = new LinkedHashMap<>();
+        Map<Long, AiOutputException> errors = new LinkedHashMap<>();
+        for (int i = 0; i < values.length(); i++) {
+            Object value = values.opt(i);
+            if (!(value instanceof JSONObject item)) continue;
+            Object taskIdValue = item.opt("taskId");
+            if (!(taskIdValue instanceof Number number)
+                    || number.doubleValue() != Math.rint(number.doubleValue())) continue;
+            long taskId = number.longValue();
+            if (!expected.contains(taskId)) continue;
+            if (!seen.add(taskId)) {
+                errors.put(taskId, outputError(
+                        "AI_OUTPUT_INVALID_SCHEMA", "AI 返回重复 taskId: " + taskId, raw));
+                results.remove(taskId);
+                continue;
+            }
+            try {
+                results.put(taskId, parseEvidenceResult(item, raw, bossTaskIds.contains(taskId)));
+            } catch (AiOutputException e) {
+                errors.put(taskId, e);
+            }
+        }
+        for (Long taskId : expectedTaskIds) {
+            if (!results.containsKey(taskId) && !errors.containsKey(taskId)) {
+                errors.put(taskId, outputError(
+                        "AI_OUTPUT_MISSING_ITEM", "AI 返回缺少 taskId: " + taskId, raw));
+            }
+        }
+        return new BatchParse(results, errors);
+    }
+
+    private AnalysisResult parseEvidenceResult(JSONObject item, String raw, boolean allowMissingGreeting) {
+        List<String> requiredFields = new ArrayList<>(List.of(
+                "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts"));
+        if (!allowMissingGreeting) requiredFields.add("greeting");
+        for (String field : requiredFields) {
+            if (!item.has(field) || item.isNull(field)) {
                 throw outputError("AI_OUTPUT_MISSING_FIELD", "AI 返回缺少字段: " + field, raw);
             }
         }
-        Object scoreValue = obj.opt("score");
-        if (!(scoreValue instanceof Number number)
-                || number.doubleValue() != Math.rint(number.doubleValue())
-                || number.intValue() < 0
-                || number.intValue() > 100) {
-            throw outputError("AI_OUTPUT_INVALID_SCORE", "AI 返回 score 必须是 0 到 100 的整数", raw);
-        }
-        String decision = obj.optString("decision", "").trim().toUpperCase(Locale.ROOT);
-        if (!"APPLY".equals(decision) && !"SKIP".equals(decision)) {
-            throw outputError("AI_OUTPUT_INVALID_DECISION", "AI 返回 decision 必须是 APPLY 或 SKIP", raw);
-        }
-        if (!(obj.opt("summary") instanceof String summary) || summary.isBlank()) {
+        if (!(item.opt("summary") instanceof String summary) || summary.isBlank()) {
             throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回 summary 不能为空", raw);
         }
-        if (!(obj.opt("strengths") instanceof JSONArray strengths)
-                || !(obj.opt("risks") instanceof JSONArray risks)
-                || !(obj.opt("greeting") instanceof String)) {
+        if (!(item.opt("matches") instanceof JSONArray matches)
+                || !(item.opt("gaps") instanceof JSONArray gaps)
+                || !(item.opt("unknowns") instanceof JSONArray unknowns)
+                || !(item.opt("dimensions") instanceof JSONArray dimensions)
+                || !(item.opt("hardConflicts") instanceof JSONArray hardConflicts)
+                || (!allowMissingGreeting && !(item.opt("greeting") instanceof String))
+                || !containsOnlyStrings(matches)
+                || !containsOnlyStrings(gaps)
+                || !containsOnlyStrings(unknowns)) {
             throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回字段类型不符合约定", raw);
         }
-        if (!containsOnlyStrings(strengths) || !containsOnlyStrings(risks)) {
-            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回 strengths/risks 必须是字符串数组", raw);
-        }
+
+        List<String> unknownItems = new ArrayList<>(toStringList(unknowns));
+        List<DimensionScore> dimensionScores = parseDimensions(dimensions, unknownItems, raw);
+        List<HardConflict> validHardConflicts = parseHardConflicts(hardConflicts, unknownItems, raw);
+        int score = (int) Math.round(dimensionScores.stream()
+                .mapToDouble(value -> value.getWeight() * MatchStatus.valueOf(value.getStatus()).factor)
+                .sum());
+
         AnalysisResult result = new AnalysisResult();
-        result.setScore(number.intValue());
-        result.setDecision(decision);
-        result.setSummary(summary);
-        result.setStrengths(toStringList(obj.opt("strengths")));
-        result.setRisks(toStringList(obj.opt("risks")));
-        result.setGreeting(obj.optString("greeting", ""));
+        result.setScore(score);
+        result.setDecision("SKIP");
+        result.setSummary(summary.trim());
+        result.setMatches(toStringList(matches));
+        result.setGaps(toStringList(gaps));
+        result.setUnknowns(List.copyOf(unknownItems));
+        result.setDimensions(dimensionScores);
+        result.setHardConflicts(validHardConflicts);
+        result.setStrengths(result.getMatches());
+        result.setRisks(result.getGaps());
+        result.setGreeting(item.opt("greeting") instanceof String greeting ? greeting.trim() : "");
         return result;
+    }
+
+    private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText) {
+        JobAnalysisRequest request = prepared.job().request();
+        if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
+        String jobDescription = safe(request.getJobDescription()).trim();
+        if (jobDescription.length() < 20) {
+            log.warn("Boss岗位 {} 缺少可用 JD，无法生成岗位定制打招呼语，将使用档案默认兜底", request.getJobKey());
+            result.setGreeting("");
+            return;
+        }
+        if (isUsableBossGreeting(result.getGreeting())
+                && greetingReferencesVerifiedEvidence(result.getGreeting(), result.getDimensions())) return;
+        if (!isLeaseCurrent(prepared.job().leaseIsCurrent())) {
+            result.setGreeting("");
+            return;
+        }
+        try {
+            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到120字的中文招呼语。\n" +
+                    "必须明确结合一项岗位 JD 要求和一项候选人简历中的真实匹配经历；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
+                    "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
+                    "公司：" + safe(request.getCompanyName()) + "\n" +
+                    "岗位：" + safe(request.getJobName()) + "\n" +
+                    "岗位 JD：\n" + jobDescription + "\n\n" +
+                    "候选人简历：\n" + safe(resumeText);
+            String raw = aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA);
+            JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
+            String greeting = parsed.optString("greeting", "").trim();
+            String jobEvidence = parsed.optString("jobEvidence", "").trim();
+            String resumeEvidence = parsed.optString("resumeEvidence", "").trim();
+            if (!isUsableBossGreeting(greeting)
+                    || !quotesExist(List.of(jobEvidence), jobDescription)
+                    || !quotesExist(List.of(resumeEvidence), resumeText)
+                    || !sharesMeaningfulGreetingPhrase(greeting, jobEvidence)
+                    || !sharesMeaningfulGreetingPhrase(greeting, resumeEvidence)) {
+                throw outputError("AI_GREETING_INVALID", "AI 返回的 BOSS 话术缺少可核验的 JD 或简历依据", raw);
+            }
+            result.setGreeting(greeting);
+        } catch (Exception error) {
+            log.warn("Boss岗位 {} 的定制打招呼语重试失败，将使用档案默认兜底: {}",
+                    request.getJobKey(), error.getMessage());
+            result.setGreeting("");
+        }
+    }
+
+    private boolean isUsableBossGreeting(String greeting) {
+        String normalized = safe(greeting).replaceAll("\\s+", "").trim();
+        if (normalized.length() < 20 || normalized.length() > 120) return false;
+        String withoutPunctuation = normalized.replaceAll("[，。！？、,.!?~～]", "");
+        if (Set.of(
+                "您好我对这个岗位很感兴趣希望可以进一步沟通谢谢",
+                "您好我对贵司岗位很感兴趣期待与您进一步沟通",
+                "BOSS好我对这份工作很感兴趣你看我有机会深入沟通下吗",
+                "你好我对这个职位很感兴趣可以聊聊吗"
+        ).contains(withoutPunctuation)) return false;
+        String meaningful = withoutPunctuation.replaceAll(
+                "(?i)boss|您好|你好|贵司|这份|这个|这个岗位|该岗位|该职位|职位|岗位|工作|"
+                        + "很|非常|十分|比较|真的|我|您|对|喜欢|感兴趣|希望|期待|想|可以|有机会|"
+                        + "进一步|深入|沟通|交流|聊聊|一下|下|谢谢|感谢|请问|吗|呀|啊|的|了",
+                "").replaceAll("[^\\p{L}\\p{N}]", "");
+        return meaningful.length() >= 4;
+    }
+
+    private boolean greetingReferencesVerifiedEvidence(String greeting, List<DimensionScore> dimensions) {
+        if (dimensions == null || dimensions.isEmpty()) return false;
+        boolean jobGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getJobEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        boolean resumeGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getResumeEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        return jobGrounded && resumeGrounded;
+    }
+
+    private List<String> safeStrings(List<String> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private boolean sharesMeaningfulGreetingPhrase(String greeting, String evidence) {
+        String normalizedGreeting = normalizeEvidence(greeting);
+        String normalizedEvidence = normalizeEvidence(evidence);
+        int maxLength = Math.min(12, normalizedEvidence.length());
+        for (int length = maxLength; length >= 2; length--) {
+            for (int start = 0; start + length <= normalizedEvidence.length(); start++) {
+                String fragment = normalizedEvidence.substring(start, start + length);
+                boolean asciiOnly = fragment.codePoints().allMatch(codePoint -> codePoint <= 0x7f);
+                if (GENERIC_GREETING_EVIDENCE_FRAGMENTS.contains(fragment) || (asciiOnly && fragment.length() < 4)) continue;
+                if (normalizedGreeting.contains(fragment)) return true;
+            }
+        }
+        return false;
+    }
+
+    private List<DimensionScore> parseDimensions(JSONArray dimensions,
+                                                 List<String> unknowns,
+                                                 String raw) {
+        if (dimensions.length() != DIMENSION_SPECS.size()) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回必须包含六个评分维度", raw);
+        }
+        Map<String, DimensionScore> parsed = new LinkedHashMap<>();
+        for (int i = 0; i < dimensions.length(); i++) {
+            Object value = dimensions.opt(i);
+            if (!(value instanceof JSONObject dimension)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回维度必须是对象", raw);
+            }
+            String key = dimension.optString("key", "").trim().toUpperCase(Locale.ROOT);
+            String statusText = dimension.optString("status", "").trim().toUpperCase(Locale.ROOT);
+            DimensionSpec spec = DIMENSION_BY_KEY.get(key);
+            MatchStatus status;
+            try {
+                status = MatchStatus.valueOf(statusText);
+            } catch (IllegalArgumentException e) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回未知维度状态: " + statusText, raw);
+            }
+            if (spec == null || parsed.containsKey(key)
+                    || !(dimension.opt("jobEvidence") instanceof JSONArray jobEvidence)
+                    || !(dimension.opt("resumeEvidence") instanceof JSONArray resumeEvidence)
+                    || !(dimension.opt("note") instanceof String note)
+                    || !containsOnlyStrings(jobEvidence)
+                    || !containsOnlyStrings(resumeEvidence)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回维度字段无效或重复", raw);
+            }
+            List<String> jobEvidenceItems = toStringList(jobEvidence);
+            List<String> resumeEvidenceItems = toStringList(resumeEvidence);
+            if (status == MatchStatus.CONFLICT
+                    && (jobEvidenceItems.isEmpty() || resumeEvidenceItems.isEmpty())) {
+                status = MatchStatus.UNKNOWN;
+                unknowns.add(spec.label() + "存在差异描述，但缺少双方原文证据，已降级为待核实");
+            }
+            DimensionScore score = new DimensionScore();
+            score.setKey(spec.key());
+            score.setLabel(spec.label());
+            score.setWeight(spec.weight());
+            score.setStatus(status.name());
+            score.setAwarded(spec.weight() * status.factor);
+            score.setJobEvidence(jobEvidenceItems);
+            score.setResumeEvidence(resumeEvidenceItems);
+            score.setNote(note.trim());
+            parsed.put(key, score);
+        }
+        if (!parsed.keySet().equals(DIMENSION_BY_KEY.keySet())) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回评分维度不完整", raw);
+        }
+        return DIMENSION_SPECS.stream().map(spec -> parsed.get(spec.key())).toList();
+    }
+
+    private List<HardConflict> parseHardConflicts(JSONArray conflicts,
+                                                  List<String> unknowns,
+                                                  String raw) {
+        List<HardConflict> valid = new ArrayList<>();
+        for (int i = 0; i < conflicts.length(); i++) {
+            Object value = conflicts.opt(i);
+            if (!(value instanceof JSONObject conflict)
+                    || !(conflict.opt("requirement") instanceof String requirement)
+                    || !(conflict.opt("jobEvidence") instanceof JSONArray jobEvidence)
+                    || !(conflict.opt("resumeEvidence") instanceof JSONArray resumeEvidence)
+                    || !containsOnlyStrings(jobEvidence)
+                    || !containsOnlyStrings(resumeEvidence)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回硬冲突字段无效", raw);
+            }
+            List<String> jobEvidenceItems = toStringList(jobEvidence);
+            List<String> resumeEvidenceItems = toStringList(resumeEvidence);
+            if (requirement.isBlank() || jobEvidenceItems.isEmpty() || resumeEvidenceItems.isEmpty()) {
+                String label = requirement.isBlank() ? "疑似硬性要求" : requirement.trim();
+                unknowns.add(label + "缺少双方原文证据，已降级为待核实");
+                continue;
+            }
+            HardConflict hardConflict = new HardConflict();
+            hardConflict.setRequirement(requirement.trim());
+            hardConflict.setJobEvidence(jobEvidenceItems);
+            hardConflict.setResumeEvidence(resumeEvidenceItems);
+            valid.add(hardConflict);
+        }
+        return List.copyOf(valid);
+    }
+
+    private void verifyQuotedEvidence(AnalysisResult result,
+                                      JobAnalysisRequest request,
+                                      String resumeText) {
+        if (result == null) return;
+        String jobSource = String.join("\n",
+                safe(request.getKeyword()),
+                safe(request.getCompanyName()),
+                safe(request.getJobName()),
+                safe(request.getSalary()),
+                safe(request.getLocation()),
+                safe(request.getExperience()),
+                safe(request.getDegree()),
+                safe(request.getCompanyInfo()),
+                safe(request.getJobDescription()));
+        List<String> unknowns = new ArrayList<>(result.getUnknowns() == null
+                ? List.of() : result.getUnknowns());
+        for (DimensionScore dimension : result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()) {
+            MatchStatus status = MatchStatus.valueOf(dimension.getStatus());
+            if (status == MatchStatus.UNKNOWN) continue;
+            if (quotesExist(dimension.getJobEvidence(), jobSource)
+                    && quotesExist(dimension.getResumeEvidence(), resumeText)) continue;
+            dimension.setStatus(MatchStatus.UNKNOWN.name());
+            dimension.setAwarded(dimension.getWeight() * MatchStatus.UNKNOWN.factor);
+            unknowns.add(dimension.getLabel() + "的双方原文证据无法核验，已降级为待核实");
+        }
+
+        List<DimensionScore> conflictDimensions = (result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()).stream()
+                .filter(dimension -> MatchStatus.CONFLICT.name().equals(dimension.getStatus()))
+                .toList();
+        List<HardConflict> verifiedHardConflicts = new ArrayList<>();
+        for (HardConflict conflict : result.getHardConflicts() == null
+                ? List.<HardConflict>of() : result.getHardConflicts()) {
+            if (quotesExist(conflict.getJobEvidence(), jobSource)
+                    && quotesExist(conflict.getResumeEvidence(), resumeText)
+                    && conflictDimensions.stream().anyMatch(dimension ->
+                    sharesEvidence(conflict.getJobEvidence(), dimension.getJobEvidence())
+                            && sharesEvidence(conflict.getResumeEvidence(), dimension.getResumeEvidence()))) {
+                verifiedHardConflicts.add(conflict);
+            } else {
+                unknowns.add(conflict.getRequirement() + "的原文证据无法核验或与冲突分项不一致，已降级为待核实");
+            }
+        }
+
+        int verifiedScore = (int) Math.round((result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()).stream()
+                .mapToDouble(value -> value.getAwarded() == null ? 0.0 : value.getAwarded())
+                .sum());
+        result.setScore(verifiedScore);
+        result.setUnknowns(List.copyOf(unknowns));
+        result.setHardConflicts(List.copyOf(verifiedHardConflicts));
+    }
+
+    private boolean quotesExist(List<String> quotes, String source) {
+        if (quotes == null || quotes.isEmpty()) return false;
+        String normalizedSource = normalizeEvidence(source);
+        return quotes.stream()
+                .map(this::normalizeEvidence)
+                .allMatch(quote -> !quote.isBlank() && normalizedSource.contains(quote));
+    }
+
+    private boolean sharesEvidence(List<String> left, List<String> right) {
+        if (left == null || right == null) return false;
+        Set<String> normalizedRight = right.stream()
+                .map(this::normalizeEvidence)
+                .filter(value -> !value.isBlank())
+                .collect(Collectors.toSet());
+        return left.stream().map(this::normalizeEvidence)
+                .anyMatch(value -> !value.isBlank() && normalizedRight.contains(value));
+    }
+
+    private String normalizeEvidence(String value) {
+        return safe(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     private List<String> parseKeywordArray(String raw) {
@@ -405,7 +988,14 @@ public class JobAiAnalysisService {
         if (raw == null || raw.trim().isEmpty()) {
             throw outputError("AI_OUTPUT_EMPTY", "AI 返回空内容", raw);
         }
-        String s = raw.trim()
+        String original = raw.trim();
+        try {
+            new JSONObject(original);
+            return original;
+        } catch (Exception ignored) {
+        }
+
+        String s = original
                 .replace('\u201c', '"')
                 .replace('\u201d', '"')
                 .replace('\u2018', '\'')
@@ -423,7 +1013,10 @@ public class JobAiAnalysisService {
         }
 
         s = s.replaceAll(",\\s*([}\\]])", "$1");
-        for (String key : List.of("score", "decision", "summary", "strengths", "risks", "greeting")) {
+        for (String key : List.of(
+                "results", "taskId", "summary", "matches", "gaps", "unknowns", "dimensions",
+                "hardConflicts", "greeting", "key", "status", "jobEvidence", "resumeEvidence",
+                "note", "requirement")) {
             s = s.replaceAll("(?m)([{,]\\s*)" + key + "\\s*:", "$1\"" + key + "\":");
         }
         try {
@@ -1055,9 +1648,41 @@ public class JobAiAnalysisService {
         private String scanRunId;
     }
 
+    public record ThresholdApplicationResult(AiEntity thresholds, int bossHistoricalPromotedCount) {
+    }
+
     public record PlatformAnalysisState(boolean completed, boolean failed, String status) {
         public static PlatformAnalysisState incomplete(String status) {
             return new PlatformAnalysisState(false, false, status);
+        }
+    }
+
+    public record BatchAnalysisJob(long taskId,
+                                   JobAnalysisRequest request,
+                                   BooleanSupplier leaseIsCurrent,
+                                   LeaseWriteGuard leaseWriteGuard) {
+    }
+
+    private record PreparedJob(BatchAnalysisJob job, boolean priority, int threshold) {
+    }
+
+    private record BatchParse(Map<Long, AnalysisResult> results,
+                              Map<Long, AiOutputException> errors) {
+    }
+
+    private record DimensionSpec(String key, String label, int weight) {
+    }
+
+    private enum MatchStatus {
+        MATCH(1.0),
+        PARTIAL(0.75),
+        UNKNOWN(0.6),
+        CONFLICT(0.0);
+
+        private final double factor;
+
+        MatchStatus(double factor) {
+            this.factor = factor;
         }
     }
 
@@ -1081,11 +1706,17 @@ public class JobAiAnalysisService {
 
     @Data
     public static class AnalysisResult {
+        private Integer schemaVersion = 2;
         private Integer score;
         private String decision;
         private String summary;
         private List<String> strengths = new ArrayList<>();
         private List<String> risks = new ArrayList<>();
+        private List<String> matches = new ArrayList<>();
+        private List<String> gaps = new ArrayList<>();
+        private List<String> unknowns = new ArrayList<>();
+        private List<DimensionScore> dimensions = new ArrayList<>();
+        private List<HardConflict> hardConflicts = new ArrayList<>();
         private String greeting;
         private Boolean priorityCompany;
         private Integer threshold;
@@ -1102,10 +1733,16 @@ public class JobAiAnalysisService {
         }
 
         public String toReasonText() {
-            Map<String, Object> map = new HashMap<>();
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("schemaVersion", schemaVersion);
             map.put("summary", summary);
-            map.put("strengths", strengths);
-            map.put("risks", risks);
+            map.put("matches", matches == null || matches.isEmpty() ? strengths : matches);
+            map.put("gaps", gaps == null || gaps.isEmpty() ? risks : gaps);
+            map.put("unknowns", unknowns);
+            map.put("dimensions", dimensions == null ? List.of() : dimensions.stream()
+                    .map(DimensionScore::toMap).toList());
+            map.put("hardConflicts", hardConflicts == null ? List.of() : hardConflicts.stream()
+                    .map(HardConflict::toMap).toList());
             map.put("threshold", threshold);
             map.put("errorCode", errorCode);
             return new JSONObject(map).toString();
@@ -1124,6 +1761,46 @@ public class JobAiAnalysisService {
             AnalysisResult result = failed(DeliveryStatus.AI_ANALYSIS_FAILED, "AI 分析任务租约已失效，已丢弃旧执行结果");
             result.setStaleLease(true);
             return result;
+        }
+    }
+
+    @Data
+    public static class DimensionScore {
+        private String key;
+        private String label;
+        private Integer weight;
+        private String status;
+        private Double awarded;
+        private List<String> jobEvidence = new ArrayList<>();
+        private List<String> resumeEvidence = new ArrayList<>();
+        private String note;
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("key", key);
+            map.put("label", label);
+            map.put("weight", weight);
+            map.put("status", status);
+            map.put("awarded", awarded);
+            map.put("jobEvidence", jobEvidence);
+            map.put("resumeEvidence", resumeEvidence);
+            map.put("note", note);
+            return map;
+        }
+    }
+
+    @Data
+    public static class HardConflict {
+        private String requirement;
+        private List<String> jobEvidence = new ArrayList<>();
+        private List<String> resumeEvidence = new ArrayList<>();
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("requirement", requirement);
+            map.put("jobEvidence", jobEvidence);
+            map.put("resumeEvidence", resumeEvidence);
+            return map;
         }
     }
 }

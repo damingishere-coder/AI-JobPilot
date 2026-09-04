@@ -10,6 +10,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -32,6 +36,7 @@ import java.util.function.Consumer;
 public class ChromeJobAnalysisQueueService {
     private static final int AI_CONCURRENCY = 2;
     private static final int LOCAL_QUEUE_CAPACITY = 200;
+    private static final long BATCH_COALESCE_MILLIS = 250;
     private static final Duration LEASE_DURATION = Duration.ofMinutes(5);
     private static final long LEASE_HEARTBEAT_SECONDS = 60;
 
@@ -41,6 +46,7 @@ public class ChromeJobAnalysisQueueService {
     private final ScheduledExecutorService leaseHeartbeatExecutor;
     private final java.util.Set<Long> locallyScheduledTaskIds = ConcurrentHashMap.newKeySet();
     private final Map<Long, AnalysisJob> runtimeJobs = new ConcurrentHashMap<>();
+    private final Map<String, Object> batchClaimLocks = new ConcurrentHashMap<>();
     private volatile boolean stopping;
 
     public ChromeJobAnalysisQueueService(JobAiAnalysisService jobAiAnalysisService,
@@ -108,6 +114,26 @@ public class ChromeJobAnalysisQueueService {
         return taskStore.outstandingCount(profileId);
     }
 
+    public int queueSize(long profileId, String platform) {
+        return taskStore.outstandingCount(profileId, platform);
+    }
+
+    public int pendingCount(long profileId) {
+        return taskStore.pendingCount(profileId);
+    }
+
+    public int pendingCount(long profileId, String platform) {
+        return taskStore.pendingCount(profileId, platform);
+    }
+
+    public int processingCount(long profileId) {
+        return taskStore.processingCount(profileId);
+    }
+
+    public int processingCount(long profileId, String platform) {
+        return taskStore.processingCount(profileId, platform);
+    }
+
     /**
      * Readiness 只读取本地执行器和持久任务计数，不调用任何 AI Provider。
      */
@@ -124,6 +150,12 @@ public class ChromeJobAnalysisQueueService {
 
     public java.util.List<JobAnalysisTaskStore.TaskView> listTasks(long profileId, int limit) {
         return taskStore.listRecent(profileId, limit);
+    }
+
+    public java.util.List<JobAnalysisTaskStore.TaskView> listTasks(long profileId,
+                                                                   String platform,
+                                                                   int limit) {
+        return taskStore.listRecent(profileId, platform, limit);
     }
 
     public JobAnalysisTaskStore.RetryResult retry(long taskId, long profileId, boolean confirmUnknown) {
@@ -196,90 +228,201 @@ public class ChromeJobAnalysisQueueService {
     private void schedule(long taskId) {
         if (stopping || !locallyScheduledTaskIds.add(taskId)) return;
         try {
-            executor.execute(() -> runPersistedTask(taskId));
+            leaseHeartbeatExecutor.schedule(() -> {
+                try {
+                    executor.execute(() -> runPersistedBatch(taskId));
+                } catch (RejectedExecutionException e) {
+                    locallyScheduledTaskIds.remove(taskId);
+                    log.debug("本地 AI executor 已满，任务 {} 保留为 PENDING", taskId);
+                }
+            }, BATCH_COALESCE_MILLIS, TimeUnit.MILLISECONDS);
         } catch (RejectedExecutionException e) {
             locallyScheduledTaskIds.remove(taskId);
-            log.debug("本地 AI executor 已满，任务 {} 保留为 PENDING", taskId);
+            log.debug("本地 AI 批处理调度器已停止，任务 {} 保留为 PENDING", taskId);
         }
     }
 
-    private void runPersistedTask(long taskId) {
+    private void runPersistedBatch(long taskId) {
+        long startedAtNanos = System.nanoTime();
         String leaseToken = UUID.randomUUID().toString();
-        JobAnalysisTaskStore.TaskRecord claimed = null;
-        JobAiAnalysisService.JobAnalysisRequest request = null;
+        List<JobAnalysisTaskStore.TaskRecord> claimedTasks = new ArrayList<>();
+        Map<Long, JobAiAnalysisService.JobAnalysisRequest> requests = new LinkedHashMap<>();
+        Map<Long, JobAiAnalysisService.AnalysisResult> batchResults = Map.of();
         ScheduledFuture<?> heartbeat = null;
         try {
-            claimed = taskStore.claim(taskId, leaseToken, LEASE_DURATION);
-            if (claimed == null) return;
-            heartbeat = startLeaseHeartbeat(taskId, leaseToken);
+            claimedTasks.addAll(claimCompatibleBatch(taskId, leaseToken));
+            if (claimedTasks.isEmpty()) return;
+            heartbeat = startLeaseHeartbeat(
+                    claimedTasks.stream().map(JobAnalysisTaskStore.TaskRecord::id).toList(), leaseToken);
 
-            request = taskStore.deserialize(claimed);
-            AnalysisJob runtimeJob = runtimeJobs.get(taskId);
-            Consumer<JobProgressMessage> progress = runtimeJob == null ? null : runtimeJob.getProgressCallback();
-            int current = runtimeJob == null ? 0 : runtimeJob.getCurrent();
-            int total = runtimeJob == null ? 0 : runtimeJob.getTotal();
-            String platform = Objects.toString(request.getPlatform(), "");
-            String jobName = Objects.toString(request.getJobName(), "");
-
-            emit(progress, JobProgressMessage.progress(platform, "AI分析中：" + jobName, current, total));
-            JobAiAnalysisService.AnalysisResult result = jobAiAnalysisService.analyzeJob(
-                    request,
-                    () -> taskStore.isLeaseOwner(taskId, leaseToken),
-                    action -> taskStore.executeWithLease(taskId, leaseToken, action)
-            );
-            if (result.isStaleLease()) {
-                log.warn("AI 任务 {} 的租约已失效，旧执行结果已丢弃", taskId);
-                return;
+            List<JobAiAnalysisService.BatchAnalysisJob> batch = new ArrayList<>();
+            for (JobAnalysisTaskStore.TaskRecord task : claimedTasks) {
+                try {
+                    JobAiAnalysisService.JobAnalysisRequest request = taskStore.deserialize(task);
+                    requests.put(task.id(), request);
+                    emitAnalysisStarted(task.id(), request);
+                    batch.add(new JobAiAnalysisService.BatchAnalysisJob(
+                            task.id(),
+                            request,
+                            () -> taskStore.isLeaseOwner(task.id(), leaseToken),
+                            action -> taskStore.executeWithLease(task.id(), leaseToken, action)
+                    ));
+                } catch (Exception e) {
+                    finishAfterExecutionException(task, leaseToken, null, e);
+                }
             }
-            boolean failed = result.isFailure();
-            String summary = Objects.toString(result.getSummary(), "");
-            boolean completed = result.isProviderOutcomeUnknown()
-                    ? taskStore.completeUnknown(taskId, leaseToken, summary)
-                    : taskStore.complete(taskId, leaseToken, failed, summary);
-            if (!completed && !result.isProviderOutcomeUnknown()) {
-                reconcileLateWorkerResult(claimed, leaseToken, failed, summary);
+            if (batch.isEmpty()) return;
+            batchResults = jobAiAnalysisService.analyzeJobs(batch);
+            for (JobAnalysisTaskStore.TaskRecord task : claimedTasks) {
+                JobAiAnalysisService.JobAnalysisRequest request = requests.get(task.id());
+                if (request == null) continue;
+                JobAiAnalysisService.AnalysisResult result = batchResults.get(task.id());
+                if (result == null) {
+                    finishAfterExecutionException(task, leaseToken, request,
+                            new IllegalStateException("批量 AI 分析未返回该任务结果"));
+                    continue;
+                }
+                completeTask(task, leaseToken, request, result);
             }
-            if (!completed && result.isProviderOutcomeUnknown()) {
-                log.warn("AI 任务 {} 的 UNKNOWN 终态写入未命中当前租约，将等待过期对账", taskId);
-            }
-
-            if (result.isProviderOutcomeUnknown()) {
-                emit(progress, JobProgressMessage.warning(
-                        platform, "AI分析结果未知：" + jobName + "，" + summary));
-            } else if (failed) {
-                emit(progress, JobProgressMessage.warning(platform, "AI分析失败：" + jobName + "，" + summary));
-            }
-            String completionLabel = "跳过：";
-            if (result.shouldApply()) {
-                completionLabel = DeliveryStatus.WAITING_CONFIRM + "：";
-            } else if (result.isProviderOutcomeUnknown()) {
-                completionLabel = "结果未知：";
-            } else if (failed) {
-                completionLabel = DeliveryStatus.AI_ANALYSIS_FAILED + "：";
-            }
-            emit(progress, JobProgressMessage.progress(
-                    platform, completionLabel + jobName, current, total));
         } catch (Exception e) {
-            log.warn("Chrome 后台 AI 分析任务 {} 失败: {}", taskId, e.getMessage(), e);
-            if (claimed != null) {
-                finishAfterExecutionException(claimed, leaseToken, request, e);
+            log.warn("Chrome 后台 AI 分析批次 {} 失败: {}", taskId, e.getMessage(), e);
+            for (JobAnalysisTaskStore.TaskRecord task : claimedTasks) {
+                finishAfterExecutionException(task, leaseToken, requests.get(task.id()), e);
             }
         } finally {
             if (heartbeat != null) heartbeat.cancel(false);
-            runtimeJobs.remove(taskId);
-            locallyScheduledTaskIds.remove(taskId);
+            if (claimedTasks.isEmpty()) locallyScheduledTaskIds.remove(taskId);
+            for (JobAnalysisTaskStore.TaskRecord task : claimedTasks) {
+                runtimeJobs.remove(task.id());
+                locallyScheduledTaskIds.remove(task.id());
+            }
+            logBatchMetrics(taskId, claimedTasks, batchResults, startedAtNanos);
             dispatchPendingTasks();
         }
     }
 
-    private ScheduledFuture<?> startLeaseHeartbeat(long taskId, String leaseToken) {
-        return leaseHeartbeatExecutor.scheduleAtFixedRate(() -> {
+    private void logBatchMetrics(long seedTaskId,
+                                 List<JobAnalysisTaskStore.TaskRecord> claimedTasks,
+                                 Map<Long, JobAiAnalysisService.AnalysisResult> results,
+                                 long startedAtNanos) {
+        if (claimedTasks.isEmpty()) return;
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+        long unknown = results.values().stream()
+                .filter(JobAiAnalysisService.AnalysisResult::isProviderOutcomeUnknown).count();
+        long stale = results.values().stream().filter(JobAiAnalysisService.AnalysisResult::isStaleLease).count();
+        long failed = results.values().stream()
+                .filter(JobAiAnalysisService.AnalysisResult::isFailure)
+                .filter(result -> !result.isProviderOutcomeUnknown() && !result.isStaleLease())
+                .count();
+        long missing = Math.max(0, claimedTasks.size() - results.size());
+        double failureRate = (failed + unknown + missing) * 100.0 / claimedTasks.size();
+        log.info("AI岗位批次完成: seedTaskId={}, batchSize={}, resultCount={}, failed={}, unknown={}, " +
+                        "stale={}, elapsedMs={}, failureRate={}",
+                seedTaskId,
+                claimedTasks.size(),
+                results.size(),
+                failed,
+                unknown,
+                stale,
+                elapsedMillis,
+                String.format(Locale.ROOT, "%.2f%%", failureRate));
+    }
+
+    private List<JobAnalysisTaskStore.TaskRecord> claimCompatibleBatch(long taskId, String leaseToken) {
+        JobAnalysisTaskStore.TaskRecord pending = taskStore.findById(taskId);
+        if (pending == null || pending.statusEnum() != JobAnalysisTaskStore.Status.PENDING) return List.of();
+        String groupKey = pending.profileId() + ":" + Objects.toString(pending.platform(), "").toLowerCase();
+        Object lock = batchClaimLocks.computeIfAbsent(groupKey, ignored -> new Object());
+        synchronized (lock) {
+            JobAnalysisTaskStore.TaskRecord seed = taskStore.claim(taskId, leaseToken, LEASE_DURATION);
+            if (seed == null) return List.of();
+            List<JobAnalysisTaskStore.TaskRecord> claimedTasks = new ArrayList<>();
+            claimedTasks.add(seed);
             try {
-                if (!taskStore.renewLease(taskId, leaseToken, LEASE_DURATION)) {
-                    log.warn("AI 任务 {} 的租约续期被拒绝，旧执行结果将被租约校验丢弃", taskId);
+                for (JobAnalysisTaskStore.TaskRecord candidate : taskStore.listCompatibleDuePending(
+                        seed.profileId(), seed.platform(), JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
+                    try {
+                        JobAnalysisTaskStore.TaskRecord claimed = taskStore.claim(
+                                candidate.id(), leaseToken, LEASE_DURATION);
+                        if (claimed != null) claimedTasks.add(claimed);
+                    } catch (RuntimeException claimError) {
+                        log.warn("批量领取兼容 AI 任务 {} 失败，保留已领取任务继续执行: {}",
+                                candidate.id(), claimError.getMessage());
+                    }
                 }
-            } catch (Exception e) {
-                log.warn("AI 任务 {} 的租约续期失败: {}", taskId, e.getMessage());
+            } catch (RuntimeException lookupError) {
+                log.warn("查询兼容 AI 任务失败，保留种子任务 {} 继续执行: {}",
+                        seed.id(), lookupError.getMessage());
+            }
+            return claimedTasks;
+        }
+    }
+
+    private void emitAnalysisStarted(long taskId, JobAiAnalysisService.JobAnalysisRequest request) {
+        AnalysisJob runtimeJob = runtimeJobs.get(taskId);
+        Consumer<JobProgressMessage> progress = runtimeJob == null ? null : runtimeJob.getProgressCallback();
+        emit(progress, JobProgressMessage.progress(
+                Objects.toString(request.getPlatform(), ""),
+                "AI分析中：" + Objects.toString(request.getJobName(), ""),
+                runtimeJob == null ? 0 : runtimeJob.getCurrent(),
+                runtimeJob == null ? 0 : runtimeJob.getTotal()));
+    }
+
+    private void completeTask(JobAnalysisTaskStore.TaskRecord task,
+                              String leaseToken,
+                              JobAiAnalysisService.JobAnalysisRequest request,
+                              JobAiAnalysisService.AnalysisResult result) {
+        if (result.isStaleLease()) {
+            log.warn("AI 任务 {} 的租约已失效，旧执行结果已丢弃", task.id());
+            return;
+        }
+        boolean failed = result.isFailure();
+        String summary = Objects.toString(result.getSummary(), "");
+        boolean completed = result.isProviderOutcomeUnknown()
+                ? taskStore.completeUnknown(task.id(), leaseToken, summary)
+                : taskStore.complete(task.id(), leaseToken, failed, summary);
+        if (!completed && !result.isProviderOutcomeUnknown()) {
+            reconcileLateWorkerResult(task, leaseToken, failed, summary);
+        }
+        if (!completed && result.isProviderOutcomeUnknown()) {
+            log.warn("AI 任务 {} 的 UNKNOWN 终态写入未命中当前租约，将等待过期对账", task.id());
+        }
+
+        AnalysisJob runtimeJob = runtimeJobs.get(task.id());
+        Consumer<JobProgressMessage> progress = runtimeJob == null ? null : runtimeJob.getProgressCallback();
+        String platform = Objects.toString(request.getPlatform(), "");
+        String jobName = Objects.toString(request.getJobName(), "");
+        if (result.isProviderOutcomeUnknown()) {
+            emit(progress, JobProgressMessage.warning(
+                    platform, "AI分析结果未知：" + jobName + "，" + summary));
+        } else if (failed) {
+            emit(progress, JobProgressMessage.warning(platform, "AI分析失败：" + jobName + "，" + summary));
+        }
+        String completionLabel = "跳过：";
+        if (result.shouldApply()) {
+            completionLabel = DeliveryStatus.WAITING_CONFIRM + "：";
+        } else if (result.isProviderOutcomeUnknown()) {
+            completionLabel = "结果未知：";
+        } else if (failed) {
+            completionLabel = DeliveryStatus.AI_ANALYSIS_FAILED + "：";
+        }
+        emit(progress, JobProgressMessage.progress(
+                platform,
+                completionLabel + jobName,
+                runtimeJob == null ? 0 : runtimeJob.getCurrent(),
+                runtimeJob == null ? 0 : runtimeJob.getTotal()));
+    }
+
+    private ScheduledFuture<?> startLeaseHeartbeat(List<Long> taskIds, String leaseToken) {
+        return leaseHeartbeatExecutor.scheduleAtFixedRate(() -> {
+            for (Long taskId : taskIds) {
+                try {
+                    if (!taskStore.renewLease(taskId, leaseToken, LEASE_DURATION)) {
+                        log.warn("AI 任务 {} 的租约续期被拒绝，旧执行结果将被租约校验丢弃", taskId);
+                    }
+                } catch (Exception e) {
+                    log.warn("AI 任务 {} 的租约续期失败: {}", taskId, e.getMessage());
+                }
             }
         }, LEASE_HEARTBEAT_SECONDS, LEASE_HEARTBEAT_SECONDS, TimeUnit.SECONDS);
     }

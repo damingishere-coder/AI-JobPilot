@@ -20,4 +20,15 @@ class BossStatsSqlProviderTest {
         assertThat(provider.selectOverview(query))
                 .contains("ai_score >= #{minAiScore}");
     }
+
+    @Test
+    void currentRunStatsIncludeEveryStatusWithinTheRequestedScan() {
+        BossStatsQuery query = new BossStatsQuery();
+        query.setProfileId(1L);
+        query.setScanRunId("boss-current");
+
+        assertThat(provider.selectKpi(query)).contains("scan_run_id = #{scanRunId}");
+        assertThat(provider.selectOverview(query)).contains("scan_run_id = #{scanRunId}");
+        assertThat(provider.selectStatusDistribution(query)).contains("scan_run_id = #{scanRunId}");
+    }
 }
