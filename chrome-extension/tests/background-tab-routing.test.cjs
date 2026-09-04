@@ -35,6 +35,7 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
+  bossDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
   }
@@ -92,6 +93,11 @@ function loadBackground({
         }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
+        }
+        if (message.type === "BOSS_DELIVER_CURRENT_V2") {
+          const response = bossDeliveryResponses.shift();
+          if (response instanceof Error) throw response;
+          return response || { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION" };
         }
         return { success: true };
       }
@@ -469,6 +475,84 @@ test("keeps Boss and Zhilian scan ownership when both start together", async () 
   const sessions = storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__;
   assert.equal(sessions.boss.tabId, 1);
   assert.equal(sessions.zhilian.tabId, 2);
+});
+
+test("halts a Boss batch after the first unknown result and leaves later jobs untouched", async () => {
+  const requests = [];
+  const tasks = [1, 2, 3].map((id) => ({
+    id,
+    requestKey: `request-${id}`,
+    url: `https://www.zhipin.com/job_detail/job-${id}.html`,
+    greeting: `岗位 ${id} 的精确话术`
+  }));
+  const { context, sentMessages } = loadBackground({
+    tabs: [{ id: 7, windowId: 1, url: tasks[0].url, status: "complete" }],
+    bossDeliveryResponses: [{
+      success: false,
+      outcome: "UNKNOWN",
+      evidence: "CHAT_SURFACE_ONLY",
+      greetingOutcome: "UNKNOWN",
+      greetingEvidence: "GREETING_RENDER_UNCONFIRMED",
+      message: "点击发送后未检测到精确话术"
+    }],
+    fetchImpl: async (url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push({ url, body });
+      return jsonResponse({ success: true, accepted: true, state: body.outcome });
+    }
+  });
+
+  const result = await context.handleBossDeliver(
+    { id: 7, windowId: 1, url: tasks[0].url, status: "complete" },
+    { hosts: ["zhipin.com"], contentScript: "boss-content.js" },
+    { type: "BOSS_DELIVER_BATCH", tasks },
+    null
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.halted, true);
+  assert.equal(result.haltedJobId, 1);
+  assert.equal(result.unknownCount, 1);
+  assert.equal(result.failedCount, 0);
+  assert.equal(result.unprocessedCount, 2);
+  assert.equal(result.results.length, 3);
+  assert.deepEqual(Array.from(result.results.slice(1), (item) => item.skipped), [true, true]);
+  assert.equal(sentMessages.filter((entry) => entry.message.type === "BOSS_DELIVER_CURRENT_V2").length, 1);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].body.outcome, "UNKNOWN");
+  assert.deepEqual(requests.slice(1).map((entry) => entry.body.greetingOutcome), ["NOT_SENT", "NOT_SENT"]);
+  assert.deepEqual(requests.slice(1).map((entry) => entry.body.evidence), ["BATCH_HALTED_BEFORE_ACTION", "BATCH_HALTED_BEFORE_ACTION"]);
+});
+
+test("preserves Boss existing-conversation and not-sent evidence", async () => {
+  const requests = [];
+  const { context } = loadBackground({
+    tabs: [],
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return jsonResponse({ success: true, accepted: true, state: "UNKNOWN" });
+    }
+  });
+
+  const result = await context.recordBossDeliveryResponse(
+    { id: 51, requestKey: "boss-existing" },
+    {
+      success: false,
+      outcome: "UNKNOWN",
+      evidence: "EXISTING_CONVERSATION",
+      greetingOutcome: "NOT_SENT",
+      greetingEvidence: "ALREADY_CONTACTED",
+      message: "已有沟通，本次未补发"
+    }
+  );
+
+  assert.equal(result.outcome, "UNKNOWN");
+  assert.equal(result.evidence, "EXISTING_CONVERSATION");
+  assert.equal(result.greetingOutcome, "NOT_SENT");
+  assert.equal(result.greetingEvidence, "ALREADY_CONTACTED");
+  assert.equal(requests[0].body.evidence, "EXISTING_CONVERSATION");
+  assert.equal(requests[0].body.greetingOutcome, "NOT_SENT");
+  assert.equal(requests[0].body.greetingEvidence, "ALREADY_CONTACTED");
 });
 
 test("profile switch and legacy sessions invalidate shared checkpoints", async () => {

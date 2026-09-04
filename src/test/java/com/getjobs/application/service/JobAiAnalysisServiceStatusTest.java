@@ -334,6 +334,21 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void nonBossAnalysisStillRequiresGreetingField() {
+        when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(missingGreetingBatch(), missingGreetingBatch());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(zhilianRequest());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_MISSING_FIELD");
+        assertThat(lastZhilianUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
     void customThresholdAcceptsScoreExactlyAtSixty() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
@@ -568,17 +583,59 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
-    void missingRequiredOutputFieldBecomesExplicitAiFailure() {
+    void missingGreetingRetriesOnlyGreetingAndKeepsAnalysisResult() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
         when(aiService.sendStructuredRequest(any(), any())).thenReturn(
-                missingGreetingBatch(), missingGreetingBatch());
+                missingGreetingBatch(), groundedGreetingResult());
 
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
 
-        assertThat(result.isFailure()).isTrue();
-        assertThat(result.getErrorCode()).isEqualTo("AI_OUTPUT_MISSING_FIELD");
-        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.AI_ANALYSIS_FAILED);
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getGreeting()).contains("Spring Boot", "后端系统设计");
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
+        assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt)
+                .contains("负责后端系统设计开发，要求 Java Spring Boot 经验。")
+                .contains("仅1年 Java 后端开发经验，熟悉 Spring Boot 和招聘业务系统。"));
+    }
+
+    @Test
+    void invalidGreetingRetryFailureFallsBackWithoutDiscardingMatchDecision() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject generic = new JSONObject(batchResult("匹配"));
+        generic.getJSONArray("results").getJSONObject(0)
+                .put("greeting", "BOSS好😝，我对这份工作很感兴趣，你看我有机会深入沟通下吗？");
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(generic.toString(), "not-json");
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getGreeting()).isEmpty();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
+    }
+
+    @Test
+    void greetingRetryRejectsEvidenceThatCannotBeFoundInJobOrResume() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        JSONObject fabricatedEvidence = new JSONObject(groundedGreetingResult())
+                .put("jobEvidence", "负责千万级电商交易平台")
+                .put("resumeEvidence", "带领二十人技术团队");
+        when(aiService.sendStructuredRequest(any(), any()))
+                .thenReturn(missingGreetingBatch(), fabricatedEvidence.toString());
+
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getDecision()).isEqualTo("APPLY");
+        assertThat(result.getGreeting()).isEmpty();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
         verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
@@ -866,7 +923,7 @@ class JobAiAnalysisServiceStatusTest {
             }
             item.put("dimensions", dimensions);
             item.put("hardConflicts", new JSONArray());
-            item.put("greeting", "你好");
+            item.put("greeting", "您好，我有 Java 和 Spring Boot 后端经验，希望进一步了解该岗位的系统设计工作。");
             results.put(item);
         }
         return new JSONObject().put("results", results).toString();
@@ -894,6 +951,14 @@ class JobAiAnalysisServiceStatusTest {
         JSONObject root = new JSONObject(batchResult("缺少字段"));
         root.getJSONArray("results").getJSONObject(0).remove("greeting");
         return root.toString();
+    }
+
+    private String groundedGreetingResult() {
+        return new JSONObject()
+                .put("greeting", "您好，我有 Spring Boot 后端经验，希望进一步了解该岗位的后端系统设计工作。")
+                .put("jobEvidence", "后端系统设计开发")
+                .put("resumeEvidence", "熟悉 Spring Boot")
+                .toString();
     }
 
     private String invalidStatusBatch() {

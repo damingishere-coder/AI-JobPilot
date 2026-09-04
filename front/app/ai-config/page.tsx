@@ -16,7 +16,7 @@ const ANALYSIS_LOGIC_TEXT = `1. 平台配置页先决定怎么找岗位：关键
 2. 自动任务按这些条件进入招聘平台搜索岗位，并读取公司、岗位名、薪资、地点、经验、学历、公司信息和岗位描述。
 3. AI 会把你的简历内容和岗位信息放在一起分析，返回 score、decision、summary、strengths、risks、greeting。
 4. 分数达到当前档案设置的投递分数线后，岗位进入“待确认”列表；分数线可在 Boss 投递分析页的“岗位数据”区域设置。
-5. 只有你在分析页确认后，系统才会执行实际投递，并优先使用 AI 返回的 greeting。`
+5. 只有你在分析页确认后，系统才会执行实际投递，并优先使用岗位 JD 定制话术；AI 生成失败时才使用档案默认兜底。`
 
 type AiConfig = {
   introduce: string
@@ -49,6 +49,7 @@ type BossConfigResponse = ProfileAwareResponse<never> & {
   config?: {
     enableAi?: unknown
     sayHi?: string
+    nativeGreetingDisabledConfirmed?: unknown
   }
 }
 
@@ -87,6 +88,7 @@ export default function AiConfigPage() {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [resumeDirty, setResumeDirty] = useState(false)
   const [sayHi, setSayHi] = useState('')
+  const [nativeGreetingDisabledConfirmed, setNativeGreetingDisabledConfirmed] = useState<number>(0)
 
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -174,6 +176,7 @@ export default function AiConfigPage() {
     setAiConfig({ introduce: '', prompt: '' })
     setEnableAi(0)
     setSayHi('')
+    setNativeGreetingDisabledConfirmed(0)
     setResumeText('')
     setResumeMeta(null)
     setResumePreview(null)
@@ -237,6 +240,9 @@ export default function AiConfigPage() {
         : { introduce: '', prompt: '' })
       setEnableAi(parseEnableAi(bossResult.config?.enableAi))
       setSayHi(bossResult.config?.sayHi || '')
+      setNativeGreetingDisabledConfirmed(parseEnableAi(
+        bossResult.config?.nativeGreetingDisabledConfirmed,
+      ))
       setResumeText(resume?.resumeText || '')
       setResumeMeta(resume ? {
         sourceFilename: resume.sourceFilename,
@@ -347,7 +353,11 @@ export default function AiConfigPage() {
     const response = await fetch(`${API_BASE}/api/boss/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sayHi: nextSayHi, enableAi }),
+      body: JSON.stringify({
+        sayHi: nextSayHi,
+        enableAi,
+        nativeGreetingDisabledConfirmed,
+      }),
     })
     await readApiResponse<unknown>(response, 'Boss默认打招呼语保存失败')
   }
@@ -720,9 +730,28 @@ export default function AiConfigPage() {
                   className="min-h-[120px] resize-y"
                 />
                 <p className="text-xs text-muted-foreground">
-                  AI关闭、AI返回为空或生成失败时，Boss投递会使用这段话术
+                  仅当岗位 JD 话术生成失败时使用；分析页会明确标为“AI 失败兜底”
                 </p>
               </div>
+
+              <label className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={nativeGreetingDisabledConfirmed === 1}
+                  onChange={(event) => {
+                    setNativeGreetingDisabledConfirmed(event.target.checked ? 1 : 0)
+                    markDirty()
+                  }}
+                  disabled={!hasProfile || isBusy}
+                  className="mt-1 h-4 w-4 rounded border-amber-400"
+                />
+                <span>
+                  <strong className="block font-semibold">我已关闭 BOSS 平台自带打招呼语</strong>
+                  <span className="mt-1 block text-xs leading-5 text-amber-800">
+                    请在 BOSS App 的“我的 → 设置 → 打招呼语”中关闭平台默认话术。未确认前，AI-JobPilot 会阻止创建真实 BOSS 投递任务，避免平台默认语抢先发送。
+                  </span>
+                </span>
+              </label>
 
               <div className="space-y-2">
                 <Label htmlFor="analysis-logic">投递岗位分析逻辑</Label>
@@ -804,7 +833,7 @@ export default function AiConfigPage() {
                   <li>自动任务按这些条件在招聘平台搜索岗位，并提取岗位详情和公司信息。</li>
                   <li>提交简历后，AI会用“简历内容 + 岗位信息 + 优先公司阈值”进行匹配打分。</li>
                   <li>岗位达到设置的分数线后进入待确认，分数线可在 Boss 投递分析页的“岗位数据”区域修改。</li>
-                  <li>你确认投递后，系统优先发送AI生成的 greeting；没有可用 greeting 时发送默认打招呼话术。</li>
+                  <li>你确认投递后，系统优先发送岗位 JD 定制话术；AI 生成失败时才使用档案默认兜底。</li>
                 </ul>
               </div>
             </div>

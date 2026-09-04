@@ -43,6 +43,9 @@ public class BossConfigEntity {
     private String stage;
     /** 默认打招呼语（当AI返回为空时使用） */
     private String sayHi;
+    /** 用户已确认关闭 BOSS 平台自带打招呼语（1=已确认，0=未确认） */
+    @TableField("native_greeting_disabled_confirmed")
+    private Integer nativeGreetingDisabledConfirmed;
     /** 期望薪资下限（单位：元/日或元/月，按平台规则解析） */
     private Integer expectedSalaryMin;
     /** 期望薪资上限（单位：元/日或元/月，按平台规则解析） */

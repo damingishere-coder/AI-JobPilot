@@ -242,6 +242,10 @@ public class BossService {
      * - 若表为空：插入新记录
      */
     public BossConfigEntity saveOrUpdateFirstSelective(BossConfigEntity partial) {
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            partial.setNativeGreetingDisabledConfirmed(
+                    partial.getNativeGreetingDisabledConfirmed() == 1 ? 1 : 0);
+        }
         BossConfigEntity existing = getFirstConfig();
         LocalDateTime now = LocalDateTime.now();
 
@@ -258,6 +262,9 @@ public class BossService {
         existing.setProfileId(profileService.getCurrentProfileId());
         // 选择性合并：仅当请求体字段非空时才覆盖
         if (partial.getSayHi() != null) existing.setSayHi(partial.getSayHi());
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            existing.setNativeGreetingDisabledConfirmed(partial.getNativeGreetingDisabledConfirmed());
+        }
         if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
@@ -288,6 +295,11 @@ public class BossService {
         existing.setUpdatedAt(now);
         bossConfigMapper.updateById(existing);
         return existing;
+    }
+
+    public boolean isNativeGreetingDisabledConfirmed() {
+        BossConfigEntity config = getFirstConfig();
+        return config != null && Integer.valueOf(1).equals(config.getNativeGreetingDisabledConfirmed());
     }
 
     /**

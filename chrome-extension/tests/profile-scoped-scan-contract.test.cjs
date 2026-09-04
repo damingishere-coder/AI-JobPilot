@@ -17,6 +17,7 @@ test("extension release and both content scripts use the profile-scoped contract
 
   assert.equal(manifest.version, "1.5.0");
   assert.match(background, /BACKGROUND_VERSION = "2026-09-04-boss-hr-assistant"/);
+  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-assistant"/);
   assert.match(boss, /EXTENSION_VERSION = "2026-09-04-boss-hr-assistant"/);
   assert.match(zhilian, /EXTENSION_VERSION = "2026-09-04-boss-hr-assistant"/);
 });

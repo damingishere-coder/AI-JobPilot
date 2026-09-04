@@ -1,3 +1,4 @@
+-- V15 follows the BOSS greeting delivery audit introduced in V14.
 CREATE TABLE hr_assistant_settings (
     profile_id INTEGER PRIMARY KEY,
     communication_profile_cipher TEXT,

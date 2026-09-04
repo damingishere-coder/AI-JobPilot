@@ -164,7 +164,13 @@ export function GreetingDraftDialog({
         <div className="space-y-1">
           <h2 id={titleId} className="text-lg font-semibold">{confirmMode ? "核对最终沟通话术" : "编辑沟通草稿"}</h2>
           <p id={descriptionId} className="text-sm text-muted-foreground">
-            {job.companyName || "未知公司"} · {job.jobName || "未命名岗位"}。当前来源：{sourceLabels[view.greetingSource]}。
+            {job.companyName || "未知公司"} · {job.jobName || "未命名岗位"}。当前来源：{
+              platform === "boss" && view.greetingSource === "AI_GREETING"
+                ? "岗位 JD 定制"
+                : platform === "boss" && view.greetingSource === "PROFILE_DEFAULT"
+                  ? "AI 失败兜底（档案默认）"
+                  : sourceLabels[view.greetingSource]
+            }。
           </p>
         </div>
 
@@ -181,7 +187,9 @@ export function GreetingDraftDialog({
             aria-invalid={Boolean(error)}
           />
           <div className="flex justify-between text-xs text-muted-foreground">
-            <span>优先级：人工编辑稿 → AI 原稿 → 档案默认话术</span>
+            <span>{platform === "boss"
+              ? "优先级：人工编辑稿 → 岗位 JD 定制 → AI 失败兜底（档案默认）"
+              : "优先级：人工编辑稿 → AI 原稿 → 档案默认话术"}</span>
             <span>{content.length}/1000</span>
           </div>
         </div>

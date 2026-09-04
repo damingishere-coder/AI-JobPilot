@@ -609,6 +609,9 @@ public class DatabaseSchemaService {
         requiredColumns.put("config", Set.of("config_key", "config_value"));
         requiredColumns.put("cookie", Set.of("platform", "cookie_value"));
         requiredColumns.put("ai", Set.of("profile_id", "apply_threshold", "priority_apply_threshold"));
+        requiredColumns.put("boss_config", requireV7TaskSchema
+                ? Set.of("profile_id", "native_greeting_disabled_confirmed")
+                : Set.of("profile_id"));
         requiredColumns.put("priority_company", Set.of("profile_id", "company_name"));
         Set<String> bossDataColumns = new LinkedHashSet<>(Set.of(
                 "profile_id", "encrypt_id", "encrypt_user_id", "delivery_status", "failure_type",
@@ -631,7 +634,8 @@ public class DatabaseSchemaService {
             requiredColumns.put("job51_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
             requiredColumns.put("delivery_attempt", Set.of(
                     "request_key", "platform", "profile_id", "job_key", "job_row_id", "state",
-                    "evidence", "message", "requested_at", "resolved_at", "updated_at"));
+                    "evidence", "message", "greeting_snapshot", "greeting_source", "greeting_outcome",
+                    "greeting_evidence", "requested_at", "resolved_at", "updated_at"));
             requiredColumns.put("hr_assistant_settings", Set.of(
                     "profile_id", "communication_profile_cipher", "napcat_ws_url", "napcat_token_cipher",
                     "qq_target_cipher", "qq_enabled", "retention_days"));

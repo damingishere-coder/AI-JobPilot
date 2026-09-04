@@ -9,6 +9,7 @@ import { GreetingDraftDialog, type GreetingJob } from "@/components/communicatio
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { BatchActionBar } from "./components/BatchActionBar"
 import { BossChartPanel } from "./components/BossChartPanel"
+import { BossDeliveryHistory } from "./components/BossDeliveryHistory"
 import { BossFilterPanel } from "./components/BossFilterPanel"
 import { BossJobTable } from "./components/BossJobTable"
 import { BossKpiCards } from "./components/BossKpiCards"
@@ -42,6 +43,7 @@ export default function AnalysisContent({
   const [selectedManualJobIds, setSelectedManualJobIds] = useState<Set<number>>(new Set())
   const [greetingJob, setGreetingJob] = useState<BossJob | null>(null)
   const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
+  const [deliveryHistoryRevision, setDeliveryHistoryRevision] = useState(0)
 
   const {
     filters,
@@ -104,6 +106,7 @@ export default function AnalysisContent({
   const refreshStats = useCallback(async () => {
     await loadStats()
     await loadDashboardStats()
+    setDeliveryHistoryRevision((current) => current + 1)
   }, [loadDashboardStats, loadStats])
 
   const handleRetryAnalysisJob = useCallback(async (job: BossJob) => {
@@ -363,6 +366,8 @@ export default function AnalysisContent({
           />
         </CardContent>
       </Card>
+
+      <BossDeliveryHistory refreshKey={deliveryHistoryRevision} />
 
       <BossChartPanel
         stats={stats}

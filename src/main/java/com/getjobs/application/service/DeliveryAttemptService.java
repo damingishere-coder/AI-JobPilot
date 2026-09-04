@@ -30,12 +30,16 @@ public class DeliveryAttemptService {
     public static final String PRE_ACTION_ERROR = "PRE_ACTION_ERROR";
     public static final String MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION";
     public static final String RETRY_APPROVED = "RETRY_APPROVED";
+    public static final String GREETING_RENDERED_EXACT = "GREETING_RENDERED_EXACT";
+    public static final String GREETING_MANUAL_RECONCILIATION = "GREETING_MANUAL_RECONCILIATION";
+    public static final String BATCH_HALTED_BEFORE_ACTION = "BATCH_HALTED_BEFORE_ACTION";
 
     private static final Set<String> PLATFORMS = Set.of("boss", "zhilian", "liepin", "51job");
     private static final Set<String> CONFIRMATION_EVIDENCE = Set.of(
             PLATFORM_STATUS_TEXT,
             PLATFORM_SUCCESS_DIALOG,
-            EXISTING_CONVERSATION
+            EXISTING_CONVERSATION,
+            GREETING_RENDERED_EXACT
     );
 
     private final JdbcTemplate jdbcTemplate;
@@ -55,6 +59,18 @@ public class DeliveryAttemptService {
                 "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_snapshot'",
                 Integer.class
         );
+        Integer greetingSourceColumn = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_source'",
+                Integer.class
+        );
+        Integer greetingOutcomeColumn = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_outcome'",
+                Integer.class
+        );
+        Integer greetingEvidenceColumn = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_attempt') WHERE name='greeting_evidence'",
+                Integer.class
+        );
         Integer jobIndex = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_delivery_attempt_job'",
                 Integer.class
@@ -66,6 +82,9 @@ public class DeliveryAttemptService {
         if (tableCount == null || tableCount != 1
                 || requestKeyColumn == null || requestKeyColumn != 1
                 || greetingSnapshotColumn == null || greetingSnapshotColumn != 1
+                || greetingSourceColumn == null || greetingSourceColumn != 1
+                || greetingOutcomeColumn == null || greetingOutcomeColumn != 1
+                || greetingEvidenceColumn == null || greetingEvidenceColumn != 1
                 || jobIndex == null || jobIndex != 1
                 || stateIndex == null || stateIndex != 1) {
             throw new IllegalStateException("投递 attempt schema 不完整，已阻止应用继续启动");
@@ -77,15 +96,20 @@ public class DeliveryAttemptService {
      * 避免草稿后续变更导致重放任务与原确认内容不一致。
      */
     public String snapshotGreeting(String requestKey, String greeting) {
+        return snapshotGreeting(requestKey, greeting, null);
+    }
+
+    public String snapshotGreeting(String requestKey, String greeting, String greetingSource) {
         if (requestKey == null || requestKey.isBlank()) {
             throw new IllegalArgumentException("requestKey 不能为空");
         }
         String normalized = greeting == null ? "" : greeting.trim();
+        String normalizedSource = blankToNull(greetingSource);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         return transaction.execute(status -> {
-            jdbcTemplate.update("UPDATE delivery_attempt SET greeting_snapshot=?, updated_at=CURRENT_TIMESTAMP " +
+            jdbcTemplate.update("UPDATE delivery_attempt SET greeting_snapshot=?, greeting_source=?, updated_at=CURRENT_TIMESTAMP " +
                             "WHERE request_key=? AND TRIM(COALESCE(greeting_snapshot, ''))=''",
-                    normalized, requestKey.trim());
+                    normalized, normalizedSource, requestKey.trim());
             List<String> snapshots = jdbcTemplate.query(
                     "SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
                     (resultSet, rowNum) -> resultSet.getString(1), requestKey.trim());
@@ -170,6 +194,8 @@ public class DeliveryAttemptService {
         if (latest.stateEnum() != State.UNKNOWN) {
             return ResolutionResult.rejected("当前岗位没有可人工对账的 UNKNOWN 投递记录");
         }
+        boolean bossGreetingRemainsUnknown = "boss".equals(normalizedPlatform)
+                && target == State.CONFIRMED;
         return resolve(
                 normalizedPlatform,
                 profileId,
@@ -180,7 +206,10 @@ public class DeliveryAttemptService {
                 firstNonBlank(message, target == State.CONFIRMED ? "人工核对平台后确认已投递" : "人工核对平台后确认失败"),
                 target == State.FAILED ? "MANUAL_RECONCILIATION" : null,
                 target == State.FAILED ? firstNonBlank(message, "人工核对平台后确认失败") : null,
-                true
+                true,
+                bossGreetingRemainsUnknown ? GreetingOutcome.UNKNOWN
+                        : target == State.CONFIRMED ? GreetingOutcome.NOT_APPLICABLE : GreetingOutcome.NOT_SENT,
+                bossGreetingRemainsUnknown ? GREETING_MANUAL_RECONCILIATION : null
         );
     }
 
@@ -194,7 +223,21 @@ public class DeliveryAttemptService {
                                     String failureType,
                                     String failureReason) {
         return resolve(platform, profileId, rowId, requestKey, target, evidence, message,
-                failureType, failureReason, false);
+                failureType, failureReason, false, GreetingOutcome.NOT_APPLICABLE, null);
+    }
+
+    public ResolutionResult resolveBoss(Long profileId,
+                                        long rowId,
+                                        String requestKey,
+                                        State target,
+                                        String evidence,
+                                        String message,
+                                        String failureType,
+                                        String failureReason,
+                                        GreetingOutcome greetingOutcome,
+                                        String greetingEvidence) {
+        return resolve("boss", profileId, rowId, requestKey, target, evidence, message,
+                failureType, failureReason, false, greetingOutcome, greetingEvidence);
     }
 
     private ResolutionResult resolve(String platform,
@@ -206,7 +249,9 @@ public class DeliveryAttemptService {
                                      String message,
                                      String failureType,
                                      String failureReason,
-                                     boolean manualReconciliation) {
+                                     boolean manualReconciliation,
+                                     GreetingOutcome greetingOutcome,
+                                     String greetingEvidence) {
         String normalizedPlatform = normalizePlatform(platform);
         if (requestKey == null || requestKey.isBlank()) {
             return ResolutionResult.rejected("缺少 requestKey，拒绝无任务绑定的投递回调");
@@ -219,6 +264,19 @@ public class DeliveryAttemptService {
                 || (manualReconciliation && MANUAL_RECONCILIATION.equals(normalizedEvidence));
         if (target == State.CONFIRMED && !validConfirmationEvidence) {
             return ResolutionResult.rejected("缺少明确平台成功证据，不能确认已投递");
+        }
+        GreetingOutcome normalizedGreetingOutcome = greetingOutcome == null
+                ? GreetingOutcome.NOT_APPLICABLE
+                : greetingOutcome;
+        String normalizedGreetingEvidence = normalizeEvidence(greetingEvidence);
+        boolean manuallyReconciledGreeting = manualReconciliation
+                && GREETING_MANUAL_RECONCILIATION.equals(normalizedGreetingEvidence);
+        if ("boss".equals(normalizedPlatform)
+                && target == State.CONFIRMED
+                && !manuallyReconciledGreeting
+                && (normalizedGreetingOutcome != GreetingOutcome.CONFIRMED
+                || !GREETING_RENDERED_EXACT.equals(normalizedGreetingEvidence))) {
+            return ResolutionResult.rejected("BOSS 沟通话术尚未精确确认，不能确认已投递");
         }
 
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
@@ -246,9 +304,11 @@ public class DeliveryAttemptService {
             }
 
             int changed = jdbcTemplate.update("UPDATE delivery_attempt SET state=?, evidence=?, message=?, " +
+                            "greeting_outcome=?, greeting_evidence=?, " +
                             "failure_type=?, failure_reason=?, resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP " +
                             "WHERE id=? AND state=?",
                     target.name(), normalizedEvidence, blankToNull(message),
+                    normalizedGreetingOutcome.name(), blankToNull(normalizedGreetingEvidence),
                     target == State.FAILED ? normalizeFailureType(failureType) : null,
                     target == State.FAILED ? firstNonBlank(failureReason, message, DeliveryStatus.DELIVERY_FAILED) : null,
                     attempt.id(), current.name());
@@ -360,7 +420,8 @@ public class DeliveryAttemptService {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         return jdbcTemplate.query(
                 "SELECT request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, " +
-                        "failure_type, failure_reason, requested_at, resolved_at, updated_at " +
+                        "failure_type, failure_reason, greeting_snapshot, greeting_source, greeting_outcome, " +
+                        "greeting_evidence, requested_at, resolved_at, updated_at " +
                         "FROM delivery_attempt WHERE platform=? AND profile_id=? ORDER BY id DESC LIMIT ?",
                 (resultSet, rowNum) -> new AttemptView(
                         resultSet.getString("request_key"),
@@ -373,6 +434,10 @@ public class DeliveryAttemptService {
                         resultSet.getString("message"),
                         resultSet.getString("failure_type"),
                         resultSet.getString("failure_reason"),
+                        resultSet.getString("greeting_snapshot"),
+                        resultSet.getString("greeting_source"),
+                        resultSet.getString("greeting_outcome"),
+                        resultSet.getString("greeting_evidence"),
                         resultSet.getString("requested_at"),
                         resultSet.getString("resolved_at"),
                         resultSet.getString("updated_at")
@@ -401,7 +466,9 @@ public class DeliveryAttemptService {
                 if (latestState == State.REQUESTED) {
                     return RequestResult.existing(latest.requestKey(), latestState, "投递请求已存在，请勿重复执行");
                 }
-                if (!RETRY_APPROVED.equals(latest.evidence())) {
+                boolean safelyNotTouched = latestState == State.FAILED
+                        && BATCH_HALTED_BEFORE_ACTION.equals(latest.evidence());
+                if (!safelyNotTouched && !RETRY_APPROVED.equals(latest.evidence())) {
                     return RequestResult.rejected("该岗位已有 " + latestState + " 投递记录，需先人工对账或显式重试");
                 }
             }
@@ -454,10 +521,12 @@ public class DeliveryAttemptService {
                                         String jobKey) {
         LocalDateTime now = LocalDateTime.now();
         jdbcTemplate.update("INSERT INTO delivery_attempt " +
-                        "(request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, requested_at, updated_at) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, greeting_outcome, requested_at, updated_at) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 requestKey, platform, profileId, jobKey.trim(), rowId,
-                State.REQUESTED.name(), "USER_CONFIRMED", "已创建投递请求", now, now);
+                State.REQUESTED.name(), "USER_CONFIRMED", "已创建投递请求",
+                "boss".equals(platform) ? GreetingOutcome.PENDING.name() : GreetingOutcome.NOT_APPLICABLE.name(),
+                now, now);
     }
 
     private int updateLegacyReadModel(String platform,
@@ -469,7 +538,12 @@ public class DeliveryAttemptService {
                                       String failureReason,
                                       String message,
                                       String jobKey) {
-        String displayStatus = switch (target) {
+        boolean bossBatchHaltedBeforeAction = "boss".equals(platform)
+                && target == State.FAILED
+                && BATCH_HALTED_BEFORE_ACTION.equals(normalizeFailureType(failureType));
+        String displayStatus = bossBatchHaltedBeforeAction
+                ? DeliveryStatus.WAITING_CONFIRM
+                : switch (target) {
             case CONFIRMED -> DeliveryStatus.DELIVERED;
             case FAILED -> DeliveryStatus.DELIVERY_FAILED;
             case UNKNOWN -> DeliveryStatus.DELIVERY_UNKNOWN;
@@ -486,8 +560,9 @@ public class DeliveryAttemptService {
                             "updated_at=CURRENT_TIMESTAMP WHERE id=? AND profile_id=? AND delivery_status=? " +
                             "AND COALESCE(NULLIF(encrypt_id, ''), CAST(id AS TEXT))=?",
                     displayStatus,
-                    target == State.FAILED ? normalizeFailureType(failureType) : "",
-                    target == State.FAILED ? firstNonBlank(failureReason, message, DeliveryStatus.DELIVERY_FAILED) : "",
+                    target == State.FAILED && !bossBatchHaltedBeforeAction ? normalizeFailureType(failureType) : "",
+                    target == State.FAILED && !bossBatchHaltedBeforeAction
+                            ? firstNonBlank(failureReason, message, DeliveryStatus.DELIVERY_FAILED) : "",
                     rowId, profileId, expectedStatus, jobKey);
         }
         if ("zhilian".equals(platform)) {
@@ -646,6 +721,23 @@ public class DeliveryAttemptService {
         }
     }
 
+    public enum GreetingOutcome {
+        PENDING,
+        CONFIRMED,
+        UNKNOWN,
+        NOT_SENT,
+        NOT_APPLICABLE;
+
+        public static GreetingOutcome parse(String value) {
+            if (value == null || value.isBlank()) return null;
+            try {
+                return valueOf(value.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+    }
+
     public record RequestResult(boolean accepted,
                                 boolean created,
                                 String requestKey,
@@ -698,6 +790,10 @@ public class DeliveryAttemptService {
                               String message,
                               String failureType,
                               String failureReason,
+                              String greetingSnapshot,
+                              String greetingSource,
+                              String greetingOutcome,
+                              String greetingEvidence,
                               String requestedAt,
                               String resolvedAt,
                               String updatedAt) {

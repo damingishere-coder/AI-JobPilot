@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV14AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV15AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -29,10 +29,10 @@ class DatabaseMigrationTest {
         try (Connection connection = DriverManager.getConnection(url)) {
             DatabaseSchemaService.validateSchema(connection);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='13'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='14'"))
                     .isEqualTo(1L);
             assertThat(scalar(connection,
-                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='14'"))
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='15'"))
                     .isEqualTo(1L);
             assertThat(scalar(connection,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_boss_data_profile_encrypt_id'"))
@@ -56,9 +56,42 @@ class DatabaseMigrationTest {
             assertThat(columns(connection, "hr_reply_proposal"))
                     .contains("confirmation_code_hash", "confirmation_code_cipher")
                     .doesNotContain("confirmation_code");
+            assertThat(columns(connection, "boss_config")).contains("native_greeting_disabled_confirmed");
+            assertThat(columns(connection, "delivery_attempt"))
+                    .contains("greeting_snapshot", "greeting_source", "greeting_outcome", "greeting_evidence");
             assertThat(columns(connection, "job_analysis_task"))
                     .contains("task_key", "job_key", "job_row_id", "request_json", "attempt_count",
                             "lease_owner", "lease_expires_at", "last_error", "started_at", "completed_at");
+        }
+    }
+
+    @Test
+    void v14BackfillsBossGreetingAuditWithoutClaimingHistoricalSuccess() throws Exception {
+        String url = sqliteUrl(tempDir.resolve("boss-greeting-audit.db"));
+        Flyway.configure()
+                .dataSource(url, null, null)
+                .locations("classpath:db/migration")
+                .target("13")
+                .load()
+                .migrate();
+        try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+            statement.execute("INSERT INTO boss_config(id, profile_id, say_hi) VALUES (1, 1, '档案默认话术')");
+            statement.execute("INSERT INTO delivery_attempt(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
+                    "VALUES ('pending', 'boss', 1, 'boss-1', 1, 'REQUESTED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+            statement.execute("INSERT INTO delivery_attempt(request_key, platform, profile_id, job_key, job_row_id, state, requested_at, updated_at) " +
+                    "VALUES ('historical', 'boss', 1, 'boss-2', 2, 'CONFIRMED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+        }
+
+        flyway(url).migrate();
+
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertThat(scalar(connection, "SELECT native_greeting_disabled_confirmed FROM boss_config WHERE id=1"))
+                    .isZero();
+            assertThat(text(connection, "SELECT greeting_outcome FROM delivery_attempt WHERE request_key='pending'"))
+                    .isEqualTo("PENDING");
+            assertThat(text(connection, "SELECT greeting_outcome FROM delivery_attempt WHERE request_key='historical'"))
+                    .isEqualTo("UNKNOWN");
         }
     }
 
@@ -432,6 +465,12 @@ class DatabaseMigrationTest {
     private long scalar(Connection connection, String sql) throws Exception {
         try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
             return resultSet.next() ? resultSet.getLong(1) : 0L;
+        }
+    }
+
+    private String text(Connection connection, String sql) throws Exception {
+        try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
+            return resultSet.next() ? resultSet.getString(1) : null;
         }
     }
 

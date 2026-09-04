@@ -3003,14 +3003,30 @@
       await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
       return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
+    const configuredGreeting = normalizeGreetingText(task?.greeting || "");
+    if (!configuredGreeting) {
+      const failure = classifyDeliveryFailure("投递任务缺少已确认的沟通话术");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR", "NOT_SENT", "GREETING_EMPTY");
+      return {
+        success: false,
+        outcome: "FAILED",
+        evidence: "PRE_ACTION_ERROR",
+        greetingOutcome: "NOT_SENT",
+        greetingEvidence: "GREETING_EMPTY",
+        message: failure.failureReason,
+        failureType: failure.failureType
+      };
+    }
     await sleep(1500);
     if (detectBossDeliveryStatus(document)) {
-      const messageText = "Boss岗位页面已显示沟通或投递状态";
-      await postDeliveryResult(task, true, messageText, "PLATFORM_STATUS_TEXT");
+      const messageText = "Boss岗位页面已存在沟通或投递状态，本次未补发话术，请人工核对";
+      await postDeliveryResult(task, null, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
       return {
-        success: true,
-        outcome: "CONFIRMED",
-        evidence: "PLATFORM_STATUS_TEXT",
+        success: false,
+        outcome: "UNKNOWN",
+        evidence: "EXISTING_CONVERSATION",
+        greetingOutcome: "NOT_SENT",
+        greetingEvidence: "ALREADY_CONTACTED",
         message: messageText
       };
     }
@@ -3065,18 +3081,24 @@
       return { ...deliveryCheck, message: failure.failureReason, failureType: failure.failureType };
     }
     const greetingResult = await sendConfiguredGreeting(task, message);
-    const finalMessage = greetingResult?.sent ? `${successMessage}，已发送开场白` : successMessage;
-    const confirmed = deliveryCheck.outcome === "CONFIRMED";
+    const confirmed = greetingResult?.sent === true;
+    const finalMessage = confirmed
+      ? `${successMessage}，已精确确认发送岗位话术`
+      : `${successMessage}，但${greetingResult?.message || "话术发送未确认"}`;
     await postDeliveryResult(
       task,
       confirmed ? true : null,
-      confirmed ? finalMessage : `${finalMessage}，但未检测到明确平台成功状态`,
-      deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY")
+      confirmed ? finalMessage : `${finalMessage}，已标记待人工确认`,
+      confirmed ? "GREETING_RENDERED_EXACT" : (deliveryCheck.evidence || "CHAT_SURFACE_ONLY"),
+      confirmed ? "CONFIRMED" : "UNKNOWN",
+      greetingResult?.evidence || (confirmed ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     );
     const result = {
       success: confirmed,
       outcome: confirmed ? "CONFIRMED" : "UNKNOWN",
-      evidence: deliveryCheck.evidence || (confirmed ? "PLATFORM_STATUS_TEXT" : "CHAT_SURFACE_ONLY"),
+      evidence: confirmed ? "GREETING_RENDERED_EXACT" : (deliveryCheck.evidence || "CHAT_SURFACE_ONLY"),
+      greetingOutcome: confirmed ? "CONFIRMED" : "UNKNOWN",
+      greetingEvidence: greetingResult?.evidence || (confirmed ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED"),
       message: confirmed ? finalMessage : `${finalMessage}，结果待人工确认`
     };
     earlyRespond?.({ ...result, early: true });
@@ -3091,30 +3113,65 @@
   }
 
   async function sendConfiguredGreeting(task, message) {
-    const greeting = compact(task?.greeting || "");
-    if (!greeting) return { attempted: false, sent: false, message: "未配置开场白" };
+    const greeting = normalizeGreetingText(task?.greeting || "");
+    if (!greeting) return { attempted: false, sent: false, evidence: "GREETING_EMPTY", message: "未配置开场白" };
 
-    const input = await waitForChatInput(4500);
-    if (!input) return { attempted: false, sent: false, message: "未出现聊天输入框" };
+    const input = await waitForChatInput(12000);
+    if (!input) return { attempted: false, sent: false, evidence: "GREETING_INPUT_MISSING", message: "未出现聊天输入框" };
 
     writeChatInput(input, greeting);
     await sleep(400);
-    const sendButton = findSendButton();
+    if (readChatInput(input) !== greeting) {
+      return { attempted: true, sent: false, evidence: "GREETING_INPUT_MISMATCH", message: "聊天输入框内容与确认话术不一致" };
+    }
+    const sendButton = findSendButton(input);
     if (!sendButton) {
       postProgress(message, "warning", "Boss Chrome已填入配置开场白，但未找到发送按钮。", {
         operation: "deliver",
         stage: "submitting"
       });
-      return { attempted: true, sent: false, message: "未找到发送按钮" };
+      return { attempted: true, sent: false, evidence: "GREETING_SEND_BUTTON_MISSING", message: "未找到发送按钮" };
     }
 
+    const messageCountBefore = countRenderedGreetingMessages(greeting, input);
     clickElement(sendButton);
-    await sleep(600);
-    postProgress(message, "info", "Boss Chrome已发送配置开场白。", {
+    const sent = await waitForGreetingConfirmation(greeting, input, messageCountBefore, 6000);
+    postProgress(message, sent ? "info" : "warning", sent
+      ? "Boss Chrome已精确确认发送岗位话术。"
+      : "Boss Chrome已点击发送，但未检测到精确话术出现在聊天记录。", {
       operation: "deliver",
       stage: "submitting"
     });
-    return { attempted: true, sent: true, message: "已发送配置开场白" };
+    return {
+      attempted: true,
+      sent,
+      evidence: sent ? "GREETING_RENDERED_EXACT" : "GREETING_RENDER_UNCONFIRMED",
+      message: sent ? "已精确确认发送岗位话术" : "点击发送后未检测到精确话术"
+    };
+  }
+
+  async function waitForGreetingConfirmation(greeting, input, beforeCount, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (countRenderedGreetingMessages(greeting, input) > beforeCount) return true;
+      await sleep(200);
+    }
+    return false;
+  }
+
+  function countRenderedGreetingMessages(greeting, input) {
+    const selectors = [
+      ".message-item",
+      ".chat-message",
+      ".message-content",
+      "[class*='message-item']",
+      "[class*='message-content']",
+      "[class*='chat-record'] [class*='text']"
+    ];
+    const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
+    return nodes.filter((node) => node !== input
+      && !node.contains?.(input)
+      && normalizeGreetingText(node.innerText || node.textContent || "") === greeting).length;
   }
 
   function buildDeliverySuccessMessage(favoriteButton, greetingResult) {
@@ -3139,21 +3196,34 @@
       "div#chat-input.chat-input[contenteditable='true']",
       "[contenteditable='true'].chat-input",
       "[contenteditable='true'][id*='chat']",
-      "textarea.input-area",
-      "textarea"
+      "[class*='chat-input'] [contenteditable='true']",
+      "[class*='chat'] textarea.input-area",
+      "[class*='chat'] textarea"
     ];
     for (const selector of selectors) {
-      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
+      const node = Array.from(document.querySelectorAll(selector)).find(isVisibleChatInput);
       if (node) return node;
     }
     return null;
+  }
+
+  function isVisibleChatInput(element) {
+    if (!element || element.offsetParent === null) return false;
+    const hint = compact([
+      element.getAttribute?.("placeholder"),
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title")
+    ].filter(Boolean).join(" "));
+    return !/(搜索|职位搜索|公司搜索)/.test(hint);
   }
 
   function writeChatInput(input, text) {
     input.focus?.();
     input.click?.();
     if (String(input.tagName || "").toLowerCase() === "textarea") {
-      input.value = text;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement?.prototype || {}, "value")?.set;
+      if (setter) setter.call(input, text);
+      else input.value = text;
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
       return;
@@ -3163,7 +3233,18 @@
     input.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
   }
 
-  function findSendButton() {
+  function readChatInput(input) {
+    if (!input) return "";
+    return normalizeGreetingText(String(input.tagName || "").toLowerCase() === "textarea"
+      ? input.value || ""
+      : input.innerText || input.textContent || "");
+  }
+
+  function normalizeGreetingText(value) {
+    return String(value || "").replace(/\r\n?/g, "\n").trim();
+  }
+
+  function findSendButton(input) {
     const selectors = [
       "div.send-message",
       "button[type='send'].btn-send",
@@ -3171,11 +3252,24 @@
       "[class*='send-message']",
       "[class*='btn-send']"
     ];
-    for (const selector of selectors) {
-      const node = Array.from(document.querySelectorAll(selector)).find((el) => el.offsetParent !== null);
-      if (node) return node;
+    const scopes = [];
+    let scope = input;
+    for (let depth = 0; scope && depth < 6; depth++) {
+      if (scope.querySelectorAll) scopes.push(scope);
+      scope = scope.parentElement;
     }
-    return findClickable(["发送"]);
+    for (const current of scopes) {
+      for (const selector of selectors) {
+        const node = Array.from(current.querySelectorAll(selector))
+          .find((el) => el.offsetParent !== null);
+        if (node) return node;
+      }
+      const textButton = Array.from(current.querySelectorAll("button, [role='button']"))
+        .find((el) => el.offsetParent !== null
+          && normalizeGreetingText(el.textContent || el.innerText || "") === "发送");
+      if (textButton) return textButton;
+    }
+    return null;
   }
 
   async function deliverBatch(tasks, message) {
@@ -3183,6 +3277,9 @@
     let failed = 0;
     let unknown = 0;
     const results = [];
+    let halted = false;
+    let haltedJobId = null;
+    let unprocessedCount = 0;
     postProgress(message, "info", `Boss Chrome批量投递开始，共 ${tasks.length} 个待确认岗位。`, {
       operation: "deliver",
       stage: "received",
@@ -3213,26 +3310,62 @@
       if (outcome === "CONFIRMED") success += 1;
       else if (outcome === "UNKNOWN") unknown += 1;
       else failed += 1;
-      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+      results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+      if (outcome === "UNKNOWN") {
+        halted = true;
+        haltedJobId = task?.id || null;
+        const remaining = tasks.slice(index + 1);
+        unprocessedCount = remaining.length;
+        for (const skippedTask of remaining) {
+          const skippedMessage = `前一岗位 ${task?.id || "-"} 的发送结果待确认，批量任务已暂停，本岗位未触达`;
+          let persisted = false;
+          await postDeliveryResult(
+            skippedTask,
+            false,
+            { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+            "BATCH_HALTED_BEFORE_ACTION",
+            "NOT_SENT",
+            "BATCH_HALTED_BEFORE_ACTION"
+          ).then(() => { persisted = true; }).catch(() => {});
+          results.push({
+            id: skippedTask?.id,
+            requestKey: skippedTask?.requestKey,
+            outcome: "FAILED",
+            evidence: "BATCH_HALTED_BEFORE_ACTION",
+            greetingOutcome: "NOT_SENT",
+            greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+            persisted,
+            skipped: true,
+            message: skippedMessage
+          });
+        }
+        break;
+      }
     }
-    postProgress(message, failed || unknown ? "warning" : "success", `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`, {
+    const summary = halted
+      ? `Boss批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+      : `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
+    postProgress(message, failed || unknown ? "warning" : "success", summary, {
       operation: "deliver",
       stage: "complete",
       keywordTotal: tasks.length,
       saved: success
     });
     return {
-      success: failed === 0 && unknown === 0,
+      success: !halted && failed === 0 && unknown === 0,
       partial: success > 0 && (failed > 0 || unknown > 0),
-      message: `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+      message: summary,
       successCount: success,
       unknownCount: unknown,
       failedCount: failed,
+      halted,
+      haltedJobId,
+      unprocessedCount,
       results
     };
   }
 
-  async function postDeliveryResult(task, success, message, evidence) {
+  async function postDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
     const failure = success === false ? normalizeFailurePayload(message) : null;
     const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await callBossLocalApi("delivery-result", {
@@ -3242,7 +3375,9 @@
       success,
       message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
-      failureReason: failure?.failureReason
+      failureReason: failure?.failureReason,
+      greetingOutcome: greetingOutcome || (outcome === "CONFIRMED" ? "CONFIRMED" : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN"),
+      greetingEvidence: greetingEvidence || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
     }, {
       params: { id: task.id },
       pageTabId: task?.pageTabId,

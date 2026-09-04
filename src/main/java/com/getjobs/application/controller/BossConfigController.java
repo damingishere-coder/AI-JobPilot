@@ -39,6 +39,9 @@ public class BossConfigController {
         if (config.getAutoDeliver() == null) {
             config.setAutoDeliver(0);
         }
+        if (config.getNativeGreetingDisabledConfirmed() == null) {
+            config.setNativeGreetingDisabledConfirmed(0);
+        }
         if (config.getSearchJobLimit() == null) {
             config.setSearchJobLimit(BossService.DEFAULT_SEARCH_JOB_LIMIT);
         } else {

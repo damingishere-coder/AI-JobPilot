@@ -138,6 +138,8 @@ public class BossAnalyticsController {
     public Map<String, Object> confirmPendingJob(
             @PathVariable("id") Long id,
             @RequestBody(required = false) GreetingConfirmationRequest request) {
+        Map<String, Object> nativeGreetingError = validateNativeGreetingDisabled();
+        if (nativeGreetingError != null) return nativeGreetingError;
         BossJobDataEntity job = bossService.getBossJobById(id);
         Map<String, Object> error = validateDeliverable(job);
         if (error != null) return error;
@@ -163,6 +165,8 @@ public class BossAnalyticsController {
 
     @PostMapping("/jobs/confirm-batch")
     public Map<String, Object> confirmBatch(@RequestBody ConfirmBatchRequest request) {
+        Map<String, Object> nativeGreetingError = validateNativeGreetingDisabled();
+        if (nativeGreetingError != null) return nativeGreetingError;
         boolean aiRecommendedOnly = request != null && Boolean.TRUE.equals(request.getAiRecommendedOnly());
         boolean manualOverrideAiNotMatch = request != null && Boolean.TRUE.equals(request.getManualOverrideAiNotMatch());
         if (aiRecommendedOnly && manualOverrideAiNotMatch) {
@@ -248,7 +252,12 @@ public class BossAnalyticsController {
             item.put("empty", greeting.finalGreeting().isBlank());
             return item;
         }).toList();
-        return Map.of("success", true, "items", items, "count", items.size());
+        return Map.of(
+                "success", true,
+                "items", items,
+                "count", items.size(),
+                "nativeGreetingDisabledConfirmed", bossService.isNativeGreetingDisabledConfirmed()
+        );
     }
 
     @PostMapping("/jobs/{id}/delivery-result")
@@ -262,8 +271,14 @@ public class BossAnalyticsController {
                     ? DeliveryAttemptService.State.CONFIRMED
                     : DeliveryAttemptService.State.FAILED;
         }
-        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolve(
-                "boss",
+        DeliveryAttemptService.GreetingOutcome greetingOutcome =
+                DeliveryAttemptService.GreetingOutcome.parse(request.getGreetingOutcome());
+        if (greetingOutcome == null && outcome == DeliveryAttemptService.State.UNKNOWN) {
+            greetingOutcome = DeliveryAttemptService.GreetingOutcome.UNKNOWN;
+        } else if (greetingOutcome == null && outcome == DeliveryAttemptService.State.FAILED) {
+            greetingOutcome = DeliveryAttemptService.GreetingOutcome.NOT_SENT;
+        }
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.resolveBoss(
                 job.getProfileId(),
                 job.getId(),
                 request.getRequestKey(),
@@ -271,7 +286,9 @@ public class BossAnalyticsController {
                 request.getEvidence(),
                 request.getMessage(),
                 request.getFailureType(),
-                firstNonBlank(request.getFailureReason(), request.getMessage())
+                firstNonBlank(request.getFailureReason(), request.getMessage()),
+                greetingOutcome,
+                request.getGreetingEvidence()
         );
         BossJobDataEntity updated = bossService.getBossJobById(id);
         return Map.of(
@@ -312,6 +329,8 @@ public class BossAnalyticsController {
     public Map<String, Object> retryDelivery(
             @PathVariable("id") Long id,
             @RequestBody(required = false) GreetingConfirmationRequest request) {
+        Map<String, Object> nativeGreetingError = validateNativeGreetingDisabled();
+        if (nativeGreetingError != null) return nativeGreetingError;
         BossJobDataEntity job = bossService.getBossJobById(id);
         if (job == null) return Map.of("success", false, "message", "岗位不存在");
         GreetingDraftService.GreetingView greeting = greetingDraftService.resolveForJob("boss", id);
@@ -384,10 +403,20 @@ public class BossAnalyticsController {
 
     private GreetingDraftService.GreetingView snapshotGreeting(
             String requestKey, GreetingDraftService.GreetingView greeting) {
-        String snapshot = deliveryAttemptService.snapshotGreeting(requestKey, greeting.finalGreeting());
+        String snapshot = deliveryAttemptService.snapshotGreeting(
+                requestKey, greeting.finalGreeting(), greeting.greetingSource());
         return new GreetingDraftService.GreetingView(
                 greeting.aiGreeting(), greeting.greetingDraft(), greeting.greetingSource(),
                 greeting.greetingUpdatedAt(), firstNonBlank(snapshot, greeting.finalGreeting()));
+    }
+
+    private Map<String, Object> validateNativeGreetingDisabled() {
+        if (bossService.isNativeGreetingDisabledConfirmed()) return null;
+        return Map.of(
+                "success", false,
+                "message", "请先在 AI 配置页确认已关闭 BOSS 平台自带打招呼语，再创建投递任务",
+                "nativeGreetingConfirmationRequired", true
+        );
     }
 
     private Map<String, Object> validateGreetingSnapshot(
