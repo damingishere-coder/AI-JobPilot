@@ -57,8 +57,9 @@
       ]);
       latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
+      if (status?.watching) await localApi("hr-command-poll");
     } catch (error) {
-      latestStatus = { watching: false, lastError: error.message || String(error), openCli: { ready: false } };
+      latestStatus = { watching: false, lastError: error.message || String(error), chromeBridge: { ready: true, tabBound: false } };
     } finally {
       activeRequest = false;
       render();
@@ -70,15 +71,17 @@
     const watching = Boolean(latestStatus?.watching);
     dot.classList.toggle("on", watching);
     const statusBox = element("div", `status ${latestStatus?.lastError ? "error" : ""}`);
-    const openCli = latestStatus?.openCli;
+    const bridge = latestStatus?.chromeBridge;
+    const timing = latestStatus?.lastScanAt ? `｜上次扫描 ${formatTime(latestStatus.lastScanAt)}` : "";
+    const next = latestStatus?.nextScanAt ? `｜下次 ${formatTime(latestStatus.nextScanAt)}` : "";
     statusBox.textContent = latestStatus
-      ? `${watching ? "值守中：每 60 秒扫描一次" : "值守已停止"}｜OpenCLI ${openCli?.ready ? "已连接" : "未就绪"}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
+      ? `${watching ? "值守中：每 60 秒扫描一次" : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${timing}${next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
       : "正在连接本地 AI-JobPilot…";
     body.appendChild(statusBox);
 
     const actions = element("div", "actions");
     const start = button("开始值守", "btn primary");
-    start.disabled = watching || !openCli?.ready;
+    start.disabled = watching;
     start.addEventListener("click", () => mutate("hr-start"));
     const stop = button("停止", "btn danger");
     stop.disabled = !watching;
@@ -154,9 +157,9 @@
       }, (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (runtimeError) return reject(new Error(runtimeError));
-        if (!response?.success) return reject(new Error(response?.message || "本地接口调用失败"));
+        if (!response?.success) return reject(new Error(formatError(response, "本地接口调用失败")));
         const envelope = response.data;
-        if (!envelope?.success) return reject(new Error(envelope?.message || "本地接口拒绝请求"));
+        if (!envelope?.success) return reject(new Error(formatError(envelope, "本地接口拒绝请求")));
         resolve(envelope.data);
       });
     });
@@ -173,5 +176,16 @@
     const node = element("button", className, text);
     node.type = "button";
     return node;
+  }
+
+  function formatError(value, fallback) {
+    const code = value?.errorCode || value?.errorType || "";
+    const requestId = value?.requestId || value?.data?.requestId || "";
+    return `${code ? `[${code}] ` : ""}${value?.message || fallback}${requestId ? `（${requestId}）` : ""}`;
+  }
+
+  function formatTime(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "未知" : date.toLocaleTimeString("zh-CN", { hour12: false });
   }
 })();

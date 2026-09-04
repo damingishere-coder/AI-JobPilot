@@ -15,11 +15,11 @@ test("extension release and both content scripts use the profile-scoped contract
   const boss = source("boss-content.js");
   const zhilian = source("zhilian-content.js");
 
-  assert.equal(manifest.version, "1.5.0");
-  assert.match(background, /BACKGROUND_VERSION = "2026-09-04-boss-hr-assistant"/);
-  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-assistant"/);
-  assert.match(boss, /EXTENSION_VERSION = "2026-09-04-boss-hr-assistant"/);
-  assert.match(zhilian, /EXTENSION_VERSION = "2026-09-04-boss-hr-assistant"/);
+  assert.equal(manifest.version, "1.6.0");
+  assert.match(background, /BACKGROUND_VERSION = "2026-09-04-boss-hr-direct"/);
+  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-direct"/);
+  assert.match(boss, /EXTENSION_VERSION = "2026-09-04-boss-hr-direct"/);
+  assert.match(zhilian, /EXTENSION_VERSION = "2026-09-04-boss-hr-direct"/);
 });
 
 test("both platforms bind cursors, dedupe, submissions and progress to profileId", () => {

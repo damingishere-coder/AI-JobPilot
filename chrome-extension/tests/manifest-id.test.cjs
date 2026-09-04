@@ -17,7 +17,7 @@ function extensionIdFromKey(key) {
 test('manifest public key derives the backend allowlisted extension id', () => {
   const manifestPath = path.join(__dirname, '..', 'manifest.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  assert.equal(manifest.version, '1.5.0');
+  assert.equal(manifest.version, '1.6.0');
   assert.equal(extensionIdFromKey(manifest.key), EXPECTED_EXTENSION_ID);
 
   const publicKey = crypto.createPublicKey({
@@ -28,6 +28,6 @@ test('manifest public key derives the backend allowlisted extension id', () => {
   assert.equal(publicKey.asymmetricKeyType, 'rsa');
   assert.deepEqual(
     manifest.host_permissions.filter((permission) => permission.startsWith('http://localhost:') || permission.startsWith('http://127.0.0.1:')),
-    ['http://localhost:6866/*', 'http://127.0.0.1:6866/*'],
+    ['http://127.0.0.1:6866/*'],
   );
 });

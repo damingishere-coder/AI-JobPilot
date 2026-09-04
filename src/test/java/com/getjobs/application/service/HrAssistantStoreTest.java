@@ -178,6 +178,62 @@ class HrAssistantStoreTest {
                 .hasMessageContaining("操作人 QQ");
     }
 
+    @Test
+    void captureAndSendCommandQueuesAreIdempotentEncryptedAndNeverRetryUnknown() {
+        assertThat(store.beginCapture(1L, "watch-1", "scan-1", "capture-1")).isTrue();
+        store.completeCapture("watch-1", "capture-1");
+        assertThat(store.beginCapture(1L, "watch-1", "scan-2", "capture-1")).isFalse();
+
+        ChatSession session = new ChatSession("uid-command", "security", "HR", "公司", "岗位", "HR", "面试吗", "11:02");
+        long conversationId = store.upsertConversation(1L, session);
+        ChatMessage inbound = new ChatMessage("对方", "文本", "面试吗", "11:02");
+        store.saveMessage(conversationId, inbound, 30);
+        String fingerprint = store.sourceFingerprint(conversationId, inbound);
+        store.updateLastInbound(conversationId, fingerprint);
+        long proposalId = store.createProposal(1L, conversationId, fingerprint,
+                new AiDraft(Classification.INTERVIEW_INVITE, "可以，请问具体时间？", "面试", List.of(), List.of(), 0.9));
+
+        String commandId = store.queueSendCommand(1L, proposalId, 1, "");
+        var claimed = store.claimSendCommand(1L, "watch-1");
+        assertThat(claimed.commandId()).isEqualTo(commandId);
+        assertThat(claimed.uid()).isEqualTo("uid-command");
+        assertThat(scalar("SELECT lease_token_hash FROM hr_send_command WHERE command_id='" + commandId + "'"))
+                .doesNotContain(claimed.leaseToken());
+        assertThatThrownBy(() -> store.completeSendCommand(1L, "watch-1", commandId, claimed.leaseToken(),
+                "SUCCESS", "非法结果", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("结果类型");
+
+        var unknown = store.completeSendCommand(1L, "watch-1", commandId, claimed.leaseToken(),
+                "RESULT_UNKNOWN", "页面未确认发出", null);
+        assertThat(unknown.status()).isEqualTo("SEND_UNKNOWN");
+        assertThat(scalar("SELECT evidence_cipher FROM hr_send_command WHERE command_id='" + commandId + "'"))
+                .doesNotContain("页面未确认发出");
+        assertThat(store.claimSendCommand(1L, "watch-1")).isNull();
+    }
+
+    @Test
+    void newInboundMessageInvalidatesAnUnclaimedSendCommand() {
+        ChatSession session = new ChatSession("uid-stale-command", "security", "HR", "公司", "岗位", "HR", "第一条", "11:02");
+        long conversationId = store.upsertConversation(1L, session);
+        ChatMessage first = new ChatMessage("对方", "文本", "第一条", "11:02");
+        store.saveMessage(conversationId, first, 30);
+        String firstFingerprint = store.sourceFingerprint(conversationId, first);
+        store.updateLastInbound(conversationId, firstFingerprint);
+        long proposalId = store.createProposal(1L, conversationId, firstFingerprint,
+                new AiDraft(Classification.REPLY, "第一条回复", "摘要", List.of(), List.of(), 0.9));
+        String commandId = store.queueSendCommand(1L, proposalId, 1, "");
+
+        ChatMessage second = new ChatMessage("对方", "文本", "第二条", "11:03");
+        store.saveMessage(conversationId, second, 30);
+        store.updateLastInbound(conversationId, store.sourceFingerprint(conversationId, second));
+
+        assertThat(store.getProposalView(1L, proposalId).status()).isEqualTo("EXPIRED");
+        assertThat(scalar("SELECT status FROM hr_send_command WHERE command_id='" + commandId + "'"))
+                .isEqualTo("STALE");
+        assertThat(store.claimSendCommand(1L, "watch-1")).isNull();
+    }
+
     private String scalar(String sql) {
         return jdbcTemplate.queryForObject(sql, String.class);
     }

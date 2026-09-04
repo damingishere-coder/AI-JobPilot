@@ -9,8 +9,11 @@ import com.getjobs.application.service.HrAssistantWatchService;
 import com.getjobs.application.service.HrReplyActionService;
 import com.getjobs.application.service.LocalActionTokenService;
 import com.getjobs.application.service.ProfileService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -19,35 +22,53 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class HrAssistantControllerTest {
-    @Test
-    void preparesOpenCliBindingOnlyWithFreshLocalActionToken() {
-        ProfileService profiles = mock(ProfileService.class);
-        HrAssistantStore store = mock(HrAssistantStore.class);
-        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
-        HrReplyActionService actions = mock(HrReplyActionService.class);
-        HrAssistantEventService events = mock(HrAssistantEventService.class);
-        LocalActionTokenService tokens = new LocalActionTokenService();
-        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
-        when(watcher.prepareStart()).thenReturn(mock(com.getjobs.application.hr.HrAssistantTypes.WatchStatus.class));
+    private final ProfileService profiles = mock(ProfileService.class);
+    private final HrAssistantStore store = mock(HrAssistantStore.class);
+    private final HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
+    private final HrReplyActionService actions = mock(HrReplyActionService.class);
+    private final HrAssistantEventService events = mock(HrAssistantEventService.class);
+    private final LocalActionTokenService tokens = new LocalActionTokenService();
+    private HrAssistantController controller;
 
-        var rejected = controller.prepareStart("invalid-token");
-        var accepted = controller.prepareStart(tokens.issueToken());
+    @BeforeEach
+    void setUp() {
+        controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
+    }
+
+    @Test
+    void startsTheExactChromeTabOnlyWithFreshLocalActionToken() {
+        HrAssistantController.WatchStartRequest request = new HrAssistantController.WatchStartRequest();
+        request.setTabId(77);
+        request.setUrl("https://www.zhipin.com/web/geek/chat");
+        request.setContentVersion("direct");
+        request.setBrowserSessionId("browser-session");
+
+        var rejected = controller.start("invalid-token", request);
+        var accepted = controller.start(tokens.issueToken(), request);
 
         assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(responseBody(rejected)).containsKeys("success", "errorCode", "message", "requestId");
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(watcher).prepareStart();
+        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session");
         verifyNoInteractions(actions, profiles, store, events);
     }
 
     @Test
+    void validatesBoundSessionBeforeClaimingSendCommand() {
+        when(profiles.getCurrentProfileId()).thenReturn(1L);
+        HrAssistantController.SendCommandClaimRequest request = new HrAssistantController.SendCommandClaimRequest();
+        request.setWatchSessionId("watch-1");
+        request.setTabId(77);
+
+        var response = controller.claimSendCommand(tokens.issueToken(), request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        verify(watcher).assertActiveSession(1L, "watch-1", 77);
+        verify(actions).claim(1L, "watch-1");
+    }
+
+    @Test
     void rejectsSendWithoutFreshLocalActionToken() {
-        ProfileService profiles = mock(ProfileService.class);
-        HrAssistantStore store = mock(HrAssistantStore.class);
-        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
-        HrReplyActionService actions = mock(HrReplyActionService.class);
-        HrAssistantEventService events = mock(HrAssistantEventService.class);
-        LocalActionTokenService tokens = new LocalActionTokenService();
-        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
         HrAssistantController.ProposalActionRequest request = new HrAssistantController.ProposalActionRequest();
         request.setExpectedVersion(1);
 
@@ -59,13 +80,6 @@ class HrAssistantControllerTest {
 
     @Test
     void mapsGroupNotificationSettingsWithoutExposingSecrets() {
-        ProfileService profiles = mock(ProfileService.class);
-        HrAssistantStore store = mock(HrAssistantStore.class);
-        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
-        HrReplyActionService actions = mock(HrReplyActionService.class);
-        HrAssistantEventService events = mock(HrAssistantEventService.class);
-        LocalActionTokenService tokens = new LocalActionTokenService();
-        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
         CommunicationProfile communication = CommunicationProfile.empty();
         SettingsView view = new SettingsView(1L, communication, true, "ws://127.0.0.1:3001",
                 QqTargetType.GROUP, "98***21", "12***56", true, true, 30, true);
@@ -85,26 +99,13 @@ class HrAssistantControllerTest {
         var response = controller.saveSettings(tokens.issueToken(), request);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(responseBody(response)).containsKeys("success", "errorCode", "message", "requestId", "data");
         verify(store).saveSettings(1L, communication, true, "ws://127.0.0.1:3001", "token-secret",
                 QqTargetType.GROUP, "987654321", "123456", 30);
     }
 
-    @Test
-    void rejectsSettingsSaveWhenActiveProfileChanged() {
-        ProfileService profiles = mock(ProfileService.class);
-        HrAssistantStore store = mock(HrAssistantStore.class);
-        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
-        HrReplyActionService actions = mock(HrReplyActionService.class);
-        HrAssistantEventService events = mock(HrAssistantEventService.class);
-        LocalActionTokenService tokens = new LocalActionTokenService();
-        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
-        HrAssistantController.SettingsRequest request = new HrAssistantController.SettingsRequest();
-        request.setExpectedProfileId(1L);
-        when(profiles.getCurrentProfileId()).thenReturn(2L);
-
-        var response = controller.saveSettings(tokens.issueToken(), request);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        verifyNoInteractions(store);
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> responseBody(org.springframework.http.ResponseEntity<?> response) {
+        return (Map<String, Object>) response.getBody();
     }
 }

@@ -39,26 +39,6 @@ public final class HrAssistantTypes {
         GROUP
     }
 
-    public record GatewayStatus(boolean ready, String version, String detail) {
-    }
-
-    public record UnreadSnapshot(int totalUnread, List<UnreadConversation> conversations) {
-        public UnreadSnapshot {
-            conversations = conversations == null ? List.of() : List.copyOf(conversations);
-        }
-    }
-
-    public record UnreadConversation(
-            int domIndex,
-            int unreadCount,
-            String hrName,
-            String companyName,
-            String jobName,
-            String lastMessage,
-            String lastTime
-    ) {
-    }
-
     public record ChatSession(
             String uid,
             String securityId,
@@ -75,6 +55,56 @@ public final class HrAssistantTypes {
         public boolean inbound() {
             return "对方".equals(from);
         }
+    }
+
+    public record ChatCapture(
+            String captureId,
+            int unreadCount,
+            ChatSession session,
+            List<ChatMessage> messages
+    ) {
+        public ChatCapture {
+            messages = messages == null ? List.of() : List.copyOf(messages);
+        }
+    }
+
+    public record ScanReceipt(
+            String scanId,
+            int received,
+            int processed,
+            int duplicates,
+            List<String> acknowledgedCaptureIds
+    ) {
+        public ScanReceipt {
+            acknowledgedCaptureIds = acknowledgedCaptureIds == null ? List.of() : List.copyOf(acknowledgedCaptureIds);
+        }
+    }
+
+    public record ChromeBridgeStatus(
+            boolean ready,
+            boolean tabBound,
+            Integer tabId,
+            String url,
+            String contentVersion,
+            LocalDateTime lastHeartbeatAt,
+            int outboxCount,
+            String detail
+    ) {
+    }
+
+    public record SendCommandView(
+            String commandId,
+            String leaseToken,
+            long proposalId,
+            String uid,
+            String hrName,
+            String companyName,
+            String jobName,
+            String sourceFingerprint,
+            ChatMessage expectedLatestInbound,
+            String draft,
+            LocalDateTime expiresAt
+    ) {
     }
 
     public record CommunicationProfile(
@@ -146,10 +176,12 @@ public final class HrAssistantTypes {
     public record WatchStatus(
             boolean watching,
             boolean scanRunning,
+            String watchSessionId,
+            long intervalMs,
             LocalDateTime lastScanAt,
             LocalDateTime nextScanAt,
             String lastError,
-            GatewayStatus openCli,
+            ChromeBridgeStatus chromeBridge,
             boolean napcatConnected,
             boolean fullAutoLocked
     ) {

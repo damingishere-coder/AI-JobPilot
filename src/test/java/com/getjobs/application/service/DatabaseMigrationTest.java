@@ -20,7 +20,7 @@ class DatabaseMigrationTest {
     Path tempDir;
 
     @Test
-    void freshDatabaseMigratesThroughV16AndMatchesSchemaContract() throws Exception {
+    void freshDatabaseMigratesThroughV17AndMatchesSchemaContract() throws Exception {
         String url = sqliteUrl(tempDir.resolve("fresh.db"));
 
         Flyway flyway = flyway(url);
@@ -38,6 +38,9 @@ class DatabaseMigrationTest {
                     "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='16'"))
                     .isEqualTo(1L);
             assertThat(scalar(connection,
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1 AND version='17'"))
+                    .isEqualTo(1L);
+            assertThat(scalar(connection,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_boss_data_profile_encrypt_id'"))
                     .isEqualTo(1L);
             assertThat(columns(connection, "resume_profile")).contains("recommended_job_keywords");
@@ -53,6 +56,8 @@ class DatabaseMigrationTest {
             assertThat(tableExists(connection, "hr_reply_proposal")).isTrue();
             assertThat(tableExists(connection, "hr_reply_attempt")).isTrue();
             assertThat(tableExists(connection, "hr_qq_command")).isTrue();
+            assertThat(tableExists(connection, "hr_scan_capture")).isTrue();
+            assertThat(tableExists(connection, "hr_send_command")).isTrue();
             assertThat(columns(connection, "hr_assistant_settings"))
                     .contains("qq_target_type", "qq_operator_cipher");
             assertThat(columns(connection, "hr_conversation"))
@@ -61,6 +66,10 @@ class DatabaseMigrationTest {
             assertThat(columns(connection, "hr_reply_proposal"))
                     .contains("confirmation_code_hash", "confirmation_code_cipher")
                     .doesNotContain("confirmation_code");
+            assertThat(columns(connection, "hr_scan_capture"))
+                    .contains("watch_session_id", "capture_id", "scan_id", "status", "error_code");
+            assertThat(columns(connection, "hr_send_command"))
+                    .contains("command_id", "proposal_id", "watch_session_id", "status", "lease_token_hash", "evidence_cipher");
             assertThat(columns(connection, "boss_config")).contains("native_greeting_disabled_confirmed");
             assertThat(columns(connection, "delivery_attempt"))
                     .contains("greeting_snapshot", "greeting_source", "greeting_outcome", "greeting_evidence");

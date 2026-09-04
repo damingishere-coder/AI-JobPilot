@@ -8,6 +8,7 @@ import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalStatus;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
 import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
+import com.getjobs.application.hr.HrAssistantTypes.SendCommandView;
 import com.getjobs.application.hr.HrAssistantTypes.SettingsView;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.DependsOn;
@@ -25,6 +26,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -161,6 +164,52 @@ public class HrAssistantStore {
     }
 
     @Transactional
+    public boolean beginCapture(Long profileId, String watchSessionId, String scanId, String captureId) {
+        List<CaptureRecord> existing = jdbcTemplate.query("""
+                SELECT status, updated_at,
+                       updated_at>datetime('now', '-5 minutes') AS is_recent
+                  FROM hr_scan_capture
+                 WHERE watch_session_id=? AND capture_id=?
+                """, (rs, rowNum) -> new CaptureRecord(rs.getString("status"), readDateTime(rs.getString("updated_at")),
+                        rs.getInt("is_recent") == 1),
+                safe(watchSessionId), safe(captureId));
+        if (existing.isEmpty()) {
+            jdbcTemplate.update("""
+                    INSERT INTO hr_scan_capture(watch_session_id, capture_id, profile_id, scan_id, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'PROCESSING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, safe(watchSessionId), safe(captureId), profileId, safe(scanId));
+            return true;
+        }
+        CaptureRecord record = existing.get(0);
+        if ("COMPLETE".equals(record.status())) return false;
+        if ("PROCESSING".equals(record.status()) && record.recent()) {
+            throw new IllegalStateException("同一 HR 消息快照仍在处理中，已保留扩展 Outbox");
+        }
+        jdbcTemplate.update("""
+                UPDATE hr_scan_capture
+                   SET profile_id=?, scan_id=?, status='PROCESSING', error_code=NULL, updated_at=CURRENT_TIMESTAMP
+                 WHERE watch_session_id=? AND capture_id=?
+                """, profileId, safe(scanId), safe(watchSessionId), safe(captureId));
+        return true;
+    }
+
+    @Transactional
+    public void completeCapture(String watchSessionId, String captureId) {
+        jdbcTemplate.update("""
+                UPDATE hr_scan_capture SET status='COMPLETE', error_code=NULL, updated_at=CURRENT_TIMESTAMP
+                 WHERE watch_session_id=? AND capture_id=?
+                """, safe(watchSessionId), safe(captureId));
+    }
+
+    @Transactional
+    public void failCapture(String watchSessionId, String captureId, String errorCode) {
+        jdbcTemplate.update("""
+                UPDATE hr_scan_capture SET status='FAILED', error_code=?, updated_at=CURRENT_TIMESTAMP
+                 WHERE watch_session_id=? AND capture_id=?
+                """, safe(errorCode), safe(watchSessionId), safe(captureId));
+    }
+
+    @Transactional
     public void updateLastInbound(long conversationId, String fingerprint) {
         jdbcTemplate.update("""
                 UPDATE hr_conversation SET last_inbound_fingerprint=?, last_observed_at=CURRENT_TIMESTAMP,
@@ -170,6 +219,12 @@ public class HrAssistantStore {
                 UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP
                  WHERE conversation_id=? AND source_fingerprint<>?
                    AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')
+                """, conversationId, fingerprint);
+        jdbcTemplate.update("""
+                UPDATE hr_send_command SET status='STALE', outcome='STALE', updated_at=CURRENT_TIMESTAMP
+                 WHERE proposal_id IN (
+                       SELECT id FROM hr_reply_proposal WHERE conversation_id=? AND source_fingerprint<>?
+                 ) AND status='PENDING'
                 """, conversationId, fingerprint);
     }
 
@@ -278,7 +333,7 @@ public class HrAssistantStore {
                        c.job_name_cipher, c.last_inbound_fingerprint
                   FROM hr_reply_proposal p JOIN hr_conversation c ON c.id=p.conversation_id
                  WHERE p.profile_id=? AND p.confirmation_code_hash=?
-                   AND p.expires_at>CURRENT_TIMESTAMP
+                   AND p.expires_at>datetime('now', 'localtime')
                  ORDER BY p.created_at DESC LIMIT 1
                 """, (rs, rowNum) -> mapProposalRecord(rs, profileId), profileId, confirmationCodeHash(profileId, code));
         if (rows.isEmpty()) throw new IllegalArgumentException("确认码不存在或已失效");
@@ -328,6 +383,138 @@ public class HrAssistantStore {
     }
 
     @Transactional
+    public String queueSendCommand(Long profileId, long proposalId, int expectedVersion, String watchSessionId) {
+        ProposalRecord record = requireProposal(profileId, proposalId);
+        assertReviewable(record);
+        if (record.version() != expectedVersion) throw new StaleProposalException("草稿版本已变化，请刷新后重新确认");
+        if (!record.sourceFingerprint().equals(record.lastInboundFingerprint())) {
+            throw new StaleProposalException("HR 已发送新消息，旧确认已作废");
+        }
+        String commandId = UUID.randomUUID().toString();
+        int changed = jdbcTemplate.update("""
+                UPDATE hr_reply_proposal SET status='APPROVED', version=version+1, updated_at=CURRENT_TIMESTAMP
+                 WHERE id=? AND profile_id=? AND version=? AND status='REVIEW_REQUIRED'
+                """, proposalId, profileId, expectedVersion);
+        if (changed != 1) throw new StaleProposalException("回复任务状态已变化，请刷新后重试");
+        jdbcTemplate.update("""
+                INSERT INTO hr_send_command(command_id, proposal_id, profile_id, watch_session_id, status, expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'PENDING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, commandId, proposalId, profileId, safe(watchSessionId), record.expiresAt().format(SQLITE_TIMESTAMP));
+        return commandId;
+    }
+
+    @Transactional
+    public SendCommandView claimSendCommand(Long profileId, String watchSessionId) {
+        expireUnconfirmedLeases();
+        List<String> commands = jdbcTemplate.query("""
+                SELECT command_id FROM hr_send_command c
+                JOIN hr_reply_proposal p ON p.id=c.proposal_id
+                JOIN hr_conversation v ON v.id=p.conversation_id
+                 WHERE c.profile_id=? AND (c.watch_session_id='' OR c.watch_session_id=?) AND c.status='PENDING'
+                   AND c.expires_at>datetime('now', 'localtime') AND p.status='APPROVED'
+                   AND p.source_fingerprint=v.last_inbound_fingerprint
+                 ORDER BY c.created_at LIMIT 1
+                """, (rs, rowNum) -> rs.getString(1), profileId, safe(watchSessionId));
+        if (commands.isEmpty()) return null;
+        String commandId = commands.get(0);
+        String leaseToken = UUID.randomUUID().toString();
+        String leaseHash = crypto.blindIndex(leaseToken, "send-lease:" + commandId);
+        int leased = jdbcTemplate.update("""
+                UPDATE hr_send_command
+                   SET watch_session_id=?, status='LEASED', lease_token_hash=?,
+                       lease_expires_at=datetime('now', '+60 seconds'), updated_at=CURRENT_TIMESTAMP
+                 WHERE command_id=? AND status='PENDING'
+                """, safe(watchSessionId), leaseHash, commandId);
+        if (leased != 1) return null;
+        Long proposalId = jdbcTemplate.queryForObject(
+                "SELECT proposal_id FROM hr_send_command WHERE command_id=?", Long.class, commandId);
+        if (proposalId == null) throw new IllegalStateException("待发送命令缺少回复任务");
+        transition(proposalId, ProposalStatus.APPROVED, ProposalStatus.SENDING);
+        ProposalRecord record = requireProposal(profileId, proposalId);
+        ChatMessage expectedInbound = recentMessages(record.conversationId(), 20).stream()
+                .filter(ChatMessage::inbound)
+                .filter(message -> sourceFingerprint(record.conversationId(), message).equals(record.sourceFingerprint()))
+                .reduce((first, second) -> second)
+                .orElseThrow(() -> new StaleProposalException("发送命令的来源消息已不存在"));
+        return new SendCommandView(commandId, leaseToken, proposalId, record.uid(), record.hrName(),
+                record.companyName(), record.jobName(), record.sourceFingerprint(), expectedInbound,
+                record.draft(), record.expiresAt());
+    }
+
+    @Transactional
+    public ProposalView completeSendCommand(Long profileId,
+                                            String watchSessionId,
+                                            String commandId,
+                                            String leaseToken,
+                                            String outcome,
+                                            String evidence,
+                                            ChatMessage observedLatestInbound) {
+        List<SendCommandRecord> commands = jdbcTemplate.query("""
+                SELECT proposal_id, lease_token_hash, status, lease_expires_at,
+                       lease_expires_at<=CURRENT_TIMESTAMP AS lease_expired
+                  FROM hr_send_command
+                 WHERE command_id=? AND profile_id=? AND watch_session_id=?
+                """, (rs, rowNum) -> new SendCommandRecord(rs.getLong("proposal_id"), rs.getString("lease_token_hash"),
+                        rs.getString("status"), readDateTime(rs.getString("lease_expires_at")), rs.getInt("lease_expired") == 1),
+                safe(commandId), profileId, safe(watchSessionId));
+        if (commands.size() != 1) throw new StaleProposalException("发送命令不存在或不属于当前值守标签");
+        SendCommandRecord command = commands.get(0);
+        String expectedLeaseHash = crypto.blindIndex(safe(leaseToken), "send-lease:" + safe(commandId));
+        if (!"LEASED".equals(command.status()) || !expectedLeaseHash.equals(command.leaseTokenHash())) {
+            throw new StaleProposalException("发送命令租约无效，禁止重复提交结果");
+        }
+        if (command.leaseExpired()) {
+            jdbcTemplate.update("""
+                    UPDATE hr_send_command SET status='COMPLETE', outcome='RESULT_UNKNOWN',
+                           lease_token_hash=NULL, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
+                     WHERE command_id=? AND status='LEASED'
+                    """, safe(commandId));
+            markFinal(command.proposalId(), ProposalStatus.SEND_UNKNOWN, "浏览器发送租约已过期，结果未知且禁止自动重试");
+            return getProposalView(profileId, command.proposalId());
+        }
+        ProposalRecord proposal = requireProposal(profileId, command.proposalId());
+        String normalizedOutcome = safe(outcome).toUpperCase(Locale.ROOT);
+        if (!Set.of("SENT", "STALE", "RESULT_UNKNOWN", "FAILED_SAFE").contains(normalizedOutcome)) {
+            throw new IllegalArgumentException("发送结果类型无效");
+        }
+        if ("SENT".equals(normalizedOutcome)) {
+            if (observedLatestInbound == null || !observedLatestInbound.inbound()
+                    || !sourceFingerprint(proposal.conversationId(), observedLatestInbound).equals(proposal.sourceFingerprint())) {
+                normalizedOutcome = "RESULT_UNKNOWN";
+                evidence = "发送后来源消息无法与确认快照一致；" + safe(evidence);
+            }
+        }
+        ProposalStatus finalStatus = switch (normalizedOutcome) {
+            case "SENT" -> ProposalStatus.SENT_CONFIRMED;
+            case "STALE" -> ProposalStatus.EXPIRED;
+            case "FAILED_SAFE" -> ProposalStatus.BLOCKED;
+            default -> ProposalStatus.SEND_UNKNOWN;
+        };
+        jdbcTemplate.update("""
+                UPDATE hr_send_command SET status='COMPLETE', outcome=?, evidence_cipher=?,
+                       lease_token_hash=NULL, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
+                 WHERE command_id=?
+                """, normalizedOutcome, crypto.encrypt(safe(evidence), "send-command:" + safe(commandId)), safe(commandId));
+        markFinal(command.proposalId(), finalStatus, safe(evidence));
+        return getProposalView(profileId, command.proposalId());
+    }
+
+    private void expireUnconfirmedLeases() {
+        List<Long> expired = jdbcTemplate.query("""
+                SELECT proposal_id FROM hr_send_command
+                 WHERE status='LEASED' AND lease_expires_at<CURRENT_TIMESTAMP
+                """, (rs, rowNum) -> rs.getLong(1));
+        for (Long proposalId : expired) {
+            jdbcTemplate.update("""
+                    UPDATE hr_send_command SET status='COMPLETE', outcome='RESULT_UNKNOWN',
+                           lease_token_hash=NULL, updated_at=CURRENT_TIMESTAMP
+                     WHERE proposal_id=? AND status='LEASED'
+                    """, proposalId);
+            markFinal(proposalId, ProposalStatus.SEND_UNKNOWN, "浏览器发送租约超时，结果未知且禁止自动重试");
+        }
+    }
+
+    @Transactional
     public void skip(Long profileId, long proposalId) {
         ProposalRecord record = requireProposal(profileId, proposalId);
         assertReviewable(record);
@@ -364,7 +551,7 @@ public class HrAssistantStore {
     @Transactional
     public int purgeExpired() {
         jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP " +
-                "WHERE expires_at<CURRENT_TIMESTAMP AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')");
+                "WHERE expires_at<datetime('now', 'localtime') AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')");
         int messages = jdbcTemplate.update("DELETE FROM hr_message WHERE expires_at<CURRENT_TIMESTAMP");
         jdbcTemplate.update("""
                 UPDATE hr_reply_attempt SET evidence_cipher=NULL
@@ -384,6 +571,8 @@ public class HrAssistantStore {
                  WHERE last_observed_at<datetime('now', '-30 days')
                 """);
         jdbcTemplate.update("DELETE FROM hr_qq_command WHERE expires_at<CURRENT_TIMESTAMP");
+        jdbcTemplate.update("DELETE FROM hr_scan_capture WHERE updated_at<datetime('now', '-30 days')");
+        jdbcTemplate.update("DELETE FROM hr_send_command WHERE updated_at<datetime('now', '-30 days')");
         return messages;
     }
 
@@ -429,7 +618,7 @@ public class HrAssistantStore {
             String code = String.format(Locale.ROOT, "%04d", RANDOM.nextInt(10_000));
             Long count = jdbcTemplate.queryForObject("""
                     SELECT COUNT(*) FROM hr_reply_proposal
-                     WHERE profile_id=? AND confirmation_code_hash=? AND expires_at>CURRENT_TIMESTAMP
+                     WHERE profile_id=? AND confirmation_code_hash=? AND expires_at>datetime('now', 'localtime')
                        AND status IN ('REVIEW_REQUIRED','APPROVED','SENDING')
                     """, Long.class, profileId, confirmationCodeHash(profileId, code));
             if (count == null || count == 0) return code;
@@ -559,7 +748,17 @@ public class HrAssistantStore {
                                  String hrName,
                                  String companyName,
                                  String jobName,
-                                 String lastInboundFingerprint) {
+                                  String lastInboundFingerprint) {
+    }
+
+    private record CaptureRecord(String status, LocalDateTime updatedAt, boolean recent) {
+    }
+
+    private record SendCommandRecord(long proposalId,
+                                     String leaseTokenHash,
+                                     String status,
+                                     LocalDateTime leaseExpiresAt,
+                                     boolean leaseExpired) {
     }
 
     public static class StaleProposalException extends IllegalStateException {

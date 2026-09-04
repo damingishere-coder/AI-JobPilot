@@ -73,10 +73,6 @@ app:
     max-pages: ${APP_RESUME_PARSER_MAX_PAGES:10}
     max-output-chars: ${APP_RESUME_PARSER_MAX_OUTPUT_CHARS:200000}
   hr-assistant:
-    opencli-executable: ${APP_HR_OPENCLI_EXECUTABLE:}
-    opencli-session: ${APP_HR_OPENCLI_SESSION:boss-hr}
-    command-timeout-seconds: ${APP_HR_OPENCLI_TIMEOUT_SECONDS:30}
-    scan-interval-ms: ${APP_HR_SCAN_INTERVAL_MS:60000}
     max-conversations-per-scan: ${APP_HR_MAX_CONVERSATIONS_PER_SCAN:100}
     key-path: ${APP_HR_KEY_PATH:}
 

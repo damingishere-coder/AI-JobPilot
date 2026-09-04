@@ -1,24 +1,22 @@
 package com.getjobs.application.service;
 
 import com.getjobs.application.hr.HrAssistantTypes.AiDraft;
+import com.getjobs.application.hr.HrAssistantTypes.ChatCapture;
 import com.getjobs.application.hr.HrAssistantTypes.ChatMessage;
 import com.getjobs.application.hr.HrAssistantTypes.ChatSession;
 import com.getjobs.application.hr.HrAssistantTypes.Classification;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
-import com.getjobs.application.hr.HrAssistantTypes.GatewayStatus;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
 import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
-import com.getjobs.application.hr.HrAssistantTypes.UnreadConversation;
-import com.getjobs.application.hr.HrAssistantTypes.UnreadSnapshot;
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -30,7 +28,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class HrAssistantWatchServiceTest {
-    private final OpenCliBossGateway gateway = mock(OpenCliBossGateway.class);
     private final ProfileService profileService = mock(ProfileService.class);
     private final HrAssistantStore store = mock(HrAssistantStore.class);
     private final HrReplyDraftService draftService = mock(HrReplyDraftService.class);
@@ -38,118 +35,90 @@ class HrAssistantWatchServiceTest {
     private final NapCatGateway napCatGateway = mock(NapCatGateway.class);
     private HrAssistantWatchService service;
 
-    @AfterEach
-    void tearDown() {
-        if (service != null) service.shutdown();
-    }
-
-    @Test
-    void preparesTheExistingSessionWithoutStartingAWatch() {
-        service = new HrAssistantWatchService(gateway, profileService, store, draftService, events, napCatGateway, 100, 60_000);
-
-        var status = service.prepareStart();
-
-        assertThat(status.watching()).isFalse();
-        verify(gateway).prepareCurrentChatTabBinding();
-        verify(gateway, times(0)).bindCurrentChatTab();
-    }
-
-    @Test
-    void discoversSixteenUnreadConversationsOnceAndImmediateTicksDoNotOverlapOrRepeat() throws Exception {
-        List<ChatSession> sessions = IntStream.rangeClosed(1, 16)
-                .mapToObj(index -> new ChatSession("uid-" + index, "security-" + index, "HR" + index,
-                        "公司" + index, "岗位" + index, "HR", "消息" + index, "11:02"))
-                .toList();
-        AtomicInteger snapshots = new AtomicInteger();
-        AtomicInteger proposalIds = new AtomicInteger(100);
-        when(gateway.status()).thenReturn(new GatewayStatus(true, "1.8.2", "ready"));
+    @BeforeEach
+    void setUp() {
         when(profileService.getCurrentProfileId()).thenReturn(1L);
         when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
                 1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
                 QqTargetType.PRIVATE, "", "", 30));
-        when(gateway.listChats(100)).thenReturn(sessions);
-        when(gateway.readUnreadSnapshot()).thenAnswer(ignored -> {
-            int index = snapshots.getAndIncrement();
-            if (index >= 16) return new UnreadSnapshot(0, List.of());
-            ChatSession session = sessions.get(index);
-            return new UnreadSnapshot(16 - index, List.of(new UnreadConversation(
-                    0, 1, session.hrName(), session.companyName(), session.jobName(), session.lastMessage(), session.lastTime())));
-        });
-        when(gateway.matchUnique(any(UnreadConversation.class), eq(sessions))).thenAnswer(invocation -> {
-            UnreadConversation unread = invocation.getArgument(0);
-            int index = Integer.parseInt(unread.hrName().substring(2)) - 1;
-            return sessions.get(index);
-        });
-        when(gateway.readMessages(any())).thenAnswer(invocation -> {
-            String uid = invocation.getArgument(0);
-            int index = Integer.parseInt(uid.substring(4));
-            return List.of(new ChatMessage("对方", "文本", "消息" + index, "11:02"));
-        });
-        when(store.upsertConversation(eq(1L), any(ChatSession.class))).thenAnswer(invocation -> {
-            ChatSession session = invocation.getArgument(1);
+        service = new HrAssistantWatchService(profileService, store, draftService, events, napCatGateway, 100);
+    }
+
+    @Test
+    void bindsOnlyTheExactCurrentBossChatTab() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat?ka=header-message",
+                "2026-09-04-boss-hr-direct", "browser-session");
+
+        assertThat(status.watching()).isTrue();
+        assertThat(status.watchSessionId()).isNotBlank();
+        assertThat(status.intervalMs()).isEqualTo(60_000L);
+        assertThat(status.chromeBridge().tabId()).isEqualTo(77);
+        assertThat(status.chromeBridge().tabBound()).isTrue();
+        assertThatThrownBy(() -> service.start(78, "https://www.zhipin.com/web/geek/job",
+                "version", "other-session")).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void ingestsSixteenCapturesOnceAndAcknowledgesDuplicateCaptureIds() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+        List<ChatCapture> captures = IntStream.rangeClosed(1, 16).mapToObj(this::capture).toList();
+        when(store.beginCapture(eq(1L), eq(status.watchSessionId()), eq("scan-1"), any())).thenReturn(true);
+        when(store.upsertConversation(eq(1L), any(ChatSession.class))).thenAnswer(call -> {
+            ChatSession session = call.getArgument(1);
             return Long.parseLong(session.uid().substring(4));
         });
-        when(store.sourceFingerprint(anyLong(), any(ChatMessage.class))).thenAnswer(invocation -> "fp-" + invocation.getArgument(0));
+        when(store.sourceFingerprint(anyLong(), any(ChatMessage.class))).thenAnswer(call -> "fp-" + call.getArgument(0));
         when(store.hasProposalForSource(anyLong(), any())).thenReturn(false);
         when(store.recentMessages(anyLong(), anyInt())).thenReturn(List.of());
         when(draftService.generate(eq(1L), anyLong(), any(CommunicationProfile.class), anyList()))
                 .thenReturn(new AiDraft(Classification.REPLY, "您好", "普通消息", List.of(), List.of(), 0.9));
-        when(store.createProposal(eq(1L), anyLong(), any(), any(AiDraft.class)))
-                .thenAnswer(ignored -> (long) proposalIds.incrementAndGet());
-        when(store.getProposalView(eq(1L), anyLong())).thenAnswer(invocation -> proposal(invocation.getArgument(1)));
+        when(store.createProposal(eq(1L), anyLong(), any(), any(AiDraft.class))).thenReturn(101L);
+        when(store.getProposalView(eq(1L), anyLong())).thenReturn(proposal());
 
-        service = new HrAssistantWatchService(gateway, profileService, store, draftService, events, napCatGateway, 100, 60_000);
-        service.start();
-        waitForCompletedScan();
-        for (int i = 0; i < 8; i++) service.scheduledScan();
-        Thread.sleep(200);
+        var receipt = service.ingestScan(status.watchSessionId(), 77, "scan-1", 16, captures);
 
-        assertThat(service.status().lastError()).isEmpty();
+        assertThat(receipt.received()).isEqualTo(16);
+        assertThat(receipt.processed()).isEqualTo(16);
+        assertThat(receipt.acknowledgedCaptureIds()).hasSize(16);
         verify(store, times(16)).createProposal(eq(1L), anyLong(), any(), any(AiDraft.class));
-        verify(gateway, times(1)).listChats(100);
+
+        when(store.beginCapture(eq(1L), eq(status.watchSessionId()), eq("scan-2"), any())).thenReturn(false);
+        var duplicate = service.ingestScan(status.watchSessionId(), 77, "scan-2", 16, captures);
+        assertThat(duplicate.duplicates()).isEqualTo(16);
+        assertThat(duplicate.processed()).isZero();
     }
 
     @Test
-    void scrollsWhenUnreadBadgesAreBelowTheVisibleVirtualList() throws Exception {
-        ChatSession session = new ChatSession("uid-1", "security-1", "HR1",
-                "公司1", "岗位1", "HR", "消息1", "11:02");
-        AtomicInteger snapshots = new AtomicInteger();
-        when(gateway.status()).thenReturn(new GatewayStatus(true, "1.8.2", "ready"));
-        when(profileService.getCurrentProfileId()).thenReturn(1L);
-        when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
-                1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
-                QqTargetType.PRIVATE, "", "", 30));
-        when(gateway.listChats(100)).thenReturn(List.of(session));
-        when(gateway.readUnreadSnapshot()).thenAnswer(ignored -> switch (snapshots.getAndIncrement()) {
-            case 0 -> new UnreadSnapshot(1, List.of());
-            case 1 -> new UnreadSnapshot(1, List.of(new UnreadConversation(
-                    0, 1, session.hrName(), session.companyName(), session.jobName(), session.lastMessage(), session.lastTime())));
-            default -> new UnreadSnapshot(0, List.of());
-        });
-        when(gateway.scrollUnreadList()).thenReturn(true);
-        when(gateway.matchUnique(any(UnreadConversation.class), anyList())).thenReturn(session);
-        when(gateway.readMessages(session.uid())).thenReturn(List.of(new ChatMessage("对方", "文本", "消息1", "11:02")));
-        when(store.upsertConversation(1L, session)).thenReturn(1L);
-        when(store.sourceFingerprint(anyLong(), any(ChatMessage.class))).thenReturn("fp-1");
-        when(store.hasProposalForSource(1L, "fp-1")).thenReturn(true);
+    void browserHeartbeatDoesNotOccupyTheBackendProcessingLock() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+        service.heartbeat(status.watchSessionId(), 77, "https://www.zhipin.com/web/geek/chat", "version", true, 1, "");
+        when(store.beginCapture(1L, status.watchSessionId(), "scan", "capture-1")).thenReturn(false);
 
-        service = new HrAssistantWatchService(gateway, profileService, store, draftService, events, napCatGateway, 100, 60_000);
-        service.start();
-        waitForCompletedScan();
+        var receipt = service.ingestScan(status.watchSessionId(), 77, "scan", 1, List.of(capture(1)));
 
-        assertThat(service.status().lastError()).isEmpty();
-        verify(gateway, times(1)).scrollUnreadList();
-        verify(gateway, times(3)).readUnreadSnapshot();
+        assertThat(receipt.duplicates()).isEqualTo(1);
+        assertThat(service.status().scanRunning()).isTrue();
     }
 
-    private void waitForCompletedScan() throws InterruptedException {
-        long deadline = System.nanoTime() + 5_000_000_000L;
-        while (service.status().lastScanAt() == null && System.nanoTime() < deadline) Thread.sleep(20);
-        assertThat(service.status().lastScanAt()).isNotNull();
+    @Test
+    void unreadCountWithoutAnySafeCaptureFailsClosed() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+
+        assertThatThrownBy(() -> service.ingestScan(status.watchSessionId(), 77, "scan", 16, List.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未能安全识别");
     }
 
-    private ProposalView proposal(long id) {
-        return new ProposalView(id, 1L, id, "1234", "REVIEW_REQUIRED", "REPLY", "HR", "公司", "岗位",
+    private ChatCapture capture(int index) {
+        String text = "消息" + index;
+        ChatSession session = new ChatSession("uid-" + index, "security-" + index, "HR" + index,
+                "公司" + index, "岗位" + index, "HR", text, "11:02");
+        return new ChatCapture("capture-" + index, 1, session,
+                List.of(new ChatMessage("对方", "文本", text, "11:02")));
+    }
+
+    private ProposalView proposal() {
+        return new ProposalView(101L, 1L, 1L, "1234", "REVIEW_REQUIRED", "REPLY", "HR", "公司", "岗位",
                 "消息", "您好", "普通消息", List.of(), List.of(), 0.9, 1,
                 LocalDateTime.now().plusMinutes(15), LocalDateTime.now(), false);
     }

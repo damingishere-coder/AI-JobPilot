@@ -627,7 +627,8 @@ public class DatabaseSchemaService {
             requiredTables.add("delivery_attempt");
             requiredTables.addAll(List.of(
                     "hr_assistant_settings", "hr_conversation", "hr_message",
-                    "hr_reply_proposal", "hr_reply_attempt", "hr_qq_command"));
+                    "hr_reply_proposal", "hr_reply_attempt", "hr_qq_command",
+                    "hr_scan_capture", "hr_send_command"));
             requiredColumns.put("liepin_config", Set.of("id", "profile_id"));
             requiredColumns.put("job51_config", Set.of("id", "profile_id"));
             requiredColumns.put("liepin_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
@@ -651,6 +652,11 @@ public class DatabaseSchemaService {
                     "proposal_id", "request_key", "status", "evidence_cipher", "updated_at"));
             requiredColumns.put("hr_qq_command", Set.of(
                     "message_id", "sender_hash", "command_type", "expires_at"));
+            requiredColumns.put("hr_scan_capture", Set.of(
+                    "watch_session_id", "capture_id", "profile_id", "scan_id", "status", "error_code", "updated_at"));
+            requiredColumns.put("hr_send_command", Set.of(
+                    "command_id", "proposal_id", "profile_id", "watch_session_id", "status", "lease_token_hash",
+                    "lease_expires_at", "expires_at", "outcome", "evidence_cipher", "updated_at"));
         }
         requiredColumns.put("job_analysis_task", requireV7TaskSchema
                 ? Set.of(
@@ -692,7 +698,10 @@ public class DatabaseSchemaService {
                     "idx_hr_message_expiry",
                     "idx_hr_reply_proposal_profile_status",
                     "idx_hr_reply_proposal_code",
-                    "idx_hr_qq_command_expiry"
+                    "idx_hr_qq_command_expiry",
+                    "idx_hr_scan_capture_status",
+                    "idx_hr_send_command_claim",
+                    "idx_hr_send_command_lease"
             ));
         }
 
