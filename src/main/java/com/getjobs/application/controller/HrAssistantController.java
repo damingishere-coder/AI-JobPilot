@@ -47,9 +47,15 @@ public class HrAssistantController {
             @RequestBody SettingsRequest request) {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("设置请求不能为空");
-        return execute(() -> store.saveSettings(profileService.getCurrentProfileId(), request.getCommunicationProfile(),
-                request.isQqEnabled(), request.getNapcatWsUrl(), request.getNapcatToken(), request.getQqTargetType(),
-                request.getQqTarget(), request.getQqOperator(), request.getRetentionDays()));
+        return execute(() -> {
+            Long profileId = profileService.getCurrentProfileId();
+            if (request.getExpectedProfileId() != null && !request.getExpectedProfileId().equals(profileId)) {
+                throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新加载设置后再保存");
+            }
+            return store.saveSettings(profileId, request.getCommunicationProfile(), request.isQqEnabled(),
+                    request.getNapcatWsUrl(), request.getNapcatToken(), request.getQqTargetType(),
+                    request.getQqTarget(), request.getQqOperator(), request.getRetentionDays());
+        });
     }
 
     @GetMapping("/status")
@@ -139,6 +145,7 @@ public class HrAssistantController {
 
     @Data
     public static class SettingsRequest {
+        private Long expectedProfileId;
         private CommunicationProfile communicationProfile;
         private boolean qqEnabled;
         private String napcatWsUrl;

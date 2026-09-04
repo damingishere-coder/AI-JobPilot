@@ -51,6 +51,7 @@ class HrAssistantControllerTest {
                 QqTargetType.GROUP, "98***21", "12***56", true, true, 30, true);
         HrAssistantController.SettingsRequest request = new HrAssistantController.SettingsRequest();
         request.setCommunicationProfile(communication);
+        request.setExpectedProfileId(1L);
         request.setQqEnabled(true);
         request.setNapcatWsUrl("ws://127.0.0.1:3001");
         request.setNapcatToken("token-secret");
@@ -66,5 +67,24 @@ class HrAssistantControllerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(store).saveSettings(1L, communication, true, "ws://127.0.0.1:3001", "token-secret",
                 QqTargetType.GROUP, "987654321", "123456", 30);
+    }
+
+    @Test
+    void rejectsSettingsSaveWhenActiveProfileChanged() {
+        ProfileService profiles = mock(ProfileService.class);
+        HrAssistantStore store = mock(HrAssistantStore.class);
+        HrAssistantWatchService watcher = mock(HrAssistantWatchService.class);
+        HrReplyActionService actions = mock(HrReplyActionService.class);
+        HrAssistantEventService events = mock(HrAssistantEventService.class);
+        LocalActionTokenService tokens = new LocalActionTokenService();
+        HrAssistantController controller = new HrAssistantController(profiles, store, watcher, actions, events, tokens);
+        HrAssistantController.SettingsRequest request = new HrAssistantController.SettingsRequest();
+        request.setExpectedProfileId(1L);
+        when(profiles.getCurrentProfileId()).thenReturn(2L);
+
+        var response = controller.saveSettings(tokens.issueToken(), request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        verifyNoInteractions(store);
     }
 }

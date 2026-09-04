@@ -28,14 +28,16 @@ test('assistant keeps full auto locked and sends only after explicit confirmatio
   assert.doesNotMatch(assistant, /screenX|screenY|clientX|clientY|elementFromPoint/);
 });
 
-test('QQ settings support encrypted group notification and optional operator mode', () => {
+test('sensitive HR settings live in the workbench instead of the BOSS overlay', () => {
   const assistant = source('chrome-extension/boss-hr-assistant.js');
-  assert.match(assistant, /\[\["PRIVATE", "私人 QQ"\], \["GROUP", "指定群聊"\]\]/);
-  assert.match(assistant, /群内操作人 QQ（可选）/);
-  assert.match(assistant, /不填则群聊仅接收通知/);
-  assert.match(assistant, /qqTargetType: read\("qqTargetType"\)/);
-  assert.match(assistant, /qqOperator: read\("qqOperator"\)/);
-  assert.match(assistant, /qqOperatorClear/);
+  const workbench = source('front/app/env-config/HrAssistantSettingsCard.tsx');
+  const environmentPage = source('front/app/env-config/page.tsx');
+  assert.doesNotMatch(assistant, /沟通资料与 QQ 通知|hr-settings|qqTargetType|napcatToken/);
+  assert.match(assistant, /localApi\("hr-status"\), localApi\("hr-proposals"\)/);
+  assert.match(workbench, /BOSS HR 值守与 QQ 通知/);
+  assert.match(workbench, /localActionFetch/);
+  assert.match(workbench, /群内操作人 QQ（可选）/);
+  assert.match(environmentPage, /<HrAssistantSettingsCard \/>/);
 });
 
 test('backend contract fixes scanning at no less than sixty seconds and never retries HR send', () => {

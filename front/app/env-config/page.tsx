@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import PageHeader from '@/app/components/PageHeader'
+import HrAssistantSettingsCard from './HrAssistantSettingsCard'
 import { API_BASE } from '@/lib/api'
 
 export default function EnvConfig() {
@@ -251,6 +252,8 @@ export default function EnvConfig() {
             </div>
           </CardContent>
         </Card>
+
+        <HrAssistantSettingsCard />
 
         {/* AI 调用方式 */}
         <Card className="animate-in fade-in slide-in-from-bottom-6 duration-700">
