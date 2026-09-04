@@ -28,7 +28,8 @@ public class LiepinPlatformAdapter implements PlatformAdapter {
 
     @Override
     public PlatformCapability capability() {
-        return new PlatformCapability(platform(), "TIER_2", "PLAYWRIGHT_LEGACY", true, true, "PLAYWRIGHT_LEGACY");
+        return new PlatformCapability(platform(), "TIER_2", "PLAYWRIGHT_LEGACY", true, true, "PLAYWRIGHT_LEGACY",
+                false, false, "UNSUPPORTED");
     }
 
     @Override

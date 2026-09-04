@@ -625,6 +625,10 @@ public class DatabaseSchemaService {
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
         if (requireV7TaskSchema) {
             requiredTables.add("delivery_attempt");
+            requiredTables.addAll(List.of(
+                    "hr_assistant_settings", "hr_conversation", "hr_message",
+                    "hr_reply_proposal", "hr_reply_attempt", "hr_qq_command",
+                    "hr_scan_capture", "hr_send_command"));
             requiredColumns.put("liepin_config", Set.of("id", "profile_id"));
             requiredColumns.put("job51_config", Set.of("id", "profile_id"));
             requiredColumns.put("liepin_data", Set.of("id", "profile_id", "job_id", "delivered", "delivery_status"));
@@ -633,6 +637,26 @@ public class DatabaseSchemaService {
                     "request_key", "platform", "profile_id", "job_key", "job_row_id", "state",
                     "evidence", "message", "greeting_snapshot", "greeting_source", "greeting_outcome",
                     "greeting_evidence", "requested_at", "resolved_at", "updated_at"));
+            requiredColumns.put("hr_assistant_settings", Set.of(
+                    "profile_id", "communication_profile_cipher", "napcat_ws_url", "napcat_token_cipher",
+                    "qq_target_cipher", "qq_target_type", "qq_operator_cipher", "qq_enabled", "retention_days"));
+            requiredColumns.put("hr_conversation", Set.of(
+                    "profile_id", "platform", "external_uid_hash", "external_uid_cipher", "hr_name_cipher",
+                    "company_name_cipher", "job_name_cipher", "last_inbound_fingerprint"));
+            requiredColumns.put("hr_message", Set.of(
+                    "conversation_id", "fingerprint", "direction", "message_type", "body_cipher", "expires_at"));
+            requiredColumns.put("hr_reply_proposal", Set.of(
+                    "profile_id", "conversation_id", "confirmation_code_hash", "confirmation_code_cipher",
+                    "source_fingerprint", "status", "classification", "draft_cipher", "version", "expires_at"));
+            requiredColumns.put("hr_reply_attempt", Set.of(
+                    "proposal_id", "request_key", "status", "evidence_cipher", "updated_at"));
+            requiredColumns.put("hr_qq_command", Set.of(
+                    "message_id", "sender_hash", "command_type", "expires_at"));
+            requiredColumns.put("hr_scan_capture", Set.of(
+                    "watch_session_id", "capture_id", "profile_id", "scan_id", "status", "error_code", "updated_at"));
+            requiredColumns.put("hr_send_command", Set.of(
+                    "command_id", "proposal_id", "profile_id", "watch_session_id", "status", "lease_token_hash",
+                    "lease_expires_at", "expires_at", "outcome", "evidence_cipher", "updated_at"));
         }
         requiredColumns.put("job_analysis_task", requireV7TaskSchema
                 ? Set.of(
@@ -668,7 +692,16 @@ public class DatabaseSchemaService {
                     "idx_job51_data_profile_company_job",
                     "idx_liepin_data_profile_status",
                     "idx_job51_data_profile_status",
-                    "idx_delivery_attempt_profile_state"
+                    "idx_delivery_attempt_profile_state",
+                    "idx_hr_conversation_profile_updated",
+                    "idx_hr_message_conversation_observed",
+                    "idx_hr_message_expiry",
+                    "idx_hr_reply_proposal_profile_status",
+                    "idx_hr_reply_proposal_code",
+                    "idx_hr_qq_command_expiry",
+                    "idx_hr_scan_capture_status",
+                    "idx_hr_send_command_claim",
+                    "idx_hr_send_command_lease"
             ));
         }
 

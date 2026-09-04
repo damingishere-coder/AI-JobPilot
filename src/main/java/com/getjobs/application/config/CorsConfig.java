@@ -23,6 +23,7 @@ public class CorsConfig {
             "/api/boss/chrome/**",
             "/api/boss/ai-keywords",
             "/api/boss/jobs/*/delivery-result",
+            "/api/hr-assistant/**",
             "/api/zhilian/chrome/**",
             "/api/zhilian/jobs/*/delivery-result"
     );

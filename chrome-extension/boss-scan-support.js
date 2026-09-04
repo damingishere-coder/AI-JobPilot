@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-03-boss-navigation-loop-fix";
+  const SUPPORT_VERSION = "2026-09-04-boss-hr-assistant";
   if (root.GetJobsBossScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;

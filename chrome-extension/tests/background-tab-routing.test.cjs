@@ -43,11 +43,16 @@ function loadBackground({
   const storage = {};
   const sentMessages = [];
   const executedScripts = [];
+  const tabUpdates = [];
+  const windowUpdates = [];
+  const alarmCreates = [];
+  const alarmClears = [];
   const tabList = tabs.map((tab) => ({ ...tab }));
   let currentContentReady = contentReady;
   let currentBossContentVersion = bossContentVersion;
   let currentZhilianContentVersion = zhilianContentVersion;
   let runtimeMessageListener = null;
+  let alarmListener = null;
   const chrome = {
     runtime: {
       onMessage: { addListener(listener) { runtimeMessageListener = listener; } },
@@ -75,6 +80,7 @@ function loadBackground({
         return { ...tab };
       },
       async update(tabId, updates) {
+        tabUpdates.push({ tabId, updates: { ...updates } });
         const tab = tabList.find((item) => item.id === tabId);
         Object.assign(tab, updates);
         return { ...tab };
@@ -91,6 +97,9 @@ function loadBackground({
         if (message.type === "GET_ZHILIAN_CONTENT_VERSION") {
           return { success: true, version: currentZhilianContentVersion };
         }
+        if (message.type === "BOSS_HR_CONTENT_VERSION") {
+          return { success: true, version: currentBossContentVersion };
+        }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
         }
@@ -103,7 +112,14 @@ function loadBackground({
       }
     },
     windows: {
-      async update() {}
+      async update(windowId, updates) {
+        windowUpdates.push({ windowId, updates: { ...updates } });
+      }
+    },
+    alarms: {
+      onAlarm: { addListener(listener) { alarmListener = listener; } },
+      async create(name, options) { alarmCreates.push({ name, options: { ...options } }); },
+      async clear(name) { alarmClears.push(name); return true; }
     },
     scripting: {
       async executeScript(options) {
@@ -164,7 +180,10 @@ function loadBackground({
       if (keepChannelOpen !== true) setImmediate(() => resolve(undefined));
     });
   }
-  return { context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList, dispatchRuntimeMessage };
+  return {
+    context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList,
+    tabUpdates, windowUpdates, alarmCreates, alarmClears, dispatchRuntimeMessage
+  };
 }
 
 function dispatchRuntimeMessage(listener, message, sender) {
@@ -308,7 +327,7 @@ test("allows Zhilian job submission through the fixed local API route", async ()
   assert.equal(response.success, true);
   assert.equal(response.data.saved, 1);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "http://localhost:6866/api/zhilian/chrome/jobs");
+  assert.equal(requests[0].url, "http://127.0.0.1:6866/api/zhilian/chrome/jobs");
   assert.equal(requests[0].options.method, "POST");
 });
 
@@ -344,7 +363,7 @@ test("allows numeric Zhilian delivery result IDs and rejects invalid or unknown 
   }, sender);
 
   assert.equal(allowed.success, true);
-  assert.equal(urls[0], "http://localhost:6866/api/zhilian/jobs/123/delivery-result");
+  assert.equal(urls[0], "http://127.0.0.1:6866/api/zhilian/jobs/123/delivery-result");
   assert.equal(invalidId.success, false);
   assert.match(invalidId.message, /有效岗位ID/);
   assert.equal(unknown.success, false);
@@ -367,6 +386,72 @@ test("treats HTTP 200 business rejection as a failed local API request", async (
   assert.equal(result.success, false);
   assert.equal(result.errorType, "BUSINESS_REJECTED");
   assert.equal(result.message, "状态已变化");
+});
+
+test("accepts a valid local JSON envelope when Chrome hides the Content-Type header", async () => {
+  const { context } = loadBackground({ tabs: [] });
+  const response = {
+    ok: true,
+    status: 200,
+    headers: { get() { return null; } },
+    async text() { return JSON.stringify({ success: true, data: { watching: false } }); }
+  };
+
+  const parsed = await context.parseLocalApiResponse(response);
+
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data.watching, false);
+});
+
+test("binds the initiating Boss chat directly without opening or focusing another window", async () => {
+  const requests = [];
+  const { dispatchRuntimeMessage, tabUpdates, windowUpdates, alarmCreates } = loadBackground({
+    tabs: [{ id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url.endsWith("/api/local-auth/action-token")) {
+        return jsonResponse({ success: true, data: { token: "test-action-token" } });
+      }
+      if (url.endsWith("/api/hr-assistant/watch/start")) {
+        return jsonResponse({ success: true, data: { watching: true, watchSessionId: "watch-1" } });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    }
+  });
+
+  const response = await dispatchRuntimeMessage({
+    source: "GET_JOBS_BOSS_CONTENT",
+    type: "BOSS_LOCAL_API",
+    operation: "hr-start",
+    timeoutMs: 30000
+  }, {
+    tab: { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat" }
+  });
+
+  assert.equal(response.success, true);
+  assert.deepEqual(requests.map((url) => new URL(url).pathname), [
+    "/api/local-auth/action-token",
+    "/api/hr-assistant/watch/start"
+  ]);
+  assert.equal(tabUpdates.length, 0);
+  assert.equal(windowUpdates.length, 0);
+  assert.deepEqual(alarmCreates, [{ name: "getjobs-boss-hr-watch", options: { periodInMinutes: 1 } }]);
+});
+
+test("persists an HR Outbox identity before a content script opens the conversation", async () => {
+  const { context, dispatchRuntimeMessage, storage } = loadBackground({
+    tabs: [{ id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }]
+  });
+  await context.writeBossHrWatch({ watching: true, tabId: 7, watchSessionId: "watch-1" });
+
+  const response = await dispatchRuntimeMessage({
+    source: "GET_JOBS_BOSS_HR_CONTENT",
+    type: "BOSS_HR_OUTBOX_PUT",
+    capture: { captureId: "capture-1", uid: "friend-1", unreadCount: 1, hrName: "HR" }
+  }, { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } });
+
+  assert.equal(response.success, true);
+  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__["capture-1"].uid, "friend-1");
 });
 
 test("preserves backend profile errors and rejects unscoped job submission locally", async () => {

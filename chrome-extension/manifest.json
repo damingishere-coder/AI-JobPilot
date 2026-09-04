@@ -1,18 +1,17 @@
 {
   "manifest_version": 3,
   "name": "投递牛马 Chrome Bridge",
-  "version": "1.4.4",
+  "version": "1.6.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzzdIlNVOv76Y/cSWrjD5Tg2Vlsha8yWHzsn46PBsg724/2dftOUzIIr2n70VRaRgGwEd8FjO/Y768Ori443zF4pQpWvuxXxm05YO25ILQ/+aJLmUycAEdWbkdhcagr4YXnXJdYlSCGSAToSQBjk+owQOdlBLQn5wofPoshrqayoJjRQ5aAUj1SuSlnNv9iimle8GMA1IaA1l5rw6K/chfcgwMTg6HxRAIoludt5JGbIBryi2Lu1hOJRMaDnL7A57ofBnn3qx3H2HIGWGkkTW9EMkls0XMXwx8+mJVIj5HSYl0EeuCvEoTa1W3i1CbOf3kY2yCPKS3Qz3lOvJiwJ4ZQIDAQAB",
-  "description": "Use the signed-in Chrome tabs to scan jobs and confirm deliveries for 投递牛马.",
+  "description": "Use signed-in Chrome tabs to scan jobs, confirm deliveries, and review BOSS HR reply drafts for 投递牛马.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["tabs", "scripting", "storage"],
+  "permissions": ["tabs", "scripting", "storage", "alarms"],
   "host_permissions": [
-    "http://localhost:6866/*",
     "http://127.0.0.1:6866/*",
     "https://www.zhipin.com/*",
     "https://*.zhipin.com/*",
@@ -37,7 +36,10 @@
         "boss-api-collector.js",
         "boss-search-collector.js",
         "boss-detail-collector.js",
-        "boss-content.js"
+        "boss-content.js",
+        "boss-hr-support.js",
+        "boss-hr-bridge.js",
+        "boss-hr-assistant.js"
       ],
       "run_at": "document_idle"
     },

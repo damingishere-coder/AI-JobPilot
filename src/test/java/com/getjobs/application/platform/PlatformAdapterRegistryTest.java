@@ -26,6 +26,12 @@ class PlatformAdapterRegistryTest {
             assertThat(capability.analysisSupported()).isTrue();
             assertThat(capability.confirmationSupported()).isTrue();
         });
+        assertThat(registry.capabilities()).filteredOn(capability -> capability.platform().equals("boss"))
+                .singleElement().satisfies(capability -> {
+                    assertThat(capability.chatReadSupported()).isTrue();
+                    assertThat(capability.replyDraftSupported()).isTrue();
+                    assertThat(capability.replySendMode()).isEqualTo("HUMAN_CONFIRMATION");
+                });
     }
 
     @Test
@@ -41,7 +47,9 @@ class PlatformAdapterRegistryTest {
         PlatformAdapter adapter = mock(PlatformAdapter.class);
         when(adapter.platform()).thenReturn(platform);
         when(adapter.capability()).thenReturn(new PlatformCapability(
-                platform.toLowerCase(), tier, mode, true, true, mode));
+                platform.toLowerCase(), tier, mode, true, true, mode,
+                "boss".equalsIgnoreCase(platform), "boss".equalsIgnoreCase(platform),
+                "boss".equalsIgnoreCase(platform) ? "HUMAN_CONFIRMATION" : "UNSUPPORTED"));
         return adapter;
     }
 }

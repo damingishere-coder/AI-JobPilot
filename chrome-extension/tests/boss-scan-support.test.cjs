@@ -267,7 +267,7 @@ test("classifies CORS and local service failures for actionable diagnostics", ()
 
 test("preserves Boss search attempts while collecting and increments after route drift", () => {
   const support = loadSupport();
-  assert.equal(support.version, "2026-09-03-boss-navigation-loop-fix");
+  assert.equal(support.version, "2026-09-04-boss-hr-assistant");
   const collecting = support.beginBossSearchCollection({
     type: "BOSS_SCAN_START",
     navigationKey: "AIGC产品运营::101280600",

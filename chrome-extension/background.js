@@ -10,7 +10,10 @@ const PLATFORM_CONFIG = {
       "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
-      "boss-content.js"
+      "boss-content.js",
+      "boss-hr-support.js",
+      "boss-hr-bridge.js",
+      "boss-hr-assistant.js"
     ]
   },
   zhilian: {
@@ -32,16 +35,24 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-04-boss-greeting-proof";
+const BACKGROUND_VERSION = "2026-09-04-boss-hr-direct";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-greeting-proof";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-03-boss-navigation-loop-fix";
-const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866"];
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-direct";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-04-boss-hr-direct";
+const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
+const BOSS_HR_ALARM_NAME = "getjobs-boss-hr-watch";
+const BOSS_HR_WATCH_STORAGE_KEY = "__GET_JOBS_BOSS_HR_WATCH__";
+const BOSS_HR_OUTBOX_STORAGE_KEY = "__GET_JOBS_BOSS_HR_OUTBOX__";
+const BOSS_HR_SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+let bossHrScanPromise = null;
+let bossHrCommandPromise = null;
+let localActionToken = "";
+let localActionBaseUrl = "";
 const ALLOWED_PAGE_ORIGINS = new Set([
   "http://localhost:6866",
   "http://127.0.0.1:6866"
@@ -65,6 +76,13 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_HR_CONTENT" && message.type === "BOSS_HR_OUTBOX_PUT") {
+    handleBossHrOutboxPut(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, errorCode: "HR_OUTBOX_WRITE_FAILED", message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_API_PAGE_REQUEST") {
     if (!isBossSender(sender)) {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起搜索 API 请求" });
@@ -103,7 +121,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起的本地接口请求" });
       return;
     }
-    handleBossLocalApiRequest(message).then(sendResponse).catch((error) => {
+    handleBossLocalApiRequest(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
     return true;
@@ -166,6 +184,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pageTabs.delete(tabId);
   clearScanSession("boss", tabId).catch(() => {});
   clearScanSession("zhilian", tabId).catch(() => {});
+  stopBossHrWatchIfOwned(tabId, "BOSS_CHAT_TAB_CLOSED", "值守标签页已关闭").catch(() => {});
+});
+
+chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
+  const url = changeInfo?.url || tab?.url || "";
+  if (url && !isBossChatUrl(url)) {
+    stopBossHrWatchIfOwned(tabId, "BOSS_CHAT_TAB_NAVIGATED", "值守标签页已离开 BOSS 聊天页").catch(() => {});
+  }
+});
+
+chrome.alarms?.onAlarm?.addListener?.((alarm) => {
+  if (alarm?.name === BOSS_HR_ALARM_NAME) runBossHrScan("alarm").catch(() => {});
 });
 
 async function forwardPlatformEvent(message, sender) {
@@ -371,23 +401,295 @@ async function handleZhilianContentNavigation(message, sender) {
   return { success: true, url: targetUrl, navigationType };
 }
 
-async function handleBossLocalApiRequest(message) {
+async function handleBossLocalApiRequest(message, sender) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
   if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
     return profileRequiredResponse();
   }
 
-  const result = await requestLocalApi(endpoint.path, {
-    operation: String(message.operation || ""),
-    method: endpoint.method,
-    body: message.body,
+  const operation = String(message.operation || "");
+  const requestContext = {
+    operation,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
-    pageTabId: message.pageTabId,
-    platform: "boss"
+    pageTabId: sender?.tab?.id || message.pageTabId,
+    platform: "boss",
+    requireActionToken: endpoint.requireActionToken === true
+  };
+  if (operation === "hr-start") {
+    return await startBossHrWatch(sender, requestContext);
+  }
+  if (operation === "hr-stop") {
+    return await stopBossHrWatch("USER_STOPPED", "用户主动停止", requestContext);
+  }
+  if (operation === "hr-command-poll") {
+    return await pollBossHrSendCommand(sender, requestContext);
+  }
+
+  const result = await requestLocalApi(endpoint.path, {
+    ...requestContext,
+    method: endpoint.method,
+    body: message.body
   });
+  if (operation === "hr-send" && result.success) {
+    await pollBossHrSendCommand(sender, requestContext);
+  }
   console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
   return result;
+}
+
+async function startBossHrWatch(sender, requestContext) {
+  const tabId = sender?.tab?.id;
+  const url = sender?.tab?.url || sender?.url || "";
+  if (!Number.isInteger(tabId) || !isBossChatUrl(url)) {
+    return { success: false, errorCode: "BOSS_CHAT_TAB_REQUIRED", message: "请在当前 BOSS 求职者聊天页点击开始值守" };
+  }
+  await ensureContentScript(tabId, "boss-content.js");
+  const ready = await chrome.tabs.sendMessage(tabId, {
+    source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_CONTENT_VERSION"
+  }).catch(() => null);
+  if (ready?.version !== REQUIRED_BOSS_CONTENT_VERSION) {
+    return { success: false, errorCode: "BOSS_HR_CONTENT_OUTDATED", message: "HR 内容脚本未就绪，请重新加载扩展并刷新 BOSS 页面" };
+  }
+  const browserSessionId = createBossHrId("browser");
+  const result = await requestLocalApi("/api/hr-assistant/watch/start", {
+    ...requestContext,
+    operation: "hr-start",
+    method: "POST",
+    body: { tabId, url, contentVersion: ready.version, browserSessionId },
+    requireActionToken: true
+  });
+  const watchStatus = result?.data?.data;
+  if (!result.success || !watchStatus?.watchSessionId) return result;
+
+  await writeBossHrWatch({
+    watching: true,
+    tabId,
+    url,
+    contentVersion: ready.version,
+    browserSessionId,
+    watchSessionId: watchStatus.watchSessionId,
+    scanRunning: false,
+    lastScanAt: null,
+    nextScanAt: Date.now(),
+    updatedAt: Date.now()
+  });
+  await chrome.alarms?.create?.(BOSS_HR_ALARM_NAME, { periodInMinutes: 1 });
+  setTimeout(() => runBossHrScan("initial").catch(() => {}), 0);
+  return result;
+}
+
+async function stopBossHrWatch(reasonCode, reason, requestContext = {}) {
+  const state = await readBossHrWatch();
+  await chrome.alarms?.clear?.(BOSS_HR_ALARM_NAME);
+  try {
+    return await requestLocalApi("/api/hr-assistant/watch/stop", {
+      ...requestContext,
+      operation: "hr-stop",
+      method: "POST",
+      body: { watchSessionId: state?.watchSessionId || "", reason: `${reasonCode}: ${reason}` },
+      requireActionToken: true
+    });
+  } finally {
+    await bossHrWatchStorage().remove(BOSS_HR_WATCH_STORAGE_KEY).catch(() => {});
+  }
+}
+
+async function pauseBossHrWatch(errorCode, message) {
+  const state = await readBossHrWatch();
+  if (!state?.watching) return;
+  await stopBossHrWatch(errorCode, message, { platform: "boss", pageTabId: state.tabId }).catch(() => {});
+}
+
+async function stopBossHrWatchIfOwned(tabId, errorCode, message) {
+  const state = await readBossHrWatch();
+  if (state?.watching && state.tabId === tabId) await pauseBossHrWatch(errorCode, message);
+}
+
+async function handleBossHrOutboxPut(message, sender) {
+  const state = await readBossHrWatch();
+  const tabId = sender?.tab?.id;
+  if (!state?.watching || state.tabId !== tabId || !isBossChatUrl(sender?.tab?.url || sender?.url || "")) {
+    return { success: false, errorCode: "BOSS_HR_TAB_NOT_BOUND", message: "当前标签页不是已绑定的 BOSS 值守标签" };
+  }
+  const capture = message?.capture;
+  if (!capture?.captureId || !capture?.uid) {
+    return { success: false, errorCode: "HR_OUTBOX_INVALID", message: "Outbox 会话身份不完整" };
+  }
+  const outbox = await readBossHrOutbox();
+  outbox[capture.captureId] = {
+    captureId: String(capture.captureId), uid: String(capture.uid),
+    unreadCount: Number(capture.unreadCount || 1),
+    addedAt: Number(outbox[capture.captureId]?.addedAt || Date.now())
+  };
+  const entries = Object.values(outbox).sort((left, right) => left.addedAt - right.addedAt).slice(-100);
+  await writeBossHrOutbox(Object.fromEntries(entries.map((entry) => [entry.captureId, entry])));
+  return { success: true, outboxCount: entries.length };
+}
+
+async function runBossHrScan(trigger = "alarm") {
+  if (bossHrCommandPromise) return { success: true, skipped: true, reason: "SEND_COMMAND_RUNNING" };
+  if (bossHrScanPromise) return { success: true, skipped: true, reason: "SCAN_ALREADY_RUNNING" };
+  bossHrScanPromise = runBossHrScanLocked(trigger).finally(() => { bossHrScanPromise = null; });
+  return await bossHrScanPromise;
+}
+
+async function runBossHrScanLocked(trigger) {
+  const state = await readBossHrWatch();
+  if (!state?.watching) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+  const tab = await chrome.tabs.get(state.tabId).catch(() => null);
+  if (!tab || !isBossChatUrl(tab.url || "")) {
+    await pauseBossHrWatch("BOSS_CHAT_TAB_UNAVAILABLE", "绑定的 BOSS 聊天标签页不存在或已跳转");
+    return { success: false, errorCode: "BOSS_CHAT_TAB_UNAVAILABLE" };
+  }
+  const scanId = createBossHrId("scan");
+  const deadlineAt = Date.now() + BOSS_HR_SCAN_TIMEOUT_MS;
+  const outbox = Object.values(await readBossHrOutbox());
+  await writeBossHrWatch({ ...state, scanRunning: true, updatedAt: Date.now() });
+  await postBossHrHeartbeat(state, tab.url, true, outbox.length, "").catch(() => {});
+  try {
+    const scanResult = await withBossHrTimeout(chrome.tabs.sendMessage(state.tabId, {
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SCAN", scanId, trigger, deadlineAt, outbox
+    }), BOSS_HR_SCAN_TIMEOUT_MS);
+    if (!scanResult?.success) {
+      throw Object.assign(new Error(scanResult?.message || "BOSS HR 扫描失败"), {
+        errorCode: scanResult?.errorCode || "BOSS_HR_SCAN_FAILED"
+      });
+    }
+    const submitted = await requestLocalApi("/api/hr-assistant/watch/scan-results", {
+      operation: "hr-scan-results", method: "POST", requireActionToken: true,
+      platform: "boss", pageTabId: state.tabId, timeoutMs: 120000,
+      body: {
+        watchSessionId: state.watchSessionId, tabId: state.tabId, scanId,
+        totalUnread: Number(scanResult.totalUnread || 0), captures: scanResult.captures || []
+      }
+    });
+    if (!submitted.success) throw Object.assign(new Error(submitted.message || "扫描结果提交失败"), { errorCode: submitted.errorType });
+    const acknowledged = submitted.data?.data?.acknowledgedCaptureIds || [];
+    await acknowledgeBossHrOutbox(acknowledged);
+    const finishedAt = Date.now();
+    const remaining = Object.keys(await readBossHrOutbox()).length;
+    await writeBossHrWatch({ ...state, scanRunning: false, lastScanAt: finishedAt,
+      nextScanAt: finishedAt + 60000, updatedAt: finishedAt });
+    await postBossHrHeartbeat(state, tab.url, false, remaining, "").catch(() => {});
+    return { success: true, scanId, received: scanResult.captures?.length || 0, acknowledged: acknowledged.length };
+  } catch (error) {
+    const code = error?.errorCode || (error?.name === "AbortError" ? "BOSS_HR_SCAN_TIMEOUT" : "BOSS_HR_SCAN_FAILED");
+    await pauseBossHrWatch(code, friendlyLocalApiError(error));
+    return { success: false, errorCode: code, message: friendlyLocalApiError(error) };
+  }
+}
+
+async function postBossHrHeartbeat(state, url, scanRunning, outboxCount, fault) {
+  return await requestLocalApi("/api/hr-assistant/watch/heartbeat", {
+    operation: "hr-heartbeat", method: "POST", requireActionToken: true,
+    platform: "boss", pageTabId: state.tabId,
+    body: {
+      watchSessionId: state.watchSessionId, tabId: state.tabId, url,
+      contentVersion: state.contentVersion, scanRunning, outboxCount, fault
+    }
+  });
+}
+
+async function pollBossHrSendCommand(sender, requestContext = {}) {
+  if (bossHrScanPromise) return bossHrNoopResult("SCAN_RUNNING");
+  if (bossHrCommandPromise) return await bossHrCommandPromise;
+  bossHrCommandPromise = pollBossHrSendCommandLocked(sender, requestContext)
+    .finally(() => { bossHrCommandPromise = null; });
+  return await bossHrCommandPromise;
+}
+
+function bossHrNoopResult(reason) {
+  return {
+    success: true,
+    httpStatus: 200,
+    data: { success: true, errorCode: "", message: reason, requestId: createBossHrId("extension"), data: null }
+  };
+}
+
+async function pollBossHrSendCommandLocked(sender, requestContext) {
+  const state = await readBossHrWatch();
+  const senderTabId = sender?.tab?.id;
+  if (!state?.watching || state.tabId !== senderTabId) {
+    return { success: false, errorCode: "BOSS_HR_TAB_NOT_BOUND", message: "只能由当前绑定的 BOSS 标签页领取发送命令" };
+  }
+  const claimed = await requestLocalApi("/api/hr-assistant/send-commands/claim", {
+    ...requestContext, operation: "hr-command-claim", method: "POST", requireActionToken: true,
+    body: { watchSessionId: state.watchSessionId, tabId: state.tabId }
+  });
+  const command = claimed?.data?.data;
+  if (!claimed.success || !command) return claimed;
+
+  let execution;
+  try {
+    execution = await chrome.tabs.sendMessage(state.tabId, {
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SEND", command
+    });
+  } catch (error) {
+    execution = { success: true, outcome: "FAILED_SAFE", evidence: `内容脚本未执行发送：${friendlyLocalApiError(error)}` };
+  }
+  const allowed = new Set(["SENT", "STALE", "RESULT_UNKNOWN", "FAILED_SAFE"]);
+  const outcome = allowed.has(execution?.outcome) ? execution.outcome : "FAILED_SAFE";
+  return await requestLocalApi(`/api/hr-assistant/send-commands/${encodeURIComponent(command.commandId)}/result`, {
+    operation: "hr-command-result", method: "POST", requireActionToken: true,
+    platform: "boss", pageTabId: state.tabId,
+    body: {
+      watchSessionId: state.watchSessionId, tabId: state.tabId, leaseToken: command.leaseToken,
+      outcome, evidence: String(execution?.evidence || "").slice(0, 500),
+      observedLatestInbound: execution?.observedLatestInbound || null
+    }
+  });
+}
+
+async function readBossHrWatch() {
+  const result = await bossHrWatchStorage().get(BOSS_HR_WATCH_STORAGE_KEY).catch(() => ({}));
+  return result?.[BOSS_HR_WATCH_STORAGE_KEY] || null;
+}
+
+async function writeBossHrWatch(state) {
+  await bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: state });
+}
+
+function bossHrWatchStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
+async function readBossHrOutbox() {
+  const result = await chrome.storage.local.get(BOSS_HR_OUTBOX_STORAGE_KEY).catch(() => ({}));
+  const outbox = result?.[BOSS_HR_OUTBOX_STORAGE_KEY];
+  return outbox && typeof outbox === "object" ? { ...outbox } : {};
+}
+
+async function writeBossHrOutbox(outbox) {
+  await chrome.storage.local.set({ [BOSS_HR_OUTBOX_STORAGE_KEY]: outbox });
+}
+
+async function acknowledgeBossHrOutbox(captureIds) {
+  const outbox = await readBossHrOutbox();
+  for (const captureId of captureIds || []) delete outbox[String(captureId)];
+  await writeBossHrOutbox(outbox);
+}
+
+function createBossHrId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${uuid}`;
+}
+
+function withBossHrTimeout(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error("BOSS HR 单轮扫描超过 5 分钟");
+      error.name = "AbortError";
+      reject(error);
+    }, timeoutMs);
+    Promise.resolve(promise).then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    }, (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 async function handleZhilianLocalApiRequest(message) {
@@ -411,6 +713,19 @@ async function handleZhilianLocalApiRequest(message) {
 
 function resolveBossLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "hr-status") return { success: true, method: "GET", path: "/api/hr-assistant/status" };
+  if (operation === "hr-settings") return { success: true, method: "GET", path: "/api/hr-assistant/settings" };
+  if (operation === "hr-settings-save") return { success: true, method: "PUT", path: "/api/hr-assistant/settings", requireActionToken: true };
+  if (operation === "hr-proposals") return { success: true, method: "GET", path: "/api/hr-assistant/proposals" };
+  if (operation === "hr-start") return { success: true, method: "POST", path: "/api/hr-assistant/watch/start", requireActionToken: true };
+  if (operation === "hr-stop") return { success: true, method: "POST", path: "/api/hr-assistant/watch/stop", requireActionToken: true };
+  if (operation === "hr-command-poll") return { success: true, method: "POST", path: "/api/hr-assistant/send-commands/claim", requireActionToken: true };
+  if (["hr-revise", "hr-send", "hr-skip"].includes(operation)) {
+    const id = String(message?.params?.id || "").trim();
+    if (!/^[1-9]\d*$/.test(id)) return { success: false, message: "HR 回复任务缺少有效 ID" };
+    const action = operation.replace("hr-", "");
+    return { success: true, method: "POST", path: `/api/hr-assistant/proposals/${id}/${action}`, requireActionToken: true };
+  }
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs/dedupe" };
   }
@@ -454,15 +769,28 @@ async function requestLocalApi(path, options = {}) {
   const timeoutMs = options.timeoutMs || BOSS_LOCAL_API_TIMEOUT_MS;
   const requestOptions = {
     method,
-    headers: { "Content-Type": "application/json" },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: method === "GET" || options.body === undefined ? undefined : JSON.stringify(options.body)
   };
+  if (options.requireActionToken) {
+    requestOptions.headers["X-Local-Action-Token"] = await getLocalActionToken();
+  }
+  const baseUrls = options.requireActionToken
+    ? [localActionBaseUrl || LOCAL_API_BASE_URLS[0]]
+    : LOCAL_API_BASE_URLS;
+  const maxAttempts = String(options.operation || "").startsWith("hr-")
+    ? 1
+    : BOSS_LOCAL_API_MAX_ATTEMPTS;
 
-  for (let attempt = 1; attempt <= BOSS_LOCAL_API_MAX_ATTEMPTS; attempt++) {
-    for (const baseUrl of LOCAL_API_BASE_URLS) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (const baseUrl of baseUrls) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
         const data = await parseLocalApiResponse(response);
+        if (response.status === 401 && options.requireActionToken) {
+          localActionToken = null;
+          localActionBaseUrl = "";
+        }
         if (data.success === false) {
           return {
             success: false,
@@ -496,17 +824,40 @@ async function requestLocalApi(path, options = {}) {
       }
     }
 
-    if (attempt < BOSS_LOCAL_API_MAX_ATTEMPTS) {
-      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
+    if (attempt < maxAttempts) {
+      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, maxAttempts, lastError);
       await sleep(350 * attempt);
     }
   }
 
   return {
     success: false,
-    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`,
+    message: options.operation === "hr-send"
+      ? `本地服务请求失败，发送结果未知且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : maxAttempts === 1
+        ? `本地服务请求失败且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : `本地服务请求失败，已自动重试 ${maxAttempts} 次：${friendlyLocalApiError(lastError)}`,
     errorType: classifyLocalApiError(0, lastError?.message || String(lastError || ""))
   };
+}
+
+async function getLocalActionToken() {
+  if (localActionToken) return localActionToken;
+  let lastError = null;
+  for (const baseUrl of LOCAL_API_BASE_URLS) {
+    try {
+      const response = await fetchWithTimeout(`${baseUrl}/api/local-auth/action-token`, { method: "GET" }, 5000);
+      const data = await parseLocalApiResponse(response);
+      const token = String(data?.data?.token || "").trim();
+      if (!response.ok || !token) throw new Error("本地操作令牌响应无效");
+      localActionToken = token;
+      localActionBaseUrl = baseUrl;
+      return token;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`无法获取本地操作令牌：${friendlyLocalApiError(lastError)}`);
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -521,10 +872,10 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 
 async function parseLocalApiResponse(response) {
   const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
-  if (!contentType.includes("application/json")) {
+  const text = await response.text();
+  if (contentType && !contentType.includes("application/json")) {
     throw new Error(`本地接口契约不匹配：Content-Type=${contentType || "missing"}`);
   }
-  const text = await response.text();
   if (!text) throw new Error("本地接口契约不匹配：JSON 响应为空");
   let data;
   try {
@@ -1961,7 +2312,7 @@ function isBossChatUrl(url) {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
       && isExactOrSubdomain(parsed.hostname, "zhipin.com")
-      && /chat|im|message/.test(parsed.pathname);
+      && parsed.pathname.startsWith("/web/geek/chat");
   } catch {
     return false;
   }
