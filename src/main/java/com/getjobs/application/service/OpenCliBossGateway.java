@@ -107,6 +107,7 @@ public class OpenCliBossGateway {
     }
 
     public void bindCurrentChatTab() {
+        requireSuccess(commandRunner.run(List.of("browser", sessionName, "unbind"), timeout), "释放旧 OpenCLI 浏览器会话");
         requireSuccess(commandRunner.run(List.of("browser", sessionName, "bind"), timeout), "绑定当前 Chrome 标签页");
         String url = requireSuccess(commandRunner.run(List.of("browser", sessionName, "get", "url"), timeout), "读取当前标签页地址");
         if (!url.contains("zhipin.com/web/geek/chat")) {

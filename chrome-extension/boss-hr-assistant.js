@@ -9,6 +9,7 @@
   let activeRequest = false;
   let latestStatus = null;
   let latestProposals = [];
+  let actionError = "";
 
   const host = document.createElement("div");
   host.id = HOST_ID;
@@ -54,7 +55,7 @@
       const [status, proposals] = await Promise.all([
         localApi("hr-status"), localApi("hr-proposals")
       ]);
-      latestStatus = status;
+      latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
     } catch (error) {
       latestStatus = { watching: false, lastError: error.message || String(error), openCli: { ready: false } };
@@ -136,8 +137,10 @@
     activeRequest = true;
     try {
       await localApi(operation, id ? { id } : {}, body);
+      actionError = "";
     } catch (error) {
-      latestStatus = { ...(latestStatus || {}), lastError: error.message || String(error) };
+      actionError = error.message || String(error);
+      latestStatus = { ...(latestStatus || {}), lastError: actionError };
     } finally {
       activeRequest = false;
       await refresh();

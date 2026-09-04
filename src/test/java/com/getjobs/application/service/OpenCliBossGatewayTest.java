@@ -73,6 +73,19 @@ class OpenCliBossGatewayTest {
     }
 
     @Test
+    void releasesStaleOwnedSessionBeforeBindingCurrentBossTab() {
+        FakeRunner runner = new FakeRunner();
+        OpenCliBossGateway gateway = gateway(runner);
+
+        gateway.bindCurrentChatTab();
+
+        assertThat(runner.calls).containsExactly(
+                List.of("browser", "boss-hr", "unbind"),
+                List.of("browser", "boss-hr", "bind"),
+                List.of("browser", "boss-hr", "get", "url"));
+    }
+
+    @Test
     void sendsThroughSelectorFillAndEnterInsteadOfRecruiterAdapter() {
         FakeRunner runner = new FakeRunner();
         OpenCliBossGateway gateway = gateway(runner);
@@ -117,6 +130,9 @@ class OpenCliBossGatewayTest {
             if (arguments.contains("focus")) return new CommandResult(0,
                     "{\"focused\":true,\"matches_n\":1,\"match_level\":\"exact\"}", "", false);
             if (arguments.contains("keys")) return new CommandResult(0, "Pressed: Enter", "", false);
+            if (arguments.contains("get") && arguments.contains("url")) {
+                return new CommandResult(0, "https://www.zhipin.com/web/geek/chat", "", false);
+            }
             if (failCountedUnreadClick && arguments.contains("未读(")) {
                 return new CommandResult(1, "", "No element found", false);
             }

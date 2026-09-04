@@ -25,6 +25,7 @@ test('assistant keeps full auto locked and sends only after explicit confirmatio
   assert.match(assistant, /const dirty = draft\.value\.trim\(\) !== savedDraft/);
   assert.match(assistant, /send\.disabled = dirty/);
   assert.match(assistant, /operation, params, body/);
+  assert.match(assistant, /lastError: status\?\.lastError \|\| actionError/);
   assert.doesNotMatch(assistant, /screenX|screenY|clientX|clientY|elementFromPoint/);
 });
 
