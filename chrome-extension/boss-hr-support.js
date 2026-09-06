@@ -68,7 +68,16 @@
       .find((element) => normalizeText(element.textContent) === "全部") || null;
   }
 
+  function refreshIdentityMetadata(documentRef) {
+    const EventType = documentRef?.defaultView?.Event;
+    if (EventType && documentRef?.dispatchEvent) documentRef.dispatchEvent(new EventType("getjobs:hr:refresh-identities"));
+  }
+
   function chatItems(documentRef) {
+    refreshIdentityMetadata(documentRef);
+    const cards = Array.from(documentRef.querySelectorAll(".user-list .friend-content"))
+      .filter(element => element.matches?.(".friend-content") && isVisible(element));
+    if (cards.length) return cards;
     const seen = new Set();
     const items = [];
     const roots = Array.from(documentRef.querySelectorAll(CHAT_ROOT_SELECTORS.join(",")))
@@ -107,6 +116,7 @@
   }
 
   function stableUid(item) {
+    if (item.matches?.(".friend-content")) return normalizeText(item.getAttribute("data-getjobs-hr-uid"));
     for (const element of [item, ...item.querySelectorAll(UID_ATTRIBUTES.map((name) => `[${name}]`).join(","))]) {
       for (const attribute of UID_ATTRIBUTES) {
         const value = normalizeText(element.getAttribute?.(attribute));
@@ -130,13 +140,14 @@
   }
 
   function itemSnapshot(item) {
+    refreshIdentityMetadata(item.ownerDocument);
     const textLines = String(item.innerText || item.textContent || "").split(/\r?\n/).map(normalizeText).filter(Boolean);
     const uid = stableUid(item);
     return {
       uid,
       unreadCount: badgeCount(item),
-      hrName: normalizeText(item.querySelector(".name-box,.title-box span,[class*='name'],[class*='title']")?.textContent || textLines[0]),
-      companyName: normalizeText(item.querySelector("[class*='company'],[class*='brand']")?.textContent || textLines[1]),
+      hrName: normalizeText((item.querySelector(".name-text") || item.querySelector(".name-box,.title-box span,[class*='name'],[class*='title']"))?.textContent || textLines[0]),
+      companyName: normalizeText(item.querySelector(".name-box > span:nth-child(2),[class*='company'],[class*='brand']")?.textContent || textLines[1]),
       jobName: normalizeText(item.querySelector("[class*='job'],[class*='position']")?.textContent || ""),
       lastMessage: normalizeText(item.querySelector(".last-msg-text,.last-msg,[class*='last-msg'],[class*='last'],[class*='message'],[class*='desc']")?.textContent || textLines.at(-1)),
       lastTime: normalizeText(item.querySelector("time,[class*='time']")?.textContent || "")
@@ -150,11 +161,19 @@
   }
 
   function currentSession(documentRef, fallback) {
-    const scope = documentRef.querySelector("[class*='chat-content'],[class*='conversation-detail'],[class*='chat-panel'],main") || documentRef;
-    const title = normalizeText(scope.querySelector("h1,h2,h3,[class*='chat-title'],[class*='title']")?.textContent || fallback?.hrName);
+    const pane = documentRef.querySelector(".chat-conversation");
+    const scope = pane || documentRef.querySelector("[class*='chat-content'],[class*='conversation-detail'],[class*='chat-panel'],main") || documentRef;
+    const title = normalizeText((scope.querySelector(".user-info .name-text") || scope.querySelector("h1,h2,h3,[class*='chat-title'],[class*='title']"))?.textContent || (!pane && fallback?.hrName));
     const text = normalizeText(scope.innerText || scope.textContent).slice(0, 1600);
+    const cards = chatItems(documentRef);
+    const modern = Boolean(pane) || cards.some(item => item.matches?.(".friend-content"));
+    const selected = cards.filter(item => item.matches?.(".friend-content.selected"));
+    const selectedUid = selected.length === 1 ? stableUid(selected[0]) : "";
+    const paneUid = normalizeText(pane?.getAttribute("data-getjobs-hr-uid"));
+    const loading = Array.from(scope.querySelectorAll(".pre-loading")).some(isVisible);
+    const uid = modern ? (!loading && title && selectedUid === paneUid ? selectedUid : "") : fallback?.uid || "";
     return {
-      uid: fallback?.uid || "",
+      uid,
       securityId: normalizeText(scope.querySelector("[data-security-id]")?.getAttribute("data-security-id")),
       hrName: fallback?.hrName || title,
       companyName: fallback?.companyName || "",
@@ -169,25 +188,27 @@
   function readMessages(documentRef) {
     const seen = new Set();
     const messages = [];
-    for (const selector of MESSAGE_SELECTORS) {
-      for (const element of documentRef.querySelectorAll(selector)) {
-        if (seen.has(element) || !isVisible(element)) continue;
-        seen.add(element);
-        const className = String(element.className || "");
-        const directionHint = normalizeText(element.getAttribute?.("data-direction") || element.getAttribute?.("data-from"));
-        const direction = /(self|mine|outbound|本人|我)/i.test(directionHint)
-          || /(^|[\s_-])(item-myself|myself|self|mine|message-self|right)([\s_-]|$)/i.test(className)
-          ? "本人" : "对方";
-        const content = element.querySelector("[class*='bubble'],[class*='message-content'],[class*='messageContent']") || element;
-        const type = content.querySelector("audio,[class*='voice']") ? "语音"
-          : content.querySelector("[class*='file'],[class*='attachment']") ? "附件"
-            : content.querySelector("img:not([class*='avatar'])") ? "图片" : "文本";
-        const textNode = content.querySelector("[class*='text'],[class*='content']") || content;
-        const text = normalizeText(textNode?.innerText || textNode?.textContent || element.innerText || element.textContent);
-        const time = normalizeText(element.querySelector("time,[class*='time']")?.textContent || element.getAttribute?.("data-time"));
-        if (!text && type === "文本") continue;
-        messages.push({ from: direction, type, text, time });
-      }
+    const scope = documentRef.querySelector?.(".chat-conversation") || documentRef;
+    const rows = Array.from(scope.querySelectorAll(".im-list > .message-item"));
+    const candidates = scope.querySelector?.(".im-list") ? rows : MESSAGE_SELECTORS.flatMap(selector => Array.from(scope.querySelectorAll(selector)));
+    for (const element of candidates) {
+      if (/\bitem-system\b/.test(String(element.className || ""))) continue;
+      if (seen.has(element) || !isVisible(element)) continue;
+      seen.add(element);
+      const className = String(element.className || "");
+      const directionHint = normalizeText(element.getAttribute?.("data-direction") || element.getAttribute?.("data-from"));
+      const direction = /(self|mine|outbound|本人|我)/i.test(directionHint)
+        || /(^|[\s_-])(item-myself|myself|self|mine|message-self|right)([\s_-]|$)/i.test(className)
+        ? "本人" : "对方";
+      const content = element.querySelector("[class*='bubble'],[class*='message-content'],[class*='messageContent']") || element;
+      const type = content.querySelector("audio,[class*='voice']") ? "语音"
+        : content.querySelector("[class*='file'],[class*='attachment']") ? "附件"
+          : content.querySelector("img:not([class*='avatar'])") ? "图片" : "文本";
+      const textNode = content.querySelector("[class*='text'],[class*='content']") || content;
+      const text = normalizeText(textNode?.innerText || textNode?.textContent || element.innerText || element.textContent);
+      const time = normalizeText(element.querySelector("time,[class*='time']")?.textContent || element.getAttribute?.("data-time"));
+      if (!text && type === "文本") continue;
+      messages.push({ from: direction, type, text, time });
     }
     return messages;
   }

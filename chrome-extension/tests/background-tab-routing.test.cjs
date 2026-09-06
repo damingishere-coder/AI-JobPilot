@@ -35,6 +35,7 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
+  bossHrContentVersion = "2026-09-06-hr-dom-identity",
   bossDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
@@ -98,7 +99,7 @@ function loadBackground({
           return { success: true, version: currentZhilianContentVersion };
         }
         if (message.type === "BOSS_HR_CONTENT_VERSION") {
-          return { success: true, version: currentBossContentVersion };
+          return { success: true, version: bossHrContentVersion };
         }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
@@ -982,4 +983,18 @@ test("losing the send channel records an unknown outcome exactly once", async ()
   assert.equal(result.success, true);
   assert.equal(results.length, 1);
   assert.equal(results[0].outcome, "RESULT_UNKNOWN");
+});
+
+
+test("rejects the old HR script before any backend start request", async () => {
+  const { dispatchRuntimeMessage } = loadBackground({
+    tabs: [{ id: 7, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    bossHrContentVersion: "2026-09-06-hr-profile-guard"
+  });
+  const response = await dispatchRuntimeMessage({
+    source: "GET_JOBS_BOSS_CONTENT", type: "BOSS_LOCAL_API", operation: "hr-start",
+    body: { expectedProfileId: 1 }
+  }, { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } });
+  assert.equal(response.success, false);
+  assert.equal(response.errorCode, "BOSS_HR_CONTENT_OUTDATED");
 });

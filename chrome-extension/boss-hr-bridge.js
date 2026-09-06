@@ -5,7 +5,7 @@
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = true;
 
   const support = globalThis.GetJobsBossHrSupport;
-  const CONTENT_VERSION = "2026-09-06-hr-profile-guard";
+  const CONTENT_VERSION = "2026-09-06-hr-dom-identity";
   const MAX_CAPTURES = 100;
   const OPEN_WAIT_MS = 450;
 
@@ -84,6 +84,10 @@
       const afterSafety = support.pageSafety(document);
       if (!afterSafety.safe) return { success: false, pause: true, ...afterSafety };
       const session = support.currentSession(document, currentSnapshot);
+      if (session.uid !== snapshot.uid) {
+        errors.push({ captureId, errorCode: "BOSS_CHAT_IDENTITY_AMBIGUOUS" });
+        continue;
+      }
       const messages = support.readMessages(document);
       if (!messages.length) {
         errors.push({ captureId, errorCode: "BOSS_CHAT_MESSAGES_MISSING" });
@@ -240,7 +244,7 @@
     const hrName = support.normalizeText(command.hrName);
     const companyName = support.normalizeText(command.companyName);
     const jobName = support.normalizeText(command.jobName);
-    return (!hrName || title.includes(hrName))
+    return session.uid === command.uid && (!hrName || title.includes(hrName))
       && (!companyName || surface.includes(companyName))
       && (!jobName || surface.includes(jobName));
   }

@@ -447,6 +447,8 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-06-hr-dom-identity";
+
 async function startBossHrWatch(sender, requestContext, expectedProfileId) {
   if (!normalizeProfileId(expectedProfileId)) return { success: false, errorCode: "PROFILE_REQUIRED", message: "请刷新页面并确认当前人物档案后再开始值守" };
   if (hrStopInProgress || bossHrScanPromise || bossHrCommandPromise) return { success: false, errorCode: "HR_WATCH_ACTIVE", message: "上一轮采集或发送尚未结束，请稍后再开始值守" };
@@ -459,7 +461,7 @@ async function startBossHrWatch(sender, requestContext, expectedProfileId) {
   const ready = await chrome.tabs.sendMessage(tabId, {
     source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_CONTENT_VERSION"
   }).catch(() => null);
-  if (ready?.version !== REQUIRED_BOSS_CONTENT_VERSION) {
+  if (ready?.version !== REQUIRED_BOSS_HR_CONTENT_VERSION) {
     return { success: false, errorCode: "BOSS_HR_CONTENT_OUTDATED", message: "HR 内容脚本未就绪，请重新加载扩展并刷新 BOSS 页面" };
   }
   const browserSessionId = createBossHrId("browser");
