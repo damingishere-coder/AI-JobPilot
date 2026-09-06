@@ -46,6 +46,26 @@ class HrAssistantWatchServiceTest {
     }
 
     @Test
+    void enabledQqReceivesOrdinaryDraftsAsWellAsHighValueReminders() {
+        when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
+                1L, CommunicationProfile.empty(), true, "ws://127.0.0.1:3001", "test-token",
+                QqTargetType.GROUP, "123456", "", 30));
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L, 30);
+        when(store.beginCapture(eq(1L), eq(status.watchSessionId()), any(), any())).thenReturn(true);
+        when(store.upsertConversation(eq(1L), any())).thenReturn(1L);
+        when(store.sourceFingerprint(anyLong(), any())).thenReturn("new-text-fingerprint");
+        when(draftService.generate(eq(1L), anyLong(), any(), anyList())).thenReturn(
+                new AiDraft(Classification.REPLY, "您好", "普通消息", List.of(), List.of(), 0.9));
+        when(store.createProposal(eq(1L), anyLong(), any(), any())).thenReturn(101L);
+        var ordinary = proposal();
+        assertThat(ordinary.highValue()).isFalse();
+        when(store.getProposalView(1L, 101L)).thenReturn(ordinary);
+        when(napCatGateway.notifyProposal(ordinary)).thenReturn(true);
+        service.ingestScan(status.watchSessionId(), 77, "all", 0, List.of(capture(1)));
+        verify(napCatGateway).notifyProposal(ordinary);
+    }
+
+    @Test
     void thirtyMinuteWatchKeepsTheIntervalAcrossHeartbeats() {
         var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L, 30);
         assertThat(status.intervalMs()).isEqualTo(1_800_000L);

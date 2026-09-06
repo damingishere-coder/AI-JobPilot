@@ -299,7 +299,7 @@ public class HrAssistantWatchService {
         long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
         ProposalView proposal = store.getProposalView(profileId, proposalId);
         events.emit("proposal-created", proposal);
-        if (proposal.highValue() && !napCatGateway.notifyProposal(proposal)) {
+        if (settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
             events.emit("qq-notification-failed", java.util.Map.of("proposalId", proposal.id(), "message", "NapCat 未连接或 QQ 通知发送失败"));
         }
     }
