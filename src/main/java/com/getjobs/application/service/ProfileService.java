@@ -45,6 +45,7 @@ public class ProfileService {
     private final ProfileMapper profileMapper;
     private final JdbcTemplate jdbcTemplate;
     private final PlatformTransactionManager transactionManager;
+    private final HrProfileGuard hrProfileGuard;
 
     @Transactional(readOnly = true)
     public List<ProfileEntity> listProfiles() {
@@ -106,19 +107,24 @@ public class ProfileService {
         return entity;
     }
 
-    @Transactional
     public ProfileEntity activateProfile(Long id) {
-        ProfileEntity entity = requireProfile(id);
-        profileMapper.update(null, new UpdateWrapper<ProfileEntity>().set("is_active", 0));
-        entity.setIsActive(1);
-        entity.setUpdatedAt(LocalDateTime.now());
-        profileMapper.updateById(entity);
-        return entity;
+        return hrProfileGuard.locked(() -> new TransactionTemplate(transactionManager).execute(status -> {
+            ProfileEntity entity = requireProfile(id);
+            if (!id.equals(getCurrentProfileIdOrNull())) hrProfileGuard.requireChangeAllowed();
+            profileMapper.update(null, new UpdateWrapper<ProfileEntity>().set("is_active", 0));
+            entity.setIsActive(1);
+            entity.setUpdatedAt(LocalDateTime.now());
+            profileMapper.updateById(entity);
+            return entity;
+        }));
     }
 
     public DeleteProfileResult deleteProfile(Long id, boolean force) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
-        return transaction.execute(status -> deleteProfileInTransaction(id, force, status));
+        return hrProfileGuard.locked(() -> {
+            if (id != null && id.equals(getCurrentProfileIdOrNull())) hrProfileGuard.requireChangeAllowed();
+            return transaction.execute(status -> deleteProfileInTransaction(id, force, status));
+        });
     }
 
     private DeleteProfileResult deleteProfileInTransaction(Long id,

@@ -52,7 +52,7 @@ class ProfileServiceAiTaskSafetyTest {
         ProfileService service = new ProfileService(
                 profileMapper,
                 jdbcTemplate,
-                new DataSourceTransactionManager(dataSource)
+                new DataSourceTransactionManager(dataSource), new HrProfileGuard()
         );
 
         ProfileService.DeleteProfileResult result = service.deleteProfile(1L, true);
@@ -90,7 +90,7 @@ class ProfileServiceAiTaskSafetyTest {
         when(profileMapper.selectCount(isNull())).thenReturn(2L);
         when(profileMapper.selectOne(any(QueryWrapper.class))).thenReturn(active);
         ProfileService service = new ProfileService(
-                profileMapper, jdbcTemplate, new DataSourceTransactionManager(dataSource));
+                profileMapper, jdbcTemplate, new DataSourceTransactionManager(dataSource), new HrProfileGuard());
 
         ProfileService.DeleteProfileResult result = service.deleteProfile(2L, true);
 

@@ -413,7 +413,7 @@ test("binds the initiating Boss chat directly without opening or focusing anothe
         return jsonResponse({ success: true, data: { token: "test-action-token" } });
       }
       if (url.endsWith("/api/hr-assistant/watch/start")) {
-        return jsonResponse({ success: true, data: { watching: true, watchSessionId: "watch-1" } });
+        return jsonResponse({ success: true, data: { watching: true, watchSessionId: "watch-1", profileId: 1 } });
       }
       throw new Error(`unexpected URL: ${url}`);
     }
@@ -423,6 +423,7 @@ test("binds the initiating Boss chat directly without opening or focusing anothe
     source: "GET_JOBS_BOSS_CONTENT",
     type: "BOSS_LOCAL_API",
     operation: "hr-start",
+    body: { expectedProfileId: 1 },
     timeoutMs: 30000
   }, {
     tab: { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat" }
@@ -442,16 +443,17 @@ test("persists an HR Outbox identity before a content script opens the conversat
   const { context, dispatchRuntimeMessage, storage } = loadBackground({
     tabs: [{ id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }]
   });
-  await context.writeBossHrWatch({ watching: true, tabId: 7, watchSessionId: "watch-1" });
+  await context.writeBossHrWatch({ watching: true, tabId: 7, watchSessionId: "watch-1", profileId: 1 });
 
   const response = await dispatchRuntimeMessage({
     source: "GET_JOBS_BOSS_HR_CONTENT",
     type: "BOSS_HR_OUTBOX_PUT",
+    watchSessionId: "watch-1",
     capture: { captureId: "capture-1", uid: "friend-1", unreadCount: 1, hrName: "HR" }
   }, { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } });
 
   assert.equal(response.success, true);
-  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__["capture-1"].uid, "friend-1");
+  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__["1:capture-1"].uid, "friend-1");
 });
 
 test("preserves backend profile errors and rejects unscoped job submission locally", async () => {
@@ -901,4 +903,83 @@ test("rejects unsafe Boss API paths and out-of-scope pagination", () => {
     path: "/wapi/zpgeek/search/joblist.json",
     params: { scene: "1", query: "Java", city: "101280600", page: "1", pageSize: "11" }
   }).success, false);
+});
+
+
+test("HR backend 404 retains HTTP identity while malformed 200 stays a contract error", async () => {
+  for (const [status, expected] of [[404, "HR_BACKEND_UNAVAILABLE"], [200, "LOCAL_API_CONTRACT_MISMATCH"]]) {
+    let calls = 0;
+    const { context } = loadBackground({ tabs: [], fetchImpl: async () => {
+      calls++; return jsonResponse({ status, error: "Not Found" }, { status, ok: status === 200 });
+    } });
+    const result = await context.requestLocalApi("/api/hr-assistant/status", { method: "GET", operation: "hr-status" });
+    assert.equal(result.httpStatus, status);
+    assert.equal(result.errorType, expected);
+    assert.equal(calls, 1);
+  }
+});
+
+test("chat entry focuses the bound tab, reuses an existing chat, or opens the fixed URL", async () => {
+  for (const mode of ["bound", "existing", "new"]) {
+    const tabs = mode === "new" ? [] : [
+      { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", lastAccessed: 10 },
+      { id: 8, windowId: 4, url: "https://www.zhipin.com/web/geek/chat", lastAccessed: 20 },
+    ];
+    const { context, tabList, dispatchRuntimeMessage, windowUpdates } = loadBackground({ tabs });
+    if (mode === "bound") await context.writeBossHrWatch({ tabId: 7 });
+    const result = await dispatchRuntimeMessage({ source: "GET_JOBS_PAGE", type: "BOSS_HR_OPEN_CHAT", url: "https://evil.example/" },
+      { tab: { id: 20, url: "http://127.0.0.1:6866/env-config" } });
+    assert.equal(result.success, true);
+    assert.equal(result.tabId, mode === "bound" ? 7 : mode === "existing" ? 8 : 1);
+    assert.equal(tabList.length, mode === "new" ? 1 : 2);
+    assert.equal(windowUpdates.length, 1);
+    assert.ok(tabList.every(tab => tab.url === "https://www.zhipin.com/web/geek/chat"));
+    const rejected = await dispatchRuntimeMessage({ source: "GET_JOBS_PAGE", type: "BOSS_HR_OPEN_CHAT" },
+      { tab: { id: 21, url: "https://evil.example/" } });
+    assert.equal(rejected.success, false);
+  }
+});
+
+test("Outbox acknowledgements and old-session captures cannot cross profiles or erase legacy records", async () => {
+  const { context, storage } = loadBackground({ tabs: [] });
+  await context.writeBossHrOutbox({
+    "legacy": { captureId: "legacy", uid: "old" },
+    "1:same": { captureId: "same", uid: "first", profileId: 1 },
+    "2:same": { captureId: "same", uid: "second", profileId: 2 },
+  });
+  await context.acknowledgeBossHrOutbox(["same"], 1);
+  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__["1:same"], undefined);
+  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__["2:same"].uid, "second");
+  assert.equal(storage.__GET_JOBS_BOSS_HR_OUTBOX__.legacy.uid, "old");
+  await context.writeBossHrWatch({ watching: true, tabId: 7, profileId: 2, watchSessionId: "new" });
+  const rejected = await context.handleBossHrOutboxPut({ watchSessionId: "old", capture: { captureId: "late", uid: "uid" } },
+    { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } });
+  assert.equal(rejected.errorCode, "STALE_STATE");
+  assert.equal(Object.keys(storage.__GET_JOBS_BOSS_HR_OUTBOX__).length, 2);
+});
+
+
+test("a late scan cannot restore stopped watch state", async () => {
+  const { context } = loadBackground({ tabs: [] });
+  const state = { watching: true, watchSessionId: "watch-1", profileId: 1, tabId: 7 };
+  await context.writeBossHrWatch(state);
+  await context.writeBossHrWatch({ ...state, watching: false });
+  assert.equal(await context.updateBossHrWatchIfActive(state, { scanRunning: false }), false);
+  assert.equal((await context.readBossHrWatch()).watching, false);
+});
+
+test("losing the send channel records an unknown outcome exactly once", async () => {
+  const results = [];
+  const { context } = loadBackground({ tabs: [], fetchImpl: async (url, options) => {
+    if (url.endsWith("/action-token")) return jsonResponse({ success: true, data: { token: "t" } });
+    if (url.endsWith("/claim")) return jsonResponse({ success: true, data: { commandId: "cmd", leaseToken: "lease", leaseDeadlineEpochMs: Date.now() + 60000 } });
+    if (url.endsWith("/result")) { results.push(JSON.parse(options.body)); return jsonResponse({ success: true, data: {} }); }
+    throw new Error(url);
+  } });
+  await context.writeBossHrWatch({ watching: true, watchSessionId: "watch-1", profileId: 1, tabId: 7 });
+  context.chrome.tabs.sendMessage = async () => { throw new Error("message channel closed"); };
+  const result = await context.pollBossHrSendCommandLocked({ tab: { id: 7 } }, {});
+  assert.equal(result.success, true);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, "RESULT_UNKNOWN");
 });

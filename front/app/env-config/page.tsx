@@ -262,7 +262,7 @@ export default function EnvConfig() {
               <BiCodeAlt className="text-primary" />
               AI 调用方式
             </CardTitle>
-            <CardDescription>本机默认复用 Codex/ChatGPT 登录态；需要时仍可手动切回远程 API</CardDescription>
+            <CardDescription>全局共用：切换人物档案不会改变 AI 调用方式、模型或密钥。本机默认复用 Codex/ChatGPT 登录态；需要时可手动切回远程 API</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="mb-6 space-y-2">

@@ -33,6 +33,7 @@ public class HrAssistantWatchService {
     private final HrAssistantEventService events;
     private final NapCatGateway napCatGateway;
     private final int maxConversations;
+    private final HrProfileGuard profileGuard;
     private final AtomicBoolean watching = new AtomicBoolean(false);
     private final AtomicBoolean processingScan = new AtomicBoolean(false);
     private volatile boolean browserScanRunning;
@@ -47,8 +48,11 @@ public class HrAssistantWatchService {
                                    HrReplyDraftService draftService,
                                    HrAssistantEventService events,
                                    NapCatGateway napCatGateway,
-                                   @Value("${app.hr-assistant.max-conversations-per-scan:100}") int maxConversations) {
+                                   @Value("${app.hr-assistant.max-conversations-per-scan:100}") int maxConversations,
+                                   HrProfileGuard profileGuard) {
         this.profileService = profileService;
+        this.profileGuard = profileGuard;
+        profileGuard.registerBlocker(() -> watching.get() || processingScan.get() || browserScanRunning || store.hasLeasedSendCommands());
         this.store = store;
         this.draftService = draftService;
         this.events = events;
@@ -56,67 +60,76 @@ public class HrAssistantWatchService {
         this.maxConversations = Math.max(1, Math.min(maxConversations, 100));
     }
 
-    public synchronized WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId) {
-        validateChatTab(tabId, url, contentVersion, browserSessionId);
-        if (watching.get()) {
-            if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)) return status();
-            throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
-        }
-        Long profileId = profileService.getCurrentProfileId();
-        session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
-                tabId, url.trim(), contentVersion.trim());
-        watching.set(true);
-        processingScan.set(false);
-        browserScanRunning = false;
-        lastScanAt = null;
-        lastHeartbeatAt = LocalDateTime.now();
-        lastError = "";
-        outboxCount = 0;
-        WatchStatus status = status();
-        events.emit("watch-status", status);
-        return status;
+    public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId) {
+        return profileGuard.locked(() -> {
+            if (expectedProfileId == null || !expectedProfileId.equals(profileService.getCurrentProfileId())) {
+                throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请刷新后重新开始值守");
+            }
+            validateChatTab(tabId, url, contentVersion, browserSessionId);
+            if (watching.get()) {
+                if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)) return status();
+                throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
+            }
+            profileGuard.requireChangeAllowed();
+            Long profileId = profileService.getCurrentProfileId();
+            session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
+                    tabId, url.trim(), contentVersion.trim());
+            watching.set(true);
+            processingScan.set(false);
+            browserScanRunning = false;
+            lastScanAt = null;
+            lastHeartbeatAt = LocalDateTime.now();
+            lastError = "";
+            outboxCount = 0;
+            WatchStatus status = status();
+            events.emit("watch-status", status);
+            return status;
+        });
     }
 
-    public synchronized WatchStatus stop(String watchSessionId, String reason) {
-        if (session != null && watchSessionId != null && !watchSessionId.isBlank()
-                && !session.watchSessionId().equals(watchSessionId.trim())) {
-            throw new HrAssistantStore.StaleProposalException("值守会话已变化，拒绝停止其他标签页的值守");
-        }
-        watching.set(false);
-        processingScan.set(false);
-        browserScanRunning = false;
-        lastError = safe(reason);
-        if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED")) {
-            napCatGateway.notifySystemFault(session.profileId(), lastError);
-        }
-        WatchStatus status = status();
-        events.emit("watch-status", status);
-        return status;
+    public WatchStatus stop(String watchSessionId, String reason) {
+        return profileGuard.locked(() -> {
+            if (session != null && watchSessionId != null && !watchSessionId.isBlank()
+                    && !session.watchSessionId().equals(watchSessionId.trim())) {
+                throw new HrAssistantStore.StaleProposalException("值守会话已变化，拒绝停止其他标签页的值守");
+            }
+            watching.set(false);
+            // A stop cancels future work, but must not release an in-flight ingestion.
+            browserScanRunning = false;
+            lastError = safe(reason);
+            if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED")) {
+                napCatGateway.notifySystemFault(session.profileId(), lastError);
+            }
+            WatchStatus status = status();
+            events.emit("watch-status", status);
+            return status;
+        });
     }
 
-    public synchronized WatchStatus heartbeat(String watchSessionId,
+    public WatchStatus heartbeat(String watchSessionId,
                                                int tabId,
                                                String url,
                                                String contentVersion,
                                                boolean browserScanRunning,
                                                int browserOutboxCount,
                                                String fault) {
-        requireSession(watchSessionId, tabId);
-        validateChatTab(tabId, url, contentVersion, session.browserSessionId());
-        session = new WatchSession(session.watchSessionId(), session.browserSessionId(), session.profileId(),
-                tabId, url.trim(), contentVersion.trim());
-        lastHeartbeatAt = LocalDateTime.now();
-        this.browserScanRunning = browserScanRunning;
-        outboxCount = Math.max(0, browserOutboxCount);
-        if (fault != null && !fault.isBlank()) {
-            lastError = concise(fault);
-            watching.set(false);
-            processingScan.set(false);
-            this.browserScanRunning = false;
-            napCatGateway.notifySystemFault(session.profileId(), lastError);
-            events.emit("watch-paused", java.util.Map.of("message", lastError));
-        }
-        return status();
+        return profileGuard.locked(() -> {
+            requireSession(watchSessionId, tabId);
+            validateChatTab(tabId, url, contentVersion, session.browserSessionId());
+            session = new WatchSession(session.watchSessionId(), session.browserSessionId(), session.profileId(),
+                    tabId, url.trim(), contentVersion.trim());
+            lastHeartbeatAt = LocalDateTime.now();
+            this.browserScanRunning = browserScanRunning;
+            outboxCount = Math.max(0, browserOutboxCount);
+            if (fault != null && !fault.isBlank()) {
+                lastError = concise(fault);
+                watching.set(false);
+                this.browserScanRunning = false;
+                napCatGateway.notifySystemFault(session.profileId(), lastError);
+                events.emit("watch-paused", java.util.Map.of("message", lastError));
+            }
+            return status();
+        });
     }
 
     public ScanReceipt ingestScan(String watchSessionId,
@@ -124,7 +137,6 @@ public class HrAssistantWatchService {
                                   String scanId,
                                   int totalUnread,
                                   List<ChatCapture> captures) {
-        WatchSession active = requireSession(watchSessionId, tabId);
         String normalizedScanId = requireNonBlank(scanId, "scanId");
         List<ChatCapture> safeCaptures = captures == null ? List.of() : List.copyOf(captures);
         if (safeCaptures.size() > maxConversations) throw new IllegalArgumentException("单轮 HR 会话数量超过 " + maxConversations);
@@ -137,13 +149,18 @@ public class HrAssistantWatchService {
                 throw new HrAssistantStore.StaleProposalException("同一轮扫描出现重复会话 UID，已暂停避免错误映射");
             }
         }
-        if (!processingScan.compareAndSet(false, true)) throw new IllegalStateException("上一轮 HR 消息仍在处理，本轮已跳过");
+        WatchSession active = profileGuard.locked(() -> {
+            WatchSession bound = requireSession(watchSessionId, tabId);
+            if (!processingScan.compareAndSet(false, true)) throw new IllegalStateException("上一轮 HR 消息仍在处理，本轮已跳过");
+            return bound;
+        });
         List<String> acknowledged = new ArrayList<>();
         int processed = 0;
         int duplicates = 0;
         try {
             HrAssistantStore.SettingsSecret settings = store.loadSettingsSecret(active.profileId());
             for (ChatCapture capture : safeCaptures) {
+                requireSession(watchSessionId, tabId);
                 validateCapture(capture);
                 boolean shouldProcess = store.beginCapture(active.profileId(), active.watchSessionId(), normalizedScanId, capture.captureId());
                 if (!shouldProcess) {
@@ -180,6 +197,11 @@ public class HrAssistantWatchService {
     }
 
     public WatchStatus status() {
+        return profileGuard.locked(this::statusLocked);
+    }
+
+    private WatchStatus statusLocked() {
+        var currentProfile = profileService.getCurrentProfile();
         WatchSession active = session;
         LocalDateTime next = watching.get() && lastScanAt != null ? lastScanAt.plusNanos(SCAN_INTERVAL_MS * 1_000_000) : null;
         ChromeBridgeStatus bridge = new ChromeBridgeStatus(active != null, watching.get() && active != null,
@@ -187,7 +209,9 @@ public class HrAssistantWatchService {
                 active == null ? "" : active.contentVersion(), lastHeartbeatAt, outboxCount,
                 active == null ? "等待 BOSS 聊天页绑定" : "投递牛马 Chrome 扩展直连");
         return new WatchStatus(watching.get(), browserScanRunning || processingScan.get(), active == null ? "" : active.watchSessionId(), SCAN_INTERVAL_MS,
-                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), true);
+                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), true,
+                active == null ? null : active.profileId(), currentProfile == null ? null : currentProfile.getId(),
+                currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked());
     }
 
     public String requireActiveWatchSession(Long profileId) {
@@ -202,6 +226,29 @@ public class HrAssistantWatchService {
         if (!active.profileId().equals(profileId)) {
             throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新开始值守");
         }
+    }
+
+    public <T> T withSession(Long profileId, String watchSessionId, int tabId, boolean completing,
+                             java.util.function.Supplier<T> action) {
+        return profileGuard.locked(() -> {
+            if (completing) {
+                WatchSession active = session;
+                if (active == null || !active.profileId().equals(profileId)
+                        || !profileId.equals(profileService.getCurrentProfileId())
+                        || !active.watchSessionId().equals(watchSessionId) || active.tabId() != tabId) {
+                    throw new HrAssistantStore.StaleProposalException("发送结果不属于当前档案和值守会话");
+                }
+            } else {
+                assertActiveSession(profileId, watchSessionId, tabId);
+            }
+            return action.get();
+        });
+    }
+
+
+    @Scheduled(fixedDelay = 5000)
+    public void expireSendLeases() {
+        profileGuard.locked(() -> { store.expireUnconfirmedLeases(); return null; });
     }
 
     @Scheduled(cron = "0 15 3 * * *")
@@ -252,6 +299,9 @@ public class HrAssistantWatchService {
     private WatchSession requireSession(String watchSessionId, int tabId) {
         WatchSession active = session;
         if (!watching.get() || active == null) throw new IllegalStateException("BOSS HR 值守未启动或已暂停");
+        if (!active.profileId().equals(profileService.getCurrentProfileId())) {
+            throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新开始值守");
+        }
         if (!active.watchSessionId().equals(safe(watchSessionId)) || active.tabId() != tabId) {
             throw new HrAssistantStore.StaleProposalException("值守会话或标签页已变化，拒绝处理旧请求");
         }

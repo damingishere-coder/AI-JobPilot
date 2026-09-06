@@ -438,7 +438,9 @@ public class HrAssistantStore {
                 .orElseThrow(() -> new StaleProposalException("发送命令的来源消息已不存在"));
         return new SendCommandView(commandId, leaseToken, proposalId, record.uid(), record.hrName(),
                 record.companyName(), record.jobName(), record.sourceFingerprint(), expectedInbound,
-                record.draft(), record.expiresAt());
+                record.draft(), record.expiresAt(), java.util.Objects.requireNonNull(jdbcTemplate.queryForObject(
+                        "SELECT CAST(strftime('%s', lease_expires_at) AS INTEGER)*1000 FROM hr_send_command WHERE command_id=?",
+                        Long.class, commandId)));
     }
 
     @Transactional
@@ -499,7 +501,13 @@ public class HrAssistantStore {
         return getProposalView(profileId, command.proposalId());
     }
 
-    private void expireUnconfirmedLeases() {
+    public boolean hasLeasedSendCommands() {
+        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_send_command WHERE status='LEASED'", Integer.class);
+        return count != null && count > 0;
+    }
+
+    @Transactional
+    public void expireUnconfirmedLeases() {
         List<Long> expired = jdbcTemplate.query("""
                 SELECT proposal_id FROM hr_send_command
                  WHERE status='LEASED' AND lease_expires_at<CURRENT_TIMESTAMP

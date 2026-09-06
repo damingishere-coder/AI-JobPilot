@@ -22,6 +22,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(failure("UPLOAD_TOO_LARGE", "文件过大，请压缩到30MB以内后再上传", requestId));
     }
 
+    @ExceptionHandler(com.getjobs.application.service.HrProfileGuard.WatchActiveException.class)
+    public ResponseEntity<Map<String, Object>> handleWatchActive(com.getjobs.application.service.HrProfileGuard.WatchActiveException e) {
+        return ResponseEntity.status(409).body(failure("HR_WATCH_ACTIVE", e.getMessage(), requestId()));
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException e) {
         String requestId = requestId();

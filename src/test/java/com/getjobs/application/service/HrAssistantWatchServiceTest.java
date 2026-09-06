@@ -34,6 +34,7 @@ class HrAssistantWatchServiceTest {
     private final HrAssistantEventService events = mock(HrAssistantEventService.class);
     private final NapCatGateway napCatGateway = mock(NapCatGateway.class);
     private HrAssistantWatchService service;
+    private final HrProfileGuard guard = new HrProfileGuard();
 
     @BeforeEach
     void setUp() {
@@ -41,13 +42,13 @@ class HrAssistantWatchServiceTest {
         when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
                 1L, CommunicationProfile.empty(), false, "ws://127.0.0.1:3001", "",
                 QqTargetType.PRIVATE, "", "", 30));
-        service = new HrAssistantWatchService(profileService, store, draftService, events, napCatGateway, 100);
+        service = new HrAssistantWatchService(profileService, store, draftService, events, napCatGateway, 100, guard);
     }
 
     @Test
     void bindsOnlyTheExactCurrentBossChatTab() {
         var status = service.start(77, "https://www.zhipin.com/web/geek/chat?ka=header-message",
-                "2026-09-04-boss-hr-direct", "browser-session");
+                "2026-09-04-boss-hr-direct", "browser-session", 1L);
 
         assertThat(status.watching()).isTrue();
         assertThat(status.watchSessionId()).isNotBlank();
@@ -55,12 +56,12 @@ class HrAssistantWatchServiceTest {
         assertThat(status.chromeBridge().tabId()).isEqualTo(77);
         assertThat(status.chromeBridge().tabBound()).isTrue();
         assertThatThrownBy(() -> service.start(78, "https://www.zhipin.com/web/geek/job",
-                "version", "other-session")).isInstanceOf(IllegalArgumentException.class);
+                "version", "other-session", 1L)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void ingestsSixteenCapturesOnceAndAcknowledgesDuplicateCaptureIds() {
-        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L);
         List<ChatCapture> captures = IntStream.rangeClosed(1, 16).mapToObj(this::capture).toList();
         when(store.beginCapture(eq(1L), eq(status.watchSessionId()), eq("scan-1"), any())).thenReturn(true);
         when(store.upsertConversation(eq(1L), any(ChatSession.class))).thenAnswer(call -> {
@@ -90,7 +91,7 @@ class HrAssistantWatchServiceTest {
 
     @Test
     void browserHeartbeatDoesNotOccupyTheBackendProcessingLock() {
-        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L);
         service.heartbeat(status.watchSessionId(), 77, "https://www.zhipin.com/web/geek/chat", "version", true, 1, "");
         when(store.beginCapture(1L, status.watchSessionId(), "scan", "capture-1")).thenReturn(false);
 
@@ -102,11 +103,52 @@ class HrAssistantWatchServiceTest {
 
     @Test
     void unreadCountWithoutAnySafeCaptureFailsClosed() {
-        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session");
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L);
 
         assertThatThrownBy(() -> service.ingestScan(status.watchSessionId(), 77, "scan", 16, List.of()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("未能安全识别");
+    }
+
+    @Test
+    void rejectsStaleProfileAndExposesSwitchLock() {
+        assertThatThrownBy(() -> service.start(77, "https://www.zhipin.com/web/geek/chat", "v", "b", 2L))
+                .isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "v", "b", 1L);
+        assertThat(status.profileId()).isEqualTo(1);
+        assertThat(status.profileSwitchBlocked()).isTrue();
+        assertThatThrownBy(guard::requireChangeAllowed).isInstanceOf(HrProfileGuard.WatchActiveException.class);
+        service.stop(status.watchSessionId(), "USER_STOPPED");
+        assertThat(guard.isBlocked()).isFalse();
+        assertThatThrownBy(() -> service.ingestScan(status.watchSessionId(), 77, "late", 0, List.of()))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void leasedSendStaysBlockedAfterStopButItsResultCanStillComplete() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "v", "b", 1L);
+        when(store.hasLeasedSendCommands()).thenReturn(true);
+        service.stop(status.watchSessionId(), "USER_STOPPED");
+        assertThat(guard.isBlocked()).isTrue();
+        assertThat(service.withSession(1L, status.watchSessionId(), 77, true, () -> "recorded")).isEqualTo("recorded");
+        assertThatThrownBy(() -> service.withSession(2L, status.watchSessionId(), 77, true, () -> "wrong"))
+                .isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        assertThatThrownBy(() -> service.withSession(1L, status.watchSessionId(), 77, false, () -> "new send"))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void stoppingDuringIngestionDoesNotUnlockProfileUntilTheIngestionReturns() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "v", "b", 1L);
+        when(store.beginCapture(1L, status.watchSessionId(), "scan", "capture-1")).thenAnswer(call -> {
+            service.stop(status.watchSessionId(), "USER_STOPPED");
+            assertThat(guard.isBlocked()).isTrue();
+            assertThatThrownBy(guard::requireChangeAllowed).isInstanceOf(HrProfileGuard.WatchActiveException.class);
+            return false;
+        });
+        service.ingestScan(status.watchSessionId(), 77, "scan", 1, List.of(capture(1)));
+        assertThat(guard.isBlocked()).isFalse();
+        assertThat(service.status().watching()).isFalse();
     }
 
     private ChatCapture capture(int index) {

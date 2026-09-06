@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import HrWatchConnection from './HrWatchConnection'
 import { BiMessageDetail, BiRefresh, BiSave } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -216,6 +217,7 @@ export default function HrAssistantSettingsCard() {
         <CardDescription>按人物档案保存沟通资料和 NapCat 通知设置；BOSS 页面仅保留值守与待确认回复。</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        <HrWatchConnection />
         <ProfileSwitcher
           compact
           disabled={loading || saving}

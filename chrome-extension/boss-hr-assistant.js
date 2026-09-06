@@ -78,11 +78,13 @@
       ? `${watching ? "值守中：每 60 秒扫描一次" : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${timing}${next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
       : "正在连接本地 AI-JobPilot…";
     body.appendChild(statusBox);
+    body.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
 
     const actions = element("div", "actions");
     const start = button("开始值守", "btn primary");
     start.disabled = watching;
-    start.addEventListener("click", () => mutate("hr-start"));
+    start.disabled = watching || !latestStatus?.currentProfileId || latestStatus?.profileSwitchBlocked;
+    start.addEventListener("click", () => mutate("hr-start", null, { expectedProfileId: latestStatus?.currentProfileId }));
     const stop = button("停止", "btn danger");
     stop.disabled = !watching;
     stop.addEventListener("click", () => mutate("hr-stop"));

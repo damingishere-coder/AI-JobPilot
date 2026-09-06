@@ -29,19 +29,22 @@ const PLATFORM_CONFIG = {
 
 const pageTabs = new Map();
 let scanSessionsWriteQueue = Promise.resolve();
+let hrOutboxWriteQueue = Promise.resolve();
+let hrWatchWriteQueue = Promise.resolve();
+let hrStopInProgress = false;
 const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
 const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-04-boss-hr-direct";
+const BACKGROUND_VERSION = "2026-09-06-hr-profile-guard";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-04-boss-hr-direct";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-04-boss-hr-direct";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -59,6 +62,7 @@ const ALLOWED_PAGE_ORIGINS = new Set([
 ]);
 const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "GET_JOBS_EXTENSION_PING",
+  "BOSS_HR_OPEN_CHAT",
   "BOSS_PAGE_STATUS",
   "BOSS_DEBUG_COLLECT",
   "BOSS_COLLECT_CURRENT_PAGE",
@@ -417,7 +421,7 @@ async function handleBossLocalApiRequest(message, sender) {
     requireActionToken: endpoint.requireActionToken === true
   };
   if (operation === "hr-start") {
-    return await startBossHrWatch(sender, requestContext);
+    return await startBossHrWatch(sender, requestContext, message.body?.expectedProfileId);
   }
   if (operation === "hr-stop") {
     return await stopBossHrWatch("USER_STOPPED", "用户主动停止", requestContext);
@@ -431,6 +435,11 @@ async function handleBossLocalApiRequest(message, sender) {
     method: endpoint.method,
     body: message.body
   });
+  if (operation === "hr-status" && result.success && result.data?.data) {
+    const legacy = Object.values(await readBossHrOutbox()).filter(item => !normalizeProfileId(item.profileId)).length;
+    result.data.data.legacyOutboxCount = legacy;
+    if (legacy) result.data.data.lastError = [result.data.data.lastError, `有 ${legacy} 条旧版待处理记录缺少档案归属，已保留，请人工处理`].filter(Boolean).join("；");
+  }
   if (operation === "hr-send" && result.success) {
     await pollBossHrSendCommand(sender, requestContext);
   }
@@ -438,7 +447,9 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
-async function startBossHrWatch(sender, requestContext) {
+async function startBossHrWatch(sender, requestContext, expectedProfileId) {
+  if (!normalizeProfileId(expectedProfileId)) return { success: false, errorCode: "PROFILE_REQUIRED", message: "请刷新页面并确认当前人物档案后再开始值守" };
+  if (hrStopInProgress || bossHrScanPromise || bossHrCommandPromise) return { success: false, errorCode: "HR_WATCH_ACTIVE", message: "上一轮采集或发送尚未结束，请稍后再开始值守" };
   const tabId = sender?.tab?.id;
   const url = sender?.tab?.url || sender?.url || "";
   if (!Number.isInteger(tabId) || !isBossChatUrl(url)) {
@@ -456,7 +467,7 @@ async function startBossHrWatch(sender, requestContext) {
     ...requestContext,
     operation: "hr-start",
     method: "POST",
-    body: { tabId, url, contentVersion: ready.version, browserSessionId },
+    body: { tabId, url, contentVersion: ready.version, browserSessionId, expectedProfileId },
     requireActionToken: true
   });
   const watchStatus = result?.data?.data;
@@ -469,6 +480,7 @@ async function startBossHrWatch(sender, requestContext) {
     contentVersion: ready.version,
     browserSessionId,
     watchSessionId: watchStatus.watchSessionId,
+    profileId: watchStatus.profileId,
     scanRunning: false,
     lastScanAt: null,
     nextScanAt: Date.now(),
@@ -480,19 +492,27 @@ async function startBossHrWatch(sender, requestContext) {
 }
 
 async function stopBossHrWatch(reasonCode, reason, requestContext = {}) {
+  hrStopInProgress = true;
+  try { return await stopBossHrWatchLocked(reasonCode, reason, requestContext); }
+  finally { hrStopInProgress = false; }
+}
+
+async function stopBossHrWatchLocked(reasonCode, reason, requestContext = {}) {
   const state = await readBossHrWatch();
   await chrome.alarms?.clear?.(BOSS_HR_ALARM_NAME);
-  try {
-    return await requestLocalApi("/api/hr-assistant/watch/stop", {
+  if (state) await writeBossHrWatch({ ...state, watching: false });
+  if (reasonCode === "USER_STOPPED") {
+    await Promise.allSettled([bossHrScanPromise, bossHrCommandPromise].filter(Boolean));
+  }
+  const result = await requestLocalApi("/api/hr-assistant/watch/stop", {
       ...requestContext,
       operation: "hr-stop",
       method: "POST",
       body: { watchSessionId: state?.watchSessionId || "", reason: `${reasonCode}: ${reason}` },
       requireActionToken: true
     });
-  } finally {
-    await bossHrWatchStorage().remove(BOSS_HR_WATCH_STORAGE_KEY).catch(() => {});
-  }
+  if (result.success) await bossHrWatchStorage().remove(BOSS_HR_WATCH_STORAGE_KEY).catch(() => {});
+  return result;
 }
 
 async function pauseBossHrWatch(errorCode, message) {
@@ -507,24 +527,37 @@ async function stopBossHrWatchIfOwned(tabId, errorCode, message) {
 }
 
 async function handleBossHrOutboxPut(message, sender) {
+  const write = hrOutboxWriteQueue.then(() => putBossHrOutbox(message, sender));
+  hrOutboxWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+async function putBossHrOutbox(message, sender) {
   const state = await readBossHrWatch();
   const tabId = sender?.tab?.id;
   if (!state?.watching || state.tabId !== tabId || !isBossChatUrl(sender?.tab?.url || sender?.url || "")) {
     return { success: false, errorCode: "BOSS_HR_TAB_NOT_BOUND", message: "当前标签页不是已绑定的 BOSS 值守标签" };
+  }
+  if (!normalizeProfileId(state.profileId) || state.watchSessionId !== message.watchSessionId) {
+    return { success: false, errorCode: "STALE_STATE", message: "采集所属人物档案或值守会话已变化" };
   }
   const capture = message?.capture;
   if (!capture?.captureId || !capture?.uid) {
     return { success: false, errorCode: "HR_OUTBOX_INVALID", message: "Outbox 会话身份不完整" };
   }
   const outbox = await readBossHrOutbox();
-  outbox[capture.captureId] = {
+  const key = `${state.profileId}:${capture.captureId}`;
+  if (!outbox[key] && Object.values(outbox).filter(item => item.profileId === state.profileId).length >= 100) {
+    return { success: false, errorCode: "HR_OUTBOX_FULL", message: "当前档案待处理记录已满，请先处理积压记录" };
+  }
+  outbox[key] = {
+    profileId: state.profileId, watchSessionId: state.watchSessionId,
     captureId: String(capture.captureId), uid: String(capture.uid),
     unreadCount: Number(capture.unreadCount || 1),
-    addedAt: Number(outbox[capture.captureId]?.addedAt || Date.now())
+    addedAt: Number(outbox[key]?.addedAt || Date.now())
   };
-  const entries = Object.values(outbox).sort((left, right) => left.addedAt - right.addedAt).slice(-100);
-  await writeBossHrOutbox(Object.fromEntries(entries.map((entry) => [entry.captureId, entry])));
-  return { success: true, outboxCount: entries.length };
+  await writeBossHrOutbox(outbox);
+  return { success: true, outboxCount: Object.values(outbox).filter(item => item.profileId === state.profileId).length };
 }
 
 async function runBossHrScan(trigger = "alarm") {
@@ -544,18 +577,21 @@ async function runBossHrScanLocked(trigger) {
   }
   const scanId = createBossHrId("scan");
   const deadlineAt = Date.now() + BOSS_HR_SCAN_TIMEOUT_MS;
-  const outbox = Object.values(await readBossHrOutbox());
-  await writeBossHrWatch({ ...state, scanRunning: true, updatedAt: Date.now() });
-  await postBossHrHeartbeat(state, tab.url, true, outbox.length, "").catch(() => {});
+  const outbox = Object.values(await readBossHrOutbox()).filter(item => item.profileId === state.profileId);
+  if (!await updateBossHrWatchIfActive(state, { scanRunning: true, updatedAt: Date.now() })) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
   try {
+    const heartbeat = await postBossHrHeartbeat(state, tab.url, true, outbox.length, "");
+    if (!heartbeat.success) throw Object.assign(new Error(heartbeat.message || "值守会话已失效"), { errorCode: heartbeat.errorType });
     const scanResult = await withBossHrTimeout(chrome.tabs.sendMessage(state.tabId, {
-      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SCAN", scanId, trigger, deadlineAt, outbox
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SCAN", scanId, trigger, deadlineAt, outbox, watchSessionId: state.watchSessionId
     }), BOSS_HR_SCAN_TIMEOUT_MS);
     if (!scanResult?.success) {
       throw Object.assign(new Error(scanResult?.message || "BOSS HR 扫描失败"), {
         errorCode: scanResult?.errorCode || "BOSS_HR_SCAN_FAILED"
       });
     }
+    const current = await readBossHrWatch();
+    if (!current?.watching || current.watchSessionId !== state.watchSessionId) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
     const submitted = await requestLocalApi("/api/hr-assistant/watch/scan-results", {
       operation: "hr-scan-results", method: "POST", requireActionToken: true,
       platform: "boss", pageTabId: state.tabId, timeoutMs: 120000,
@@ -566,11 +602,13 @@ async function runBossHrScanLocked(trigger) {
     });
     if (!submitted.success) throw Object.assign(new Error(submitted.message || "扫描结果提交失败"), { errorCode: submitted.errorType });
     const acknowledged = submitted.data?.data?.acknowledgedCaptureIds || [];
-    await acknowledgeBossHrOutbox(acknowledged);
+    await acknowledgeBossHrOutbox(acknowledged, state.profileId);
     const finishedAt = Date.now();
-    const remaining = Object.keys(await readBossHrOutbox()).length;
-    await writeBossHrWatch({ ...state, scanRunning: false, lastScanAt: finishedAt,
-      nextScanAt: finishedAt + 60000, updatedAt: finishedAt });
+    const remaining = Object.values(await readBossHrOutbox()).filter(item => item.profileId === state.profileId).length;
+    const latest = await readBossHrWatch();
+    if (!latest?.watching || latest.watchSessionId !== state.watchSessionId) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+    if (!await updateBossHrWatchIfActive(state, { scanRunning: false, lastScanAt: finishedAt,
+      nextScanAt: finishedAt + 60000, updatedAt: finishedAt })) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
     await postBossHrHeartbeat(state, tab.url, false, remaining, "").catch(() => {});
     return { success: true, scanId, received: scanResult.captures?.length || 0, acknowledged: acknowledged.length };
   } catch (error) {
@@ -623,13 +661,13 @@ async function pollBossHrSendCommandLocked(sender, requestContext) {
   let execution;
   try {
     execution = await chrome.tabs.sendMessage(state.tabId, {
-      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SEND", command
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SEND", command: { ...command, deadlineAt: Math.min(Date.now() + 45000, Number(command.leaseDeadlineEpochMs) - 5000) }
     });
   } catch (error) {
-    execution = { success: true, outcome: "FAILED_SAFE", evidence: `内容脚本未执行发送：${friendlyLocalApiError(error)}` };
+    execution = { success: true, outcome: "RESULT_UNKNOWN", evidence: `内容脚本发送结果无法确认：${friendlyLocalApiError(error)}` };
   }
   const allowed = new Set(["SENT", "STALE", "RESULT_UNKNOWN", "FAILED_SAFE"]);
-  const outcome = allowed.has(execution?.outcome) ? execution.outcome : "FAILED_SAFE";
+  const outcome = allowed.has(execution?.outcome) ? execution.outcome : "RESULT_UNKNOWN";
   return await requestLocalApi(`/api/hr-assistant/send-commands/${encodeURIComponent(command.commandId)}/result`, {
     operation: "hr-command-result", method: "POST", requireActionToken: true,
     platform: "boss", pageTabId: state.tabId,
@@ -647,7 +685,20 @@ async function readBossHrWatch() {
 }
 
 async function writeBossHrWatch(state) {
-  await bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: state });
+  const write = hrWatchWriteQueue.then(() => bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: state }));
+  hrWatchWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+async function updateBossHrWatchIfActive(expected, changes) {
+  const write = hrWatchWriteQueue.then(async () => {
+    const current = await readBossHrWatch();
+    if (!current?.watching || current.watchSessionId !== expected.watchSessionId) return false;
+    await bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: { ...current, ...changes } });
+    return true;
+  });
+  hrWatchWriteQueue = write.catch(() => {});
+  return await write;
 }
 
 function bossHrWatchStorage() {
@@ -664,10 +715,14 @@ async function writeBossHrOutbox(outbox) {
   await chrome.storage.local.set({ [BOSS_HR_OUTBOX_STORAGE_KEY]: outbox });
 }
 
-async function acknowledgeBossHrOutbox(captureIds) {
-  const outbox = await readBossHrOutbox();
-  for (const captureId of captureIds || []) delete outbox[String(captureId)];
-  await writeBossHrOutbox(outbox);
+async function acknowledgeBossHrOutbox(captureIds, profileId) {
+  const write = hrOutboxWriteQueue.then(async () => {
+    const outbox = await readBossHrOutbox();
+    for (const captureId of captureIds || []) delete outbox[`${profileId}:${captureId}`];
+    await writeBossHrOutbox(outbox);
+  });
+  hrOutboxWriteQueue = write.catch(() => {});
+  return await write;
 }
 
 function createBossHrId(prefix) {
@@ -786,7 +841,16 @@ async function requestLocalApi(path, options = {}) {
     for (const baseUrl of baseUrls) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
-        const data = await parseLocalApiResponse(response);
+        if (response.status === 404 && path.startsWith("/api/hr-assistant/")) {
+          return { success: false, httpStatus: 404, errorType: "HR_BACKEND_UNAVAILABLE",
+            message: "当前后端缺少 BOSS 值守功能（HTTP 404），请切换到包含值守功能的服务版本", attempt, baseUrl };
+        }
+        let data;
+        try { data = await parseLocalApiResponse(response); }
+        catch (error) {
+          return { success: false, httpStatus: response.status, errorType: "LOCAL_API_CONTRACT_MISMATCH",
+            message: `本地接口响应格式不兼容（HTTP ${response.status}）：${error.message}`, attempt, baseUrl };
+        }
         if (response.status === 401 && options.requireActionToken) {
           localActionToken = null;
           localActionBaseUrl = "";
@@ -947,6 +1011,18 @@ async function postLocalApiRetryProgress(platform, pageTabId, operation, nextAtt
   });
 }
 
+async function openBossHrChat() {
+  const state = await readBossHrWatch();
+  const bound = state?.tabId ? await chrome.tabs.get(state.tabId).catch(() => null) : null;
+  const tabs = await chrome.tabs.query({ url: ["https://*.zhipin.com/web/geek/chat*", "https://zhipin.com/web/geek/chat*"] });
+  const tab = bound && isBossChatUrl(bound.url || "") ? bound
+    : tabs.filter(item => isBossChatUrl(item.url || "")).sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+  const opened = tab ? await chrome.tabs.update(tab.id, { active: true })
+    : await chrome.tabs.create({ url: "https://www.zhipin.com/web/geek/chat", active: true });
+  if (opened.windowId != null) await chrome.windows.update(opened.windowId, { focused: true });
+  return { success: true, tabId: opened.id, message: "已打开 BOSS 聊天页，请确认人物档案和 BOSS 账号后点击开始值守" };
+}
+
 async function handlePageMessage(message, sender) {
   const pageTabId = sender.tab?.id;
   if (pageTabId) pageTabs.set(pageTabId, Date.now());
@@ -954,6 +1030,8 @@ async function handlePageMessage(message, sender) {
   if (message.type === "GET_JOBS_EXTENSION_PING") {
     return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION };
   }
+
+  if (message.type === "BOSS_HR_OPEN_CHAT") return await openBossHrChat();
 
   const platform = message.platform || inferPlatform(message.type);
   if (!platform || !PLATFORM_CONFIG[platform]) {

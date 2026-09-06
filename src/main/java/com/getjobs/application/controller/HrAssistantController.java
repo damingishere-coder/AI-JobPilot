@@ -77,7 +77,7 @@ public class HrAssistantController {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("值守启动请求不能为空");
         return execute(() -> watchService.start(request.getTabId(), request.getUrl(), request.getContentVersion(),
-                request.getBrowserSessionId()));
+                request.getBrowserSessionId(), request.getExpectedProfileId()));
     }
 
     @PostMapping("/watch/heartbeat")
@@ -117,8 +117,8 @@ public class HrAssistantController {
         if (request == null) return badRequest("发送命令领取请求不能为空");
         return execute(() -> {
             Long profileId = profileService.getCurrentProfileId();
-            watchService.assertActiveSession(profileId, request.getWatchSessionId(), request.getTabId());
-            return actionService.claim(profileId, request.getWatchSessionId());
+            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), false,
+                    () -> actionService.claim(profileId, request.getWatchSessionId()));
         });
     }
 
@@ -131,9 +131,9 @@ public class HrAssistantController {
         if (request == null) return badRequest("发送结果不能为空");
         return execute(() -> {
             Long profileId = profileService.getCurrentProfileId();
-            watchService.assertActiveSession(profileId, request.getWatchSessionId(), request.getTabId());
-            return actionService.complete(profileId, request.getWatchSessionId(), id, request.getLeaseToken(),
-                    request.getOutcome(), request.getEvidence(), request.getObservedLatestInbound());
+            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), true,
+                    () -> actionService.complete(profileId, request.getWatchSessionId(), id, request.getLeaseToken(),
+                    request.getOutcome(), request.getEvidence(), request.getObservedLatestInbound()));
         });
     }
 
@@ -180,6 +180,8 @@ public class HrAssistantController {
         String requestId = UUID.randomUUID().toString();
         try {
             return ResponseEntity.ok(envelope(true, "", "", requestId, action.run()));
+        } catch (com.getjobs.application.service.HrProfileGuard.WatchActiveException e) {
+            return failure(HttpStatus.CONFLICT, "HR_WATCH_ACTIVE", e.getMessage(), requestId);
         } catch (HrAssistantStore.StaleProposalException e) {
             return failure(HttpStatus.CONFLICT, "STALE_STATE", e.getMessage(), requestId);
         } catch (IllegalArgumentException e) {
@@ -250,6 +252,7 @@ public class HrAssistantController {
         private String url;
         private String contentVersion;
         private String browserSessionId;
+        private Long expectedProfileId;
     }
 
     @Data

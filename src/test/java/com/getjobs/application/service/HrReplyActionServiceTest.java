@@ -32,7 +32,7 @@ class HrReplyActionServiceTest {
     @Test
     void claimsOneCommandAndRecordsResultUnknownWithoutRetrying() {
         SendCommandView command = new SendCommandView("command-1", "lease", 10L, "uid-1", "HR", "公司", "岗位",
-                "fingerprint", new ChatMessage("对方", "文本", "你好", "11:02"), "您好", LocalDateTime.now().plusMinutes(1));
+                "fingerprint", new ChatMessage("对方", "文本", "你好", "11:02"), "您好", LocalDateTime.now().plusMinutes(1), System.currentTimeMillis() + 60000);
         when(store.claimSendCommand(1L, "watch-1")).thenReturn(command);
         when(store.completeSendCommand(1L, "watch-1", "command-1", "lease", "RESULT_UNKNOWN", "未确认", null))
                 .thenReturn(proposal("SEND_UNKNOWN"));

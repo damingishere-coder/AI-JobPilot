@@ -42,6 +42,7 @@ class HrAssistantControllerTest {
         request.setUrl("https://www.zhipin.com/web/geek/chat");
         request.setContentVersion("direct");
         request.setBrowserSessionId("browser-session");
+        request.setExpectedProfileId(1L);
 
         var rejected = controller.start("invalid-token", request);
         var accepted = controller.start(tokens.issueToken(), request);
@@ -49,7 +50,7 @@ class HrAssistantControllerTest {
         assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(responseBody(rejected)).containsKeys("success", "errorCode", "message", "requestId");
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session");
+        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session", 1L);
         verifyNoInteractions(actions, profiles, store, events);
     }
 
@@ -60,10 +61,14 @@ class HrAssistantControllerTest {
         request.setWatchSessionId("watch-1");
         request.setTabId(77);
 
+        when(watcher.withSession(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.eq("watch-1"),
+                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(4)).get());
         var response = controller.claimSendCommand(tokens.issueToken(), request);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(watcher).assertActiveSession(1L, "watch-1", 77);
+        verify(watcher).withSession(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.eq("watch-1"),
+                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any());
         verify(actions).claim(1L, "watch-1");
     }
 

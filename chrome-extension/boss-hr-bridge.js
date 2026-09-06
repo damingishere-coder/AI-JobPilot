@@ -5,7 +5,7 @@
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = true;
 
   const support = globalThis.GetJobsBossHrSupport;
-  const CONTENT_VERSION = "2026-09-04-boss-hr-direct";
+  const CONTENT_VERSION = "2026-09-06-hr-profile-guard";
   const MAX_CAPTURES = 100;
   const OPEN_WAIT_MS = 450;
 
@@ -64,7 +64,7 @@
         return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "单轮扫描超过 5 分钟，已暂停" };
       }
       const captureId = snapshot.captureId || support.captureId(snapshot);
-      const stored = await backgroundRequest("BOSS_HR_OUTBOX_PUT", { capture: { ...snapshot, captureId } });
+      const stored = await backgroundRequest("BOSS_HR_OUTBOX_PUT", { capture: { ...snapshot, captureId }, watchSessionId: message.watchSessionId });
       if (!stored?.success) return { success: false, pause: true, errorCode: "HR_OUTBOX_WRITE_FAILED", message: "无法在打开会话前保存 Outbox" };
 
       const located = await locateByUid(snapshot.uid);
@@ -205,6 +205,7 @@
     const inputs = Array.from(document.querySelectorAll("#chat-input,textarea,[contenteditable='true']"))
       .filter((element) => visible(element));
     if (inputs.length !== 1) return { success: true, outcome: "FAILED_SAFE", evidence: "聊天输入框未唯一命中" };
+    if (!Number.isFinite(command.deadlineAt) || Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     const input = inputs[0];
     writeInput(input, command.draft);
     if (support.normalizeText(inputValue(input)) !== support.normalizeText(command.draft)) {
@@ -213,6 +214,7 @@
 
     const sendButtons = Array.from(document.querySelectorAll("button,[role='button']"))
       .filter((element) => visible(element) && /^发送$/.test(support.normalizeText(element.textContent)) && !element.disabled);
+    if (Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     let dispatched = false;
     if (sendButtons.length === 1) {
       sendButtons[0].click();

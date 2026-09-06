@@ -103,7 +103,8 @@ public final class HrAssistantTypes {
             String sourceFingerprint,
             ChatMessage expectedLatestInbound,
             String draft,
-            LocalDateTime expiresAt
+            LocalDateTime expiresAt,
+            long leaseDeadlineEpochMs
     ) {
     }
 
@@ -183,7 +184,11 @@ public final class HrAssistantTypes {
             String lastError,
             ChromeBridgeStatus chromeBridge,
             boolean napcatConnected,
-            boolean fullAutoLocked
+            boolean fullAutoLocked,
+            Long profileId,
+            Long currentProfileId,
+            String currentProfileName,
+            boolean profileSwitchBlocked
     ) {
     }
 }
