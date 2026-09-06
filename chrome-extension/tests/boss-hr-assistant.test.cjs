@@ -15,7 +15,7 @@ test("manifest loads the direct HR bridge and one-minute alarm capability", () =
   const bossScripts = manifest.content_scripts.find((entry) => entry.matches.some((value) => value.includes("zhipin.com"))).js;
   assert.deepEqual(bossScripts.slice(-3), ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"]);
   assert.ok(manifest.permissions.includes("alarms"));
-  assert.equal(manifest.version, "1.6.3");
+  assert.equal(manifest.version, "1.6.4");
 });
 
 test("assistant keeps full auto locked and sends only after explicit confirmation", () => {
@@ -33,7 +33,7 @@ test("background binds one exact BOSS tab, scans every minute, and persists Outb
   const background = source("chrome-extension/background.js");
   const bridge = source("chrome-extension/boss-hr-bridge.js");
   assert.match(background, /BOSS_HR_ALARM_NAME/);
-  assert.match(background, /periodInMinutes: 1/);
+  assert.match(background, /periodInMinutes: intervalMinutes/);
   assert.match(background, /if \(bossHrScanPromise\)/);
   assert.match(background, /BOSS_HR_SCAN_TIMEOUT_MS = 5 \* 60 \* 1000/);
   assert.match(background, /LOCAL_API_BASE_URLS = \["http:\/\/127\.0\.0\.1:6866"\]/);

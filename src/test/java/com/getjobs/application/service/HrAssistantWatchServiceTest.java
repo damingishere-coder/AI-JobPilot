@@ -46,6 +46,28 @@ class HrAssistantWatchServiceTest {
     }
 
     @Test
+    void thirtyMinuteWatchKeepsTheIntervalAcrossHeartbeats() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L, 30);
+        assertThat(status.intervalMs()).isEqualTo(1_800_000L);
+        assertThat(service.heartbeat(status.watchSessionId(), 77, "https://www.zhipin.com/web/geek/chat", "version", true, 0, "").intervalMs()).isEqualTo(1_800_000L);
+        assertThatThrownBy(() -> service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L, 2)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void fullListCaptureDoesNotReplyAgainAfterTheUserHasAnswered() {
+        var status = service.start(77, "https://www.zhipin.com/web/geek/chat", "version", "browser-session", 1L, 30);
+        var old = capture(1);
+        var answered = new ChatCapture("answered", 0, old.session(), List.of(
+                old.messages().get(0), new ChatMessage("本人", "文本", "好的谢谢", "刚刚")));
+        when(store.beginCapture(eq(1L), eq(status.watchSessionId()), any(), eq("answered"))).thenReturn(true);
+        when(store.upsertConversation(eq(1L), any())).thenReturn(1L);
+        var result = service.ingestScan(status.watchSessionId(), 77, "all", 0, List.of(answered));
+        assertThat(result.acknowledgedCaptureIds()).containsExactly("answered");
+        verify(store).expireAnsweredProposals(1L);
+        org.mockito.Mockito.verifyNoInteractions(draftService);
+    }
+
+    @Test
     void bindsOnlyTheExactCurrentBossChatTab() {
         var status = service.start(77, "https://www.zhipin.com/web/geek/chat?ka=header-message",
                 "2026-09-04-boss-hr-direct", "browser-session", 1L);

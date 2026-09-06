@@ -238,6 +238,19 @@ public class HrAssistantStore {
     }
 
     @Transactional
+    public void expireAnsweredProposals(long conversationId) {
+        jdbcTemplate.update("""
+                UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP
+                 WHERE conversation_id=? AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')
+                """, conversationId);
+        jdbcTemplate.update("""
+                UPDATE hr_send_command SET status='STALE', outcome='STALE', updated_at=CURRENT_TIMESTAMP
+                 WHERE status='PENDING' AND proposal_id IN (
+                     SELECT id FROM hr_reply_proposal WHERE conversation_id=? AND status='EXPIRED')
+                """, conversationId);
+    }
+
+    @Transactional
     public long createProposal(Long profileId,
                                long conversationId,
                                String sourceFingerprint,

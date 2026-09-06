@@ -42,6 +42,7 @@ public class HrAssistantWatchService {
     private volatile LocalDateTime lastHeartbeatAt;
     private volatile String lastError = "";
     private volatile int outboxCount;
+    private volatile long scanIntervalMs = SCAN_INTERVAL_MS;
 
     public HrAssistantWatchService(ProfileService profileService,
                                    HrAssistantStore store,
@@ -61,6 +62,11 @@ public class HrAssistantWatchService {
     }
 
     public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId) {
+        return start(tabId, url, contentVersion, browserSessionId, expectedProfileId, 1);
+    }
+
+    public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId, int intervalMinutes) {
+        if (intervalMinutes != 1 && intervalMinutes != 30) throw new IllegalArgumentException("值守间隔仅支持 1 分钟或 30 分钟");
         return profileGuard.locked(() -> {
             if (expectedProfileId == null || !expectedProfileId.equals(profileService.getCurrentProfileId())) {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请刷新后重新开始值守");
@@ -75,6 +81,7 @@ public class HrAssistantWatchService {
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
                     tabId, url.trim(), contentVersion.trim());
             watching.set(true);
+            scanIntervalMs = intervalMinutes * 60_000L;
             processingScan.set(false);
             browserScanRunning = false;
             lastScanAt = null;
@@ -203,12 +210,12 @@ public class HrAssistantWatchService {
     private WatchStatus statusLocked() {
         var currentProfile = profileService.getCurrentProfile();
         WatchSession active = session;
-        LocalDateTime next = watching.get() && lastScanAt != null ? lastScanAt.plusNanos(SCAN_INTERVAL_MS * 1_000_000) : null;
+        LocalDateTime next = watching.get() && lastScanAt != null ? lastScanAt.plusNanos(scanIntervalMs * 1_000_000) : null;
         ChromeBridgeStatus bridge = new ChromeBridgeStatus(active != null, watching.get() && active != null,
                 active == null ? null : active.tabId(), active == null ? "" : active.url(),
                 active == null ? "" : active.contentVersion(), lastHeartbeatAt, outboxCount,
                 active == null ? "等待 BOSS 聊天页绑定" : "投递牛马 Chrome 扩展直连");
-        return new WatchStatus(watching.get(), browserScanRunning || processingScan.get(), active == null ? "" : active.watchSessionId(), SCAN_INTERVAL_MS,
+        return new WatchStatus(watching.get(), browserScanRunning || processingScan.get(), active == null ? "" : active.watchSessionId(), scanIntervalMs,
                 lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), true,
                 active == null ? null : active.profileId(), currentProfile == null ? null : currentProfile.getId(),
                 currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked());
@@ -261,6 +268,12 @@ public class HrAssistantWatchService {
         ChatSession chat = capture.session();
         long conversationId = store.upsertConversation(profileId, chat);
         for (ChatMessage message : capture.messages()) store.saveMessage(conversationId, message, settings.retentionDays());
+        // Full-list scans include conversations that the user has already answered.
+        // Never draft a second response to an older inbound message in that case.
+        if (!capture.messages().get(capture.messages().size() - 1).inbound()) {
+            store.expireAnsweredProposals(conversationId);
+            return;
+        }
         ChatMessage source = latestInboundForCurrentLastMessage(capture.messages(), chat.lastMessage());
         if (source == null) throw new IllegalStateException("最新入站消息与会话列表不一致，已保留 Outbox 并停止处理");
         String sourceFingerprint = store.sourceFingerprint(conversationId, source);
@@ -273,7 +286,10 @@ public class HrAssistantWatchService {
                     List.of("NON_TEXT_MESSAGE"), List.of("请人工查看 " + source.type()), 1);
         } else {
             try {
-                draft = draftService.generate(profileId, conversationId, settings.communicationProfile(), store.recentMessages(conversationId, 12));
+                // The current ordered capture avoids mixing old, misclassified copies
+                // with the corrected messages saved during historical recovery.
+                draft = draftService.generate(profileId, conversationId, settings.communicationProfile(),
+                        capture.messages().subList(Math.max(0, capture.messages().size() - 12), capture.messages().size()));
             } catch (RuntimeException aiFailure) {
                 draft = new AiDraft(Classification.NEEDS_USER, "", "AI 草稿生成失败，需要人工填写回复。",
                         List.of("AI_FAILURE"), List.of("请人工填写回复"), 0);

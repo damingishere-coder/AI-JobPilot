@@ -50,7 +50,7 @@ class HrAssistantControllerTest {
         assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(responseBody(rejected)).containsKeys("success", "errorCode", "message", "requestId");
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session", 1L);
+        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session", 1L, 1);
         verifyNoInteractions(actions, profiles, store, events);
     }
 

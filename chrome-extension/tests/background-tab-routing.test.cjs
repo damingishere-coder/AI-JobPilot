@@ -35,7 +35,7 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-06-hr-message-type",
+  bossHrContentVersion = "2026-09-06-hr-all-conversations",
   bossDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
@@ -997,4 +997,51 @@ test("rejects the old HR script before any backend start request", async () => {
   }, { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } });
   assert.equal(response.success, false);
   assert.equal(response.errorCode, "BOSS_HR_CONTENT_OUTDATED");
+});
+
+
+test("thirty minute mode is persisted and asks the content bridge to read all conversations", async () => {
+  const requests = [];
+  const { context, alarmCreates, storage, sentMessages } = loadBackground({
+    tabs: [{ id: 7, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("action-token")) return jsonResponse({ success: true, data: { token: "test" } });
+      requests.push({ url, body: JSON.parse(options.body) });
+      if (url.endsWith("watch/start")) return jsonResponse({ success: true, data: { watchSessionId: "watch", profileId: 1 } });
+      return jsonResponse({ success: true, data: { acknowledgedCaptureIds: [] } });
+    }
+  });
+  const run = context.runBossHrScan;
+  context.runBossHrScan = async () => {};
+  await context.startBossHrWatch({ tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } }, {}, 1, 30);
+  assert.equal(requests[0].body.intervalMinutes, 30);
+  assert.equal(storage.__GET_JOBS_BOSS_HR_WATCH__.intervalMinutes, 30);
+  assert.equal(alarmCreates[0].options.periodInMinutes, 30);
+  await run("initial");
+  const scan = sentMessages.find(entry => entry.message.type === "BOSS_HR_SCAN");
+  assert.equal(scan.message.scanAll, true);
+  assert.equal(scan.message.streamResults, true);
+  assert.equal(alarmCreates.at(-1).options.delayInMinutes, 30);
+});
+
+test("streamed capture rejects stale sessions and retains Outbox after an unknown AI submission", async () => {
+  let submissions = 0;
+  const { context, storage } = loadBackground({
+    tabs: [],
+    fetchImpl: async (url) => {
+      if (url.endsWith("action-token")) return jsonResponse({ success: true, data: { token: "test" } });
+      submissions++;
+      throw new Error("NetworkError");
+    }
+  });
+  await context.writeBossHrWatch({ watching: true, scanRunning: true, tabId: 7, profileId: 1, watchSessionId: "watch", scanId: "scan" });
+  await context.writeBossHrOutbox({ "1:cap": { profileId: 1, uid: "101-0", captureId: "cap" } });
+  const sender = { tab: { id: 7, url: "https://www.zhipin.com/web/geek/chat" } };
+  const message = { watchSessionId: "old", scanId: "scan", capture: { captureId: "cap", session: { uid: "101-0" }, messages: [{ from: "对方", type: "文本", text: "你好" }] } };
+  assert.equal((await context.submitBossHrCapture(message, sender)).errorCode, "STALE_STATE");
+  assert.equal(submissions, 0);
+  message.watchSessionId = "watch";
+  assert.equal((await context.submitBossHrCapture(message, sender)).success, false);
+  assert.equal(submissions, 1);
+  assert.ok(storage.__GET_JOBS_BOSS_HR_OUTBOX__["1:cap"]);
 });

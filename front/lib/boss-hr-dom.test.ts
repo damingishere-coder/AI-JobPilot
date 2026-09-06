@@ -167,4 +167,44 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result.captures[0].session.uid).toBe('101-0')
     expect(result.captures[0].messages[0].text).toBe('明天方便面试吗？')
   })
+
+  it('reads already-read conversations sequentially, persists each result and stops on an unknown submission', async () => {
+    const a = addCard('101')
+    const b = addCard('102')
+    const c = addCard('103')
+    const pane = document.querySelector('.chat-conversation')!
+    const order: string[] = []
+    for (const entry of [a, b, c]) {
+      entry.card.querySelector('.notice-badge')!.remove()
+      entry.card.addEventListener('click', () => {
+        order.push(`open:${entry.props.uniqueId}`)
+        document.querySelectorAll('.friend-content').forEach(card => card.classList.remove('selected'))
+        entry.card.classList.add('selected')
+        Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: entry.props } })
+        pane.querySelector('.im-list')!.innerHTML = '<li class="message-item item-friend"><span class="text">方便聊聊吗？</span></li>'
+        bindMessages()
+      })
+    }
+    let listener!: (message: object, sender: object, respond: (result: { success: boolean }) => void) => unknown
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
+      window: { top: window, self: window }, document, location: { pathname: '/web/geek/chat' },
+      GetJobsBossHrSupport: support, Event, getComputedStyle,
+      setTimeout: (callback: () => void) => setTimeout(callback, 0),
+      chrome: { runtime: {
+        onMessage: { addListener: (value: typeof listener) => { listener = value } },
+        sendMessage: (message: { type: string; capture: { uid?: string; session?: { uid: string }; messages?: Array<{ type: string }> } }, respond: (result: object) => void) => {
+          const uid = message.capture.uid || message.capture.session!.uid
+          order.push(`${message.type === 'BOSS_HR_OUTBOX_PUT' ? 'put' : 'save'}:${uid}`)
+          if (message.type === 'BOSS_HR_CAPTURE_RESULT') expect(message.capture.messages![0].type).toBe('文本')
+          respond({ success: !(message.type === 'BOSS_HR_CAPTURE_RESULT' && uid === '102-0'), message: '结果未知' })
+        },
+      } },
+    })
+    const result = await new Promise<{ success: boolean }>(resolve => listener({
+      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN', deadlineAt: Date.now() + 30_000,
+      scanId: 'full-scan', watchSessionId: 'watch', scanAll: true, streamResults: true, outbox: [],
+    }, {}, resolve))
+    expect(result.success).toBe(false)
+    expect(order).toEqual(['put:101-0', 'open:101-0', 'save:101-0', 'put:102-0', 'open:102-0', 'save:102-0'])
+  })
 })

@@ -1,11 +1,10 @@
 (function () {
   "use strict";
 
-  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__) return;
-  window.__GET_JOBS_BOSS_HR_BRIDGE__ = true;
-
+  const CONTENT_VERSION = "2026-09-06-hr-all-conversations";
+  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
+  window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
-  const CONTENT_VERSION = "2026-09-06-hr-message-type";
   const MAX_CAPTURES = 100;
   const OPEN_WAIT_MS = 450;
 
@@ -35,18 +34,19 @@
     }
 
     const initialUnreadTotal = support.unreadTotal(document);
-    const unread = support.unreadTab(document);
+    const scanAll = message.scanAll === true;
+    const unread = scanAll ? support.allTab(document) : support.unreadTab(document);
     if (unread && !/active|selected/i.test(String(unread.className || ""))) {
       unread.click();
       await wait(350);
     }
 
-    const collected = await collectUnreadTargets(message.deadlineAt);
+    const collected = await collectUnreadTargets(message.deadlineAt, scanAll);
     if (!collected.success) return collected;
     const targets = collected.targets;
     for (const pending of Array.isArray(message.outbox) ? message.outbox : []) {
       if (pending?.uid && !targets.has(pending.uid)) targets.set(pending.uid, pending);
-      if (targets.size >= MAX_CAPTURES) break;
+      if (targets.size >= (scanAll ? 1000 : MAX_CAPTURES)) break;
     }
 
     // Opening an unread conversation clears its badge. Process the saved targets from
@@ -59,11 +59,12 @@
 
     const captures = [];
     const errors = [];
+    let scannedCount = 0;
     for (const snapshot of targets.values()) {
       if (Date.now() > Number(message.deadlineAt || 0)) {
-        return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "单轮扫描超过 5 分钟，已暂停" };
+        return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "本轮读取达到安全时限，已暂停；已保存的进度保留" };
       }
-      const captureId = snapshot.captureId || support.captureId(snapshot);
+      const captureId = snapshot.captureId || (scanAll ? `${message.scanId}:${snapshot.uid}` : support.captureId(snapshot));
       const stored = await backgroundRequest("BOSS_HR_OUTBOX_PUT", { capture: { ...snapshot, captureId }, watchSessionId: message.watchSessionId });
       if (!stored?.success) return { success: false, pause: true, errorCode: "HR_OUTBOX_WRITE_FAILED", message: "无法在打开会话前保存 Outbox" };
 
@@ -80,7 +81,7 @@
         unreadCount: snapshot.unreadCount || visibleSnapshot.unreadCount || 1
       };
       located.unique.click();
-      await wait(OPEN_WAIT_MS);
+      await wait(scanAll ? 2000 : OPEN_WAIT_MS);
       const afterSafety = support.pageSafety(document);
       if (!afterSafety.safe) return { success: false, pause: true, ...afterSafety };
       const session = support.currentSession(document, currentSnapshot);
@@ -89,19 +90,24 @@
         continue;
       }
       const messages = support.readMessages(document);
-      if (!messages.length) {
+      if (!messages.length && !scanAll) {
         errors.push({ captureId, errorCode: "BOSS_CHAT_MESSAGES_MISSING" });
         continue;
       }
       const inbound = support.latestInbound(messages);
-      if (!inbound) {
+      if (!inbound && !scanAll) {
         errors.push({ captureId, errorCode: "BOSS_CHAT_INBOUND_MISSING" });
         continue;
       }
-      session.lastMessage = inbound.text;
-      session.lastTime = inbound.time || currentSnapshot.lastTime;
+      session.lastMessage = inbound?.text || "";
+      session.lastTime = inbound?.time || currentSnapshot.lastTime;
       delete session.surfaceText;
-      captures.push({ captureId, unreadCount: currentSnapshot.unreadCount, session, messages });
+      const capture = { captureId, unreadCount: currentSnapshot.unreadCount, session, messages };
+      if (message.streamResults) {
+        const saved = await backgroundRequest("BOSS_HR_CAPTURE_RESULT", { capture, scanId: message.scanId, watchSessionId: message.watchSessionId });
+        if (!saved?.success) return { success: false, pause: true, errorCode: saved?.errorCode || "HR_CAPTURE_SUBMIT_FAILED", message: saved?.message || "生成或保存结果未确认，已暂停，不自动重试" };
+      } else captures.push(capture);
+      scannedCount++;
     }
 
     if (errors.length) {
@@ -119,38 +125,50 @@
       totalUnread: initialUnreadTotal,
       captures,
       errors,
-      truncated: targets.size >= MAX_CAPTURES
+      streamed: Boolean(message.streamResults),
+      scannedCount,
+      truncated: targets.size >= (scanAll ? 1000 : MAX_CAPTURES)
     };
   }
 
-  async function collectUnreadTargets(deadlineAt) {
+  async function collectUnreadTargets(deadlineAt, scanAll = false) {
     const targets = new Map();
     let unchangedRounds = 0;
-    let list = null;
+    let reachedEnd = false;
+    let list = findScrollableList(support.chatItems(document)[0]);
+    if (list && list.scrollTop > 0) {
+      list.scrollTop = 0;
+      list.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await wait(350);
+    }
     for (let round = 0; round < 120; round++) {
       if (Date.now() > Number(deadlineAt || 0)) {
-        return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "单轮扫描超过 5 分钟，已暂停" };
+        return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "本轮读取达到安全时限，已暂停；已保存的进度保留" };
       }
       const before = targets.size;
       const items = support.chatItems(document);
       for (const item of items) {
         const snapshot = support.itemSnapshot(item);
-        if (snapshot.unreadCount <= 0) continue;
+        if (!scanAll && snapshot.unreadCount <= 0) continue;
         if (!snapshot.uid) {
-          return { success: false, pause: true, errorCode: "BOSS_CHAT_UID_MISSING", message: "未读会话缺少稳定 UID，已暂停避免误认 HR" };
+          return { success: false, pause: true, errorCode: "BOSS_CHAT_UID_MISSING", message: "会话缺少稳定 UID，已暂停避免误认 HR" };
         }
         targets.set(snapshot.uid, snapshot);
-        if (targets.size >= MAX_CAPTURES) break;
+        if (targets.size >= (scanAll ? 1000 : MAX_CAPTURES)) break;
       }
-      if (targets.size >= MAX_CAPTURES) break;
+      if (targets.size >= (scanAll ? 1000 : MAX_CAPTURES)) {
+        if (scanAll) return { success: false, pause: true, errorCode: "HR_LIST_LIMIT", message: "会话列表超过本轮安全上限，未完成全部读取，已暂停" };
+        break;
+      }
       list ||= findScrollableList(items[0]);
-      if (!list || list.scrollTop + list.clientHeight >= list.scrollHeight - 2) break;
+      if (!list || list.scrollTop + list.clientHeight >= list.scrollHeight - 2) { reachedEnd = true; break; }
       unchangedRounds = targets.size === before ? unchangedRounds + 1 : 0;
       if (unchangedRounds >= 3) break;
       list.scrollTop = Math.min(list.scrollHeight, list.scrollTop + Math.max(240, Math.floor(list.clientHeight * 0.85)));
       list.dispatchEvent(new Event("scroll", { bubbles: true }));
       await wait(140);
     }
+    if (scanAll && !reachedEnd) return { success: false, pause: true, errorCode: "HR_LIST_INCOMPLETE", message: "未能确认已读到会话列表底部，已暂停，未标记全部完成" };
     return { success: true, targets };
   }
 

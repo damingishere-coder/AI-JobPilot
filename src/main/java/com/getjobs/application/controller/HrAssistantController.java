@@ -77,7 +77,7 @@ public class HrAssistantController {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("值守启动请求不能为空");
         return execute(() -> watchService.start(request.getTabId(), request.getUrl(), request.getContentVersion(),
-                request.getBrowserSessionId(), request.getExpectedProfileId()));
+                request.getBrowserSessionId(), request.getExpectedProfileId(), request.getIntervalMinutes()));
     }
 
     @PostMapping("/watch/heartbeat")
@@ -248,6 +248,7 @@ public class HrAssistantController {
 
     @Data
     public static class WatchStartRequest {
+        private int intervalMinutes = 1;
         private int tabId;
         private String url;
         private String contentVersion;

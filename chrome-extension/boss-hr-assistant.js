@@ -1,15 +1,19 @@
 (function () {
   "use strict";
 
-  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__) return;
-  window.__GET_JOBS_BOSS_HR_ASSISTANT__ = true;
+  const PANEL_VERSION = "2026-09-06-hr-all-conversations";
+  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
+  window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
+  window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
 
   const HOST_ID = "getjobs-boss-hr-assistant";
+  document.getElementById(HOST_ID)?.remove();
   const REFRESH_MS = 15_000;
   let activeRequest = false;
   let latestStatus = null;
   let latestProposals = [];
   let actionError = "";
+  let intervalMinutes = 30;
 
   const host = document.createElement("div");
   host.id = HOST_ID;
@@ -43,10 +47,11 @@
 
   render();
   refresh();
-  window.setInterval(() => {
+  const refreshTimer = window.setInterval(() => {
     host.style.display = location.pathname.startsWith("/web/geek/chat") ? "block" : "none";
     if (host.style.display !== "none") refresh();
   }, REFRESH_MS);
+  window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__ = () => { window.clearInterval(refreshTimer); host.remove(); };
 
   async function refresh() {
     if (activeRequest || !location.pathname.startsWith("/web/geek/chat")) return;
@@ -75,16 +80,28 @@
     const timing = latestStatus?.lastScanAt ? `｜上次扫描 ${formatTime(latestStatus.lastScanAt)}` : "";
     const next = latestStatus?.nextScanAt ? `｜下次 ${formatTime(latestStatus.nextScanAt)}` : "";
     statusBox.textContent = latestStatus
-      ? `${watching ? "值守中：每 60 秒扫描一次" : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${timing}${next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
+      ? `${watching ? (latestStatus.intervalMs === 1800000 ? "值守中：每 30 分钟读取全部会话" : "值守中：每 60 秒检查未读") : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.scanRunning ? `｜正在逐个读取与生成，已处理 ${latestStatus.scannedCount || 0} 个` : timing + next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
       : "正在连接本地 AI-JobPilot…";
     body.appendChild(statusBox);
     body.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
+    const schedule = document.createElement("select");
+    schedule.setAttribute("aria-label", "值守检查范围与间隔");
+    schedule.className = "btn";
+    for (const [value, label] of [[30, "每 30 分钟：全部会话（含已读）"], [1, "每 1 分钟：仅未读会话"]]) {
+      const option = element("option", "", label);
+      option.value = String(value);
+      schedule.appendChild(option);
+    }
+    schedule.value = String(watching ? (latestStatus.intervalMs === 1800000 ? 30 : 1) : intervalMinutes);
+    schedule.disabled = watching;
+    schedule.addEventListener("change", () => { intervalMinutes = Number(schedule.value); });
+    body.appendChild(schedule);
 
     const actions = element("div", "actions");
     const start = button("开始值守", "btn primary");
     start.disabled = watching;
     start.disabled = watching || !latestStatus?.currentProfileId || latestStatus?.profileSwitchBlocked;
-    start.addEventListener("click", () => mutate("hr-start", null, { expectedProfileId: latestStatus?.currentProfileId }));
+    start.addEventListener("click", () => mutate("hr-start", null, { expectedProfileId: latestStatus?.currentProfileId, intervalMinutes }));
     const stop = button("停止", "btn danger");
     stop.disabled = !watching;
     stop.addEventListener("click", () => mutate("hr-stop"));
@@ -92,6 +109,10 @@
     locked.disabled = true;
     actions.append(start, stop, locked);
     body.appendChild(actions);
+    const readAll = button("立即读取全部并生成草稿", "btn");
+    readAll.disabled = !watching || Boolean(latestStatus?.scanRunning);
+    readAll.addEventListener("click", () => mutate("hr-scan-all", null, { expectedProfileId: latestStatus?.currentProfileId }));
+    body.appendChild(readAll);
     body.appendChild(element("div", "section-title", `待确认回复（${latestProposals.length}）`));
     if (!latestProposals.length) {
       body.appendChild(element("div", "empty", "暂无待确认消息。AI 不会未经确认自动回复。"));
