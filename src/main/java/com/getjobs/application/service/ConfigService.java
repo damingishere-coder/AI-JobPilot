@@ -191,7 +191,7 @@ public class ConfigService {
         result.put("AI_PROVIDER", "remote".equals(provider) ? "api" : provider);
         result.put("CODEX_PATH", optionalAiConfigValue("CODEX_PATH", "codex"));
         result.put("CODEX_HOME", optionalAiConfigValue("CODEX_HOME", ""));
-        result.put("CODEX_MODEL", optionalAiConfigValue("CODEX_MODEL", "gpt-5.6-sol"));
+        result.put("CODEX_MODEL", optionalAiConfigValue("CODEX_MODEL", "gpt-6-astra"));
         result.put("CODEX_TIMEOUT_SECONDS", optionalAiConfigValue("CODEX_TIMEOUT_SECONDS", "300"));
         result.put("AI_REQUEST_TIMEOUT_SECONDS", optionalAiConfigValue("AI_REQUEST_TIMEOUT_SECONDS", "120"));
         if ("codex".equals(provider)) {

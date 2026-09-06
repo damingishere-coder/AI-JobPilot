@@ -38,7 +38,7 @@ class AiServiceProviderTest {
         Map<String, String> config = Map.of(
                 "AI_PROVIDER", "codex",
                 "CODEX_PATH", "codex",
-                "CODEX_MODEL", "gpt-5.6-sol"
+                "CODEX_MODEL", "gpt-6-astra"
         );
         when(configService.getAiConfigs()).thenReturn(config);
         when(codexCliService.generateText("岗位分析", config)).thenReturn("{\"decision\":\"SKIP\"}");
