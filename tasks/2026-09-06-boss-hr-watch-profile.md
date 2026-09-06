@@ -19,14 +19,20 @@
 - 使用本次 JAR、独立 `target/hr-smoke/smoke.db` 和 6867 端口验证：健康接口和环境配置 HTTP 200，静态页面包含聊天入口与全局 AI 说明；测试档案开始值守后切换/删除返回 409，停止后可切换，旧采集请求被拒绝，AI 配置前后完全一致。测试服务已关闭。
 - 没有操作真实 BOSS 会话，没有调用真实 AI 生成或发送 HR/QQ 消息。真实采集到草稿验收仍待服务切换和浏览器扩展刷新。
 
-## 待授权的服务切换
+## 服务切换记录
 
 1. 重新确认 6866 监听与 RunDock Backend 成员身份，备份共享 `C:\Users\10578\Documents\New project 3\db\getjobs.db`，记录完整性及 SHA-256。
 2. 仅停止该 Backend 成员，备份其原始启动配置，将工作目录和启动脚本改成本修复工作树；保留其他启动参数与环境变量，显式沿用共享数据库和原有数据路径。
 3. 通过 RunDock 启动，核验成员状态、监听 PID 及父进程、运行目录、共享数据库、`/api/ready`、`/api/hr-assistant/status` 和环境配置静态页面。
 4. Chrome 加载本工作树 `chrome-extension`，刷新扩展及 BOSS 聊天页；核对人物档案和 BOSS 账号后，由用户启动半自动值守，验证采集与待确认草稿。
 
-服务切换未执行，6866 仍是旧版本；PR 不自动合并。
+2026-09-06 用户确认后已完成服务切换。RunDock Backend 持久化 cwd 和脚本均指向 `C:\Users\10578\Documents\AI-JobPilot-worktrees\boss-hr-watch-profile`。最终监听 6866 的 Java PID 51720，父进程链经 Gradle / PowerShell PID 47764 到 RunDock daemon PID 27408。`/api/ready`、值守状态和 HR 设置接口均 HTTP 200；当前档案 4、值守停止、全自动锁定。
+
+共享数据库仍为原项目 `db/getjobs.db`：schema 17，完整性检查正常、外键错误 0；人物档案 3、岗位 895、HR 会话/草稿/发送命令均 0，与切换前一致。数据库、原 RunDock 配置和原密钥备份位于 `C:\Users\10578\Documents\New project 3\target\backups\hr-watch-cutover-20260906-173016`，不进入 Git。
+
+部署发现 Windows 对 Codex 的 AppData 文件重定向：原可用密钥实际位于 Codex 包的 LocalCache 中，而 RunDock 在相同表面路径读取另一份新密钥。已保留原件，将可用密钥复制到共享 `data/secrets/hr-chat.key`，通过 Backend 的 `APP_HR_KEY_PATH` 显式指定，解决旧 HR 设置解密失败。除 cwd、脚本参数和这个密钥路径外，其他启动环境保持不变。密钥内容及临时诊断日志不进入源码或 PR。
+
+浏览器环境配置已加载新版入口、值守状态和全局 AI 说明。Chrome 当前扩展仍从旧 HR 工作树加载，需在扩展管理页加载本修复工作树的 `chrome-extension`（1.6.1），再刷新工作台与聊天页。真实标签绑定及采集到待确认草稿仍待此步骤后验收；未发送真实 HR/QQ 消息。PR 不自动合并。
 
 ## 回滚
 
