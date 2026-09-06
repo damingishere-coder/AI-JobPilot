@@ -17,6 +17,14 @@ function addCard(id = '101', source = 0, name = '王女士') {
   return { wrapper, card: wrapper.firstElementChild!, props }
 }
 
+function bindMessages() {
+  document.querySelectorAll('.im-list > .message-item').forEach((row, index) => {
+    const mid = `synthetic-${index}`
+    row.setAttribute('data-mid', mid)
+    Object.assign(row, { __vue__: { $el: row, $props: { message: { mid, messageType: row.getAttribute('data-fixture-type') || 'text' } } } })
+  })
+}
+
 // This fixture follows the observed DOM and the public v5535 rendering code.
 // It contains no real HR identifiers, message history or account data.
 describe('BOSS virtual-list identity adapter', () => {
@@ -79,10 +87,37 @@ describe('BOSS virtual-list identity adapter', () => {
 
   it('reads messages in DOM order without duplicating the history container or nested bubbles', () => {
     document.querySelector('.im-list')!.innerHTML = '<li class="message-item item-friend"><span class="text">请问何时到岗？</span></li><li class="message-item item-myself"><span class="text">两周内。</span></li><li class="message-item item-system">系统提示</li><li class="message-item item-friend"><div class="item-friend"><span class="text">好的，明天方便面试吗？</span></div></li>'
+    bindMessages()
     const messages = support.readMessages(document)
     expect(messages).toHaveLength(3)
     expect(messages.map((message: { from: string }) => message.from)).toEqual(['对方', '本人', '对方'])
     expect(support.latestInbound(messages).text).toBe('好的，明天方便面试吗？')
+  })
+
+  it('uses message type rather than avatars, quoted images or inline emoji', () => {
+    document.querySelector('.im-list')!.innerHTML = `
+      <li class="message-item item-friend"><div class="message-content"><div class="figure"><img src="avatar.png"></div><div class="text"><div class="quote-message"><img src="quote.png">旧引用</div><p><span class="text-content">明天方便吗<br><img alt="[微笑]" src="emoji.png"></span></p></div></div></li>
+      <li class="message-item item-friend" data-fixture-type="image"><div class="message-content"><div class="figure"><img src="avatar.png"></div><div class="text item-image"><img src="photo.png"></div></div></li>
+      <li class="message-item item-friend" data-fixture-type="sound"><div class="message-content"><div class="text">语音</div></div></li>
+      <li class="message-item item-friend" data-fixture-type="resume"><div class="message-content"><div class="text">附件.pdf</div></div></li>
+      <li class="message-item item-friend" data-fixture-type="video"><div class="text">视频</div></li>
+      <li class="message-item item-friend" data-fixture-type="future-card"><div class="text">新卡片</div></li>`
+    bindMessages()
+    const messages = support.readMessages(document)
+    expect(messages.map((message: { type: string }) => message.type)).toEqual(['文本', '图片', '语音', '附件', '视频', '其他'])
+    expect(messages[0].text).toBe('明天方便吗 [微笑]')
+    expect(messages[1].text).toBe('')
+  })
+
+  it('clears stale message metadata and does not guess text when a row is recycled', () => {
+    document.querySelector('.im-list')!.innerHTML = '<li class="message-item item-friend"><div class="text">消息</div></li>'
+    bindMessages()
+    const row = document.querySelector('.message-item')!
+    expect(support.readMessages(document)[0].type).toBe('文本')
+    row.setAttribute('data-mid', 'recycled-message')
+    expect(support.readMessages(document)[0].type).toBe('未知类型')
+    Object.assign(row, { __vue__: undefined })
+    expect(support.readMessages(document)[0].type).toBe('未知类型')
   })
 
   it('rejects malformed, synthetic and numerically unsafe identity fields', () => {
@@ -103,6 +138,7 @@ describe('BOSS virtual-list identity adapter', () => {
       card.classList.add('selected')
       Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: props } })
       pane.querySelector('.im-list')!.innerHTML = '<li class="message-item item-friend"><span class="text">明天方便面试吗？</span></li>'
+      bindMessages()
     })
     type Result = { success: boolean; captures: Array<{ session: { uid: string }; messages: Array<{ text: string }> }> }
     let listener!: (message: object, sender: object, respond: (result: Result) => void) => unknown

@@ -109,7 +109,11 @@
       element("span", "", proposal.jobName || "未知岗位"),
       element("span", "", proposal.hrName || "HR")
     );
-    if (proposal.highValue) meta.appendChild(element("span", "tag", "高价值/需注意"));
+    const risks = Array.isArray(proposal.riskTags) ? proposal.riskTags : [];
+    const label = risks.includes("AI_FAILURE") ? "草稿生成失败"
+      : risks.includes("NON_TEXT_MESSAGE") ? "需人工查看"
+        : ({ NEEDS_USER: "待补充信息", REJECTION: "婉拒 / 无需回复", NO_REPLY: "无需回复", INTERVIEW_INVITE: "面试邀请", OFFER: "录用意向" })[proposal.classification];
+    if (label || proposal.highValue) meta.appendChild(element("span", "tag", label || "需注意"));
     const source = element("div", "source", `HR：${proposal.sourceMessage || "（非文本消息）"}`);
     const draft = document.createElement("textarea");
     draft.value = proposal.draft || "";
@@ -133,7 +137,11 @@
     const skip = button("跳过", "btn danger");
     skip.addEventListener("click", () => mutate("hr-skip", proposal.id));
     cardActions.append(save, send, skip);
-    card.append(meta, source, draft, cardActions);
+    card.append(meta, source);
+    if (proposal.summary) card.appendChild(element("div", "source", proposal.summary));
+    const missingFacts = Array.isArray(proposal.missingFacts) ? proposal.missingFacts.filter(value => typeof value === "string" && value.trim()) : [];
+    if (missingFacts.length) card.appendChild(element("div", "source", `需要处理：${missingFacts.join("；")}`));
+    card.append(draft, cardActions);
     return card;
   }
 

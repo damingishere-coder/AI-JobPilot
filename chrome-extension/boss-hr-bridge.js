@@ -5,7 +5,7 @@
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = true;
 
   const support = globalThis.GetJobsBossHrSupport;
-  const CONTENT_VERSION = "2026-09-06-hr-dom-identity";
+  const CONTENT_VERSION = "2026-09-06-hr-message-type";
   const MAX_CAPTURES = 100;
   const OPEN_WAIT_MS = 450;
 

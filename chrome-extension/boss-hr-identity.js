@@ -6,6 +6,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const ATTRIBUTE = "data-getjobs-hr-uid";
+  const MESSAGE_TYPE = "data-getjobs-hr-message-type";
   const EVENT = "getjobs:hr:refresh-identities";
 
   function text(value) { return String(value ?? "").replace(/\s+/g, " ").trim(); }
@@ -25,6 +26,18 @@
   function sync(documentRef) {
     // Clear first: virtual-list nodes can be reused for a different person.
     for (const node of documentRef.querySelectorAll(`[${ATTRIBUTE}]`)) node.removeAttribute(ATTRIBUTE);
+    for (const node of documentRef.querySelectorAll(`[${MESSAGE_TYPE}]`)) node.removeAttribute(MESSAGE_TYPE);
+    for (const row of documentRef.querySelectorAll(".chat-conversation .im-list > .message-item")) {
+      try {
+        const component = row.__vue__;
+        const message = component?.$el === row ? component.$props?.message : null;
+        // ChatMessage renders this very li and selects its body by messageType.
+        // Avatars, quoted images and inline emoji do not determine that type.
+        if (!message || !text(message.mid) || text(message.mid) !== row.getAttribute("data-mid")) continue;
+        const type = ({ text: "文本", image: "图片", sticker: "图片", sound: "语音", video: "视频", resume: "附件" })[message.messageType];
+        row.setAttribute(MESSAGE_TYPE, typeof type === "string" ? type : "其他");
+      } catch { /* Unrecognized message metadata requires manual review. */ }
+    }
     for (const wrapper of documentRef.querySelectorAll(".user-list .friend-content-warp")) {
       try {
         const component = wrapper.__vue__;

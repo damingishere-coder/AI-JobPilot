@@ -35,7 +35,7 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-06-hr-dom-identity",
+  bossHrContentVersion = "2026-09-06-hr-message-type",
   bossDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");

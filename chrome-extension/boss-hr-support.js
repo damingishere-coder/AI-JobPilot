@@ -186,6 +186,7 @@
   }
 
   function readMessages(documentRef) {
+    refreshIdentityMetadata(documentRef);
     const seen = new Set();
     const messages = [];
     const scope = documentRef.querySelector?.(".chat-conversation") || documentRef;
@@ -201,11 +202,20 @@
         || /(^|[\s_-])(item-myself|myself|self|mine|message-self|right)([\s_-]|$)/i.test(className)
         ? "本人" : "对方";
       const content = element.querySelector("[class*='bubble'],[class*='message-content'],[class*='messageContent']") || element;
-      const type = content.querySelector("audio,[class*='voice']") ? "语音"
+      const modern = element.matches?.(".im-list > .message-item") && scope !== documentRef;
+      const type = modern ? (element.getAttribute("data-getjobs-hr-message-type") || "未知类型")
+        : content.querySelector("audio,[class*='voice']") ? "语音"
         : content.querySelector("[class*='file'],[class*='attachment']") ? "附件"
           : content.querySelector("img:not([class*='avatar'])") ? "图片" : "文本";
-      const textNode = content.querySelector("[class*='text'],[class*='content']") || content;
-      const text = normalizeText(textNode?.innerText || textNode?.textContent || element.innerText || element.textContent);
+      const textNode = content.querySelector(".text > p > .text-content")
+        || content.querySelector("[class*='text'],[class*='content']") || content;
+      const body = textNode.cloneNode?.(true);
+      if (body) {
+        body.querySelectorAll(".quote-message,.message-status,.item-time,.figure,[class*='avatar']").forEach(node => node.remove());
+        body.querySelectorAll("img[alt]").forEach(node => node.replaceWith(node.getAttribute("alt")));
+        body.querySelectorAll("br").forEach(node => node.replaceWith("\n"));
+      }
+      const text = normalizeText(body ? body.textContent : textNode?.innerText || textNode?.textContent);
       const time = normalizeText(element.querySelector("time,[class*='time']")?.textContent || element.getAttribute?.("data-time"));
       if (!text && type === "文本") continue;
       messages.push({ from: direction, type, text, time });

@@ -447,7 +447,7 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
-const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-06-hr-dom-identity";
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-06-hr-message-type";
 
 async function startBossHrWatch(sender, requestContext, expectedProfileId) {
   if (!normalizeProfileId(expectedProfileId)) return { success: false, errorCode: "PROFILE_REQUIRED", message: "请刷新页面并确认当前人物档案后再开始值守" };
