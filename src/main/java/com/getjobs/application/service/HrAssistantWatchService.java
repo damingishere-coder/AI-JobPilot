@@ -26,6 +26,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @Service
 public class HrAssistantWatchService {
+    private HrAutopilotService autopilot;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setAutopilot(HrAutopilotService autopilot) { this.autopilot = autopilot; }
     private static final long SCAN_INTERVAL_MS = 60_000L;
     private final ProfileService profileService;
     private final HrAssistantStore store;
@@ -72,6 +75,9 @@ public class HrAssistantWatchService {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请刷新后重新开始值守");
             }
             validateChatTab(tabId, url, contentVersion, browserSessionId);
+            if(autopilot!=null && autopilot.policy(expectedProfileId).enabled()
+                    && (!url.contains("getjobs-autopilot=1") || !contentVersion.equals("2026-09-07-hr-autopilot")))
+                throw new IllegalStateException("请打开新版扩展的专用托管聊天标签，再开始值守");
             if (watching.get()) {
                 if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)) return status();
                 throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
@@ -81,7 +87,7 @@ public class HrAssistantWatchService {
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
                     tabId, url.trim(), contentVersion.trim());
             watching.set(true);
-            scanIntervalMs = intervalMinutes * 60_000L;
+            scanIntervalMs = autopilot!=null && autopilot.policy(profileId).enabled() ? 60_000L : intervalMinutes * 60_000L;
             processingScan.set(false);
             browserScanRunning = false;
             lastScanAt = null;
@@ -216,7 +222,7 @@ public class HrAssistantWatchService {
                 active == null ? "" : active.contentVersion(), lastHeartbeatAt, outboxCount,
                 active == null ? "等待 BOSS 聊天页绑定" : "投递牛马 Chrome 扩展直连");
         return new WatchStatus(watching.get(), browserScanRunning || processingScan.get(), active == null ? "" : active.watchSessionId(), scanIntervalMs,
-                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), true,
+                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), autopilot == null || currentProfile == null || !autopilot.policy(currentProfile.getId()).enabled(),
                 active == null ? null : active.profileId(), currentProfile == null ? null : currentProfile.getId(),
                 currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked());
     }
@@ -261,6 +267,7 @@ public class HrAssistantWatchService {
     @Scheduled(cron = "0 15 3 * * *")
     public void purgeExpiredSensitiveData() {
         int deleted = store.purgeExpired();
+        if(autopilot!=null) autopilot.purgeExpired();
         if (deleted > 0) log.info("已清理 {} 条过期 HR 消息正文", deleted);
     }
 
@@ -280,16 +287,22 @@ public class HrAssistantWatchService {
         store.updateLastInbound(conversationId, sourceFingerprint);
         if (store.hasProposalForSource(conversationId, sourceFingerprint)) return;
 
+        if (autopilot != null) {
+            if(!capture.historical()) capture = autopilot.resolve(capture);
+            autopilot.saveContext(conversationId, capture);
+        }
         AiDraft draft;
-        if (!"文本".equals(source.type())) {
+        if(autopilot!=null && capture.historical()) {
+            draft=new AiDraft(Classification.NO_REPLY,"","历史仅整理，不自动补发",List.of(),List.of(),1);
+        } else if (autopilot == null && !"文本".equals(source.type())) {
             draft = new AiDraft(Classification.NEEDS_USER, "", "HR 发送了非文本消息，需要人工查看。",
                     List.of("NON_TEXT_MESSAGE"), List.of("请人工查看 " + source.type()), 1);
         } else {
             try {
                 // The current ordered capture avoids mixing old, misclassified copies
                 // with the corrected messages saved during historical recovery.
-                draft = draftService.generate(profileId, conversationId, settings.communicationProfile(),
-                        capture.messages().subList(Math.max(0, capture.messages().size() - 12), capture.messages().size()));
+                draft = autopilot != null ? autopilot.generate(profileId, conversationId, settings.communicationProfile(), capture)
+                        : draftService.generate(profileId, conversationId, settings.communicationProfile(), capture.messages());
             } catch (RuntimeException aiFailure) {
                 draft = new AiDraft(Classification.NEEDS_USER, "", "AI 草稿生成失败，需要人工填写回复。",
                         List.of("AI_FAILURE"), List.of("请人工填写回复"), 0);
@@ -297,9 +310,10 @@ public class HrAssistantWatchService {
             }
         }
         long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
+        boolean notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, session.watchSessionId());
         ProposalView proposal = store.getProposalView(profileId, proposalId);
         events.emit("proposal-created", proposal);
-        if (settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
+        if (notify && settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
             events.emit("qq-notification-failed", java.util.Map.of("proposalId", proposal.id(), "message", "NapCat 未连接或 QQ 通知发送失败"));
         }
     }

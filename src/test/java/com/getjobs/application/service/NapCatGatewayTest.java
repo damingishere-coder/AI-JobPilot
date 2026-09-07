@@ -14,6 +14,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class NapCatGatewayTest {
@@ -22,6 +23,24 @@ class NapCatGatewayTest {
     private final HrReplyActionService actions = mock(HrReplyActionService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final NapCatGateway gateway = new NapCatGateway(profileService, store, actions, objectMapper);
+
+    @Test
+    void connectionIdentityIncludesProfileAndStaleSocketCannotDrainAnotherProfilesQueue() {
+        var settings=groupSettings("123456");
+        String first=org.springframework.test.util.ReflectionTestUtils.invokeMethod(gateway,"fingerprint",1L,settings);
+        String second=org.springframework.test.util.ReflectionTestUtils.invokeMethod(gateway,"fingerprint",2L,settings);
+        assertThat(first).isNotEqualTo(second);
+        var outbox=mock(HrAutopilotStore.class);
+        gateway.setAutopilot(outbox);
+        var socket=mock(java.net.http.WebSocket.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway,"socket",socket);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway,"connectionFingerprint",first);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(2L);
+        when(store.loadSettingsSecret(2L)).thenReturn(settings);
+        gateway.flushNotifications();
+        verify(outbox,never()).pending(any());
+        verify(socket,never()).sendText(any(),org.mockito.ArgumentMatchers.anyBoolean());
+    }
 
     @Test
     void groupCommandRequiresBothConfiguredGroupAndOperator() {
@@ -70,8 +89,27 @@ class NapCatGatewayTest {
 
         assertThat(json.path("action").asText()).isEqualTo("send_group_msg");
         assertThat(json.path("params").path("group_id").asLong()).isEqualTo(987654321L);
-        assertThat(json.path("params").path("message").asText()).isEqualTo("通知正文");
+        assertThat(json.path("params").path("message").get(0).path("data").path("text").asText()).isEqualTo("通知正文");
         assertThat(json.path("params").has("user_id")).isFalse();
+    }
+
+    @Test
+    void onlySuccessfulReceiptWithMessageIdConfirmsDelivery() {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        gateway.handleIncoming(1L,"{\"echo\":\"hr-delivery:delivery-1\",\"retcode\":0,\"status\":\"ok\",\"data\":{\"message_id\":12345}}");
+        gateway.handleIncoming(1L,"{\"echo\":\"hr-delivery:delivery-2\",\"retcode\":0,\"status\":\"ok\",\"data\":{}}");
+        verify(outbox).receipt("delivery-1",true,"12345");
+        verify(outbox).receipt("delivery-2",false,"");
+    }
+
+    @Test
+    void wrongGroupCannotPauseOrRememberFacts() {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        gateway.handleIncoming(1L,event("group","111111","123456","999999","pause1","暂停"));
+        gateway.handleIncoming(1L,event("group","987654321","777777","999999","remember1","记住 不真实经历"));
+        verifyNoInteractions(outbox);
     }
 
     private HrAssistantStore.SettingsSecret groupSettings(String operatorQq) {

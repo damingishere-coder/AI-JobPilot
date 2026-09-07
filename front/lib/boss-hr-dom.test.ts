@@ -145,7 +145,7 @@ describe('BOSS virtual-list identity adapter', () => {
     const writes: string[] = []
     runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
       window, document, location: { pathname: '/web/geek/chat' },
-      GetJobsBossHrSupport: support, Event, getComputedStyle,
+      GetJobsBossHrSupport: support, Event, getComputedStyle, sessionStorage,
       setTimeout: (callback: () => void) => setTimeout(callback, 0),
       chrome: { runtime: {
         onMessage: { addListener: (value: typeof listener) => { listener = value } },
@@ -158,7 +158,7 @@ describe('BOSS virtual-list identity adapter', () => {
       } },
     })
     const result = await new Promise<Result>(resolve => listener({
-      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN', deadlineAt: Date.now() + 30_000,
+      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN_V2', deadlineAt: Date.now() + 30_000,
       scanId: 'synthetic-scan', watchSessionId: 'synthetic-watch', outbox: [],
     }, {}, resolve))
     expect(writes).toEqual(['101-0'])
@@ -187,8 +187,8 @@ describe('BOSS virtual-list identity adapter', () => {
     }
     let listener!: (message: object, sender: object, respond: (result: { success: boolean }) => void) => unknown
     runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
-      window: { top: window, self: window }, document, location: { pathname: '/web/geek/chat' },
-      GetJobsBossHrSupport: support, Event, getComputedStyle,
+      window: { top: window, self: window, addEventListener: () => {} }, document, location: { pathname: '/web/geek/chat' },
+      GetJobsBossHrSupport: support, Event, getComputedStyle, sessionStorage,
       setTimeout: (callback: () => void) => setTimeout(callback, 0),
       chrome: { runtime: {
         onMessage: { addListener: (value: typeof listener) => { listener = value } },
@@ -201,7 +201,7 @@ describe('BOSS virtual-list identity adapter', () => {
       } },
     })
     const result = await new Promise<{ success: boolean }>(resolve => listener({
-      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN', deadlineAt: Date.now() + 30_000,
+      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN_V2', deadlineAt: Date.now() + 30_000,
       scanId: 'full-scan', watchSessionId: 'watch', scanAll: true, streamResults: true, outbox: [],
     }, {}, resolve))
     expect(result.success).toBe(false)

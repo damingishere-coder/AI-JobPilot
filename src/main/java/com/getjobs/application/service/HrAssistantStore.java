@@ -68,7 +68,8 @@ public class HrAssistantStore {
         SettingsSecret secret = loadSettingsSecret(profileId);
         return new SettingsView(profileId, secret.communicationProfile(), secret.qqEnabled(), secret.napcatWsUrl(),
                 secret.qqTargetType(), maskQq(secret.qqTarget()), maskQq(secret.qqOperator()),
-                !secret.qqOperator().isBlank(), !secret.napcatToken().isBlank(), secret.retentionDays(), true);
+                !secret.qqOperator().isBlank(), !secret.napcatToken().isBlank(), secret.retentionDays(),
+                jdbcTemplate.queryForObject("SELECT COALESCE((SELECT enabled FROM hr_autopilot_policy WHERE profile_id=?),0)",Integer.class,profileId)==0);
     }
 
     @Transactional
@@ -160,6 +161,8 @@ public class HrAssistantStore {
                 """, conversationId, fingerprint, message.inbound() ? "INBOUND" : "OUTBOUND", safe(message.type()),
                 crypto.encrypt(safe(message.text()), messageAad(conversationId, fingerprint)), safe(message.time()),
                 "+" + clampRetention(retentionDays) + " days");
+        if (changed == 1) jdbcTemplate.update("UPDATE hr_message SET metadata_cipher=? WHERE conversation_id=? AND fingerprint=?",
+                crypto.encrypt(writeJson(message), messageAad(conversationId, fingerprint) + ":meta"), conversationId, fingerprint);
         return changed == 1;
     }
 
@@ -289,6 +292,12 @@ public class HrAssistantStore {
 
     @Transactional(readOnly = true)
     public List<ProposalView> listProposals(Long profileId, boolean includeClosed) {
+        return queryProposals(profileId, includeClosed, null);
+    }
+
+    private List<ProposalView> listProposalsForId(Long profileId, long id) { return queryProposals(profileId, true, id); }
+
+    private List<ProposalView> queryProposals(Long profileId, boolean includeClosed, Long id) {
         String filter = includeClosed ? "" : " AND p.status IN ('REVIEW_REQUIRED','APPROVED','SENDING','SEND_UNKNOWN','BLOCKED')";
         return jdbcTemplate.query("""
                 SELECT p.*, c.external_uid_hash, c.hr_name_cipher, c.company_name_cipher, c.job_name_cipher,
@@ -297,7 +306,7 @@ public class HrAssistantStore {
                   JOIN hr_conversation c ON c.id=p.conversation_id
              LEFT JOIN hr_message m ON m.conversation_id=p.conversation_id AND m.fingerprint=p.source_fingerprint
                  WHERE p.profile_id=?
-                """ + filter + " ORDER BY p.updated_at DESC LIMIT 200", (rs, rowNum) -> {
+                """ + filter + (id == null ? "" : " AND p.id=" + id) + " ORDER BY p.updated_at DESC LIMIT 200", (rs, rowNum) -> {
             String sourceFingerprint = rs.getString("source_fingerprint");
             String aad = proposalAad(profileId, sourceFingerprint);
             String code = crypto.decrypt(rs.getString("confirmation_code_cipher"), aad + ":code");
@@ -321,7 +330,7 @@ public class HrAssistantStore {
 
     @Transactional(readOnly = true)
     public ProposalView getProposalView(Long profileId, long proposalId) {
-        return listProposals(profileId, true).stream()
+        return listProposalsForId(profileId, proposalId).stream()
                 .filter(item -> item.id() == proposalId)
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("未找到 HR 回复任务"));
@@ -359,11 +368,12 @@ public class HrAssistantStore {
         ProposalRecord record = requireProposal(profileId, proposalId);
         assertReviewable(record);
         String aad = proposalAad(profileId, record.sourceFingerprint());
+        String newCode = nextConfirmationCode(profileId);
         int changed = jdbcTemplate.update("""
-                UPDATE hr_reply_proposal SET draft_cipher=?, version=version+1, status='REVIEW_REQUIRED',
+                UPDATE hr_reply_proposal SET confirmation_code_hash=?, confirmation_code_cipher=?, draft_cipher=?, version=version+1, status='REVIEW_REQUIRED',
                        updated_at=CURRENT_TIMESTAMP
                  WHERE id=? AND profile_id=? AND version=? AND status='REVIEW_REQUIRED'
-                """, crypto.encrypt(newDraft.trim(), aad + ":draft"), proposalId, profileId, expectedVersion);
+                """, confirmationCodeHash(profileId, newCode), crypto.encrypt(newCode, aad + ":code"), crypto.encrypt(newDraft.trim(), aad + ":draft"), proposalId, profileId, expectedVersion);
         if (changed != 1) throw new StaleProposalException("草稿已变化，请刷新后重新确认");
         return getProposalView(profileId, proposalId);
     }
@@ -545,12 +555,18 @@ public class HrAssistantStore {
     @Transactional(readOnly = true)
     public List<ChatMessage> recentMessages(long conversationId, int limit) {
         List<ChatMessage> rows = jdbcTemplate.query("""
-                SELECT fingerprint, direction, message_type, body_cipher, message_time
+                SELECT fingerprint, direction, message_type, body_cipher, message_time, metadata_cipher
                   FROM hr_message WHERE conversation_id=? ORDER BY id DESC LIMIT ?
-                """, (rs, rowNum) -> new ChatMessage(
+                """, (rs, rowNum) -> {
+            String meta = rs.getString("metadata_cipher");
+            if (meta != null && !meta.isBlank()) {
+                try { return objectMapper.readValue(crypto.decrypt(meta, messageAad(conversationId, rs.getString("fingerprint")) + ":meta"), ChatMessage.class); }
+                catch (Exception e) { throw new IllegalStateException("消息原始内容读取失败", e); }
+            }
+            return new ChatMessage(
                 "INBOUND".equals(rs.getString("direction")) ? "对方" : "我", rs.getString("message_type"),
                 crypto.decrypt(rs.getString("body_cipher"), messageAad(conversationId, rs.getString("fingerprint"))),
-                safe(rs.getString("message_time"))), conversationId, Math.max(1, Math.min(limit, 20)));
+                safe(rs.getString("message_time"))); }, conversationId, Math.max(1, Math.min(limit, 200)));
         Collections.reverse(rows);
         return rows;
     }
@@ -649,7 +665,7 @@ public class HrAssistantStore {
 
     private String fingerprint(long conversationId, ChatMessage message) {
         return crypto.blindIndex(safe(message.from()) + "|" + safe(message.type()) + "|" +
-                safe(message.time()) + "|" + safe(message.text()), "message:" + conversationId);
+                safe(message.time()) + "|" + safe(message.text()) + (safe(message.messageId()).isBlank() ? "" : "|id:" + message.messageId()), "message:" + conversationId);
     }
 
     private boolean isHighValue(String classification, List<String> risk, List<String> missing) {

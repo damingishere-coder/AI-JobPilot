@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react'
 import HrWatchConnection from './HrWatchConnection'
+import HrAutopilotSettings from './HrAutopilotSettings'
 import { BiMessageDetail, BiRefresh, BiSave } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -252,6 +253,7 @@ export default function HrAssistantSettingsCard() {
 
         {currentProfile && !loadError && !loading ? (
           <>
+            <HrAutopilotSettings key={currentProfile.id} profileId={Number(currentProfile.id)} />
             <div>
               <h3 className="mb-3 text-sm font-semibold">沟通资料</h3>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -297,7 +299,7 @@ export default function HrAssistantSettingsCard() {
                 </div>
                 {form.qqTargetType === 'GROUP' ? (
                   <div className="space-y-2">
-                    <Label htmlFor="hrQqOperator">群内操作人 QQ（可选）</Label>
+                    <Label htmlFor="hrQqOperator">群内操作人 QQ（完全托管必填）</Label>
                     <Input id="hrQqOperator" inputMode="numeric" value={form.qqOperator} onChange={(event) => updateForm('qqOperator', event.target.value)} placeholder={operatorConfigured ? `已配置：${operatorMasked}；留空不修改` : '不填则群聊仅接收通知'} />
                   </div>
                 ) : null}
@@ -310,9 +312,9 @@ export default function HrAssistantSettingsCard() {
               ) : null}
               <label className="mt-4 flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={form.qqEnabled} onChange={(event) => updateForm('qqEnabled', event.target.checked)} />
-                仅将高价值 HR 消息通知到上述 QQ 目标
+                仅将需要人工决策或处理的事项通知到上述 QQ 目标
               </label>
-              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。全自动回复始终锁定。</p>
+              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。托管启用前须确认规则和指定简历。</p>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">

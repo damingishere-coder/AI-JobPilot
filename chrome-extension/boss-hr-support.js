@@ -203,10 +203,14 @@
         ? "本人" : "对方";
       const content = element.querySelector("[class*='bubble'],[class*='message-content'],[class*='messageContent']") || element;
       const modern = element.matches?.(".im-list > .message-item") && scope !== documentRef;
-      const type = modern ? (element.getAttribute("data-getjobs-hr-message-type") || "未知类型")
+      let type = modern ? (element.getAttribute("data-getjobs-hr-message-type") || "未知类型")
         : content.querySelector("audio,[class*='voice']") ? "语音"
         : content.querySelector("[class*='file'],[class*='attachment']") ? "附件"
           : content.querySelector("img:not([class*='avatar'])") ? "图片" : "文本";
+      if(type==="其他" || type==="未知类型") {
+        if(content.querySelector(".job-card,.job-detail-card,[data-card-type='job']")) type="岗位卡片";
+        else if(content.querySelector(".interview-card,[data-card-type='interview']")) type="面试卡片";
+      }
       const textNode = content.querySelector(".text > p > .text-content")
         || content.querySelector("[class*='text'],[class*='content']") || content;
       const body = textNode.cloneNode?.(true);
@@ -217,8 +221,17 @@
       }
       const text = normalizeText(body ? body.textContent : textNode?.innerText || textNode?.textContent);
       const time = normalizeText(element.querySelector("time,[class*='time']")?.textContent || element.getAttribute?.("data-time"));
-      if (!text && type === "文本") continue;
-      messages.push({ from: direction, type, text, time });
+      if (!text && type === "文本") type="读取失败";
+      const media=[];
+      if(type!=="文本") for(const node of content.querySelectorAll("img,audio,source,a[href]")) {
+        if(node.closest(".figure,[class*='avatar'],.quote-message")) continue;
+        const sourceUrl=node.currentSrc||node.src||node.href||"";
+        if(!sourceUrl || media.some(m=>m.sourceUrl===sourceUrl)) continue;
+        media.push({name:node.getAttribute("download")||node.getAttribute("alt")||text||type,
+          mimeType:node.getAttribute("type")||"",sourceUrl,dataUrl:"",readStatus:"PENDING",extractedText:""});
+      }
+      if(type!=="文本" && !media.length && type!=="岗位卡片") media.push({name:type,mimeType:"",sourceUrl:"",dataUrl:"",readStatus:"UNAVAILABLE",extractedText:"未取得原始内容"});
+      messages.push({ from: direction, type, text, time, messageId:element.getAttribute("data-mid")||element.getAttribute("data-message-id")||"", media });
     }
     return messages;
   }
@@ -232,7 +245,7 @@
 
   function messagesMatch(left, right) {
     if (!left || !right) return false;
-    return normalizeText(left.from) === normalizeText(right.from)
+    return (!right.messageId || left.messageId === right.messageId) && normalizeText(left.from) === normalizeText(right.from)
       && normalizeText(left.type) === normalizeText(right.type)
       && normalizeText(left.text) === normalizeText(right.text)
       && (!normalizeText(right.time) || normalizeText(left.time) === normalizeText(right.time));

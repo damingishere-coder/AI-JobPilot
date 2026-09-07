@@ -212,6 +212,12 @@ public class AiService {
                 + "严禁编造任何候选人经历，严禁添加图像中不存在的信息。"
                 + "保留姓名、联系方式、工作经历、项目经历和教育背景的顺序，只输出复核后的纯文本。\n\n"
                 + "本地识别文本：\n" + limit(localText == null ? "" : localText, 20_000);
+        return readImages(images, prompt);
+    }
+
+    /** Uses the existing provider and exactly one remote request, without fallback. */
+    public String readImages(List<ResumeImage> images, String prompt) {
+        if (images == null || images.isEmpty()) throw new IllegalArgumentException("图片不能为空");
         var cfg = configService.getAiConfigs();
         if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
             return codexCliService.reviewResumeImages(

@@ -51,7 +51,15 @@ public final class HrAssistantTypes {
     ) {
     }
 
-    public record ChatMessage(String from, String type, String text, String time) {
+    public record MediaContent(String name, String mimeType, String dataUrl, String sourceUrl,
+                               String readStatus, String extractedText) { }
+
+    public record ChatMessage(String from, String type, String text, String time,
+                              String messageId, List<MediaContent> media) {
+        public ChatMessage(String from, String type, String text, String time) {
+            this(from, type, text, time, "", List.of());
+        }
+        public ChatMessage { media = media == null ? List.of() : List.copyOf(media); }
         public boolean inbound() {
             return "对方".equals(from);
         }
@@ -61,8 +69,13 @@ public final class HrAssistantTypes {
             String captureId,
             int unreadCount,
             ChatSession session,
-            List<ChatMessage> messages
+            List<ChatMessage> messages,
+            boolean historical,
+            boolean contextComplete
     ) {
+        public ChatCapture(String captureId, int unreadCount, ChatSession session, List<ChatMessage> messages) {
+            this(captureId, unreadCount, session, messages, true, false);
+        }
         public ChatCapture {
             messages = messages == null ? List.of() : List.copyOf(messages);
         }
@@ -104,8 +117,16 @@ public final class HrAssistantTypes {
             ChatMessage expectedLatestInbound,
             String draft,
             LocalDateTime expiresAt,
-            long leaseDeadlineEpochMs
+            long leaseDeadlineEpochMs,
+            String actionType, int policyVersion, String resumeName, String resumeSha256,
+            List<ChatMessage> expectedInboundRound
     ) {
+        public SendCommandView(String commandId,String leaseToken,long proposalId,String uid,String hrName,
+                               String companyName,String jobName,String sourceFingerprint,ChatMessage expectedLatestInbound,
+                               String draft,LocalDateTime expiresAt,long leaseDeadlineEpochMs) {
+            this(commandId,leaseToken,proposalId,uid,hrName,companyName,jobName,sourceFingerprint,expectedLatestInbound,
+                    draft,expiresAt,leaseDeadlineEpochMs,"TEXT",0,"","",List.of());
+        }
     }
 
     public record CommunicationProfile(

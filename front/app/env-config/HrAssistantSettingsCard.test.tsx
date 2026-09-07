@@ -79,8 +79,8 @@ describe('BOSS HR settings in environment config', () => {
 
     fireEvent.change(screen.getByLabelText('QQ 通知方式'), { target: { value: 'GROUP' } })
     fireEvent.change(screen.getByLabelText('目标群号'), { target: { value: '987654321' } })
-    fireEvent.change(screen.getByLabelText('群内操作人 QQ（可选）'), { target: { value: '654321' } })
-    fireEvent.click(screen.getByRole('checkbox', { name: '仅将高价值 HR 消息通知到上述 QQ 目标' }))
+    fireEvent.change(screen.getByLabelText('群内操作人 QQ（完全托管必填）'), { target: { value: '654321' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '仅将需要人工决策或处理的事项通知到上述 QQ 目标' }))
     fireEvent.click(screen.getByRole('button', { name: '保存 BOSS HR 设置' }))
 
     expect(await screen.findByText('BOSS HR 设置已加密保存。')).toBeInTheDocument()

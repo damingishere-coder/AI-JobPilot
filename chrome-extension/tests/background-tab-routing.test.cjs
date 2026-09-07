@@ -35,7 +35,7 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-06-hr-all-conversations",
+  bossHrContentVersion = "2026-09-07-hr-autopilot",
   bossDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
@@ -98,7 +98,7 @@ function loadBackground({
         if (message.type === "GET_ZHILIAN_CONTENT_VERSION") {
           return { success: true, version: currentZhilianContentVersion };
         }
-        if (message.type === "BOSS_HR_CONTENT_VERSION") {
+        if (message.type === "BOSS_HR_CONTENT_VERSION_V2") {
           return { success: true, version: bossHrContentVersion };
         }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
@@ -417,6 +417,7 @@ test("binds the initiating Boss chat directly without opening or focusing anothe
       if (url.endsWith("/api/hr-assistant/watch/start")) {
         return jsonResponse({ success: true, data: { watching: true, watchSessionId: "watch-1", profileId: 1 } });
       }
+      if (url.endsWith("/api/hr-assistant/autopilot")) return jsonResponse({success:true,data:{enabled:false,paused:false}});
       throw new Error(`unexpected URL: ${url}`);
     }
   });
@@ -434,7 +435,8 @@ test("binds the initiating Boss chat directly without opening or focusing anothe
   assert.equal(response.success, true);
   assert.deepEqual(requests.map((url) => new URL(url).pathname), [
     "/api/local-auth/action-token",
-    "/api/hr-assistant/watch/start"
+    "/api/hr-assistant/watch/start",
+    "/api/hr-assistant/autopilot"
   ]);
   assert.equal(tabUpdates.length, 0);
   assert.equal(windowUpdates.length, 0);
@@ -481,6 +483,7 @@ test("records an empty Boss chat-page response as unknown instead of confirmed",
   const { context } = loadBackground({
     tabs: [{ id: 7, windowId: 1, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
     fetchImpl: async (url, options) => {
+      if(url.endsWith("/api/hr-assistant/autopilot")) return jsonResponse({success:true,data:{enabled:false,paused:false}});
       requests.push({ url, body: JSON.parse(options.body) });
       return jsonResponse({ success: true, accepted: true, state: "UNKNOWN" });
     }
@@ -618,6 +621,7 @@ test("preserves Boss existing-conversation and not-sent evidence", async () => {
   const { context } = loadBackground({
     tabs: [],
     fetchImpl: async (url, options) => {
+      if(url.endsWith("/api/hr-assistant/autopilot")) return jsonResponse({success:true,data:{enabled:false,paused:false}});
       requests.push({ url, body: JSON.parse(options.body) });
       return jsonResponse({ success: true, accepted: true, state: "UNKNOWN" });
     }
@@ -1007,6 +1011,7 @@ test("thirty minute mode is persisted and asks the content bridge to read all co
     tabs: [{ id: 7, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
     fetchImpl: async (url, options) => {
       if (url.endsWith("action-token")) return jsonResponse({ success: true, data: { token: "test" } });
+      if(url.endsWith("/api/hr-assistant/autopilot")) return jsonResponse({success:true,data:{enabled:false,paused:false}});
       requests.push({ url, body: JSON.parse(options.body) });
       if (url.endsWith("watch/start")) return jsonResponse({ success: true, data: { watchSessionId: "watch", profileId: 1 } });
       return jsonResponse({ success: true, data: { acknowledgedCaptureIds: [] } });
@@ -1019,7 +1024,7 @@ test("thirty minute mode is persisted and asks the content bridge to read all co
   assert.equal(storage.__GET_JOBS_BOSS_HR_WATCH__.intervalMinutes, 30);
   assert.equal(alarmCreates[0].options.periodInMinutes, 30);
   await run("initial");
-  const scan = sentMessages.find(entry => entry.message.type === "BOSS_HR_SCAN");
+  const scan = sentMessages.find(entry => entry.message.type === "BOSS_HR_SCAN_V2");
   assert.equal(scan.message.scanAll, true);
   assert.equal(scan.message.streamResults, true);
   assert.equal(alarmCreates.at(-1).options.delayInMinutes, 30);
@@ -1072,4 +1077,56 @@ test("Zhilian missing and loading pages remain unavailable without opening a tab
   const pending = await loading.context.handlePageMessage({ type: "ZHILIAN_PAGE_STATUS", platform: "zhilian" }, { tab: { id: 20 } });
   assert.equal(pending.pageState, "LOADING");
   assert.equal(loading.sentMessages.length, 0);
+});
+
+
+test("rejects job navigation originating from a chat tab", async () => {
+  const { context, tabUpdates }=loadBackground({tabs:[{id:7,url:"https://www.zhipin.com/web/geek/chat",status:"complete"}]});
+  const result=await context.handleBossContentNavigation({url:"https://www.zhipin.com/web/geek/job"},{tab:{id:7,url:"https://www.zhipin.com/web/geek/chat"}});
+  assert.equal(result.success,false);
+  assert.equal(result.errorCode,"HR_CHAT_PROTECTED");
+  assert.equal(tabUpdates.length,0);
+});
+
+test("autopilot tick serializes simultaneous alarms and scans before sending", async () => {
+  const { context }=loadBackground({tabs:[],fetchImpl:async()=>jsonResponse({success:true,data:{enabled:true,paused:false}})});
+  await context.writeBossHrWatch({watching:true,tabId:7,watchSessionId:"watch",profileId:1,managed:true});
+  const order=[];let release;
+  const pending=new Promise(resolve=>{release=resolve;});
+  context.runBossHrScan=async()=>{order.push("scan");await pending;order.push("scan-complete");};
+  context.pollBossHrSendCommand=async()=>{order.push("send");};
+  const first=context.runBossHrTick();const second=context.runBossHrTick();
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(order,["scan"]);
+  release();await Promise.all([first,second]);
+  assert.deepEqual(order,["scan","scan-complete","send"]);
+});
+
+test("QQ pause prevents both scanning and queued sends", async () => {
+  const { context }=loadBackground({tabs:[],fetchImpl:async()=>jsonResponse({success:true,data:{enabled:true,paused:true}})});
+  await context.writeBossHrWatch({watching:true,tabId:7,watchSessionId:"watch",profileId:1,managed:true});
+  let actions=0;context.runBossHrScan=async()=>{actions++;};context.pollBossHrSendCommand=async()=>{actions++;};
+  await context.runBossHrTick();assert.equal(actions,0);
+});
+
+
+test("failed policy read after start stops backend watch instead of downgrading to unmanaged", async () => {
+  const requests=[];
+  const {dispatchRuntimeMessage,alarmCreates}=loadBackground({
+    tabs:[{id:7,windowId:3,url:"https://www.zhipin.com/web/geek/chat",status:"complete"}],
+    fetchImpl:async(url)=>{
+      requests.push(url);
+      if(url.endsWith("/api/local-auth/action-token")) return jsonResponse({success:true,data:{token:"test-action-token"}});
+      if(url.endsWith("/api/hr-assistant/watch/start")) return jsonResponse({success:true,data:{watching:true,watchSessionId:"watch-1",profileId:1}});
+      if(url.endsWith("/api/hr-assistant/autopilot")) return jsonResponse({success:false,message:"unavailable"});
+      if(url.endsWith("/api/hr-assistant/watch/stop")) return jsonResponse({success:true,data:{watching:false}});
+      throw new Error(`unexpected URL: ${url}`);
+    }
+  });
+  const response=await dispatchRuntimeMessage({source:"GET_JOBS_BOSS_CONTENT",type:"BOSS_LOCAL_API",operation:"hr-start",body:{expectedProfileId:1}},
+    {tab:{id:7,windowId:3,url:"https://www.zhipin.com/web/geek/chat"}});
+  assert.equal(response.success,false);
+  assert.equal(response.errorCode,"HR_POLICY_UNAVAILABLE");
+  assert.equal(alarmCreates.length,0);
+  assert.ok(requests.some(url=>url.endsWith("/api/hr-assistant/watch/stop")));
 });

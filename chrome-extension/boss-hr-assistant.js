@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-06-hr-all-conversations";
+  const PANEL_VERSION = "2026-09-07-hr-autopilot";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -13,7 +13,9 @@
   let latestStatus = null;
   let latestProposals = [];
   let actionError = "";
-  let intervalMinutes = 30;
+  let intervalMinutes = 1;
+  const cards=new Map();
+  let includeClosed=false;
 
   const host = document.createElement("div");
   host.id = HOST_ID;
@@ -58,11 +60,11 @@
     activeRequest = true;
     try {
       const [status, proposals] = await Promise.all([
-        localApi("hr-status"), localApi("hr-proposals")
+        localApi("hr-status"), localApi("hr-proposals",{includeClosed})
       ]);
       latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
-      if (status?.watching) await localApi("hr-command-poll");
+
     } catch (error) {
       latestStatus = { watching: false, lastError: error.message || String(error), chromeBridge: { ready: true, tabBound: false } };
     } finally {
@@ -72,7 +74,8 @@
   }
 
   function render() {
-    body.replaceChildren();
+    const rendered={nodes:[],appendChild(node){this.nodes.push(node);}};
+    const scroll=body.scrollTop;
     const watching = Boolean(latestStatus?.watching);
     dot.classList.toggle("on", watching);
     const statusBox = element("div", `status ${latestStatus?.lastError ? "error" : ""}`);
@@ -80,10 +83,10 @@
     const timing = latestStatus?.lastScanAt ? `｜上次扫描 ${formatTime(latestStatus.lastScanAt)}` : "";
     const next = latestStatus?.nextScanAt ? `｜下次 ${formatTime(latestStatus.nextScanAt)}` : "";
     statusBox.textContent = latestStatus
-      ? `${watching ? (latestStatus.intervalMs === 1800000 ? "值守中：每 30 分钟读取全部会话" : "值守中：每 60 秒检查未读") : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.scanRunning ? `｜正在逐个读取与生成，已处理 ${latestStatus.scannedCount || 0} 个` : timing + next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
+      ? `${watching ? (latestStatus.intervalMs === 1800000 ? "值守中：每 30 分钟读取全部会话" : (latestStatus.fullAutoLocked ? "值守中：每 60 秒检查未读" : "托管中：每分钟新消息，半小时补漏")) : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.scanRunning ? `｜正在逐个读取与生成，已处理 ${latestStatus.scannedCount || 0} 个` : timing + next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
       : "正在连接本地 AI-JobPilot…";
-    body.appendChild(statusBox);
-    body.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
+    rendered.appendChild(statusBox);
+    rendered.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
     const schedule = document.createElement("select");
     schedule.setAttribute("aria-label", "值守检查范围与间隔");
     schedule.className = "btn";
@@ -95,7 +98,7 @@
     schedule.value = String(watching ? (latestStatus.intervalMs === 1800000 ? 30 : 1) : intervalMinutes);
     schedule.disabled = watching;
     schedule.addEventListener("change", () => { intervalMinutes = Number(schedule.value); });
-    body.appendChild(schedule);
+    rendered.appendChild(schedule);
 
     const actions = element("div", "actions");
     const start = button("开始值守", "btn primary");
@@ -105,23 +108,39 @@
     const stop = button("停止", "btn danger");
     stop.disabled = !watching;
     stop.addEventListener("click", () => mutate("hr-stop"));
-    const locked = button("全自动（锁定）", "btn locked");
-    locked.disabled = true;
+    const dedicated=/getjobs-autopilot=1/.test(location.search||"");
+    const locked = button(!dedicated ? "打开专用托管标签" : "恢复托管", "btn");
+    locked.addEventListener("click",()=> {
+      if(!dedicated) mutate("hr-dedicated-open");
+      else { window.dispatchEvent(new Event("getjobs:hr:resume")); mutate("hr-resume"); }
+    });
     actions.append(start, stop, locked);
-    body.appendChild(actions);
+    rendered.appendChild(actions);
     const readAll = button("立即读取全部并生成草稿", "btn");
     readAll.disabled = !watching || Boolean(latestStatus?.scanRunning);
     readAll.addEventListener("click", () => mutate("hr-scan-all", null, { expectedProfileId: latestStatus?.currentProfileId }));
-    body.appendChild(readAll);
-    body.appendChild(element("div", "section-title", `待确认回复（${latestProposals.length}）`));
+    rendered.appendChild(readAll);
+    const historyToggle=button(includeClosed?"只看待处理":"查看最近已处理记录","btn");
+    historyToggle.addEventListener("click",()=>{includeClosed=!includeClosed;refresh();});
+    rendered.appendChild(historyToggle);
+    rendered.appendChild(element("div", "section-title", `${includeClosed?"最近记录（最多200条）":"待确认回复"}（${latestProposals.length}）`));
     if (!latestProposals.length) {
-      body.appendChild(element("div", "empty", "暂无待确认消息。AI 不会未经确认自动回复。"));
+      rendered.appendChild(element("div", "empty", "暂无待确认消息。符合已确认托管边界的新消息自动处理，例外发送 QQ。"));
     } else {
-      latestProposals.forEach((proposal) => body.appendChild(renderProposal(proposal)));
+      latestProposals.forEach((proposal) => rendered.appendChild(renderProposal(proposal)));
     }
+    const wanted=rendered.nodes;
+    wanted.forEach((node,index)=>{if(body.childNodes[index]!==node) body.insertBefore(node,body.childNodes[index]||null);});
+    while(body.childNodes.length>wanted.length) body.lastChild.remove();
+    body.scrollTop=scroll;
+    const live=new Set(latestProposals.map(p=>p.id));
+    for(const id of cards.keys()) if(!live.has(id)) cards.delete(id);
   }
 
   function renderProposal(proposal) {
+    const key=JSON.stringify(proposal);
+    const previous=cards.get(proposal.id);
+    if(previous?.key===key) return previous.node;
     const card = element("article", `card ${proposal.highValue ? "high" : ""}`);
     const meta = element("div", "meta");
     meta.append(
@@ -131,7 +150,8 @@
       element("span", "", proposal.hrName || "HR")
     );
     const risks = Array.isArray(proposal.riskTags) ? proposal.riskTags : [];
-    const label = risks.includes("AI_FAILURE") ? "草稿生成失败"
+    const label = proposal.status==="SENT_CONFIRMED" ? "已确认发送" : proposal.status==="SKIPPED" ? "已整理 / 无需回复"
+      : proposal.status==="SEND_UNKNOWN" ? "发送结果未知，禁止重试" : risks.includes("AI_FAILURE") ? "草稿生成失败"
       : risks.includes("NON_TEXT_MESSAGE") ? "需人工查看"
         : ({ NEEDS_USER: "待补充信息", REJECTION: "婉拒 / 无需回复", NO_REPLY: "无需回复", INTERVIEW_INVITE: "面试邀请", OFFER: "录用意向" })[proposal.classification];
     if (label || proposal.highValue) meta.appendChild(element("span", "tag", label || "需注意"));
@@ -162,7 +182,40 @@
     if (proposal.summary) card.appendChild(element("div", "source", proposal.summary));
     const missingFacts = Array.isArray(proposal.missingFacts) ? proposal.missingFacts.filter(value => typeof value === "string" && value.trim()) : [];
     if (missingFacts.length) card.appendChild(element("div", "source", `需要处理：${missingFacts.join("；")}`));
-    card.append(draft, cardActions);
+    const details=element("details");
+    details.appendChild(element("summary","","完整对话与图片 / 卡片 / 附件"));
+    const detailBody=element("div","source"); details.appendChild(detailBody);
+    details.addEventListener("toggle",async()=> {
+      if(!details.open || details.dataset.loaded) return;
+      detailBody.textContent="正在读取已采集内容…";
+      try {
+        const capture=await localApi("hr-context",{id:proposal.id});
+        detailBody.textContent=capture.contextComplete?"本次上下文已读取":"上下文未完整读取，缺失内容不代表没有消息";
+        for(const message of capture.messages||[]) {
+          detailBody.appendChild(element("p","",`${message.from} [${message.type}] ${message.text||""}`));
+          for(const media of message.media||[]) {
+            detailBody.appendChild(element("p","",`${media.name} [${media.readStatus}] ${media.extractedText||""}`));
+            if(media.dataUrl?.startsWith("data:image/")) {
+              const img=document.createElement("img");img.src=media.dataUrl;img.alt=media.name||"HR 图片";img.style.maxWidth="100%";detailBody.appendChild(img);
+            } else if(media.dataUrl?.startsWith("data:audio/")) {
+              const audio=document.createElement("audio");audio.src=media.dataUrl;audio.controls=true;detailBody.appendChild(audio);
+            } else if(media.dataUrl?.startsWith("data:application/pdf;") || media.dataUrl?.startsWith("data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;")) {
+              const link=element("a","","下载原始附件");link.href=media.dataUrl;link.download=media.name||"HR附件";detailBody.appendChild(link);
+            }
+          }
+        }
+        details.dataset.loaded="true";
+      } catch(error) {detailBody.textContent=error.message||"详情读取失败";}
+    });
+    if(previous) {
+      const old=previous.node.querySelector("textarea");
+      if(old && old.value!==old.dataset.saved) {draft.value=old.value;save.disabled=false;send.disabled=true;}
+      const priorDetail=previous.node.querySelector("details");
+      if(priorDetail?.open) details.open=true;
+    }
+    draft.dataset.saved=savedDraft;
+    card.append(details,draft, cardActions);
+    cards.set(proposal.id,{key,node:card});
     return card;
   }
 

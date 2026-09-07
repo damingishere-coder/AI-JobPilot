@@ -43,6 +43,56 @@ public class HrAssistantController {
     private final HrAssistantEventService eventService;
     private final LocalActionTokenService localActionTokenService;
 
+    private com.getjobs.application.service.HrProfileGuard profileGuard = new com.getjobs.application.service.HrProfileGuard();
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setProfileGuard(com.getjobs.application.service.HrProfileGuard guard) { this.profileGuard=guard; }
+    private com.getjobs.application.service.HrAutopilotStore autopilot;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setAutopilot(com.getjobs.application.service.HrAutopilotStore autopilot) { this.autopilot=autopilot; }
+
+    @GetMapping("/autopilot")
+    public ResponseEntity<?> autopilot() { return execute(()-> {
+        Long id=profileService.getCurrentProfileId();
+        var result=new java.util.LinkedHashMap<String,Object>();
+        var p=autopilot.policy(id);
+        result.put("version",p.version()); result.put("enabled",p.enabled()); result.put("paused",p.paused());
+        result.put("resumeName",p.resumeName()); result.put("resumeSha256",p.resumeSha256()); result.put("facts",p.facts());
+        result.put("rules",p.rules()); result.put("pendingFact",p.pendingFact()); result.put("authorizationValid",autopilot.authorizationValid(id));
+        return result;
+    }); }
+
+    @GetMapping("/autopilot/deliveries")
+    public ResponseEntity<?> deliveryCounts() { return execute(()->autopilot.deliveryCounts(profileService.getCurrentProfileId())); }
+
+    @PutMapping("/autopilot")
+    public ResponseEntity<?> saveAutopilot(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                           @RequestBody AutopilotRequest request) {
+        if(!localActionTokenService.isValid(token)) return unauthorized();
+        return execute(()-> profileGuard.locked(()-> {
+            Long id=profileService.getCurrentProfileId();
+            if(!id.equals(request.profileId())) throw new HrAssistantStore.StaleProposalException("当前人物档案已变化");
+            if(watchService.status().watching() || watchService.status().scanRunning() || store.hasLeasedSendCommands())
+                throw new IllegalStateException("请先停止值守并等待发送结果后再修改托管授权");
+            if(!request.rulesConfirmed()) throw new IllegalArgumentException("请先核对并确认托管规则");
+            return autopilot.configure(id,request.expectedVersion(),request.enabled(),request.resumeName(),request.resumeSha256());
+        }));
+    }
+    public record AutopilotRequest(Long profileId,int expectedVersion,boolean enabled,boolean rulesConfirmed,String resumeName,String resumeSha256) { }
+
+    @PostMapping("/autopilot/{operation:pause|resume}")
+    public ResponseEntity<?> pauseAutopilot(@PathVariable String operation,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token)) return unauthorized();
+        return execute(()->autopilot.pause(profileService.getCurrentProfileId(),operation.equals("pause")));
+    }
+
+    @GetMapping("/proposals/{id}/context")
+    public ResponseEntity<?> context(@PathVariable long id) {
+        return execute(()-> {
+            Long profileId=profileService.getCurrentProfileId();
+            return autopilot.context(profileId,store.requireProposal(profileId,id).conversationId());
+        });
+    }
+
     @GetMapping("/settings")
     public ResponseEntity<?> settings() {
         return execute(() -> store.loadSettings(profileService.getCurrentProfileId()));
@@ -54,7 +104,8 @@ public class HrAssistantController {
             @RequestBody SettingsRequest request) {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("设置请求不能为空");
-        return execute(() -> {
+        return execute(() -> profileGuard.locked(() -> {
+            profileGuard.requireChangeAllowed();
             Long profileId = profileService.getCurrentProfileId();
             if (request.getExpectedProfileId() != null && !request.getExpectedProfileId().equals(profileId)) {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新加载设置后再保存");
@@ -62,7 +113,7 @@ public class HrAssistantController {
             return store.saveSettings(profileId, request.getCommunicationProfile(), request.isQqEnabled(),
                     request.getNapcatWsUrl(), request.getNapcatToken(), request.getQqTargetType(),
                     request.getQqTarget(), request.getQqOperator(), request.getRetentionDays());
-        });
+        }));
     }
 
     @GetMapping("/status")
