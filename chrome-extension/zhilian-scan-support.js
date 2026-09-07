@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-07-page-status";
+  const SUPPORT_VERSION = "2026-09-07-modern-collection";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
@@ -129,7 +129,7 @@
   function isZhilianSearchUrl(value) {
     if (!isZhilianUrl(value)) return false;
     try {
-      return /^\/sou(?:\/|$)/i.test(new URL(String(value)).pathname);
+      return /^(?:\/sou(?:\/|$)|\/jobs\/?$)/i.test(new URL(String(value)).pathname);
     } catch {
       return false;
     }
@@ -192,10 +192,44 @@
     const search = normalizedSearchParamsForCursor(config);
     const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
     const params = new URLSearchParams();
+    params.set("jl", search.cityCode);
     params.set("kw", String(keyword || ""));
     if (!isUnlimitedZhilianSalary(search.salary)) params.set("sl", search.salary);
-    if (page > 1) params.set("p", String(page));
-    return `https://www.zhaopin.com/sou/jl${search.cityCode}/?${params.toString()}`;
+    // Explicit page numbers are only used by the legacy paged layout.
+    if (page > 1) {
+      params.delete("jl");
+      params.set("p", String(page));
+      return `https://www.zhaopin.com/sou/jl${search.cityCode}/?${params.toString()}`;
+    }
+    return `https://www.zhaopin.com/jobs?${params.toString()}`;
+  }
+
+  function matchesSearchUrl(value, keyword, config = {}, pageNumber = 1) {
+    if (!isZhilianSearchUrl(value)) return false;
+    const current = new URL(value);
+    const search = normalizedSearchParamsForCursor(config);
+    const city = current.searchParams.get("jl") || current.pathname.match(/\/jl(\d+)/i)?.[1];
+    let word = current.searchParams.get("kw") || current.searchParams.get("keyword") || current.searchParams.get("query");
+    if (!word) {
+      try { word = decodeURIComponent(current.pathname.match(/\/kw([^/]+)/)?.[1] || ""); } catch { return false; }
+    }
+    const salary = current.searchParams.get("sl") || DEFAULT_SALARY_CODE;
+    const page = Number(current.searchParams.get("p") || current.searchParams.get("page") || current.searchParams.get("pageIndex") || current.pathname.match(/\/p(\d+)/)?.[1] || 1);
+    return compact(word).toLowerCase() === compact(keyword).toLowerCase()
+      && city === search.cityCode && salary === search.salary
+      && page === Math.max(1, Math.floor(Number(pageNumber) || 1));
+  }
+
+  function normalizeJobUrl(value, origin = "https://www.zhaopin.com") {
+    try {
+      const url = new URL(String(value || ""), origin);
+      if (!/^(?:www\.)?zhaopin\.com$|^jobs\.zhaopin\.com$/i.test(url.hostname)
+          || url.username || url.password || url.port) return "";
+      if (url.protocol === "http:" && /^\/(?:jobdetail|job_detail|positiondetail|job)\//i.test(url.pathname)) url.protocol = "https:";
+      if (url.protocol !== "https:") return "";
+      url.hash = "";
+      return url.href;
+    } catch { return ""; }
   }
 
   function pageStatus({ hasLoginPrompt = false, hasSecurityPrompt = false, loading = false } = {}) {
@@ -206,6 +240,8 @@
   }
 
   root.GetJobsZhilianScanSupport = Object.freeze({
+    matchesSearchUrl,
+    normalizeJobUrl,
     pageStatus,
     version: SUPPORT_VERSION,
     DEFAULT_CITY_CODE,

@@ -17,6 +17,42 @@ import static org.mockito.Mockito.when;
 
 class ZhilianServiceCrossRunUpsertTest {
     @Test
+    void incompleteRescanPreservesPreviouslyCollectedCoreFieldsAndDescription() {
+        ProfileService profiles = mock(ProfileService.class);
+        ZhilianJobDataMapper mapper = mock(ZhilianJobDataMapper.class);
+        ZhilianService service = new ZhilianService(null, null, mapper, null, profiles);
+        ZhilianJobDataEntity existing = new ZhilianJobDataEntity();
+        existing.setId(11L);
+        existing.setJobId("CC100J200");
+        existing.setJobTitle("产品运营");
+        existing.setCompanyName("招聘公司");
+        existing.setJobLink("https://www.zhaopin.com/jobdetail/CC100J200.htm");
+        existing.setSalary("8000-12000元");
+        existing.setLocation("北京");
+        existing.setExperience("3-5年");
+        existing.setDegree("本科");
+        existing.setJobDescription("岗位职责：负责人工智能产品运营、需求收集与分析、客户培训和效果跟踪。任职要求：本科，三年以上经验。");
+        when(mapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(mapper.selectById(11L)).thenReturn(existing);
+        ZhilianJobDataEntity incoming = new ZhilianJobDataEntity();
+        incoming.setJobId("CC100J200");
+        incoming.setSalary(" ");
+        incoming.setJobDescription("列表摘要");
+        service.upsertChromeJob(incoming, "rescan", 7L);
+        ArgumentCaptor<ZhilianJobDataEntity> captor = ArgumentCaptor.forClass(ZhilianJobDataEntity.class);
+        verify(mapper).updateById(captor.capture());
+        ZhilianJobDataEntity updated = captor.getValue();
+        assertThat(updated.getJobTitle()).isEqualTo(existing.getJobTitle());
+        assertThat(updated.getJobLink()).isEqualTo(existing.getJobLink());
+        assertThat(updated.getCompanyName()).isEqualTo(existing.getCompanyName());
+        assertThat(updated.getSalary()).isEqualTo(existing.getSalary());
+        assertThat(updated.getLocation()).isEqualTo(existing.getLocation());
+        assertThat(updated.getExperience()).isEqualTo(existing.getExperience());
+        assertThat(updated.getDegree()).isEqualTo(existing.getDegree());
+        assertThat(updated.getJobDescription()).isEqualTo(existing.getJobDescription());
+    }
+
+    @Test
     void sameJobAcrossScanRunsUpdatesExistingRowAndPreservesWorkflowState() {
         ProfileService profileService = mock(ProfileService.class);
         ZhilianJobDataMapper mapper = mock(ZhilianJobDataMapper.class);

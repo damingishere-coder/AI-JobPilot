@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-07-zhilian-page-status";
+  const EXTENSION_VERSION = "2026-09-07-modern-collection";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -583,7 +583,9 @@
       }
       const jobs = collectionResult.jobs;
 
-      postProgress(task, "info", `智联 Chrome已按配置采集 ${collectionResult.candidateCount} 个候选岗位，将进入 ${jobs.length}/${searchJobLimit} 个详情页做AI比对`, {
+      postProgress(task, "info", collectionResult.detailsComplete
+        ? `智联已读取 ${jobs.length}/${searchJobLimit} 个完整岗位，准备提交后台AI队列`
+        : `智联 Chrome已按配置采集 ${collectionResult.candidateCount} 个候选岗位，将进入 ${jobs.length}/${searchJobLimit} 个详情页做AI比对`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
@@ -593,21 +595,21 @@
       const detailTask = {
         ...baseTask,
         phase: "detail",
-        detailIndex: 0,
+        detailIndex: collectionResult.detailsComplete ? jobs.length : 0,
         jobs,
         collectedJobs: [],
         searchPage: 1,
         pagesScanned: 0
       };
       await storeScanTask(detailTask);
-      postProgress(task, "info", `智联 Chrome正在查看详情 1/${jobs.length}：${jobs[0].title}`, {
+      if (!collectionResult.detailsComplete) postProgress(task, "info", `智联 Chrome正在查看详情 1/${jobs.length}：${jobs[0].title}`, {
         ...baseMeta,
         stage: "details",
         collected: jobs.length,
         detailIndex: 1,
         detailTotal: jobs.length
       });
-      const firstNavigation = await navigateToDetail(task, jobs[0].url);
+      const firstNavigation = collectionResult.detailsComplete ? { status: "ready" } : await navigateToDetail(task, jobs[0].url);
       if (firstNavigation.status === "pending") {
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
@@ -737,7 +739,116 @@
     };
   }
 
+  async function collectModernZhilianJobs(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved) {
+    const collector = window.GetJobsZhilianModernCollector;
+    if (!collector) throw new Error("智联新版采集脚本未加载，请重新加载扩展并刷新智联页面");
+    const resuming = task.modernKeyword === keyword;
+    const jobs = resuming ? normalizeCollectedJobs(task.collectedJobs).filter(job => job.detailVerified === true) : [];
+    const seenIds = new Set([...(resuming ? task.modernSeenIds || [] : []), ...jobs.map(job => job.id)]);
+    const visitedCards = new WeakSet();
+    let historyDuplicateCount = resuming ? Number(task.historyDuplicateCount || 0) : 0;
+    let detailFailures = resuming ? Number(task.modernDetailFailures || 0) : 0;
+    let rounds = 0;
+    let stagnant = 0;
+    const startedAt = Date.now();
+    let stopReason = "";
+    const checkpoint = async () => storeScanTask({
+      ...baseTask, phase: "collecting", searchLayout: "split", modernKeyword: keyword, searchPage: 1,
+      navigationAttempts: 0, navigationStartedAt: 0,
+      collectedJobs: jobs, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures,
+      historyDuplicateCount, totalSaved
+    });
+    const pausedForBlock = async () => handleBlockingState({
+      ...baseTask, phase: "collecting", searchPage: 1, collectedJobs: jobs,
+      modernKeyword: keyword, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures, historyDuplicateCount, totalSaved
+    }, buildPageBlockDiagnostics(), baseMeta);
+
+    await waitForJobCards();
+    if (await hasStopRequested()) return { stopped: true, jobs };
+    const initialBlock = await pausedForBlock();
+    if (initialBlock) return { paused: true, jobs, message: initialBlock.message };
+    // These seeds carry IDs but only cover the initial response. Never use their
+    // count or a synthetic page number as evidence of further loaded results.
+    const seeds = collectZhilianInitialStateJobs(keyword);
+    const seedDedupe = await filterZhilianDuplicateJobs(seeds, task, keyword);
+    const freshSeedIds = new Set(seedDedupe.jobs.map(job => job.id));
+    for (const seed of seeds) {
+      if (!freshSeedIds.has(seed.id) && !seenIds.has(seed.id)) {
+        seenIds.add(seed.id);
+        historyDuplicateCount++;
+      }
+    }
+
+    while (!(stopReason = zhilianCollectionStopReason({ target: searchJobLimit, fresh: jobs.length,
+      pages: rounds, stagnantPages: stagnant, elapsedMs: Date.now() - startedAt }))) {
+      if (await hasStopRequested()) return { stopped: true, jobs };
+      if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("智联搜索条件已改变，已保留采集断点");
+      const blocked = await pausedForBlock();
+      if (blocked) return { paused: true, jobs, message: blocked.message };
+      const cards = Array.from(document.querySelectorAll(".job-list-panel .job-card"));
+      const countBefore = cards.length;
+      for (const card of cards) {
+        if (jobs.length >= searchJobLimit || Date.now() - startedAt >= 180000) break;
+        if (await hasStopRequested()) return { stopped: true, jobs };
+        if (visitedCards.has(card)) continue;
+        visitedCards.add(card);
+        const summary = collector.readCard(card);
+        const matches = seeds.filter(seed => seed.title === summary.title && seed.company === summary.company && seed.salary === summary.salary);
+        const expectedId = matches.length === 1 ? matches[0].id : "";
+        if (expectedId && seenIds.has(expectedId)) continue;
+        let job = null;
+        for (let attempt = 0; attempt < 2 && !job; attempt++) {
+          job = await collector.selectAndRead(document, card, { expectedId, sleep, shouldStop: hasStopRequested });
+          if (await hasStopRequested()) return { stopped: true, jobs };
+          const block = await pausedForBlock();
+          if (block) return { paused: true, jobs, message: block.message };
+        }
+        if (!job) {
+          detailFailures++;
+          postProgress(task, "warning", `智联岗位详情未通过身份或正文校验，跳过：${summary.title}`, { ...baseMeta, stage: "collecting", detailFailures });
+          await checkpoint();
+          continue;
+        }
+        if (seenIds.has(job.id)) continue;
+        job.keyword = keyword;
+        const dedupe = await filterZhilianDuplicateJobs([job], task, keyword);
+        seenIds.add(job.id);
+        historyDuplicateCount += dedupe.duplicateCount;
+        jobs.push(...dedupe.jobs);
+        await checkpoint();
+        postProgress(task, "info", `智联新版列表：已读取完整详情 ${jobs.length}/${searchJobLimit} 个，历史重复 ${historyDuplicateCount} 个，详情失败 ${detailFailures} 个。`, {
+          ...baseMeta, stage: "collecting", collected: jobs.length, candidateCount: seenIds.size,
+          historyDuplicates: historyDuplicateCount, detailFailures, jobId: job.id, jobTitle: job.title
+        });
+      }
+      if (jobs.length >= searchJobLimit) break;
+      const lastCard = document.querySelector(".job-list-panel")?.lastElementChild;
+      lastCard?.scrollIntoView({ block: "end" });
+      window.scrollBy(0, Math.max(600, window.innerHeight || 0));
+      let grew = false;
+      for (let poll = 0; poll < 10 && !await hasStopRequested(); poll++) {
+        await sleep(500);
+        if (document.querySelectorAll(".job-list-panel .job-card").length > countBefore) { grew = true; break; }
+      }
+      stagnant = grew ? 0 : stagnant + 1;
+      rounds++;
+    }
+    await checkpoint();
+    stopReason = jobs.length >= searchJobLimit ? "target_reached" : stopReason;
+    postProgress(task, jobs.length >= searchJobLimit ? "info" : "warning",
+      `智联完整岗位详情 ${jobs.length}/${searchJobLimit} 个，历史重复 ${historyDuplicateCount} 个，详情失败 ${detailFailures} 个。${collectionStopReasonLabel(stopReason)}`, {
+        ...baseMeta, stage: "collecting", collected: jobs.length, historyDuplicates: historyDuplicateCount, detailFailures, stopReason
+      });
+    if (!jobs.length && !seeds.length && !document.querySelector(".job-card")) {
+      throw new Error("智联未识别到有效岗位数据，请检查空结果、登录或页面结构；未提交AI分析");
+    }
+    return { jobs, detailsComplete: true, empty: !jobs.length, candidateCount: seenIds.size, pagesScanned: rounds, stopReason };
+  }
+
   async function collectJobsAcrossSearchPages(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved) {
+    if (/^\/jobs\/?$/i.test(window.location.pathname)) {
+      return await collectModernZhilianJobs(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved);
+    }
     let collectedJobs = normalizeCollectedJobs(task.collectedJobs);
     const seenJobUrls = new Set(collectedJobs.map((job) => normalizeJobUrlKey(job)).filter(Boolean));
     let pageNumber = Math.max(1, Number(task.searchPage || currentSearchPageNumber() || 1));
@@ -1536,13 +1647,11 @@
   }
 
   function enrichZhilianJobFromCurrentDetail(job, message, detailIndex, detailTotal) {
-    const listDescription = job.description || "";
     try {
       const detailText = zhilianDetailDescription();
-      const fullText = compact(document.body?.innerText || "");
       const tags = zhilianDetailTags();
       const detailUrl = isZhilianJobDetailUrl(window.location.href) ? window.location.href : job.url;
-      const description = detailText || stripCompanyOnlyText(fullText) || listDescription;
+      const description = detailText || "";
       return {
         ...job,
         title: zhilianDetailTitle() || job.title,
@@ -1556,10 +1665,10 @@
         url: detailUrl
       };
     } catch (error) {
-      postProgress(message, "warning", `智联 Chrome详情读取失败，改用列表文本：${job.title}`);
+      postProgress(message, "warning", `智联 Chrome详情读取失败，标记信息不足：${job.title}`);
       return {
         ...job,
-        description: stripCompanyOnlyText(listDescription),
+        description: "",
         detailIndex,
         detailTotal
       };
@@ -2448,30 +2557,8 @@
   }
 
   function isCurrentSearchPage(keyword, config, pageNumber = 1) {
-    try {
-      const current = new URL(window.location.href);
-      if (current.protocol !== "https:" || !/(^|\.)zhaopin\.com$/i.test(current.hostname)) return false;
-      if (!current.pathname.startsWith("/sou")) return false;
-
-      const expectedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
-      const currentPage = currentSearchPageNumber();
-      if (currentPage !== expectedPage) return false;
-
-      const target = new URL(buildSearchUrl(keyword, config, pageNumber));
-      const currentKeyword = current.searchParams.get("kw") || current.searchParams.get("keyword") || current.searchParams.get("query") || "";
-      const targetKeyword = target.searchParams.get("kw") || keyword;
-      if (compact(currentKeyword) === compact(targetKeyword) || decodeURIComponentSafe(currentKeyword) === keyword) return true;
-
-      const keywordInPath = current.pathname.match(/\/kw([^/]+)/);
-      if (!keywordInPath) return false;
-      const encodedKeyword = encodeURIComponent(keyword);
-      const rawKeyword = keywordInPath[1] || "";
-      if (rawKeyword === encodedKeyword || decodeURIComponentSafe(rawKeyword) === keyword) return true;
-      const pageText = compact([document.title, document.body?.innerText || ""].filter(Boolean).join(" "));
-      return Boolean(rawKeyword && pageText.includes(keyword));
-    } catch {
-      return false;
-    }
+    return typeof SCAN_SUPPORT.matchesSearchUrl === "function"
+      && SCAN_SUPPORT.matchesSearchUrl(window.location.href, keyword, config, pageNumber);
   }
 
   async function waitForJobCards() {
@@ -2802,12 +2889,11 @@
 
   function zhilianDetailDescription() {
     const selectors = [
+      ".job-description__content",
       "[class*='job-sec-text']",
       "[class*='job-sec']",
       "[class*='job-description']",
       "[class*='jobDescription']",
-      "[class*='job-detail']",
-      "[class*='jobDetail']",
       "[class*='describ']",
       "[class*='responsibility']",
       "[class*='position-detail']",
@@ -2822,6 +2908,7 @@
 
   function zhilianDetailTitle() {
     return cleanJobTitle(textOf(document, [
+      ".job-detail-summary__title-text",
       "[class*='job-title']",
       "[class*='jobTitle']",
       "[class*='jobname']",
@@ -2918,14 +3005,8 @@
   }
 
   function normalizeZhilianJobUrl(rawUrl) {
-    try {
-      const parsed = new URL(rawUrl || "", window.location.origin);
-      if (parsed.protocol !== "https:" || !/(^|\.)zhaopin\.com$/i.test(parsed.hostname)) return "";
-      parsed.hash = "";
-      return parsed.href;
-    } catch {
-      return String(rawUrl || "");
-    }
+    return typeof SCAN_SUPPORT.normalizeJobUrl === "function"
+      ? SCAN_SUPPORT.normalizeJobUrl(rawUrl, window.location.origin) : "";
   }
 
   function resolveZhilianJobUrl(linkOrUrl) {
@@ -2971,7 +3052,7 @@
   }
 
   function isZhilianSearchPath(pathname) {
-    return /^\/sou(\/|$)/.test(String(pathname || "").toLowerCase());
+    return /^(?:\/sou(?:\/|$)|\/jobs\/?$)/.test(String(pathname || "").toLowerCase());
   }
 
   function isCurrentZhilianJobDetailPage(expectedUrl) {

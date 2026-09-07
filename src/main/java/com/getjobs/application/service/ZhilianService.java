@@ -329,6 +329,19 @@ public class ZhilianService {
         }
 
         entity.setId(existing.getId());
+        entity.setJobTitle(firstNonBlank(entity.getJobTitle(), existing.getJobTitle()));
+        entity.setJobLink(firstNonBlank(entity.getJobLink(), existing.getJobLink()));
+        entity.setCompanyName(firstNonBlank(entity.getCompanyName(), existing.getCompanyName()));
+        entity.setSalary(firstNonBlank(entity.getSalary(), existing.getSalary()));
+        entity.setLocation(firstNonBlank(entity.getLocation(), existing.getLocation()));
+        entity.setExperience(firstNonBlank(entity.getExperience(), existing.getExperience()));
+        entity.setDegree(firstNonBlank(entity.getDegree(), existing.getDegree()));
+        String incomingDescription = firstNonBlank(entity.getJobDescription(), "");
+        String existingDescription = firstNonBlank(existing.getJobDescription(), "");
+        if (incomingDescription == null || (existingDescription != null
+                && existingDescription.length() > incomingDescription.length())) {
+            entity.setJobDescription(existing.getJobDescription());
+        }
         entity.setProfileId(profileId);
         entity.setCreateTime(existing.getCreateTime());
         entity.setUpdateTime(now);
