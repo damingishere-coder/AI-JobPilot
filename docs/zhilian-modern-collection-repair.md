@@ -18,6 +18,8 @@ Chrome Bridge 版本为 `1.6.7`，保持原扩展 ID 和权限。使用本修复
 
 ## 自动验证
 
+前端 DOM 测试使用 Node 24，与 CI 一致；锁定的 jsdom/undici 依赖要求 Node >= 22.19，Node 20 无法启动测试环境。
+
 ```powershell
 node scripts/validate-chrome-extension.mjs
 node --test chrome-extension/tests/*.test.cjs
