@@ -38,13 +38,13 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-06-hr-profile-guard";
+const BACKGROUND_VERSION = "2026-09-07-zhilian-page-status";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-07-zhilian-page-status";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -64,6 +64,7 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "GET_JOBS_EXTENSION_PING",
   "BOSS_HR_OPEN_CHAT",
   "BOSS_PAGE_STATUS",
+  "ZHILIAN_PAGE_STATUS",
   "BOSS_DEBUG_COLLECT",
   "BOSS_COLLECT_CURRENT_PAGE",
   "BOSS_API_POC_COLLECT",
@@ -1115,6 +1116,8 @@ async function handlePageMessage(message, sender) {
     return { success: false, message: "请至少填写一个搜索关键词" };
   }
 
+  if (message.type === "ZHILIAN_PAGE_STATUS") return await queryZhilianPageStatus(message, pageTabId);
+
   const config = PLATFORM_CONFIG[platform];
   const tab = await resolvePlatformTab(platform, message);
   if (!tab?.id) {
@@ -1822,6 +1825,23 @@ async function postPlatformProgress(pageTabId, payload) {
   }, pageTabId);
 }
 
+async function queryZhilianPageStatus(message, pageTabId) {
+  const tabs = (await chrome.tabs.query({}))
+    .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian))
+    .sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0));
+  if (!tabs.length) return { success: true, chromePageReady: false, pageState: "NO_TAB", message: "请先在 Chrome 中打开智联招聘页面" };
+  // Probe all candidates without focusing, navigating or creating a tab. A stale login tab must not mask a usable page.
+  const statuses = await Promise.all(tabs.map(async tab => {
+    if (tab.status === "loading") return { success: true, chromePageReady: false, pageState: "LOADING", message: "智联页面正在加载，请稍后重新检查" };
+    const status = await queryPassivePlatformStatus(tab.id, "zhilian", message, pageTabId);
+    return { ...status, tabId: tab.id };
+  }));
+  return statuses.find(status => status.success && status.chromePageReady && !status.hasLoginPrompt && !status.hasSecurityPrompt)
+    || statuses.find(status => status.hasSecurityPrompt)
+    || statuses.find(status => status.hasLoginPrompt)
+    || statuses[0];
+}
+
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
   if (message?.type === "BOSS_PAGE_STATUS" || platform === "zhilian") {
     try {
@@ -1944,6 +1964,10 @@ async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requ
   const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
   if (running) return running;
 
+  if (platform === "zhilian") {
+    const pageStatus = await queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", platform }, null);
+    if (pageStatus.chromePageReady && pageStatus.tabId) return await chrome.tabs.get(pageStatus.tabId);
+  }
   return await findOrCreatePlatformTab(platform, startUrl);
 }
 

@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-03-keyword-deep-fill";
+  const SUPPORT_VERSION = "2026-09-07-page-status";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
@@ -198,7 +198,15 @@
     return `https://www.zhaopin.com/sou/jl${search.cityCode}/?${params.toString()}`;
   }
 
+  function pageStatus({ hasLoginPrompt = false, hasSecurityPrompt = false, loading = false } = {}) {
+    const chromePageReady = !loading && !hasLoginPrompt && !hasSecurityPrompt;
+    return { success: true, chromePageReady, hasLoginPrompt, hasSecurityPrompt,
+      pageState: hasSecurityPrompt ? "SECURITY_REQUIRED" : hasLoginPrompt ? "LOGIN_REQUIRED" : loading ? "LOADING" : "READY",
+      message: hasSecurityPrompt ? "智联页面需要安全验证" : hasLoginPrompt ? "智联页面需要登录" : loading ? "智联页面正在加载，请稍后重新检查" : "Chrome 中的智联页面可用" };
+  }
+
   root.GetJobsZhilianScanSupport = Object.freeze({
+    pageStatus,
     version: SUPPORT_VERSION,
     DEFAULT_CITY_CODE,
     DEFAULT_SALARY_CODE,

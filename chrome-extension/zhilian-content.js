@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-06-hr-profile-guard";
+  const EXTENSION_VERSION = "2026-09-07-zhilian-page-status";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
   window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -89,6 +89,11 @@
     }
     if (messageType === "GET_ZHILIAN_CONTENT_VERSION") {
       sendResponse({ success: true, version: EXTENSION_VERSION, instanceId: CONTENT_INSTANCE_ID });
+      return;
+    }
+    if (messageType === "ZHILIAN_PAGE_STATUS") {
+      const diagnostics = buildPageBlockDiagnostics();
+      sendResponse(SCAN_SUPPORT.pageStatus({ ...diagnostics, loading: document.readyState === "loading" || !compact(document.body?.innerText) }));
       return;
     }
     if (messageType === "ZHILIAN_SCAN_STOP") {

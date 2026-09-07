@@ -303,8 +303,10 @@ public class ZhilianController {
             @RequestParam(value = "minK", required = false) Double minK,
             @RequestParam(value = "maxK", required = false) Double maxK,
             @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "scanRunId", required = false) String scanRunId
+            @RequestParam(value = "scanRunId", required = false) String scanRunId,
+            @RequestParam(value = "profileId", required = false) Long profileId
     ) {
+        assertAnalysisProfile(profileId);
         java.util.List<String> statusList = null;
         if (statuses != null && !statuses.trim().isEmpty()) {
             statusList = java.util.Arrays.stream(statuses.split(","))
@@ -312,7 +314,9 @@ public class ZhilianController {
                     .filter(s -> !s.isEmpty())
                     .collect(java.util.stream.Collectors.toList());
         }
-        return zhilianService.getZhilianStats(statusList, location, experience, degree, minK, maxK, keyword, scanRunId);
+        ZhilianService.StatsResponse result = zhilianService.getZhilianStats(statusList, location, experience, degree, minK, maxK, keyword, scanRunId);
+        assertAnalysisProfile(profileId);
+        return result;
     }
 
     /** 岗位列表（分页 + 筛选） */
@@ -327,8 +331,10 @@ public class ZhilianController {
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "scanRunId", required = false) String scanRunId,
             @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
-            @RequestParam(value = "size", required = false, defaultValue = "20") Integer size
+            @RequestParam(value = "size", required = false, defaultValue = "20") Integer size,
+            @RequestParam(value = "profileId", required = false) Long profileId
     ) {
+        assertAnalysisProfile(profileId);
         java.util.List<String> statusList = null;
         if (statuses != null && !statuses.trim().isEmpty()) {
             statusList = java.util.Arrays.stream(statuses.split(","))
@@ -339,7 +345,14 @@ public class ZhilianController {
         ZhilianService.PagedResult result = zhilianService.listZhilianJobs(
                 statusList, location, experience, degree, minK, maxK, keyword, page, size, scanRunId);
         enrichGreetings(result == null ? null : result.items);
+        assertAnalysisProfile(profileId);
         return result;
+    }
+
+    private void assertAnalysisProfile(Long expectedProfileId) {
+        if (expectedProfileId != null && !expectedProfileId.equals(profileService.getCurrentProfileIdOrNull())) {
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT, "当前档案已切换，请刷新分析页");
+        }
     }
 
     /** 清空智联投递分析数据，切换候选人或简历前使用。 */

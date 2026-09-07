@@ -1,3 +1,4 @@
+import { getZhilianPageStatus } from "@/lib/zhilian-page-status"
 import { API_BASE } from "@/lib/api"
 import { getChromeBridgeStatus, sendChromeBridgeMessage } from "@/lib/chromeBridge"
 
@@ -169,22 +170,9 @@ async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem>
     }
   }
 
-  try {
-    const data = await fetchJson<LoginStatusResponse>(`${API_BASE}/api/${platform}/login-status`, 5000)
-    const done = !!data.isLoggedIn
-    return item(
-      "zhilianLogin",
-      title,
-      !!data.success && done,
-      done
-        ? "登录态可用，可以扫描"
-        : data.failureReason || data.message || "请先完成平台登录",
-      "去登录",
-      href
-    )
-  } catch {
-    return item("zhilianLogin", title, false, "登录状态接口暂不可用", "去登录", href, true)
-  }
+  const status = await getZhilianPageStatus()
+  return item("zhilianLogin", title, status.ready, status.message, "检查智联页面", href, !status.connected)
+
 }
 
 export async function loadSetupChecklist(): Promise<SetupChecklistResult> {
@@ -222,5 +210,5 @@ export async function validateSetupForPlatform(platform: "boss" | "zhilian", opt
 
 export function formatSetupMissingMessage(platformLabel: string, missing: SetupCheckItem[]) {
   if (!missing.length) return ""
-  return `${platformLabel}开始扫描前请先完成：${missing.map((entry) => entry.title).join("、")}。`
+  return `${platformLabel}开始扫描前请先完成：${missing.map((entry) => `${entry.title}：${entry.detail}`).join("；")}。`
 }

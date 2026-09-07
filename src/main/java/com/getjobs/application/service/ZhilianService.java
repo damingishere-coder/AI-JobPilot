@@ -570,7 +570,32 @@ public class ZhilianService {
     }
 
     /** 统计响应 */
-    public static class StatsResponse { public Kpi kpi; public Charts charts; }
+    public static class StatsResponse {
+        public Kpi kpi;
+        public Charts charts;
+        public Overview overview = new Overview();
+    }
+
+    public static class Overview {
+        public Double aiAvgScore;
+        public long priorityCompanyCount;
+        public long missingLinkCount;
+        public long missingSalaryCount;
+        public java.time.LocalDateTime latestCreatedAt;
+    }
+
+    private Overview buildOverview(List<ZhilianJobDataEntity> jobs) {
+        Overview overview = new Overview();
+        java.util.IntSummaryStatistics scores = jobs.stream().map(ZhilianJobDataEntity::getAiScore)
+                .filter(Objects::nonNull).mapToInt(Integer::intValue).summaryStatistics();
+        overview.aiAvgScore = scores.getCount() == 0 ? null : Math.round(scores.getAverage() * 10.0) / 10.0;
+        overview.priorityCompanyCount = jobs.stream().filter(job -> Integer.valueOf(1).equals(job.getPriorityCompany())).count();
+        overview.missingLinkCount = jobs.stream().filter(job -> job.getJobLink() == null || job.getJobLink().isBlank()).count();
+        overview.missingSalaryCount = jobs.stream().filter(job -> job.getSalary() == null || job.getSalary().isBlank()).count();
+        overview.latestCreatedAt = jobs.stream().map(ZhilianJobDataEntity::getCreateTime).filter(Objects::nonNull)
+                .max(java.time.LocalDateTime::compareTo).orElse(null);
+        return overview;
+    }
 
     /** 获取智联投递统计（带筛选） */
     public StatsResponse getZhilianStats(
@@ -722,6 +747,7 @@ public class ZhilianService {
         StatsResponse resp = new StatsResponse();
         resp.kpi = kpi;
         resp.charts = charts;
+        resp.overview = buildOverview(filtered);
         return resp;
     }
 

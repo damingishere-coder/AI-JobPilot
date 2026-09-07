@@ -38,13 +38,15 @@ import {
   BiLinkExternal,
   BiMessageDetail,
 } from "react-icons/bi"
-import { parseSalary } from "@/lib/salary"
+import { useZhilianAnalysisSync } from "./useZhilianAnalysisSync"
 
 type NameValue = { name: string; value: number }
 type BucketValue = { bucket: string; value: number }
 type SalaryBucketLike = BucketValue | { bucket?: string; name?: string; value: number }
 
 type StatsResponse = {
+  overview?: { aiAvgScore: number | null; priorityCompanyCount: number; missingLinkCount: number; missingSalaryCount: number; latestCreatedAt: string | null }
+
   kpi: {
 	    total: number
 	    delivered: number
@@ -125,21 +127,16 @@ async function markZhilianUnknownReservations(
   if (failed.length > 0) console.error("智联 UNKNOWN 状态回写失败", failed)
 }
 
-async function postZhilianJsonWithRetry(url: string, body?: unknown) {
-  let lastError: unknown
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      })
-      return await response.json()
-    } catch (error) {
-      lastError = error
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("智联投递请求未收到响应")
+async function postZhilianJsonOnce(url: string, body?: unknown) {
+  // A missing response may follow a successful reservation; never replay a write automatically.
+  const response = await fetch(url, {
+    method: "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.message || "智联操作失败，请刷新状态后核对。")
+  return result
 }
 
 function unresolvedZhilianReservations(
@@ -405,11 +402,9 @@ function topName(items?: NameValue[]) {
 
 function OverviewPanel({
   stats,
-  items,
   loading,
 }: {
   stats: StatsResponse | null
-  items: ZhilianJob[]
   loading: boolean
 }) {
   const k = stats?.kpi
@@ -430,22 +425,19 @@ function OverviewPanel({
     { label: "失败/跳过", value: failed + skipped, className: "bg-amber-500" },
     { label: "其他", value: remainder, className: "bg-slate-400" },
   ].filter((segment) => segment.value > 0)
-  const scoredItems = items.filter((item) => item.aiScore || item.aiScore === 0)
-  const aiAvgScore = scoredItems.length
-    ? Math.round((scoredItems.reduce((sum, item) => sum + (item.aiScore || 0), 0) / scoredItems.length) * 10) / 10
-    : "暂无数据"
+  const aiAvgScore = stats?.overview?.aiAvgScore ?? "暂无数据"
   const aiRejectCount = statusCount("AI不匹配")
   const aiFailedCount = statusCount("AI分析失败")
-  const priorityCompanyCount = items.filter((item) => item.priorityCompany).length
-  const missingLinkCount = items.filter((item) => !item.jobLink?.trim()).length
-  const missingSalaryCount = items.filter((item) => !item.salary?.trim()).length
-  const latestCreatedAt = items[0]?.createTime ? formatDateOnly(items[0].createTime) : "暂无数据"
+  const priorityCompanyCount = stats?.overview?.priorityCompanyCount ?? 0
+  const missingLinkCount = stats?.overview?.missingLinkCount ?? 0
+  const missingSalaryCount = stats?.overview?.missingSalaryCount ?? 0
+  const latestCreatedAt = stats?.overview?.latestCreatedAt ? formatDateOnly(stats.overview.latestCreatedAt) : "暂无数据"
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 数据总览</CardTitle>
-        <CardDescription>基于当前智联岗位库生成的投递进度、AI 判断、岗位画像与数据质量概况</CardDescription>
+        <CardDescription>基于当前档案、扫描范围和筛选条件的全部岗位统计</CardDescription>
       </CardHeader>
       <CardContent>
         {loading && !stats ? (
@@ -606,11 +598,25 @@ function PendingJobCard({
   )
 }
 
-export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
+export default function AnalysisContent({ showHeader = false, refreshSignal = 0, profileId, activeScanRunId = "" }: {
+  showHeader?: boolean; refreshSignal?: number; profileId: number; activeScanRunId?: string
+}) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
-  const [dashboardStats, setDashboardStats] = useState<StatsResponse | null>(null)
+  const dashboardStats = stats
   const [loadingStats, setLoadingStats] = useState(true)
-  const [loadingDashboardStats, setLoadingDashboardStats] = useState(true)
+  const loadingDashboardStats = loadingStats
+  const [loadError, setLoadError] = useState("")
+  const requestSequence = useRef(0)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      // Invalidate every request, including the first Strict Mode mount.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++requestSequence.current
+    }
+  }, [])
 
   const [items, setItems] = useState<ZhilianJob[]>([])
   const [total, setTotal] = useState(0)
@@ -629,19 +635,19 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
 
   const [exporting, setExporting] = useState(false)
   const [clearingAnalysis, setClearingAnalysis] = useState(false)
-  const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
   const [greetingJob, setGreetingJob] = useState<ZhilianJob | null>(null)
   const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
-  const activeScanRunId = ""
 
-	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
+	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败", "采集信息不足", "已跳过", "LIST_COLLECTED"]
 
   const loadList = async (toPage = page, toSize = size) => {
+    const sequence = ++requestSequence.current
+    setLoadingStats(true)
     try {
-      const params = new URLSearchParams()
+      const params = new URLSearchParams({ profileId: String(profileId) })
       if (statuses.length) params.set("statuses", statuses.join(","))
       if (location) params.set("location", location)
       if (experience) params.set("experience", experience)
@@ -650,58 +656,38 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       if (maxK) params.set("maxK", String(Number(maxK)))
       if (keyword) params.set("keyword", keyword)
       if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      params.set("page", String(toPage))
-      params.set("size", String(toSize))
-      const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
-      const data: PagedResult = await res.json()
-      setItems(data.items || [])
-      setTotal(data.total || 0)
-      setPage(data.page || toPage)
-      setSize(data.size || toSize)
-    } catch (e) {
-      console.error("fetch zhilian list failed", e)
-    }
-  }
-
-  const loadStats = async () => {
-    try {
-      setLoadingStats(true)
-      const params = new URLSearchParams()
-      if (statuses.length) params.set("statuses", statuses.join(","))
-      if (location) params.set("location", location)
-      if (experience) params.set("experience", experience)
-      if (degree) params.set("degree", degree)
-      if (minK) params.set("minK", String(Number(minK)))
-      if (maxK) params.set("maxK", String(Number(maxK)))
-      if (keyword) params.set("keyword", keyword)
-      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
-      setStats(data)
-    } catch (e) {
-      console.error("fetch zhilian stats failed", e)
+      const listParams = new URLSearchParams(params)
+      listParams.set("page", String(toPage)); listParams.set("size", String(toSize))
+      const read = async (url: string) => {
+        const res = await fetch(url, { cache: "no-store" })
+        const data = await res.json().catch(() => { throw new Error("分析服务返回异常，请重新加载。") })
+        if (!res.ok || data.success === false) throw new Error(res.status === 409 ? "当前档案已切换，正在重新加载。" : data.message || `加载失败（HTTP ${res.status}）`)
+        return data
+      }
+      const [data, nextStats]: [PagedResult, StatsResponse] = await Promise.all([
+        read(`${API_BASE}/api/zhilian/list?${listParams}`), read(`${API_BASE}/api/zhilian/stats?${params}`),
+      ])
+      if (!alive.current || sequence !== requestSequence.current) return
+      if (!Array.isArray(data.items) || !nextStats.kpi || !nextStats.charts) throw new Error("分析接口返回格式异常，请检查服务版本。")
+      setItems(data.items); setTotal(data.total)
+      setPage(data.page || toPage); setSize(data.size || toSize)
+      setInputPage(data.page || toPage); setInputSize(data.size || toSize)
+      setStats(nextStats); setLoadError("")
+    } catch (cause) {
+      if (alive.current && sequence === requestSequence.current) {
+        setItems([]); setStats(null)
+        setLoadError(cause instanceof Error ? cause.message : "分析数据加载失败，请重试。")
+      }
     } finally {
-      setLoadingStats(false)
+      if (alive.current && sequence === requestSequence.current) setLoadingStats(false)
     }
   }
-
-  const loadDashboardStats = async () => {
-    try {
-      setLoadingDashboardStats(true)
-      const params = new URLSearchParams()
-      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
-      setDashboardStats(data)
-    } catch (e) {
-      console.error("fetch zhilian dashboard stats failed", e)
-    } finally {
-      setLoadingDashboardStats(false)
-    }
-  }
+  const loadStats = () => loadList(page, size)
+  const hasPending = Boolean(stats?.charts.byStatus.some(row => ["AI分析中", "LIST_COLLECTED"].includes(row.name) && row.value > 0))
+  const working = useZhilianAnalysisSync(profileId, () => loadList(page, size), hasPending)
 
   const clearAnalysisData = async () => {
-    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
+    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，此操作不能撤销，切换档案无需清空历史数据。")
     if (!ok) return
     try {
       setClearingAnalysis(true)
@@ -715,11 +701,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       setPage(1)
       setInputPage(1)
       setStats(null)
-      setDashboardStats(null)
-      setComputedSalaryBuckets([])
       await loadList(1, size)
-      await loadStats()
-      await loadDashboardStats()
       alert(data.message || "智联投递分析数据已清空。")
     } catch (error) {
       alert(error instanceof Error ? error.message : "清空失败：网络或服务异常。")
@@ -729,29 +711,21 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   }
 
   useEffect(() => {
-    loadList(1, size)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
     if (!refreshSignal) return
     loadList(1, size)
-    loadStats()
-    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal])
 
   useEffect(() => {
     loadList(1, size)
-    loadStats()
-    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statuses.join(","), location, experience, degree, minK, maxK, keyword])
+  }, [statuses.join(","), location, experience, degree, minK, maxK, keyword, activeScanRunId, profileId])
 
   const exportCSV = async () => {
     try {
       setExporting(true)
-      const baseParams = new URLSearchParams()
+      const baseParams = new URLSearchParams({ profileId: String(profileId) })
+      if (activeScanRunId) baseParams.set("scanRunId", activeScanRunId)
       if (statuses.length) baseParams.set("statuses", statuses.join(","))
       if (location) baseParams.set("location", location)
       if (experience) baseParams.set("experience", experience)
@@ -770,7 +744,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         params.set("page", String(currentPage))
         params.set("size", String(pageSize))
         const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
+        if (!res.ok) throw new Error("读取导出数据失败，请重新加载当前档案。")
         const data: PagedResult = await res.json()
+        if (!alive.current) return
         const chunk = data.items || []
         if (currentPage === 1) totalCount = data.total || chunk.length
         all = all.concat(chunk)
@@ -830,55 +806,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
-  const refreshComputedSalaryBuckets = async () => {
-    try {
-      const baseParams = new URLSearchParams()
-      if (statuses.length) baseParams.set("statuses", statuses.join(","))
-      if (location) baseParams.set("location", location)
-      if (experience) baseParams.set("experience", experience)
-      if (degree) baseParams.set("degree", degree)
-      if (minK) baseParams.set("minK", String(Number(minK)))
-      if (maxK) baseParams.set("maxK", String(Number(maxK)))
-      if (keyword) baseParams.set("keyword", keyword)
-
-      const pageSize = 1000
-      let currentPage = 1
-      let totalCount = 0
-      const ks: number[] = []
-
-      while (true) {
-        const params = new URLSearchParams(baseParams)
-        params.set("page", String(currentPage))
-        params.set("size", String(pageSize))
-        const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
-        const data: PagedResult = await res.json()
-        const chunk = data.items || []
-        if (currentPage === 1) totalCount = data.total || chunk.length
-        for (const it of chunk) {
-          const info = parseSalary(it.salary)
-          if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-        }
-        if (currentPage * pageSize >= totalCount || chunk.length === 0) break
-        currentPage += 1
-      }
-
-      if (!ks.length) { setComputedSalaryBuckets([]); return }
-
-      const buckets: { key: string; min: number; max: number | null }[] = [
-        { key: "0-10K", min: 0, max: 10 },
-        { key: "10-15K", min: 10, max: 15 },
-        { key: "15-20K", min: 15, max: 20 },
-        { key: "20-25K", min: 20, max: 25 },
-        { key: ">=25K", min: 25, max: null },
-      ]
-      const counts = buckets.map((b) => ks.filter((k) => (b.max == null ? k >= b.min : k >= b.min && k < b.max)).length)
-      setComputedSalaryBuckets(buckets.map((b, i) => ({ bucket: b.key, value: counts[i] })))
-    } catch (e) {
-      console.error("compute salary buckets failed", e)
-      setComputedSalaryBuckets([])
-    }
-  }
-
   const currentBatchFilters = () => ({
     location: location || undefined,
     experience: experience || undefined,
@@ -897,7 +824,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingJobId(job.id)
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { greetingSnapshot })
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { greetingSnapshot })
       if (!data.success) {
         alert(data.message || "该智联岗位暂不能投递。")
         return
@@ -913,8 +840,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       alert(result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
       await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 投递执行结果")
       alert("确认投递失败：网络或服务异常。")
@@ -931,14 +856,12 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     if (answer !== "已投递" && answer !== "未投递") return
     try {
       setActingJobId(job.id)
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-reconcile`, {
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-reconcile`, {
         outcome: answer === "已投递" ? "CONFIRMED" : "FAILED",
         message: `用户在智联平台人工核对：${answer}`,
       })
       alert(data.message || (data.success ? "人工对账已保存。" : "人工对账失败。"))
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
       alert("人工对账失败：网络或服务异常。")
     } finally {
@@ -960,7 +883,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       const ok = window.confirm(`这会创建新的投递 attempt，并可能再次申请该智联岗位。\n\n最终话术：\n${finalGreeting}\n\n确认显式重试？`)
       if (!ok) return
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
       if (!data.success || !data.task) {
         alert(data.message || "当前岗位不能重试。")
         return
@@ -976,8 +899,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       alert(result.message || "重试任务已结束。")
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
       await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 重试执行结果")
       alert("重试失败：网络或服务异常，已保守标记待对账。")
@@ -991,7 +912,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     try {
       setActingBatch(true)
       const body = currentBatchFilters()
-      const preview = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch/preview`, body)
+      const preview = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/confirm-batch/preview`, body)
       const previewItems = Array.isArray(preview.items) ? preview.items as ZhilianBatchPreviewItem[] : []
       if (preview.success === false || previewItems.length === 0) {
         alert(preview.message || "当前筛选条件下没有智联待确认岗位。")
@@ -1003,7 +924,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       const ok = window.confirm(formatZhilianGreetingPreview(previewItems))
       if (!ok) return
-      const data = await postZhilianJsonWithRetry(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
         ...body,
         greetingSnapshots: zhilianGreetingSnapshots(previewItems),
       })
@@ -1024,8 +945,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       }
       alert(formatZhilianBatchResult(result))
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
       await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 批量投递执行结果")
       alert("批量投递失败：网络或服务异常。")
@@ -1034,31 +953,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
-  useEffect(() => {
-    const apiBuckets = stats?.charts?.salaryBuckets || []
-    const sum = apiBuckets.reduce((a, b) => a + (b?.value || 0), 0)
-    if (apiBuckets.length === 0 || sum === 0) {
-      refreshComputedSalaryBuckets()
-    } else {
-      setComputedSalaryBuckets([])
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stats, statuses.join(","), location, experience, degree, minK, maxK, keyword])
-
   const kpiCards = useMemo(() => {
     const k = dashboardStats?.kpi
     const statusCount = (name: string) => dashboardStats?.charts.byStatus.find((item) => item.name === name)?.value ?? 0
-    const avgMonthlyKFromItems = (() => {
-      if (!items?.length) return undefined
-      const ks: number[] = []
-      for (const it of items) {
-        const info = parseSalary(it.salary)
-        if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-      }
-      if (!ks.length) return undefined
-      const sum = ks.reduce((a, b) => a + b, 0)
-      return Math.round((sum / ks.length) * 10) / 10
-    })()
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
       { title: "已投递", value: k?.delivered ?? 0 },
@@ -1067,9 +964,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       { title: "未投递", value: k?.pending ?? 0 },
       { title: "已过滤", value: k?.filtered ?? 0 },
       { title: "投递失败", value: k?.failed ?? 0 },
-      { title: "平均月薪(K)", value: (k?.avgMonthlyK ?? avgMonthlyKFromItems ?? 0) },
+      { title: "平均月薪(K)", value: (k?.avgMonthlyK == null ? "暂无数据" : Math.round(k.avgMonthlyK * 10) / 10) },
     ]
-  }, [dashboardStats, items])
+  }, [dashboardStats])
 
   const pendingJobs = useMemo(() => (
     items.filter((item) => item.deliveryStatus === "待确认")
@@ -1103,7 +1000,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       {showHeader && (
         <PageHeader
           title="智联 投递分析"
-          subtitle="基于 zhilian_data 表的统计图与列表分析"
+          subtitle="查看岗位匹配结果，筛选并逐条确认投递"
           icon={<BiBarChart size={28} />}
           actions={
             <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
@@ -1113,7 +1010,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         />
       )}
 
-      <div className="space-y-4">
+      {loadError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{loadError} <Button variant="outline" onClick={() => loadList(page, size)}>重新加载</Button></div>}
+      {working && <p role="status" className="text-sm text-blue-700">扫描或 AI 分析进行中，结果每 5 秒自动更新。</p>}
+      {!loadError && <div className="space-y-4">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
           {kpiCards.map((c, idx) => (
             <Card key={idx} className="border">
@@ -1125,8 +1024,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           ))}
         </div>
 
-        <OverviewPanel stats={dashboardStats} items={items} loading={loadingDashboardStats} />
-      </div>
+        <OverviewPanel stats={dashboardStats} loading={loadingDashboardStats} />
+      </div>}
 
       {/* 操作栏 */}
       <Card>
@@ -1143,10 +1042,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   onClick={() => setStatuses((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))}
                   className={`px-3 py-1.5 rounded-full text-xs border ${statuses.includes(s) ? "bg-primary text-white border-primary" : "bg-transparent text-primary border-primary"}`}
                 >
-                  {s}
+                  {s === "LIST_COLLECTED" ? "已采集待分析" : s}
                 </button>
               ))}
-              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={() => setStatuses([])}>重置</button>
+              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={() => { setStatuses([]); setLocation(""); setExperience(""); setDegree(""); setMinK(""); setMaxK(""); setKeyword("") }}>重置筛选</button>
             </div>
           </div>
         </CardHeader>
@@ -1191,7 +1090,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             <Button variant="outline" onClick={exportCSV} disabled={exporting}>
               <BiDownload className="mr-1" /> 导出CSV
             </Button>
-            <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+            <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || loadingStats || !!loadError}>
               <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
             </Button>
           </div>
@@ -1217,7 +1116,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             <Button size="sm" variant="outline" onClick={() => setStatuses(["待确认"])}>
               <BiBarChart className="mr-1" /> 只看待确认
             </Button>
-            <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+            <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || loadingStats || !!loadError}>
               <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
             </Button>
           </div>
@@ -1342,8 +1241,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             {stats ? (
               <ChartCanvas
                 type="line"
-                labels={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x: SalaryBucketLike) => salaryBucketLabel(x))}
-                data={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x) => x.value)}
+                labels={stats.charts.salaryBuckets.map((x: SalaryBucketLike) => salaryBucketLabel(x))}
+                data={stats.charts.salaryBuckets.map((x) => x.value)}
                 color="#ef4444"
               />
             ) : (
@@ -1382,6 +1281,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                 </tr>
               </thead>
               <tbody>
+                {!items.length && <tr><td colSpan={15} className="p-8 text-center text-muted-foreground">{loadError ? "数据加载失败，请点击重新加载。" : loadingStats ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : statuses.length || location || experience || degree || minK || maxK || keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
                 {items.map((it, idx) => (
                   <tr
                     key={`${it.jobId}-${idx}`}

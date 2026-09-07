@@ -104,6 +104,7 @@ function loadBackground({
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
         }
+        if (message.type === "ZHILIAN_PAGE_STATUS") return statuses[tabId] || { success: true, chromePageReady: false };
         if (message.type === "BOSS_DELIVER_CURRENT_V2") {
           const response = bossDeliveryResponses.shift();
           if (response instanceof Error) throw response;
@@ -1044,4 +1045,31 @@ test("streamed capture rejects stale sessions and retains Outbox after an unknow
   assert.equal((await context.submitBossHrCapture(message, sender)).success, false);
   assert.equal(submissions, 1);
   assert.ok(storage.__GET_JOBS_BOSS_HR_OUTBOX__["1:cap"]);
+});
+
+
+test("Zhilian page checks prefer a usable tab without focusing or creating tabs", async () => {
+  const harness = loadBackground({ tabs: [
+    { id: 1, windowId: 1, url: "https://passport.zhaopin.com/login", status: "complete", lastAccessed: 20 },
+    { id: 2, windowId: 1, url: "https://www.zhaopin.com/sou/", status: "complete", lastAccessed: 10 }
+  ], statuses: { 1: { success: true, hasLoginPrompt: true, chromePageReady: false }, 2: { success: true, chromePageReady: true } } });
+  const response = await harness.dispatchRuntimeMessage({ source: "GET_JOBS_PAGE", type: "ZHILIAN_PAGE_STATUS", platform: "zhilian" }, { tab: { id: 20, url: "http://127.0.0.1:6866/zhilian" }, url: "http://127.0.0.1:6866/zhilian" });
+  assert.equal(response.chromePageReady, true);
+  assert.equal(response.tabId, 2);
+  assert.equal(harness.tabUpdates.length, 0);
+  assert.equal(harness.tabList.length, 2);
+  const selected = await harness.context.findScanPlatformTab("zhilian", "https://www.zhaopin.com/", "run-4", 4);
+  assert.equal(selected.id, 2);
+});
+
+test("Zhilian missing and loading pages remain unavailable without opening a tab", async () => {
+  const missing = loadBackground({ tabs: [] });
+  const status = await missing.context.handlePageMessage({ type: "ZHILIAN_PAGE_STATUS", platform: "zhilian" }, { tab: { id: 20 } });
+  assert.equal(status.chromePageReady, false);
+  assert.equal(status.pageState, "NO_TAB");
+  assert.equal(missing.tabList.length, 0);
+  const loading = loadBackground({ tabs: [{ id: 1, url: "https://www.zhaopin.com/", status: "loading" }] });
+  const pending = await loading.context.handlePageMessage({ type: "ZHILIAN_PAGE_STATUS", platform: "zhilian" }, { tab: { id: 20 } });
+  assert.equal(pending.pageState, "LOADING");
+  assert.equal(loading.sentMessages.length, 0);
 });

@@ -17,7 +17,7 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-09-03-keyword-deep-fill");
+  assert.equal(support.version, "2026-09-07-page-status");
   assert.equal(typeof support.isZhilianUrl, "function");
 });
 
@@ -206,4 +206,14 @@ test("normalizes legacy custom salary and pagination", () => {
     JSON.stringify(support.normalizedSearchParamsForCursor({ cityCode: "0", salary: "12000,30000" })),
     JSON.stringify({ cityCode: "489", salary: "0000,9999999" })
   );
+});
+
+
+test("page readiness distinguishes login, security and loading from a usable page", () => {
+  const support = loadSupport();
+  assert.equal(support.pageStatus({}).chromePageReady, true);
+  for (const evidence of [{ hasLoginPrompt: true }, { hasSecurityPrompt: true }, { loading: true }]) {
+    assert.equal(support.pageStatus(evidence).chromePageReady, false);
+  }
+  assert.equal(support.pageStatus({ hasSecurityPrompt: true, hasLoginPrompt: true }).pageState, "SECURITY_REQUIRED");
 });
