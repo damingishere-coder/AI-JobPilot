@@ -6,6 +6,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -46,6 +47,17 @@ public class GlobalExceptionHandler {
         String requestId = requestId();
         log.warn("requestId={} request body rejected: HttpMessageNotReadableException", requestId);
         return ResponseEntity.badRequest().body(failure("INVALID_JSON", "请求参数格式不正确，请检查 JSON 字段和值类型", requestId));
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatus(ResponseStatusException error) {
+        if (error.getStatusCode().is5xxServerError()) {
+            return ResponseEntity.status(error.getStatusCode())
+                    .body(failure("INTERNAL_ERROR", "本地服务处理失败，请根据错误编号检查日志", requestId()));
+        }
+        String reason = error.getReason();
+        return ResponseEntity.status(error.getStatusCode())
+                .body(failure("REQUEST_REJECTED", reason == null || reason.isBlank() ? "请求无法处理" : reason, requestId()));
     }
 
     @ExceptionHandler(Throwable.class)
