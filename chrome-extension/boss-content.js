@@ -823,6 +823,7 @@
   }
 
   async function resumeStoredScanTaskIfActive(force = false) {
+    if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const storedTask = await readStoredScanTaskFromAnyStorage();
     if (!storedTask || storedTask.completed || stopRequested) return;
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
@@ -3735,7 +3736,7 @@
   function isBossUrl(url) {
     try {
       const parsed = new URL(url);
-      return parsed.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(parsed.hostname);
+      return parsed.protocol === "https:" && !parsed.pathname.startsWith("/web/geek/chat") && /(^|\.)zhipin\.com$/i.test(parsed.hostname);
     } catch {
       return false;
     }
@@ -4568,6 +4569,7 @@
   }
 
   function openSearchPage(url, task) {
+    if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const attempts = Number(task.navigationAttempts || 1);
     scheduleSearchNavigationRetry(url, task, attempts);
     requestBackgroundNavigation(url).then((response) => {
@@ -4586,6 +4588,7 @@
   }
 
   function requestBackgroundNavigation(url) {
+    if(window.location.pathname.startsWith("/web/geek/chat")) return Promise.resolve({success:false,errorCode:"HR_CHAT_PROTECTED"});
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       return Promise.resolve({ success: false });
     }
@@ -4597,6 +4600,7 @@
   }
 
   function navigateSearchPageInCurrentFrame(url, attempts) {
+    if(window.location.pathname.startsWith("/web/geek/chat")) return;
     if (attempts > 1) {
       window.location.replace(url);
     } else {

@@ -33,3 +33,31 @@ it('explains manual review and AI failure without enabling an empty draft or ren
   expect(Array.from(root.querySelectorAll<HTMLButtonElement>('.card .primary')).every(node => node.disabled)).toBe(true)
   expect(operations).toEqual(['hr-status', 'hr-proposals'])
 })
+
+
+it('keeps the same focused editor and unsaved text across status polling', async () => {
+  const attach = Element.prototype.attachShadow
+  vi.spyOn(Element.prototype, 'attachShadow').mockImplementation(function (this: Element) {
+    return attach.call(this, { mode: 'open' })
+  })
+  let tick: (() => void) | undefined
+  const proposal = { id: 9, version: 1, classification: 'REPLY', highValue: false, riskTags: [], draft: '已保存', status: 'REVIEW_REQUIRED' }
+  runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-assistant.js'), 'utf8'), {
+    document, location: { pathname: '/web/geek/chat' },
+    window: { top: window, self: window, setInterval: (callback: () => void) => { tick = callback } },
+    chrome: { runtime: { sendMessage: (message: { operation: string }, respond: (value: object) => void) => {
+      respond({ success: true, data: { success: true, data: message.operation === 'hr-status' ? { watching: true } : [{ ...proposal }] } })
+    } } },
+  })
+  const root = document.getElementById('getjobs-boss-hr-assistant')!.shadowRoot!
+  await vi.waitFor(() => expect(root.querySelector('textarea')).not.toBeNull())
+  const editor = root.querySelector('textarea')!
+  editor.value = '我正在输入的内容'
+  editor.dispatchEvent(new Event('input', { bubbles: true }))
+  editor.focus()
+  tick!()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(root.querySelector('textarea')).toBe(editor)
+  expect(editor.value).toBe('我正在输入的内容')
+  expect(root.querySelector<HTMLButtonElement>('.card .primary')!.disabled).toBe(true)
+})
