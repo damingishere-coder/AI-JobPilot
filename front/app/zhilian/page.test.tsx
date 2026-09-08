@@ -2,9 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import Page from './page'
 import { sendChromeBridgeMessage } from '@/lib/chromeBridge'
+import { validateSetupForPlatform } from '@/lib/setupChecklist'
 
 vi.mock('@/lib/zhilian-page-status', () => ({ getZhilianPageStatus: async () => ({ connected: true, ready: true, message: 'Chrome 智联可用' }) }))
-vi.mock('@/lib/setupChecklist', () => ({ validateSetupForPlatform: async () => ({ ready: true, missing: [] }), formatSetupMissingMessage: () => '' }))
+vi.mock('@/lib/setupChecklist', () => ({ validateSetupForPlatform: vi.fn(async () => ({ ready: true, missing: [] })), formatSetupMissingMessage: () => '' }))
 vi.mock('@/lib/chromeBridge', () => ({ sendChromeBridgeMessage: vi.fn(async () => ({ success: true })), subscribeChromeBridgeEvents: () => () => {} }))
 afterEach(() => vi.unstubAllGlobals())
 
@@ -22,8 +23,14 @@ it('配置页不再嵌入分析；启动后提供带档案与批次的独立结�
   expect(screen.getByRole('link', { name: '智联分析' })).toHaveAttribute('href', '/zhilian/analysis')
   const start = await screen.findByRole('button', { name: '开始扫描' })
   await waitFor(() => expect(start).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: '20' }))
+  const counts = screen.getAllByRole('option').map(option => Number(option.textContent))
+  expect(counts).toEqual(Array.from({ length: 40 }, (_, index) => (index + 1) * 5))
+  fireEvent.click(screen.getByRole('option', { name: '25' }))
   fireEvent.click(start)
   const link = await screen.findByRole('link', { name: '查看本次扫描结果' })
   expect(link.getAttribute('href')).toMatch(/\/zhilian\/analysis\?profileId=4&scanRunId=zhilian-/)
   expect(vi.mocked(sendChromeBridgeMessage).mock.calls.filter(([message]) => message.type === 'ZHILIAN_SCAN_START')).toHaveLength(1)
+  expect(validateSetupForPlatform).toHaveBeenCalledWith('zhilian', { openPlatformPageIfMissing: true })
+  expect(sendChromeBridgeMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'ZHILIAN_SCAN_START', config: expect.objectContaining({ searchJobLimit: 25 }) }))
 })

@@ -1081,6 +1081,41 @@ test("Zhilian missing and loading pages remain unavailable without opening a tab
   assert.equal(loading.sentMessages.length, 0);
 });
 
+test("explicit Zhilian preflight opens one official page for concurrent requests and reuses it", async () => {
+  const harness = loadBackground({ tabs: [], statuses: { 1: { success: true, chromePageReady: true } } });
+  const message = { type: "ZHILIAN_PAGE_STATUS", platform: "zhilian", openIfMissing: true, startUrl: "https://example.com/" };
+  const results = await Promise.all([harness.context.queryZhilianPageStatus(message, 20), harness.context.queryZhilianPageStatus(message, 20)]);
+  assert.ok(results.every(result => result.chromePageReady));
+  assert.equal(harness.tabList.length, 1);
+  assert.equal(harness.tabList[0].url, "https://www.zhaopin.com/jobs?jl=489");
+  await harness.context.queryZhilianPageStatus(message, 20);
+  assert.equal(harness.tabList.length, 1);
+  assert.equal(harness.tabUpdates.length, 0);
+});
+
+test("explicit Zhilian preflight waits for loading pages without navigating or bypassing login", async () => {
+  const harness = loadBackground({ tabs: [{ id: 1, url: "https://www.zhaopin.com/jobs", status: "loading" }], statuses: { 1: { success: true, chromePageReady: false, hasLoginPrompt: true } } });
+  let waited = false;
+  harness.context.waitForSupportedTab = async () => { waited = true; harness.tabList[0].status = "complete"; };
+  const status = await harness.context.queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", openIfMissing: true }, 20);
+  assert.equal(waited, true);
+  assert.equal(status.hasLoginPrompt, true);
+  assert.equal(status.chromePageReady, false);
+  assert.equal(harness.tabList.length, 1);
+  assert.equal(harness.tabUpdates.length, 0);
+});
+
+test("auto-opened Zhilian page retains security checks and returns creation failures", async () => {
+  const harness = loadBackground({ tabs: [], statuses: { 1: { success: true, chromePageReady: false, hasSecurityPrompt: true } } });
+  const message = { type: "ZHILIAN_PAGE_STATUS", openIfMissing: true };
+  assert.equal((await harness.context.queryZhilianPageStatus(message, 20)).hasSecurityPrompt, true);
+  const failed = loadBackground({ tabs: [] });
+  failed.context.chrome.tabs.create = async () => { throw new Error("cannot create tab"); };
+  const status = await failed.context.queryZhilianPageStatus(message, 20);
+  assert.equal(status.success, false);
+  assert.match(status.message, /cannot create tab/);
+});
+
 
 test("rejects job navigation originating from a chat tab", async () => {
   const { context, tabUpdates }=loadBackground({tabs:[{id:7,url:"https://www.zhipin.com/web/geek/chat",status:"complete"}]});

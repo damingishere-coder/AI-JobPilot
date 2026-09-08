@@ -30,6 +30,7 @@ export type SetupChecklistResult = {
 
 export type ValidateSetupOptions = {
   requirePlatformLogin?: boolean
+  openPlatformPageIfMissing?: boolean
 }
 
 type AiConfigResponse = {
@@ -144,7 +145,7 @@ async function checkResume(): Promise<SetupCheckItem> {
   }
 }
 
-async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem> {
+async function checkLogin(platform: "boss" | "zhilian", openIfMissing = false): Promise<SetupCheckItem> {
   const title = platform === "boss" ? "Boss登录状态" : "智联登录状态"
   const href = platform === "boss" ? "/boss" : "/zhilian"
 
@@ -170,7 +171,7 @@ async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem>
     }
   }
 
-  const status = await getZhilianPageStatus()
+  const status = await getZhilianPageStatus({ openIfMissing })
   return item("zhilianLogin", title, status.ready, status.message, "检查智联页面", href, !status.connected)
 
 }
@@ -197,7 +198,7 @@ export async function validateSetupForPlatform(platform: "boss" | "zhilian", opt
     checkResume(),
   ]
   if (requirePlatformLogin) {
-    checkers.push(checkLogin(platform))
+    checkers.push(checkLogin(platform, options.openPlatformPageIfMissing === true))
   }
   const items = await Promise.all(checkers)
   const requiredKeys: SetupCheckKey[] = ["backend", "chromeBridge", "aiConfig", "resume"]

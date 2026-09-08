@@ -6,11 +6,14 @@ export type ZhilianPageStatus = {
   message: string
 }
 
-export async function getZhilianPageStatus(): Promise<ZhilianPageStatus> {
+export async function getZhilianPageStatus(options: { openIfMissing?: boolean } = {}): Promise<ZhilianPageStatus> {
   try {
     const bridge = await getChromeBridgeStatus()
     if (!bridge.success) return { connected: false, ready: false, message: bridge.message || 'Chrome扩展未连接，请加载或重新加载扩展。' }
-    const status = await sendChromeBridgeMessage({ type: 'ZHILIAN_PAGE_STATUS', platform: 'zhilian' }, 8000)
+    const status = await sendChromeBridgeMessage({
+      type: 'ZHILIAN_PAGE_STATUS', platform: 'zhilian',
+      ...(options.openIfMissing ? { openIfMissing: true } : {}),
+    }, options.openIfMissing ? 35000 : 8000)
     const ready = status.success === true && status.chromePageReady === true
       && !status.hasLoginPrompt && !status.hasSecurityPrompt
     return {
