@@ -17,7 +17,7 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-09-07-page-status");
+  assert.equal(support.version, "2026-09-07-modern-collection");
   assert.equal(typeof support.isZhilianUrl, "function");
 });
 
@@ -174,7 +174,7 @@ test("builds a Zhilian search URL with official city and salary params", () => {
 
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "10001,15000" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java&sl=10001%2C15000"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java&sl=10001%2C15000"
   );
 });
 
@@ -183,15 +183,15 @@ test("omits sl when salary is unlimited", () => {
 
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "0" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "\u4e0d\u9650" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "0000,9999999" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
 });
 
@@ -216,4 +216,25 @@ test("page readiness distinguishes login, security and loading from a usable pag
     assert.equal(support.pageStatus(evidence).chromePageReady, false);
   }
   assert.equal(support.pageStatus({ hasSecurityPrompt: true, hasLoginPrompt: true }).pageState, "SECURITY_REQUIRED");
+});
+
+test("accepts redirected jobs searches only with matching keyword, city, salary and page", () => {
+  const support = loadSupport();
+  const config = { cityCode: "489" };
+  for (const url of ["https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营", "https://www.zhaopin.com/jobs/?jl=489&kw=AI产品运营", "https://www.zhaopin.com/sou/jl489/?kw=AI产品运营"]) {
+    assert.equal(support.matchesSearchUrl(url, "AI产品运营", config), true);
+  }
+  for (const url of ["https://www.zhaopin.com/jobs?jl=765&kw=AI产品运营", "https://www.zhaopin.com/jobs?jl=489&kw=Java", "https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营&sl=10001,15000", "https://www.zhaopin.com/jobs/?pageMode=recommend", "https://evilzhaopin.com/jobs?jl=489&kw=AI产品运营"]) {
+    assert.equal(support.matchesSearchUrl(url, "AI产品运营", config), false);
+  }
+  assert.equal(support.matchesSearchUrl("https://www.zhaopin.com/sou/jl489/?kw=Java&p=2", "Java", config, 2), true);
+  assert.equal(support.matchesSearchUrl("https://www.zhaopin.com/sou/jl489/?kw=Java&p=2", "Java", config, 1), false);
+});
+
+test("normalizes official HTTP detail links without relaxing the origin or protocol boundary", () => {
+  const support = loadSupport();
+  assert.equal(support.normalizeJobUrl("http://www.zhaopin.com/jobdetail/CC100J200.htm"), "https://www.zhaopin.com/jobdetail/CC100J200.htm");
+  for (const value of ["http://evilzhaopin.com/jobdetail/CC100J200.htm", "https://www.zhaopin.com.evil.test/jobdetail/CC100J200.htm", "javascript:alert(1)", "http://www.zhaopin.com/companydetail/CC100.htm", "https://user:password@www.zhaopin.com/jobdetail/CC100.htm"]) {
+    assert.equal(support.normalizeJobUrl(value), "");
+  }
 });

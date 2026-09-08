@@ -22,6 +22,7 @@ const PLATFORM_CONFIG = {
     contentScript: "zhilian-content.js",
     contentScripts: [
       "zhilian-scan-support.js",
+      "zhilian-modern-collector.js",
       "zhilian-content.js"
     ]
   }
@@ -38,13 +39,13 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-07-zhilian-page-status";
+const BACKGROUND_VERSION = "2026-09-07-modern-collection";
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-07-zhilian-page-status";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-07-modern-collection";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -2483,7 +2484,7 @@ function isZhilianSearchUrl(url) {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
       && isZhilianHost(parsed.hostname)
-      && /^\/sou(?:\/|$)/i.test(parsed.pathname);
+      && /^(?:\/sou(?:\/|$)|\/jobs\/?$)/i.test(parsed.pathname);
   } catch {
     return false;
   }

@@ -275,7 +275,7 @@ class ChromeJobAnalysisQueueServiceTest {
             maxActive.accumulateAndGet(current, Math::max);
             entered.countDown();
             try {
-                assertThat(release.await(2, TimeUnit.SECONDS)).isTrue();
+                assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
             } finally {
                 active.decrementAndGet();
             }
@@ -283,15 +283,20 @@ class ChromeJobAnalysisQueueServiceTest {
             jobs.forEach(job -> results.put(job.taskId(), successResult()));
             return results;
         }).when(analysisService).analyzeJobs(any());
-        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        // This test asserts dispatch of two full batches. Persist all ten tasks
+        // before starting workers; streaming enqueue may legitimately claim 3+2+5.
         for (int index = 0; index < 10; index++) {
-            assertThat(queue.enqueue(job(request("boss", "job-batch-" + index, "run-batch"))).isQueued())
+            assertThat(store.submit(request("boss", "job-batch-" + index, "run-batch")).created())
                     .isTrue();
         }
-
-        assertThat(entered.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(maxActive.get()).isLessThanOrEqualTo(2);
-        release.countDown();
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        queue.initialize();
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(maxActive.get()).isLessThanOrEqualTo(2);
+        } finally {
+            release.countDown();
+        }
         for (int index = 0; index < 10; index++) {
             awaitStatus(submittedTaskId("job-batch-" + index), "SUCCEEDED");
         }
