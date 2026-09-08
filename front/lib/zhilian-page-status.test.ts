@@ -12,6 +12,11 @@ beforeEach(() => {
 })
 
 describe('智联 Chrome 状态', () => {
+  it('主动启动允许自动开页，并留出加载时间；登录和安全验证仍阻止扫描', async () => {
+    vi.mocked(sendChromeBridgeMessage).mockResolvedValue({ success: true, chromePageReady: true, hasLoginPrompt: true })
+    expect((await getZhilianPageStatus({ openIfMissing: true })).ready).toBe(false)
+    expect(sendChromeBridgeMessage).toHaveBeenCalledWith({ type: 'ZHILIAN_PAGE_STATUS', platform: 'zhilian', openIfMissing: true }, 35000)
+  })
   it('Chrome 可用时不再读取后端浏览器登录状态', async () => {
     const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/api/ready')
       ? { ready: true, status: "UP" } : { success: true, data: { introduce: '简介', prompt: '分析', resumeText: '简历' } } }))

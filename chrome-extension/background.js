@@ -39,7 +39,8 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-07-modern-collection";
+const BACKGROUND_VERSION = "2026-09-08-scan-controls";
+let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
@@ -1873,6 +1874,13 @@ async function postPlatformProgress(pageTabId, payload) {
 }
 
 async function queryZhilianPageStatus(message, pageTabId) {
+  if (message.openIfMissing === true) {
+    if (!zhilianPagePreparation) {
+      zhilianPagePreparation = prepareZhilianPageStatus(message, pageTabId)
+        .finally(() => { zhilianPagePreparation = null; });
+    }
+    return await zhilianPagePreparation;
+  }
   const tabs = (await chrome.tabs.query({}))
     .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian))
     .sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0));
@@ -1887,6 +1895,31 @@ async function queryZhilianPageStatus(message, pageTabId) {
     || statuses.find(status => status.hasSecurityPrompt)
     || statuses.find(status => status.hasLoginPrompt)
     || statuses[0];
+}
+
+async function prepareZhilianPageStatus(message, pageTabId) {
+  const passiveMessage = { ...message, openIfMissing: false };
+  try {
+    let tabs = (await chrome.tabs.query({}))
+      .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian));
+    if (!tabs.length) {
+      // Use a fixed official URL; page messages cannot choose an arbitrary destination.
+      tabs = [await chrome.tabs.create({ url: "https://www.zhaopin.com/jobs?jl=489", active: true })];
+    }
+    await Promise.all(tabs.filter(tab => tab.status === "loading").map(tab =>
+      waitForSupportedTab(tab.id, PLATFORM_CONFIG.zhilian).catch(() => null)
+    ));
+    const startedAt = Date.now();
+    let status;
+    do {
+      status = await queryZhilianPageStatus(passiveMessage, pageTabId);
+      if (status.chromePageReady || status.hasLoginPrompt || status.hasSecurityPrompt || status.pageState === "NO_TAB") return status;
+      await sleep(CONTENT_READY_INTERVAL_MS);
+    } while (Date.now() - startedAt < 8000);
+    return { ...status, message: status.message || "智联页面已打开，但尚未就绪，请等待页面加载完成后重试" };
+  } catch (error) {
+    return { success: false, chromePageReady: false, message: `自动打开智联页面失败：${error?.message || String(error)}` };
+  }
 }
 
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {

@@ -7,7 +7,6 @@ import { API_BASE } from '@/lib/api'
 import { BiSave, BiBriefcase, BiPlay, BiStop, BiLinkExternal, BiCodeAlt } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import Link from 'next/link'
@@ -423,7 +422,7 @@ export default function ZhilianPage() {
         appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
         return
       }
-      const setup = await validateSetupForPlatform('zhilian')
+      const setup = await validateSetupForPlatform('zhilian', { openPlatformPageIfMissing: true })
       if (!setup.ready) {
         const message = formatSetupMissingMessage('智联招聘', setup.missing)
         appendProgressLog({ type: 'error', message })
@@ -775,24 +774,18 @@ export default function ZhilianPage() {
                   </div>
                   <div className="space-y-2">
                     <Label>每关键词后台 AI 分析岗位数</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={200}
-                      step={1}
-                      placeholder="20"
+                    <Select
                       value={searchJobLimitInput}
-                      onChange={(e) => {
-                        const rawValue = e.target.value
-                        setSearchJobLimitInput(rawValue)
-                        const parsed = Number(rawValue)
-                        if (Number.isFinite(parsed) && parsed >= 1) {
-                          setConfig((c) => ({ ...c, searchJobLimit: Math.min(Math.floor(parsed), 200) }))
-                        }
-                      }}
-                      onBlur={() => commitSearchJobLimit(searchJobLimitInput)}
+                      onChange={(e) => commitSearchJobLimit(e.target.value)}
                       disabled={!hasProfile}
-                    />
+                    >
+                      {Number(searchJobLimitInput) % 5 !== 0 && (
+                        <option value={searchJobLimitInput}>{searchJobLimitInput}（已保存）</option>
+                      )}
+                      {Array.from({ length: 40 }, (_, index) => (index + 1) * 5).map((limit) => (
+                        <option key={limit} value={String(limit)}>{limit}</option>
+                      ))}
+                    </Select>
                   </div>
                   <div className="space-y-2">
                     <Label>薪资范围</Label>
