@@ -161,6 +161,11 @@ public class ZhilianController {
         return toOptionMaps("salary");
     }
 
+    @GetMapping("/config/options/filters")
+    public Map<String,Object> getFilterOptions(@RequestParam(value="cityCode",defaultValue="489") String cityCode) {
+        return com.getjobs.application.service.ZhilianFilterCatalog.options(cityCode);
+    }
+
     private List<Map<String, String>> toOptionMaps(String type) {
         return zhilianService.getOptionsByType(type).stream().map(e -> {
             Map<String, String> m = new HashMap<>();
@@ -595,6 +600,10 @@ public class ZhilianController {
     @PostMapping("/openclaw/probe")
     public ResponseEntity<Map<String, Object>> probeOpenClaw(@RequestBody(required = false) Map<String, Object> payload) {
         Map<String, Object> request = payload == null ? new HashMap<>() : new HashMap<>(payload);
+        if(request.get("config") instanceof Map<?,?> config && config.get("filters") != null
+                && objectMapper.convertValue(config.get("filters"),com.getjobs.application.dto.ZhilianFilters.class).isActive()) {
+            return ResponseEntity.badRequest().body(Map.of("success",false,"message","完整筛选请使用 Chrome 扫描；实验通路无法核验官网筛选状态"));
+        }
         request.put("platform", "zhilian");
         Map<String, Object> response = openClawJobProbeService.probe(request);
         if (Boolean.TRUE.equals(response.get("success"))) {

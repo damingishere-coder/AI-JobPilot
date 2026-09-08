@@ -11,12 +11,12 @@ function harness(respond) {
     store: async task => stored.push(JSON.parse(JSON.stringify(task))), log: (...args) => logs.push(args),
     pause: async (message, jobs, totalSaved, error) => ({paused:true, message:error.message, receipts:message.submissionReceipts}) };
   const code = source.replace('resumeStoredScanTaskIfActive().catch', 'Promise.resolve().catch').replace(/\}\)\(\);\s*$/, `
-    window.api = { submit: continueZhilianDetailScan, owned: hasStopRequested };
+    window.api = { submit: continueZhilianDetailScan, owned: hasStopRequested, setOwner:token=>expectedScanOwnerToken=token };
     requestZhilianLocalApi = hooks.request; storeScanTask = hooks.store; postProgress = hooks.log;
     pauseZhilianSubmission = hooks.pause; advanceKeywordCursor = () => {}; sleep = async () => {};
     hasStopRequested = async () => window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID;
   })();`);
-  const context = vm.createContext({window, hooks, chrome:{runtime:{onMessage:{addListener:f=>listeners.push(f)}}}, console, URL, URLSearchParams, Date, Math, setTimeout, clearTimeout});
+  const context = vm.createContext({window, hooks, sessionStorage:{getItem:()=>null}, chrome:{runtime:{sendMessage:async()=>({success:true,isOwner:false,ownerToken:'other'}),onMessage:{addListener:f=>listeners.push(f)}}}, console, URL, URLSearchParams, Date, Math, setTimeout, clearTimeout});
   vm.runInContext(code, context);
   const jobs = ['A','B','C'].map(id=>({id,url:`https://www.zhaopin.com/jobdetail/${id}.htm`}));
   return {calls,stored,logs,listeners,window,inject:()=>vm.runInContext(code,context), run: (extra={})=>window.api.submit({jobs,detailIndex:3,profileId:4,...extra}, 'AI', 'run', {})};
@@ -43,4 +43,8 @@ test('same-version injection starts one listener and obsolete owner cannot submi
 });
 test('unexpected receipts pause instead of an endless loop',async()=>{
   const h=harness(()=>({items:[receipt('OTHER')]}));assert.equal((await h.run()).paused,true);assert.equal(h.calls.length,1);
+});
+test('a background ownership change stops the prior scan loop',async()=>{
+  const h=harness(()=>({items:[]}));h.window.api.setOwner('original-owner');
+  assert.equal(await h.window.api.owned(),true);
 });

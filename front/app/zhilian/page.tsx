@@ -18,6 +18,8 @@ import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
 import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
+import FilterControls from './FilterControls'
+import {resetCityFilters, type ZhilianFilters, type FilterCatalog} from '@/lib/zhilian-filters'
 
 interface ZhilianConfig {
   id?: number
@@ -25,6 +27,7 @@ interface ZhilianConfig {
   cityCode?: string
   salary?: string
   searchJobLimit?: number
+  filters?: ZhilianFilters
 }
 
 interface Option { name: string; code: string }
@@ -112,6 +115,20 @@ export default function ZhilianPage() {
   const [options, setOptions] = useState<ZhilianOptions>({ city: [], salary: [] })
   const [configWarnings, setConfigWarnings] = useState<Record<string, string>>({})
   const [loadingConfig, setLoadingConfig] = useState(true)
+  const [filterCatalog,setFilterCatalog]=useState<FilterCatalog|null>(null)
+  const [filterError,setFilterError]=useState('')
+  useEffect(()=>{
+    let cancelled=false
+    setFilterCatalog(null);setFilterError('')
+    fetch(`${API_BASE}/api/zhilian/config/options/filters?cityCode=${encodeURIComponent(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE)}`)
+      .then(async response=>{if(!response.ok)throw new Error('官方筛选选项加载失败，请检查服务后重试');return response.json()})
+      .then(data=>{
+        if(!data.version || !data.options || String(data.cityCode)!==String(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE))throw new Error('官方筛选选项响应不完整，请检查服务版本')
+        if(!cancelled)setFilterCatalog(data)
+      })
+      .catch(error=>{if(!cancelled)setFilterError(error.message)})
+    return ()=>{cancelled=true}
+  },[config.cityCode])
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
     const parsed = Number(value)
@@ -450,6 +467,7 @@ export default function ZhilianPage() {
       }
       if (profileRef.current !== profileId) return
       const runId = `zhilian-${Date.now()}`
+      if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       setActiveRunId(runId)
       setLatestRunId(runId)
       setIsStopping(false)
@@ -784,7 +802,7 @@ export default function ZhilianPage() {
                     <Label>城市</Label>
                     <Select
                       value={config.cityCode || DEFAULT_ZHILIAN_CITY_CODE}
-                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value }))}
+                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value, filters:resetCityFilters(c.filters) }))}
                       placeholder="请选择城市"
                       disabled={!hasProfile}
                     >
@@ -827,6 +845,8 @@ export default function ZhilianPage() {
                       <p className="text-xs text-amber-600 dark:text-amber-300">{configWarnings.salary}</p>
                     )}
                   </div>
+                  {filterError && <p role="alert" className="col-span-full text-destructive">{filterError}</p>}
+                  {filterCatalog && <FilterControls key={filterCatalog.cityCode} catalog={filterCatalog} filters={config.filters||{}} disabled={!hasProfile} onChange={filters=>setConfig(c=>({...c,filters}))}/>}
                 </div>
               )}
             </CardContent>

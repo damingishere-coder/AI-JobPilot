@@ -107,9 +107,9 @@ jobs:
         working-directory: front
         run: pnpm typecheck
 
-      - name: Test Zhilian modern DOM collection
+      - name: Test frontend and Zhilian DOM contracts
         working-directory: front
-        run: pnpm exec vitest run lib/zhilian-modern-collector.test.ts
+        run: pnpm test
 
       - name: Build frontend
         working-directory: front

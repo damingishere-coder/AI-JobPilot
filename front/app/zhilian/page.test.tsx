@@ -15,7 +15,7 @@ it('配置页不再嵌入分析；启动后提供带档案与批次的独立结�
     success: true, hasProfile: true, currentProfile: { id: 4, name: '测试档案' },
     config: { keywords: '["开发"]', cityCode: '489', salary: '0000,9999999', searchJobLimit: 20 },
     options: { city: [{ name: '全国', code: '489' }], salary: [{ name: '不限', code: '0000,9999999' }] },
-  } : { success: true, data: { keywords: [] } } })))
+  } : url.includes('/config/options/filters') ? {success:true,version:'2026-09-08',cityCode:'489',cityName:'全国',source:'https://fe-api.zhaopin.com/c/i/search/base/data',options:{}} : { success: true, data: { keywords: [] } } })))
   render(<Page />)
   await screen.findByText('Chrome 智联可用')
   expect(screen.queryByRole('tab')).not.toBeInTheDocument()

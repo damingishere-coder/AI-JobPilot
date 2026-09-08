@@ -69,6 +69,7 @@ public class ZhilianJobService implements JobPlatformService {
 
             // 加载配置（统一从 zhilian_config 专表读取）
             ZhilianConfig config = configService.getZhilianConfig();
+            if(config.getFilters().isActive()) throw new IllegalArgumentException("完整筛选需要使用 Chrome 扫描；旧浏览器通路无法核验官网选中状态");
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始扫描岗位，命中岗位会进入待确认列表..."));

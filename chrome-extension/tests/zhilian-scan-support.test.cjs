@@ -17,7 +17,7 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-09-07-modern-collection");
+  assert.equal(support.version, "2026-09-08-official-filters");
   assert.equal(typeof support.isZhilianUrl, "function");
 });
 
@@ -204,7 +204,7 @@ test("normalizes legacy custom salary and pagination", () => {
   );
   assert.equal(
     JSON.stringify(support.normalizedSearchParamsForCursor({ cityCode: "0", salary: "12000,30000" })),
-    JSON.stringify({ cityCode: "489", salary: "0000,9999999" })
+    JSON.stringify({ cityCode: "489", salary: "0000,9999999", filters: {} })
   );
 });
 

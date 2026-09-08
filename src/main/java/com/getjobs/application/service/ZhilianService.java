@@ -71,6 +71,7 @@ public class ZhilianService {
         config.setSearchJobLimit(normalizeSearchJobLimit(entity.getSearchJobLimit()));
         config.setCityCode(normalizeCityCode(entity.getCityCode()));
         config.setSalary(normalizeSalaryCode(entity.getSalary()));
+        config.setFilters(entity.getFilters());
         return config;
     }
 
@@ -110,6 +111,12 @@ public class ZhilianService {
         config.setCityCode(normalizeCityCode(config.getCityCode()));
         config.setSalary(normalizeSalaryCode(config.getSalary()));
         config.setSearchJobLimit(normalizeSearchJobLimit(config.getSearchJobLimit()));
+        ZhilianConfigEntity previous = getFirstConfig();
+        var filters = config.getFiltersJson() == null && previous != null ? previous.getFilters() : config.getFilters();
+        if (config.getFiltersJson() == null && previous != null && !Objects.equals(normalizeCityCode(previous.getCityCode()), config.getCityCode())) {
+            filters.setDistrict(""); filters.setSubwayLine(""); filters.setSubwayStation("");
+        }
+        config.setFilters(ZhilianFilterCatalog.validate(config.getCityCode(), filters));
         return saveOrUpdateFirstSelective(config);
     }
 
@@ -125,6 +132,7 @@ public class ZhilianService {
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setCityCode(incoming.getCityCode());
             toInsert.setSalary(incoming.getSalary());
+            toInsert.setFilters(incoming.getFilters());
             toInsert.setSearchJobLimit(normalizeSearchJobLimit(incoming.getSearchJobLimit()));
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
@@ -137,6 +145,7 @@ public class ZhilianService {
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getCityCode() != null) toUpdate.setCityCode(incoming.getCityCode());
             if (incoming.getSalary() != null) toUpdate.setSalary(incoming.getSalary());
+            if (incoming.getFiltersJson() != null) toUpdate.setFilters(incoming.getFilters());
             if (incoming.getSearchJobLimit() != null) {
                 toUpdate.setSearchJobLimit(normalizeSearchJobLimit(incoming.getSearchJobLimit()));
             } else if (first.getSearchJobLimit() == null) {

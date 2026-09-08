@@ -64,6 +64,23 @@ class JobAnalysisTaskStoreTest {
     }
 
     @Test
+    void additiveFilterMigrationPreservesConfigAndIsolatesProgressByProfile() {
+        jdbcTemplate.update("INSERT INTO zhilian_config(profile_id,keywords,city_code,salary,search_job_limit) VALUES(4,'AI产品运营','765','0000,9999999',30)");
+        assertThat(jdbcTemplate.queryForObject("SELECT filters_json FROM zhilian_config WHERE profile_id=4",String.class)).isEqualTo("{}");
+        var filters = new com.getjobs.application.dto.ZhilianFilters();filters.setEducation(List.of("4"));
+        var config = new com.getjobs.application.entity.ZhilianConfigEntity();config.setFilters(filters);
+        jdbcTemplate.update("UPDATE zhilian_config SET filters_json=? WHERE profile_id=4", config.getFiltersJson());
+        config.setFiltersJson(jdbcTemplate.queryForObject("SELECT filters_json FROM zhilian_config WHERE profile_id=4",String.class));
+        assertThat(config.getFilters()).isEqualTo(filters);
+        assertThat(jdbcTemplate.queryForObject("SELECT search_job_limit FROM zhilian_config WHERE profile_id=4",Integer.class)).isEqualTo(30);
+        var req=request(4L,"zhilian","progress-job","progress-run");
+        jdbcTemplate.update("UPDATE zhilian_data SET scan_run_id=? WHERE id=?","progress-run",req.getJobRowId());
+        assertThat(store.submit(req).accepted()).isTrue();
+        assertThat(((Number)store.zhilianRunProgress(4L,"progress-run").get("enqueued")).intValue()).isEqualTo(1);
+        assertThat(((Number)store.zhilianRunProgress(5L,"progress-run").get("collected")).intValue()).isZero();
+    }
+
+    @Test
     void concurrentProducersAndConsumerNeverLoseOrDuplicateTasks() throws Exception {
         var requests = new java.util.ArrayList<JobAiAnalysisService.JobAnalysisRequest>();
         for (int i = 0; i < 30; i++) requests.add(request(1L, "zhilian", "concurrent-" + i, "run-concurrent"));
