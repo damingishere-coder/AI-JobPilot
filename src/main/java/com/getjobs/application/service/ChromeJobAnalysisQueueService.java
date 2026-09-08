@@ -85,7 +85,10 @@ public class ChromeJobAnalysisQueueService {
         try {
             JobAnalysisTaskStore.SubmitResult submitted = taskStore.submit(job.getRequest());
             if (!submitted.accepted() || submitted.task() == null) {
-                return EnqueueResult.rejected(submitted.message());
+                EnqueueResult rejection = EnqueueResult.rejected(submitted.message());
+                rejection.setErrorCode(submitted.errorCode());
+                rejection.setRetryable(submitted.retryable());
+                return rejection;
             }
             JobAnalysisTaskStore.TaskRecord task = submitted.task();
             if (task.statusEnum() == JobAnalysisTaskStore.Status.PENDING) {
@@ -558,6 +561,8 @@ public class ChromeJobAnalysisQueueService {
         private final boolean rejected;
         private final String message;
         private final int queueSize;
+        private String errorCode = "PERSISTENCE_ERROR";
+        private boolean retryable;
 
         public static EnqueueResult queued(int queueSize) {
             return EnqueueResult.of(true, false, "", queueSize);

@@ -64,6 +64,71 @@ class JobAnalysisTaskStoreTest {
     }
 
     @Test
+    void additiveFilterMigrationPreservesConfigAndIsolatesProgressByProfile() {
+        jdbcTemplate.update("INSERT INTO zhilian_config(profile_id,keywords,city_code,salary,search_job_limit) VALUES(4,'AI产品运营','765','0000,9999999',30)");
+        assertThat(jdbcTemplate.queryForObject("SELECT filters_json FROM zhilian_config WHERE profile_id=4",String.class)).isEqualTo("{}");
+        var filters = new com.getjobs.application.dto.ZhilianFilters();filters.setEducation(List.of("4"));
+        var config = new com.getjobs.application.entity.ZhilianConfigEntity();config.setFilters(filters);
+        jdbcTemplate.update("UPDATE zhilian_config SET filters_json=? WHERE profile_id=4", config.getFiltersJson());
+        config.setFiltersJson(jdbcTemplate.queryForObject("SELECT filters_json FROM zhilian_config WHERE profile_id=4",String.class));
+        assertThat(config.getFilters()).isEqualTo(filters);
+        assertThat(jdbcTemplate.queryForObject("SELECT search_job_limit FROM zhilian_config WHERE profile_id=4",Integer.class)).isEqualTo(30);
+        var req=request(4L,"zhilian","progress-job","progress-run");
+        jdbcTemplate.update("UPDATE zhilian_data SET scan_run_id=? WHERE id=?","progress-run",req.getJobRowId());
+        assertThat(store.submit(req).accepted()).isTrue();
+        assertThat(((Number)store.zhilianRunProgress(4L,"progress-run").get("enqueued")).intValue()).isEqualTo(1);
+        assertThat(((Number)store.zhilianRunProgress(5L,"progress-run").get("collected")).intValue()).isZero();
+    }
+
+    @Test
+    void concurrentProducersAndConsumerNeverLoseOrDuplicateTasks() throws Exception {
+        var requests = new java.util.ArrayList<JobAiAnalysisService.JobAnalysisRequest>();
+        for (int i = 0; i < 30; i++) requests.add(request(1L, "zhilian", "concurrent-" + i, "run-concurrent"));
+        try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
+            var results = new java.util.ArrayList<Future<JobAnalysisTaskStore.SubmitResult>>();
+            CountDownLatch start = new CountDownLatch(1);
+            for (var request : requests) {
+                for (int copy = 0; copy < 2; copy++) {
+                    results.add(pool.submit(() -> { start.await(); return store.submit(request); }));
+                }
+            }
+            start.countDown();
+            for (var future : results) {
+                var result = future.get();
+                assertThat(result.accepted()).as(result.message()).isTrue();
+                if (result.created()) {
+                    var claimed = store.claim(result.task().id(), "consumer", Duration.ofMinutes(1));
+                    if (claimed != null) store.complete(claimed.id(), "consumer", false, "done");
+                }
+            }
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM job_analysis_task", Integer.class)).isEqualTo(30);
+    }
+
+    @Test
+    void retriesTransientLockInFreshTransactionAndKeepsOtherFailuresVisible() throws Exception {
+        var request = request(1L, "zhilian", "locked", "run-lock");
+        var original = jdbcTemplate.getDataSource();
+        var retryJdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tempDir.resolve("analysis-task.db") + "?busy_timeout=10"));
+        var retryStore = new JobAnalysisTaskStore(retryJdbc, new DataSourceTransactionManager(retryJdbc.getDataSource()), new ObjectMapper());
+        try (var connection = original.getConnection(); var statement = connection.createStatement(); var pool = Executors.newSingleThreadExecutor()) {
+            statement.execute("BEGIN IMMEDIATE");
+            statement.execute("UPDATE job_analysis_task SET id=id WHERE id=-1");
+            var result = pool.submit(() -> retryStore.submit(request));
+            Thread.sleep(180);
+            statement.execute("COMMIT");
+            assertThat(result.get().accepted()).isTrue();
+        }
+        assertThat(JobAnalysisTaskStore.isTransientSqliteLock(new java.sql.SQLException("busy snapshot", "", 517))).isTrue();
+        assertThat(JobAnalysisTaskStore.isTransientSqliteLock(new java.sql.SQLException("constraint", "", 19))).isFalse();
+        jdbcTemplate.execute("CREATE TRIGGER reject_tasks BEFORE INSERT ON job_analysis_task BEGIN SELECT RAISE(ABORT, 'test storage failure'); END");
+        var failed = store.submit(request(1L, "zhilian", "broken", "run-lock"));
+        assertThat(failed.accepted()).isFalse();
+        assertThat(failed.errorCode()).isEqualTo("PERSISTENCE_ERROR");
+        assertThat(failed.retryable()).isFalse();
+    }
+
+    @Test
     void compatibleBatchSelectionKeepsProfileAndPlatformIsolated() {
         store.submit(request(1L, "boss", "boss-one", "run-a"));
         store.submit(request(1L, "boss", "boss-two", "run-a"));

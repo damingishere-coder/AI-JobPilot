@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-07-modern-collection";
+  const SUPPORT_VERSION = "2026-09-08-official-filters";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
@@ -111,7 +111,8 @@
   function normalizedSearchParamsForCursor(config = {}) {
     return {
       cityCode: normalizeZhilianCityCode(config.cityCode || config.cityId || config.city),
-      salary: normalizeZhilianSalaryCode(config.salary || config.salaryTypeCode || config.sl)
+      salary: normalizeZhilianSalaryCode(config.salary || config.salaryTypeCode || config.sl),
+      filters: root.GetJobsZhilianFilters ? root.GetJobsZhilianFilters.normalize(config.filters) : config.filters || {}
     };
   }
 
@@ -195,6 +196,8 @@
     params.set("jl", search.cityCode);
     params.set("kw", String(keyword || ""));
     if (!isUnlimitedZhilianSalary(search.salary)) params.set("sl", search.salary);
+    if(root.GetJobsZhilianFilters) Object.entries(root.GetJobsZhilianFilters.query(search.filters)).forEach(([key,value])=>params.set(key,value));
+    else if(Object.keys(search.filters).length) throw new Error("智联筛选模块未加载，禁止忽略筛选扫描");
     // Explicit page numbers are only used by the legacy paged layout.
     if (page > 1) {
       params.delete("jl");
@@ -217,6 +220,7 @@
     const page = Number(current.searchParams.get("p") || current.searchParams.get("page") || current.searchParams.get("pageIndex") || current.pathname.match(/\/p(\d+)/)?.[1] || 1);
     return compact(word).toLowerCase() === compact(keyword).toLowerCase()
       && city === search.cityCode && salary === search.salary
+      && (!root.GetJobsZhilianFilters || root.GetJobsZhilianFilters.matches(value, search.filters))
       && page === Math.max(1, Math.floor(Number(pageNumber) || 1));
   }
 

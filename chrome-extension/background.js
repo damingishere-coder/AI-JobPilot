@@ -21,6 +21,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
+      "zhilian-filters.js",
       "zhilian-scan-support.js",
       "zhilian-modern-collector.js",
       "zhilian-content.js"
@@ -39,14 +40,14 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-08-scan-controls";
+const BACKGROUND_VERSION = "2026-09-08-official-filters";
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
 const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-07-modern-collection";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-08-official-filters";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -918,6 +919,11 @@ function resolveBossLocalApiEndpoint(message) {
 
 function resolveZhilianLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if(operation === "filter-options") {
+    const city=String(message?.params?.cityCode || "489");
+    if(!/^\d+$/.test(city)) return {success:false,message:"智联城市代码无效"};
+    return {success:true,method:"GET",path:`/api/zhilian/config/options/filters?cityCode=${city}`};
+  }
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs/dedupe" };
   }

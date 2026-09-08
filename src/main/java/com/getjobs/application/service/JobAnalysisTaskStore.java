@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,6 +31,7 @@ import java.util.Set;
  * Chrome 岗位 AI 分析任务的持久事实源。线程池只是消费者，任务是否存在以本表为准。
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAnalysisTaskStore {
@@ -103,7 +105,13 @@ public class JobAnalysisTaskStore {
         String taskKey = taskKey(request, platform, jobKey);
         String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
-        return transaction.execute(status -> {
+        transaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        for (int attempt = 0; attempt < 4; attempt++) {
+          try {
+            return transaction.execute(status -> {
+            // Acquire SQLite's write reservation before reading. A deferred read transaction
+            // cannot safely upgrade after a consumer has committed a concurrent write.
+            jdbcTemplate.update("UPDATE job_analysis_task SET id=id WHERE id=-1");
             TaskRecord exact = findByTaskKey(taskKey);
             if (exact != null) {
                 return SubmitResult.existing(exact, duplicateMessage(exact));
@@ -113,23 +121,18 @@ public class JobAnalysisTaskStore {
                 return SubmitResult.existing(active, "该岗位已有待执行或执行中的 AI 任务");
             }
             if (outstandingCount() >= MAX_OUTSTANDING_TASKS) {
-                return SubmitResult.rejected("持久 AI 任务队列已满，请等待现有任务完成");
+                return SubmitResult.rejected("QUEUE_FULL", true, "持久 AI 任务队列已满，请等待现有任务完成");
             }
 
             String now = dbTime(LocalDateTime.now());
-            int inserted;
-            try {
-                inserted = jdbcTemplate.update("INSERT OR IGNORE INTO job_analysis_task (" +
+            int inserted = jdbcTemplate.update("INSERT INTO job_analysis_task (" +
                                 "profile_id, platform, scan_run_id, status, total_count, processed_count, " +
                                 "success_count, failed_count, message, created_at, updated_at, task_key, job_key, " +
                                 "job_row_id, request_json, attempt_count) " +
-                                "VALUES (?, ?, ?, 'PENDING', 1, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0)",
+                                "VALUES (?, ?, ?, 'PENDING', 1, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT DO NOTHING",
                         request.getProfileId(), platform, blankToNull(request.getScanRunId()),
                         "已持久化，等待 AI 分析", now, now, taskKey, jobKey,
                         request.getJobRowId(), requestJson);
-            } catch (DataAccessException e) {
-                inserted = 0;
-            }
             TaskRecord stored = findByTaskKey(taskKey);
             if (stored == null) {
                 stored = findActive(request.getProfileId(), platform, jobKey);
@@ -142,7 +145,53 @@ public class JobAnalysisTaskStore {
             }
             status.setRollbackOnly();
             return SubmitResult.rejected("AI 分析任务持久化失败");
-        });
+            });
+          } catch (DataAccessException e) {
+            boolean busy = isTransientSqliteLock(e);
+            if (busy && attempt < 3) {
+                try { Thread.sleep(new long[]{100, 300, 900}[attempt]); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return SubmitResult.rejected("DB_BUSY", true, "AI 任务提交等待已中断，断点保留");
+                }
+                continue;
+            }
+            log.error("AI task persistence failed platform={} profileId={} runId={} jobKey={} errorType={}",
+                    platform, request.getProfileId(), request.getScanRunId(), jobKey, busy ? "DB_BUSY" : "PERSISTENCE_ERROR", e);
+            return SubmitResult.rejected(busy ? "DB_BUSY" : "PERSISTENCE_ERROR", busy,
+                    busy ? "数据库暂忙，等待后继续提交" : "AI 任务持久化异常，具体原因已记录，请检查后重试");
+          }
+        }
+        throw new IllegalStateException("Unreachable submit retry state");
+    }
+
+    public static boolean isTransientSqliteLock(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException sql) {
+                int primary = sql.getErrorCode() & 0xff;
+                if (primary == 5 || primary == 6) return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean hasTaskForJob(long profileId, String platform, String jobKey) {
+        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND platform=? AND job_key=?",
+                Integer.class, profileId, platform, jobKey);
+        return count != null && count > 0;
+    }
+
+    public java.util.Map<String, Object> zhilianRunProgress(long profileId, String runId) {
+        return jdbcTemplate.queryForMap("SELECT COUNT(*) AS collected, " +
+                "SUM(CASE WHEN t.id IS NOT NULL THEN 1 ELSE 0 END) AS enqueued, " +
+                "SUM(CASE WHEN t.status IN ('PENDING','RETRY_WAIT') THEN 1 ELSE 0 END) AS pending, " +
+                "SUM(CASE WHEN t.status='LEASED' THEN 1 ELSE 0 END) AS running, " +
+                "SUM(CASE WHEN t.status='SUCCEEDED' THEN 1 ELSE 0 END) AS completed, " +
+                "SUM(CASE WHEN t.status='FAILED' THEN 1 ELSE 0 END) AS failed, " +
+                "SUM(CASE WHEN t.status='UNKNOWN' THEN 1 ELSE 0 END) AS unknown " +
+                "FROM zhilian_data j LEFT JOIN job_analysis_task t ON t.id=(SELECT MAX(a.id) FROM job_analysis_task a " +
+                "WHERE a.profile_id=j.profile_id AND a.platform='zhilian' AND a.job_key=j.job_id) " +
+                "WHERE j.profile_id=? AND j.scan_run_id=?", profileId, runId);
     }
 
     public SubmitResult recordUnknown(JobAiAnalysisService.JobAnalysisRequest request, String message) {
@@ -838,17 +887,21 @@ public class JobAnalysisTaskStore {
     ) {
     }
 
-    public record SubmitResult(boolean accepted, boolean created, TaskRecord task, String message) {
+    public record SubmitResult(boolean accepted, boolean created, TaskRecord task, String message, String errorCode, boolean retryable) {
         static SubmitResult created(TaskRecord task) {
-            return new SubmitResult(true, true, task, "AI 分析任务已持久化");
+            return new SubmitResult(true, true, task, "AI 分析任务已持久化", "", false);
         }
 
         static SubmitResult existing(TaskRecord task, String message) {
-            return new SubmitResult(true, false, task, message);
+            return new SubmitResult(true, false, task, message, "", false);
         }
 
         static SubmitResult rejected(String message) {
-            return new SubmitResult(false, false, null, message);
+            return rejected("PERSISTENCE_ERROR", false, message);
+        }
+
+        static SubmitResult rejected(String errorCode, boolean retryable, String message) {
+            return new SubmitResult(false, false, null, message, errorCode, retryable);
         }
     }
 

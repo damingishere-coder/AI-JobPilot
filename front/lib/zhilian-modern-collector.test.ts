@@ -107,6 +107,7 @@ describe('Zhilian modern split list', () => {
     const functionSource = code.slice(code.indexOf('  async function collectModernZhilianJobs('), code.indexOf('  async function collectJobsAcrossSearchPages('))
     const context = {
       window: {
+        GetJobsZhilianFilters: {verify:async()=>({verified:true})},
         GetJobsZhilianModernCollector: collector, innerHeight: 800,
         scrollBy: () => {
           const card = addCard('滚动新增岗位')
@@ -154,7 +155,8 @@ describe('Zhilian modern split list', () => {
       return { totalSaved: 20, totalRead: 20, totalReceived: 20, totalInsufficient: 0 }
     })
     const context = {
-      stopRequested: false, Date, window: { location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营' } },
+      stopRequested: false, Date, document, window: { GetJobsZhilianFilters:{verify:async()=>({verified:true})}, location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营' } },
+      requestZhilianLocalApi:async()=>({version:'2026-09-08'}),
       normalizeScanTask: (m: unknown) => m, scanKeywords: () => ['AI产品运营'], normalizeTaskIndex: () => 0,
       hasStopRequested: async () => false, markKeywordCursorCurrent: () => {}, buildSearchUrl: () => '', buildSearchNavigationKey: () => '',
       writeScanStatus: () => {}, isCurrentSearchPage: () => true, storeScanTask: async () => {}, postProgress: () => {},

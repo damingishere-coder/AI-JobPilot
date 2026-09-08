@@ -2,14 +2,35 @@ package com.getjobs.application.service;
 
 import com.getjobs.application.entity.ZhilianOptionEntity;
 import com.getjobs.application.mapper.ZhilianOptionMapper;
+import com.getjobs.application.mapper.ZhilianConfigMapper;
+import com.getjobs.application.entity.ZhilianConfigEntity;
+import com.getjobs.application.dto.ZhilianFilters;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 class ZhilianServiceSearchParamTest {
+    @Test
+    void oldClientsPreserveFiltersButChangingCityClearsDependentCodes() {
+        var mapper=mock(ZhilianConfigMapper.class);var profiles=mock(ProfileService.class);
+        when(profiles.getCurrentProfileIdOrNull()).thenReturn(4L);when(profiles.getCurrentProfileId()).thenReturn(4L);
+        var existing=new ZhilianConfigEntity();existing.setId(1L);existing.setCityCode("765");
+        var filters=new ZhilianFilters();filters.setDistrict("2038");filters.setEducation(java.util.List.of("4"));existing.setFilters(filters);
+        when(mapper.selectOne(any())).thenReturn(existing);
+        var service=new ZhilianService(mapper,mock(ZhilianOptionMapper.class),null,null,profiles);
+        var incoming=new ZhilianConfigEntity();incoming.setCityCode("530");incoming.setSearchJobLimit(30);
+        service.updateConfig(incoming);
+        var saved=ArgumentCaptor.forClass(ZhilianConfigEntity.class);verify(mapper).updateById(saved.capture());
+        assertThat(saved.getValue().getFilters().getDistrict()).isEmpty();
+        assertThat(saved.getValue().getFilters().getEducation()).containsExactly("4");
+        assertThat(saved.getValue().getProfileId()).isEqualTo(4L);
+        assertThat(saved.getValue().getSearchJobLimit()).isEqualTo(30);
+    }
     @Test
     void normalizesLegacyCityValuesToOfficialCityCodes() {
         ZhilianService service = zhilianService(mock(ZhilianOptionMapper.class));

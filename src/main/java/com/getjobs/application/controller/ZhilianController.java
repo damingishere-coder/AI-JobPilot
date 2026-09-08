@@ -77,6 +77,9 @@ public class ZhilianController {
     private ChromeJobAnalysisQueueService chromeJobAnalysisQueueService;
 
     @Autowired
+    private com.getjobs.application.service.JobAnalysisTaskStore jobAnalysisTaskStore;
+
+    @Autowired
     private OpenClawJobProbeService openClawJobProbeService;
 
     @Autowired
@@ -156,6 +159,11 @@ public class ZhilianController {
     @GetMapping("/config/options/salary")
     public List<Map<String, String>> getSalaryOptions() {
         return toOptionMaps("salary");
+    }
+
+    @GetMapping("/config/options/filters")
+    public Map<String,Object> getFilterOptions(@RequestParam(value="cityCode",defaultValue="489") String cityCode) {
+        return com.getjobs.application.service.ZhilianFilterCatalog.options(cityCode);
     }
 
     private List<Map<String, String>> toOptionMaps(String type) {
@@ -293,6 +301,13 @@ public class ZhilianController {
 
     // ==================== 数据分析与列表 ====================
 
+    @GetMapping("/scan/progress")
+    public Map<String, Object> scanProgress(@RequestParam("profileId") Long profileId,
+                                            @RequestParam("runId") String runId) {
+        assertAnalysisProfile(profileId);
+        return jobAnalysisTaskStore.zhilianRunProgress(profileId, runId);
+    }
+
     /** 投递统计（Dashboard） */
     @GetMapping("/stats")
     public ZhilianService.StatsResponse stats(
@@ -374,6 +389,7 @@ public class ZhilianController {
         int restored = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
         List<Map<String, Object>> analyses = new ArrayList<>();
+        List<Map<String, Object>> items = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
             if (jobRunCoordinator.isCancelRequested(runId)) {
                 jobRunCoordinator.clearCancel(runId);
@@ -384,6 +400,8 @@ public class ZhilianController {
             }
             sendZhilianProgress(profileId, JobProgressMessage.info("zhilian", "Chrome已采集到 " + received + " 个智联岗位，正在提交后台AI队列"));
             for (ChromeJobDto dto : request.getJobs()) {
+                String receiptKey = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractUrlId(dto.getUrl()));
+                try {
                 if (jobRunCoordinator.isCancelRequested(runId)) {
                     jobRunCoordinator.clearCancel(runId);
                     sendZhilianProgress(profileId, JobProgressMessage.warning("zhilian", "智联 Chrome扫描已停止，后端已中断剩余岗位入队"));
@@ -397,13 +415,18 @@ public class ZhilianController {
 
                 if (saved == null) {
                     skipped++;
+                    items.add(submissionReceipt(receiptKey, "FAILED", false, "JOB_SAVE_FAILED", "岗位保存未返回记录"));
                     log.warn("智联 Chrome岗位入库返回为空：company={}, title={}, url={}", dto == null ? "" : dto.getCompany(), dto == null ? "" : dto.getTitle(), dto == null ? "" : dto.getUrl());
                     continue;
                 }
                 validateZhilianSavedIdentity(profileId, dto, saved);
                 String currentStatus = saved.getDeliveryStatus();
-                if (DeliveryStatus.AI_ANALYZING.equals(currentStatus)) {
+                if (DeliveryStatus.AI_ANALYZING.equals(currentStatus)
+                        || jobAnalysisTaskStore.hasTaskForJob(profileId, "zhilian", saved.getJobId())) {
                     skipped++;
+                    // This may be a legacy in-flight provider call with no durable task.
+                    // Never infer that it is safe to invoke AI again.
+                    items.add(submissionReceipt(receiptKey, "EXISTING", false, "", "已有分析正在执行或等待核对"));
                     Map<String, Object> snapshot = toZhilianAnalysisSnapshot(saved);
                     if (snapshot != null) {
                         analyses.add(snapshot);
@@ -413,6 +436,7 @@ public class ZhilianController {
                 }
                 if (isFinalZhilianStatus(currentStatus)) {
                     skipped++;
+                    items.add(submissionReceipt(receiptKey, "SKIPPED", false, "", "保留已有分析或投递结果"));
                     Map<String, Object> snapshot = toZhilianAnalysisSnapshot(saved);
                     if (snapshot != null) {
                         analyses.add(snapshot);
@@ -423,6 +447,7 @@ public class ZhilianController {
                 List<String> missingFields = collectMissingAnalysisFields(saved);
                 if (!missingFields.isEmpty()) {
                     insufficient++;
+                    items.add(submissionReceipt(receiptKey, "INSUFFICIENT", false, "", "采集信息不足"));
                     markZhilianCollectionInsufficient(saved, profileId, missingFields);
                     ZhilianJobDataEntity display = zhilianService.getZhilianJobById(saved.getId());
                     if (display == null) display = saved;
@@ -465,14 +490,12 @@ public class ZhilianController {
 
                 ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                 if (enqueueResult.isRejected()) {
-                    Map<String, Object> response = zhilianChromeJobsResponse(
-                            false, false, received, savedCount, queued, skipped, insufficient, restored, analyses
-                    );
-                    response.put("message", enqueueResult.getMessage());
-                    return ResponseEntity.status(429).body(response);
+                    items.add(submissionReceipt(receiptKey, "REJECTED", enqueueResult.isRetryable(), enqueueResult.getErrorCode(), enqueueResult.getMessage()));
+                    continue;
                 }
                 if (enqueueResult.isQueued()) {
                     queued++;
+                    items.add(submissionReceipt(receiptKey, "QUEUED", false, "", "已加入后台 AI 队列"));
                     sendZhilianProgress(profileId, JobProgressMessage.progress(
                             "zhilian",
                             "已加入后台AI队列：" + saved.getJobTitle(),
@@ -481,13 +504,36 @@ public class ZhilianController {
                     ));
                 } else {
                     skipped++;
+                    items.add(submissionReceipt(receiptKey, "EXISTING", false, "", enqueueResult.getMessage()));
+                }
+                } catch (Exception e) {
+                    boolean retryable = com.getjobs.application.service.JobAnalysisTaskStore.isTransientSqliteLock(e);
+                    log.error("Zhilian submission failed profileId={} runId={} jobKey={}", profileId, runId, receiptKey, e);
+                    items.add(submissionReceipt(receiptKey, "FAILED", retryable, retryable ? "DB_BUSY" : "PERSISTENCE_ERROR", retryable ? "数据库暂忙" : "岗位提交异常，请检查后台日志"));
                 }
             }
         }
+        long rejectedCount = items.stream().filter(item -> List.of("REJECTED", "FAILED").contains(item.get("status"))).count();
+        if (rejectedCount > 0) {
+            Map<String, Object> response = zhilianChromeJobsResponse(false, false, received, savedCount, queued, skipped, insufficient, restored, analyses);
+            response.put("items", items);
+            response.put("partial", true);
+            response.put("pending", rejectedCount);
+            response.put("message", "本批已确认 " + (items.size() - rejectedCount) + " 个岗位，剩余 " + rejectedCount + " 个待处理");
+            response.put("errorCode", "PARTIAL_SUBMISSION");
+            return ResponseEntity.ok(response);
+        }
         sendZhilianProgress(profileId, JobProgressMessage.success("zhilian", "智联 Chrome岗位已提交后台AI队列：入库 " + savedCount + " 个，入队 " + queued + " 个，恢复本档案已有分析 " + restored + " 个，信息不足 " + insufficient + " 个"));
-        return ResponseEntity.ok(zhilianChromeJobsResponse(
+        Map<String, Object> response = zhilianChromeJobsResponse(
                 true, false, received, savedCount, queued, skipped, insufficient, restored, analyses
-        ));
+        );
+        response.put("items", items);
+        return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> submissionReceipt(String jobKey, String status, boolean retryable, String errorCode, String message) {
+        return Map.of("jobKey", Objects.toString(jobKey, ""), "status", status, "retryable", retryable,
+                "errorCode", Objects.toString(errorCode, ""), "message", Objects.toString(message, ""));
     }
 
     @PostMapping("/chrome/jobs/dedupe")
@@ -506,6 +552,12 @@ public class ZhilianController {
                     ? zhilianService.existsByJobId(profileId, id)
                     : !title.isBlank() && !company.isBlank()
                             && zhilianService.existsByTitleAndCompany(profileId, title, company);
+            if (duplicate && !isBlank(id)) {
+                ZhilianJobDataEntity existing = zhilianService.findByJobId(profileId, id);
+                duplicate = existing != null && (isFinalZhilianStatus(existing.getDeliveryStatus())
+                        || DeliveryStatus.AI_ANALYZING.equals(existing.getDeliveryStatus())
+                        || jobAnalysisTaskStore.hasTaskForJob(profileId, "zhilian", id));
+            }
             if (duplicate) duplicateCount++;
             Map<String, Object> item = new HashMap<>();
             item.put("id", Objects.toString(id, ""));
@@ -548,6 +600,10 @@ public class ZhilianController {
     @PostMapping("/openclaw/probe")
     public ResponseEntity<Map<String, Object>> probeOpenClaw(@RequestBody(required = false) Map<String, Object> payload) {
         Map<String, Object> request = payload == null ? new HashMap<>() : new HashMap<>(payload);
+        if(request.get("config") instanceof Map<?,?> config && config.get("filters") != null
+                && objectMapper.convertValue(config.get("filters"),com.getjobs.application.dto.ZhilianFilters.class).isActive()) {
+            return ResponseEntity.badRequest().body(Map.of("success",false,"message","完整筛选请使用 Chrome 扫描；实验通路无法核验官网筛选状态"));
+        }
         request.put("platform", "zhilian");
         Map<String, Object> response = openClawJobProbeService.probe(request);
         if (Boolean.TRUE.equals(response.get("success"))) {

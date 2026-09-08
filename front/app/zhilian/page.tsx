@@ -18,6 +18,8 @@ import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
 import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
 import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
+import FilterControls from './FilterControls'
+import {resetCityFilters, type ZhilianFilters, type FilterCatalog} from '@/lib/zhilian-filters'
 
 interface ZhilianConfig {
   id?: number
@@ -25,6 +27,7 @@ interface ZhilianConfig {
   cityCode?: string
   salary?: string
   searchJobLimit?: number
+  filters?: ZhilianFilters
 }
 
 interface Option { name: string; code: string }
@@ -84,6 +87,23 @@ export default function ZhilianPage() {
   const profileRef = useRef<number | null>(null)
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
+  const [runProgress, setRunProgress] = useState<Record<string, number>>({})
+  const [submissionProgress, setSubmissionProgress] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    setRunProgress({}); setSubmissionProgress({})
+    if (!currentProfile?.id || !latestRunId) return
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/zhilian/scan/progress?profileId=${currentProfile.id}&runId=${encodeURIComponent(latestRunId)}`)
+        if (response.ok) { const data = await response.json(); if (!cancelled) setRunProgress(data) }
+      } catch { /* Keep last confirmed counts while disconnected. */ }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 3000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [currentProfile?.id, latestRunId])
 
   useEffect(() => {
     if (currentProfile?.id && latestRunId) rememberZhilianRun(currentProfile.id, latestRunId)
@@ -95,6 +115,20 @@ export default function ZhilianPage() {
   const [options, setOptions] = useState<ZhilianOptions>({ city: [], salary: [] })
   const [configWarnings, setConfigWarnings] = useState<Record<string, string>>({})
   const [loadingConfig, setLoadingConfig] = useState(true)
+  const [filterCatalog,setFilterCatalog]=useState<FilterCatalog|null>(null)
+  const [filterError,setFilterError]=useState('')
+  useEffect(()=>{
+    let cancelled=false
+    setFilterCatalog(null);setFilterError('')
+    fetch(`${API_BASE}/api/zhilian/config/options/filters?cityCode=${encodeURIComponent(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE)}`)
+      .then(async response=>{if(!response.ok)throw new Error('官方筛选选项加载失败，请检查服务后重试');return response.json()})
+      .then(data=>{
+        if(!data.version || !data.options || String(data.cityCode)!==String(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE))throw new Error('官方筛选选项响应不完整，请检查服务版本')
+        if(!cancelled)setFilterCatalog(data)
+      })
+      .catch(error=>{if(!cancelled)setFilterError(error.message)})
+    return ()=>{cancelled=true}
+  },[config.cityCode])
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
     const parsed = Number(value)
@@ -213,6 +247,7 @@ export default function ZhilianPage() {
       const payload = event.payload
       if (!payload || payload.platform !== 'zhilian') return
       if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      if (typeof payload.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: payload.submissionConfirmed, pending: Number(payload.submissionPending || 0) })
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -259,6 +294,7 @@ export default function ZhilianPage() {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
               if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              if (typeof data.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: data.submissionConfirmed, pending: Number(data.submissionPending || 0) })
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
@@ -431,6 +467,7 @@ export default function ZhilianPage() {
       }
       if (profileRef.current !== profileId) return
       const runId = `zhilian-${Date.now()}`
+      if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       setActiveRunId(runId)
       setLatestRunId(runId)
       setIsStopping(false)
@@ -677,6 +714,11 @@ export default function ZhilianPage() {
       </div>
       <div className="space-y-6">
 
+          {latestRunId && <div className="grid gap-3 md:grid-cols-3" aria-live="polite">
+            <Card><CardContent className="pt-5"><p>采集进度</p><p>本批已入库 {runProgress.collected || 0} 个岗位</p></CardContent></Card>
+            <Card><CardContent className="pt-5"><p>入队进度</p><p>已建立任务 {runProgress.enqueued || 0} 个</p>{submissionProgress.confirmed !== undefined && <p className="text-sm">当前关键词确认 {submissionProgress.confirmed} 个，待提交 {submissionProgress.pending} 个</p>}</CardContent></Card>
+            <Card><CardContent className="pt-5"><p>AI 分析进度</p><p>完成 {runProgress.completed || 0} · 执行 {runProgress.running || 0} · 等待 {runProgress.pending || 0}</p><p className="text-sm">失败 {runProgress.failed || 0} · 结果待核对 {runProgress.unknown || 0}</p></CardContent></Card>
+          </div>}
 	          <ProgressLogCard
               logs={progressLogs}
               isRunning={isDelivering}
@@ -760,7 +802,7 @@ export default function ZhilianPage() {
                     <Label>城市</Label>
                     <Select
                       value={config.cityCode || DEFAULT_ZHILIAN_CITY_CODE}
-                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value }))}
+                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value, filters:resetCityFilters(c.filters) }))}
                       placeholder="请选择城市"
                       disabled={!hasProfile}
                     >
@@ -803,6 +845,8 @@ export default function ZhilianPage() {
                       <p className="text-xs text-amber-600 dark:text-amber-300">{configWarnings.salary}</p>
                     )}
                   </div>
+                  {filterError && <p role="alert" className="col-span-full text-destructive">{filterError}</p>}
+                  {filterCatalog && <FilterControls key={filterCatalog.cityCode} catalog={filterCatalog} filters={config.filters||{}} disabled={!hasProfile} onChange={filters=>setConfig(c=>({...c,filters}))}/>}
                 </div>
               )}
             </CardContent>
