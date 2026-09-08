@@ -15,7 +15,7 @@ test("manifest loads the direct HR bridge and one-minute alarm capability", () =
   const bossScripts = manifest.content_scripts.find((entry) => entry.matches.some((value) => value.includes("zhipin.com"))).js;
   assert.deepEqual(bossScripts.slice(-3), ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"]);
   assert.ok(manifest.permissions.includes("alarms"));
-  assert.equal(manifest.version, "1.6.8");
+  assert.equal(manifest.version, "1.6.9");
 });
 
 test("assistant exposes policy-gated dedicated watch and preserves explicit manual send", () => {

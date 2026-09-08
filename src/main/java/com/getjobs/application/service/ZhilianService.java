@@ -256,6 +256,12 @@ public class ZhilianService {
         return c != null && c > 0;
     }
 
+    public ZhilianJobDataEntity findByJobId(Long profileId, String jobId) {
+        if (profileId == null || jobId == null || jobId.isBlank()) return null;
+        return zhilianJobDataMapper.selectOne(new QueryWrapper<ZhilianJobDataEntity>()
+                .eq("profile_id", profileId).eq("job_id", jobId.trim()).last("LIMIT 1"));
+    }
+
     public boolean existsByTitleAndCompany(String jobTitle, String companyName) {
         Long profileId = profileService.getCurrentProfileIdOrNull();
         return existsByTitleAndCompany(profileId, jobTitle, companyName);

@@ -64,6 +64,54 @@ class JobAnalysisTaskStoreTest {
     }
 
     @Test
+    void concurrentProducersAndConsumerNeverLoseOrDuplicateTasks() throws Exception {
+        var requests = new java.util.ArrayList<JobAiAnalysisService.JobAnalysisRequest>();
+        for (int i = 0; i < 30; i++) requests.add(request(1L, "zhilian", "concurrent-" + i, "run-concurrent"));
+        try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
+            var results = new java.util.ArrayList<Future<JobAnalysisTaskStore.SubmitResult>>();
+            CountDownLatch start = new CountDownLatch(1);
+            for (var request : requests) {
+                for (int copy = 0; copy < 2; copy++) {
+                    results.add(pool.submit(() -> { start.await(); return store.submit(request); }));
+                }
+            }
+            start.countDown();
+            for (var future : results) {
+                var result = future.get();
+                assertThat(result.accepted()).as(result.message()).isTrue();
+                if (result.created()) {
+                    var claimed = store.claim(result.task().id(), "consumer", Duration.ofMinutes(1));
+                    if (claimed != null) store.complete(claimed.id(), "consumer", false, "done");
+                }
+            }
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM job_analysis_task", Integer.class)).isEqualTo(30);
+    }
+
+    @Test
+    void retriesTransientLockInFreshTransactionAndKeepsOtherFailuresVisible() throws Exception {
+        var request = request(1L, "zhilian", "locked", "run-lock");
+        var original = jdbcTemplate.getDataSource();
+        var retryJdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tempDir.resolve("analysis-task.db") + "?busy_timeout=10"));
+        var retryStore = new JobAnalysisTaskStore(retryJdbc, new DataSourceTransactionManager(retryJdbc.getDataSource()), new ObjectMapper());
+        try (var connection = original.getConnection(); var statement = connection.createStatement(); var pool = Executors.newSingleThreadExecutor()) {
+            statement.execute("BEGIN IMMEDIATE");
+            statement.execute("UPDATE job_analysis_task SET id=id WHERE id=-1");
+            var result = pool.submit(() -> retryStore.submit(request));
+            Thread.sleep(180);
+            statement.execute("COMMIT");
+            assertThat(result.get().accepted()).isTrue();
+        }
+        assertThat(JobAnalysisTaskStore.isTransientSqliteLock(new java.sql.SQLException("busy snapshot", "", 517))).isTrue();
+        assertThat(JobAnalysisTaskStore.isTransientSqliteLock(new java.sql.SQLException("constraint", "", 19))).isFalse();
+        jdbcTemplate.execute("CREATE TRIGGER reject_tasks BEFORE INSERT ON job_analysis_task BEGIN SELECT RAISE(ABORT, 'test storage failure'); END");
+        var failed = store.submit(request(1L, "zhilian", "broken", "run-lock"));
+        assertThat(failed.accepted()).isFalse();
+        assertThat(failed.errorCode()).isEqualTo("PERSISTENCE_ERROR");
+        assertThat(failed.retryable()).isFalse();
+    }
+
+    @Test
     void compatibleBatchSelectionKeepsProfileAndPlatformIsolated() {
         store.submit(request(1L, "boss", "boss-one", "run-a"));
         store.submit(request(1L, "boss", "boss-two", "run-a"));
