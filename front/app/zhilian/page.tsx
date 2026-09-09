@@ -19,6 +19,7 @@ import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setup
 import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
 import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
 import FilterControls from './FilterControls'
+import ScanResult, { readScanResult, type ScanResultData } from './ScanResult'
 import {resetCityFilters, type ZhilianFilters, type FilterCatalog} from '@/lib/zhilian-filters'
 
 interface ZhilianConfig {
@@ -89,6 +90,21 @@ export default function ZhilianPage() {
   const [hasProfile, setHasProfile] = useState(false)
   const [runProgress, setRunProgress] = useState<Record<string, number>>({})
   const [submissionProgress, setSubmissionProgress] = useState<Record<string, number>>({})
+  const [scanResult, setScanResult] = useState<ScanResultData | null>(null)
+  const scanRunRef = useRef('')
+  const acceptRun = useCallback((runId: unknown) => {
+    if (typeof runId !== 'string' || !runId) return !scanRunRef.current
+    const current = scanRunRef.current
+    if (current && current !== runId) {
+      const incomingTime = Number(runId.match(/^zhilian-(\d+)$/)?.[1] || 0)
+      const currentTime = Number(current.match(/^zhilian-(\d+)$/)?.[1] || 0)
+      if (!incomingTime || !currentTime || incomingTime <= currentTime) return false
+    }
+    scanRunRef.current = runId
+    return true
+  }, [])
+
+  useEffect(() => { setScanResult(null); scanRunRef.current = '' }, [currentProfile?.id])
 
   useEffect(() => {
     setRunProgress({}); setSubmissionProgress({})
@@ -186,6 +202,12 @@ export default function ZhilianPage() {
         profileId,
       }, 2000)
       if (profileRef.current !== profileId) return
+      if (status.profileId !== undefined && normalizeScanProfileId(status.profileId) !== profileId) return
+      if (!acceptRun(status.runId)) return
+      if (normalizeScanProfileId(status.profileId) === profileId) {
+        const result = readScanResult(status)
+        if (result) { setScanResult(result); setLatestRunId(result.runId) }
+      }
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
         setIsDelivering(true)
@@ -209,7 +231,7 @@ export default function ZhilianPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog, currentProfile?.id])
+  }, [appendProgressLog, currentProfile?.id, acceptRun])
 
   useEffect(() => {
     void checkChromeBridge()
@@ -247,6 +269,9 @@ export default function ZhilianPage() {
       const payload = event.payload
       if (!payload || payload.platform !== 'zhilian') return
       if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      if ((payload.operation === 'scan' || Array.isArray(payload.keywordResults)) && !acceptRun(payload.runId)) return
+      const result = readScanResult(payload)
+      if (result) setScanResult(result)
       if (typeof payload.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: payload.submissionConfirmed, pending: Number(payload.submissionPending || 0) })
 
       appendProgressLog({
@@ -262,7 +287,7 @@ export default function ZhilianPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, currentProfile?.id])
+  }, [appendProgressLog, currentProfile?.id, acceptRun])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -294,6 +319,9 @@ export default function ZhilianPage() {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
               if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              if ((data.operation === 'scan' || Array.isArray(data.keywordResults)) && !acceptRun(data.runId)) return
+              const result = readScanResult(data)
+              if (result) setScanResult(result)
               if (typeof data.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: data.submissionConfirmed, pending: Number(data.submissionPending || 0) })
               appendProgressLog({
                 type: data.type || 'info',
@@ -316,7 +344,7 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog, currentProfile?.id])
+  }, [appendProgressLog, currentProfile?.id, acceptRun])
 
   // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
@@ -469,7 +497,9 @@ export default function ZhilianPage() {
       const runId = `zhilian-${Date.now()}`
       if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       setActiveRunId(runId)
+      scanRunRef.current = runId
       setLatestRunId(runId)
+      setScanResult(null)
       setIsStopping(false)
       setIsDelivering(true)
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
@@ -713,6 +743,7 @@ export default function ZhilianPage() {
         </div>
       </div>
       <div className="space-y-6">
+          <ScanResult result={scanResult} />
 
           {latestRunId && <div className="grid gap-3 md:grid-cols-3" aria-live="polite">
             <Card><CardContent className="pt-5"><p>采集进度</p><p>本批已入库 {runProgress.collected || 0} 个岗位</p></CardContent></Card>

@@ -4,10 +4,12 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 type Job = { id: string; title: string; company: string; description: string; url: string; detailVerified: boolean }
+type Hooks = { expectedId?: string; sleep: (ms: number) => Promise<void>; shouldStop: () => Promise<boolean>; deadline?: number }
 type Collector = {
   readCard(card: Element): Partial<Job>
   readDetail(document: Document, card: Element, expectedId?: string): Job | null
-  selectAndRead(document: Document, card: Element, hooks: { expectedId?: string; sleep: () => Promise<void>; shouldStop: () => Promise<boolean> }): Promise<Job | null>
+  selectAndRead(document: Document, card: Element, hooks: Hooks): Promise<Job | null>
+  selectAndReadResult(document: Document, card: Element, hooks: Hooks): Promise<{job: Job | null; reason: string; retries: number}>
 }
 const scope: Record<string, unknown> = {}
 for (const file of ['zhilian-scan-support.js', 'zhilian-modern-collector.js']) {
@@ -95,6 +97,114 @@ describe('Zhilian modern split list', () => {
     expect(await collector.selectAndRead(document, card, { sleep: async () => {}, shouldStop: async () => true })).toBeNull()
   })
 
+  it('scrolls each card into view and waits for a lazily rendered title before clicking', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__title-clamp')!.innerHTML = ''
+    const scroll = vi.fn()
+    card.scrollIntoView = scroll
+    const click = vi.fn(() => showDetail(card))
+    card.querySelector('.job-card__title-clamp')!.addEventListener('click', click)
+    let ticks = 0
+    const result = await collector.selectAndReadResult(document, card, {
+      shouldStop: async () => false,
+      sleep: async () => { if (++ticks === 2) card.querySelector('.job-card__title-clamp')!.textContent = 'AI产品运营' }
+    })
+    expect(result.job?.title).toBe('AI产品运营')
+    expect(scroll).toHaveBeenCalled()
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+
+  it('reacquires a uniquely matching replaced node and retries exactly once', async () => {
+    const card = addCard()
+    const staleClick = vi.fn(() => {
+      const replacement = card.cloneNode(true) as HTMLElement
+      card.replaceWith(replacement)
+      replacement.querySelector('.job-card__title-clamp')!.addEventListener('click', () => showDetail(replacement))
+    })
+    card.querySelector('.job-card__title-clamp')!.addEventListener('click', staleClick)
+    const result = await collector.selectAndReadResult(document, card, { sleep: async () => {}, shouldStop: async () => false })
+    expect(result.job?.id).toBe('CC100J200')
+    expect(result.retries).toBe(1)
+    expect(staleClick).toHaveBeenCalledTimes(1)
+    expect(collector.readDetail(document, card)).toBeNull()
+  })
+
+  it('accepts salary and location that finish rendering after selection', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__salary')!.textContent = ''
+    card.querySelector('.job-card__location')!.textContent = ''
+    card.querySelector('.job-card__title-clamp')!.addEventListener('click', () => {
+      card.querySelector('.job-card__salary')!.textContent = '8000-12000元'
+      card.querySelector('.job-card__location')!.textContent = '北京 海淀'
+      showDetail(card)
+    })
+    expect((await collector.selectAndReadResult(document, card, {sleep: async () => {}, shouldStop: async () => false})).job?.id).toBe('CC100J200')
+  })
+
+  it('never rebinds a replaced card to a different job at the same list index', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__title-clamp')!.addEventListener('click', () => {
+      const other = addCard('其他岗位', '另一公司'); card.replaceWith(other); showDetail(other)
+    })
+    const result = await collector.selectAndReadResult(document, card, { sleep: async () => {}, shouldStop: async () => false })
+    expect(result.job).toBeNull()
+    expect(result.reason).toBe('CARD_DETACHED')
+    expect(result.retries).toBe(1)
+  })
+
+  it('does not accept an old same-title panel on the second attempt after the card became active', async () => {
+    const a = addCard(), b = addCard('AI产品运营', '另一招聘公司')
+    showDetail(a)
+    b.querySelector('.job-card__title-clamp')!.addEventListener('click', () => {
+      a.classList.remove('job-card--active'); b.classList.add('job-card--active')
+    })
+    const result = await collector.selectAndReadResult(document, b, { sleep: async () => {}, shouldStop: async () => false })
+    expect(result).toMatchObject({ job: null, reason: 'DETAIL_NOT_SWITCHED', retries: 1 })
+  })
+
+  it.each([
+    ['IDENTITY_MISMATCH', 'CC100J999', description],
+    ['BODY_INCOMPLETE', 'CC100J200', '加载中']
+  ])('reports %s without retrying an invalid detail', async (reason, id, content) => {
+    const card = addCard(); showDetail(card, id, content)
+    const result = await collector.selectAndReadResult(document, card, { expectedId: 'CC100J200', sleep: async () => {}, shouldStop: async () => false })
+    expect(result).toMatchObject({ job: null, reason, retries: 0 })
+  })
+
+  it('bounds title readiness retries and never clicks a blank title', async () => {
+    const card = addCard(); card.querySelector('.job-card__title-clamp')!.innerHTML = ''
+    const click = vi.fn(); card.querySelector('.job-card__title-clamp')!.addEventListener('click', click)
+    const sleep = vi.fn(async () => {})
+    expect(await collector.selectAndReadResult(document, card, { sleep, shouldStop: async () => false }))
+      .toMatchObject({ job: null, reason: 'CARD_NOT_READY', retries: 1 })
+    expect(sleep).toHaveBeenCalledTimes(20)
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('shares the keyword deadline across both attempts without accepting a late detail', async () => {
+    const card = addCard(); showDetail(card)
+    let now = 1000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    // The module VM has its own Date constructor; pass the shared clock explicitly.
+    const local: Record<string, unknown> = { GetJobsZhilianScanSupport: scope.GetJobsZhilianScanSupport }
+    runInNewContext(readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-modern-collector.js'), 'utf8'), { window: local, Date })
+    const result = await (local.GetJobsZhilianModernCollector as Collector).selectAndReadResult(document, card, {
+      deadline: 1250, sleep: async ms => { now += ms }, shouldStop: async () => false
+    })
+    expect(result).toMatchObject({ job: null, reason: 'KEYWORD_TIMEOUT', retries: 0 })
+    expect(now).toBe(1250)
+    clock.mockRestore()
+  })
+
+  it('checks cancellation again after rendering and does not click or accept a detail', async () => {
+    const card = addCard(); showDetail(card)
+    const click = vi.fn(); card.querySelector('.job-card__title-clamp')!.addEventListener('click', click)
+    let checks = 0
+    const result = await collector.selectAndReadResult(document, card, { sleep: async () => {}, shouldStop: async () => ++checks > 1 })
+    expect(result.reason).toBe('STOPPED')
+    expect(click).not.toHaveBeenCalled()
+  })
+
   it('continues after twenty historical duplicates and checkpoints a fresh appended job', async () => {
     const seeds = Array.from({ length: 20 }, (_, i) => {
       addCard(`初始岗位${i}`)
@@ -168,5 +278,87 @@ describe('Zhilian modern split list', () => {
     expect((await run({ config: {}, runId: 'test-run', currentIndex: 0 })).saved).toBe(20)
     expect(navigation).not.toHaveBeenCalled()
     expect(submit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Zhilian keyword outcomes', () => {
+  function runner(collections: Array<Record<string, unknown>>, storedTask?: Record<string, unknown>) {
+    const source = readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-content.js'), 'utf8')
+    const functionSource = source.slice(source.indexOf('  async function runScanInternal('), source.indexOf('  function collectJobs('))
+    const checkpoints: Array<Record<string, unknown>> = []
+    const events: Array<{ type: string; meta: Record<string, unknown> }> = []
+    const keywords = ['关键词一', '关键词二', '关键词三'].slice(0, collections.length)
+    const collect = vi.fn(async (_task, base) => collections[base.currentIndex])
+    const submit = vi.fn(async (task) => ({ totalSaved: task.totalSaved + task.jobs.length,
+      totalRead: task.totalRead + task.jobs.length, totalReceived: task.totalReceived + task.jobs.length, totalInsufficient: 0 }))
+    const context = {
+      stopRequested: false, Date, document,
+      window: { GetJobsZhilianFilters: { verify: async () => ({ verified: true }) }, location: { href: 'https://www.zhaopin.com/jobs' } },
+      requestZhilianLocalApi: async () => ({}), normalizeScanTask: (m: unknown) => m,
+      scanKeywords: () => keywords, normalizeTaskIndex: (index: number) => index || 0,
+      hasStopRequested: async () => false, markKeywordCursorCurrent: () => {}, buildSearchUrl: () => '', buildSearchNavigationKey: () => '',
+      writeScanStatus: vi.fn(), isCurrentSearchPage: () => true,
+      storeScanTask: async (task: Record<string, unknown>) => { checkpoints.push(structuredClone(task)) },
+      postProgress: (_task: unknown, type: string, _message: string, meta: Record<string, unknown>) => events.push({ type, meta }),
+      waitForPage: async () => {}, sleep: async () => {}, humanPause: async () => {}, normalizeSearchJobLimit: () => 30,
+      collectJobsAcrossSearchPages: collect, navigateToDetail: vi.fn(), continueZhilianDetailScan: submit,
+      advanceKeywordCursor: () => {}, clearStoredScanTask: () => {}
+    }
+    const run = runInNewContext(`${functionSource}\nrunScanInternal`, context)
+    return { run: () => run({ config: {}, runId: 'test-run', profileId: 4, currentIndex: 0, ...storedTask }), checkpoints, events, collect, submit, navigation: context.navigateToDetail }
+  }
+
+  const complete = { jobs: [{ id: 'CC100J200', title: '岗位', detailVerified: true }], detailsComplete: true, stopReason: 'target_reached' }
+  const failed = { jobs: [], empty: true, detailsComplete: true, detailFailures: 4, historyDuplicateCount: 19, stopReason: 'timeout_safety_cap' }
+
+  it('continues after an empty failed keyword, preserves counts, and finishes with a warning', async () => {
+    const h = runner([complete, failed, complete])
+    const result = await h.run()
+    expect(h.collect).toHaveBeenCalledTimes(3)
+    expect(h.submit).toHaveBeenCalledTimes(2)
+    expect(result).toMatchObject({ outcome: 'partial', saved: 2, totalRead: 2, totalReceived: 2 })
+    expect(result.keywordResults.map((item: {outcome: string}) => item.outcome)).toEqual(['complete', 'failed', 'complete'])
+    expect(result.keywordResults[1]).toMatchObject({ detailFailures: 4, historyDuplicates: 19, collected: 0 })
+    expect(h.events.at(-1)).toMatchObject({ type: 'warning', meta: { stage: 'complete', outcome: 'partial' } })
+    expect(h.checkpoints.at(-1)?.keywordResults).toHaveLength(3)
+  })
+
+  it('reports an error when every keyword fails, without submitting empty jobs', async () => {
+    const h = runner([failed, failed]); const result = await h.run()
+    expect(result).toMatchObject({ success: false, outcome: 'failed', totalRead: 0 })
+    expect(h.submit).not.toHaveBeenCalled()
+    expect(h.events.at(-1)).toMatchObject({ type: 'error', meta: { stage: 'error' } })
+  })
+
+  it('treats proven empty or historical-only exhausted results as complete', async () => {
+    const h = runner([
+      { jobs: [], empty: true, stopReason: 'platform_exhausted' },
+      { jobs: [], empty: true, stopReason: 'platform_exhausted', historyDuplicateCount: 20 }
+    ])
+    expect(await h.run()).toMatchObject({ outcome: 'complete', totalRead: 0 })
+    expect(h.submit).not.toHaveBeenCalled()
+    expect(h.events.at(-1)?.type).toBe('success')
+  })
+
+  it('restores failed keyword outcomes from a navigation checkpoint without re-submitting prior keywords', async () => {
+    const first = runner([complete, failed, complete]); await first.run()
+    const checkpoint = first.checkpoints.find(task => task.currentIndex === 2 && task.phase === 'nextKeyword')!
+    const resumed = runner([complete, failed, complete], checkpoint)
+    expect(await resumed.run()).toMatchObject({ outcome: 'partial', totalRead: 2, saved: 2 })
+    expect(resumed.collect).toHaveBeenCalledTimes(1)
+    expect(resumed.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call legacy candidate collection complete before detail navigation finishes', async () => {
+    const h = runner([{...complete, detailsComplete: false}])
+    h.submit.mockImplementation(async () => ({pendingNavigation: true, totalSaved: 0, totalRead: 0, totalReceived: 0, totalInsufficient: 0}))
+    // Legacy details first navigate to the selected job; the mock lets that
+    // navigation resolve so the saved detail checkpoint can be inspected.
+    const sourceCheckpoint = h.checkpoints
+    // This test runner normally avoids the standalone navigation path.
+    // Stub its navigation below through the returned mock.
+    h.navigation.mockResolvedValue({status: 'ready'})
+    expect(await h.run()).toMatchObject({pendingNavigation: true})
+    expect(sourceCheckpoint.at(-1)?.keywordResults).toEqual([expect.objectContaining({outcome: 'running', collected: 0})])
   })
 })

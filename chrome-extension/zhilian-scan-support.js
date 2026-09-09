@@ -1,5 +1,5 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-08-official-filters";
+  const SUPPORT_VERSION = "2026-09-09-detail-scan";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
@@ -160,9 +160,15 @@
     return Boolean(zhilianSecurityReason(options));
   }
 
-  function prepareTaskForResume(task) {
+  function prepareTaskForResume(task, now = Date.now()) {
     if (!task || typeof task !== "object") return task;
     const resumed = { ...task };
+    const pausedAt = Number(task.pausedAt || task.blockedAt || 0);
+    if (task.collectionStartedAt && pausedAt > 0) {
+      // Human login/verification time is not active collection time. A normal
+      // page reload still consumes the original keyword budget.
+      resumed.collectionStartedAt = Number(task.collectionStartedAt) + Math.max(0, now - pausedAt);
+    }
     delete resumed.blockedAt;
     delete resumed.blockState;
     delete resumed.pausedAt;
@@ -171,13 +177,19 @@
   }
 
   function mergeScanStatus(previous, nextStatus, now = Date.now()) {
+    const identityChanged = ["profileId", "runId"].some(key => nextStatus?.[key] !== undefined
+      && String(nextStatus[key] ?? "") !== String(previous?.[key] ?? ""));
     const next = {
-      ...(previous || {}),
+      ...(identityChanged ? {} : previous || {}),
       ...(nextStatus || {}),
       updatedAt: Number(now)
     };
     const stage = String(next.stage || "");
+    if (stage === "idle") { next.outcome = "idle"; next.keywordResults = []; }
+    else if (stage === "stopped") next.outcome = "stopped";
+    else if (stage === "error") next.outcome = "failed";
     if (next.isRunning === true) {
+      next.outcome = "running";
       next.paused = false;
       next.resumable = true;
       next.diagnosticType = "";
