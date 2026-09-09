@@ -17,7 +17,7 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-09-08-official-filters");
+  assert.equal(support.version, "2026-09-09-detail-scan");
   assert.equal(typeof support.isZhilianUrl, "function");
 });
 
@@ -237,4 +237,28 @@ test("normalizes official HTTP detail links without relaxing the origin or proto
   for (const value of ["http://evilzhaopin.com/jobdetail/CC100J200.htm", "https://www.zhaopin.com.evil.test/jobdetail/CC100J200.htm", "javascript:alert(1)", "http://www.zhaopin.com/companydetail/CC100.htm", "https://user:password@www.zhaopin.com/jobdetail/CC100.htm"]) {
     assert.equal(support.normalizeJobUrl(value), "");
   }
+});
+
+test('clears prior keyword outcomes and counters when profile, run or idle state changes', () => {
+  const support = loadSupport();
+  const previous = {profileId: 4, runId: 'run-old', stage: 'complete', outcome: 'partial', totalSaved: 3,
+    keywordResults: [{keyword: '旧关键词'}]};
+  for (const update of [{profileId: 5, runId: '', stage: 'idle'}, {profileId: 4, runId: 'run-new', stage: 'searching', isRunning: true}]) {
+    const next = support.mergeScanStatus(previous, update);
+    assert.equal(next.keywordResults?.length || 0, 0);
+    assert.notEqual(next.outcome, 'partial');
+    assert.equal(next.totalSaved, undefined);
+  }
+  assert.equal(support.mergeScanStatus(previous, {stage: 'idle'}).keywordResults.length, 0);
+  assert.deepEqual(support.mergeScanStatus(previous, {stage: 'complete', isRunning: false}).keywordResults, previous.keywordResults);
+});
+
+test('preserves active collection budget across reloads but excludes an explicit human pause', () => {
+  const support = loadSupport();
+  const task = {collectionStartedAt: 1000, modernKeyword: '开发', keywordResults: [{keyword: '前项', outcome: 'partial'}]};
+  assert.equal(support.prepareTaskForResume(task, 120000).collectionStartedAt, 1000);
+  const resumed = support.prepareTaskForResume({...task, pausedAt: 10000}, 120000);
+  assert.equal(resumed.collectionStartedAt, 111000);
+  assert.equal(resumed.pausedAt, undefined);
+  assert.deepEqual(resumed.keywordResults, task.keywordResults);
 });

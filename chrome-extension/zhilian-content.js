@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-08-official-filters";
+  const EXTENSION_VERSION = "2026-09-09-detail-scan";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -427,6 +427,20 @@
     let totalReceived = Number(task.totalReceived || 0);
     let totalInsufficient = Number(task.totalInsufficient || 0);
     const startIndex = normalizeTaskIndex(task.currentIndex, keywords.length);
+    const keywordResults = Array.isArray(task.keywordResults) ? task.keywordResults.map(result => ({ ...result })) : [];
+    task.keywordResults = keywordResults;
+    const recordKeyword = (keywordIndex, keyword, collection) => {
+      const failures = Number(collection.detailFailures || 0);
+      const pendingDetails = !collection.detailsComplete && !collection.empty;
+      const collected = pendingDetails ? 0 : Number(collection.jobs?.length || 0);
+      const stopReason = collection.stopReason || "target_reached";
+      const finished = ["target_reached", "platform_exhausted"].includes(stopReason) && failures === 0;
+      const result = { keywordIndex: keywordIndex + 1, keyword, collected,
+        historyDuplicates: Number(collection.historyDuplicateCount || 0), detailFailures: failures,
+        stopReason, outcome: pendingDetails ? "running" : finished ? "complete" : collected ? "partial" : "failed" };
+      const existing = keywordResults.findIndex(item => item.keywordIndex === result.keywordIndex);
+      if (existing < 0) keywordResults.push(result); else keywordResults[existing] = result;
+    };
 
     if (!keywords.length) {
       throw new Error("请至少填写一个搜索关键词");
@@ -486,6 +500,9 @@
         stage: "searching",
         message: `智联 Chrome正在搜索：${keyword}`,
         runId,
+        profileId: task.profileId,
+        outcome: "running",
+        keywordResults,
         keyword,
         keywordIndex: keywordIndex + 1,
         keywordTotal: keywords.length,
@@ -509,6 +526,8 @@
         task = {
           ...task,
           phase: "nextKeyword", submissionReceipts: {},
+          collectedJobs: [], modernKeyword: "", modernSeenIds: [], modernDetailFailures: 0,
+          historyDuplicateCount: 0, collectionStartedAt: 0, searchPage: 1, pagesScanned: 0,
           jobs: [],
           detailIndex: 0,
           currentIndex: keywordIndex + 1,
@@ -583,17 +602,22 @@
         stopRequested = true;
         break;
       }
+      recordKeyword(keywordIndex, keyword, collectionResult);
+      writeScanStatus({ outcome: "running", keywordResults });
       if (collectionResult.empty) {
         advanceKeywordCursor(task, keywordIndex + 1, keyword);
-        await storeScanTask({
+        task = {
           ...baseTask,
           phase: "nextKeyword", submissionReceipts: {},
+          jobs: [], detailIndex: 0, collectedJobs: [], modernKeyword: "", modernSeenIds: [], modernDetailFailures: 0,
+          historyDuplicateCount: 0, collectionStartedAt: 0, searchPage: 1, pagesScanned: 0,
           currentIndex: keywordIndex + 1,
           totalSaved,
           totalRead,
           totalReceived,
           totalInsufficient
-        });
+        };
+        await storeScanTask(task);
         continue;
       }
       const jobs = collectionResult.jobs;
@@ -613,6 +637,7 @@
         detailIndex: collectionResult.detailsComplete ? jobs.length : 0,
         jobs,
         collectedJobs: [],
+        modernKeyword: "", modernSeenIds: [], modernDetailFailures: 0, historyDuplicateCount: 0, collectionStartedAt: 0,
         searchPage: 1,
         pagesScanned: 0
       };
@@ -655,6 +680,7 @@
         phase: "nextKeyword", submissionReceipts: {},
         jobs: [],
         collectedJobs: [],
+        modernKeyword: "", modernSeenIds: [], modernDetailFailures: 0, historyDuplicateCount: 0, collectionStartedAt: 0,
         searchPage: 1,
         pagesScanned: 0,
         detailIndex: 0,
@@ -674,13 +700,17 @@
     clearStoredScanTask();
     const stopped = stopRequested;
     if (stopped) await clearStopRequested();
+    const unfinished = keywordResults.filter(result => result.outcome !== "complete");
+    const allFailed = keywordResults.length === keywords.length && keywordResults.every(result => result.outcome === "failed");
+    const outcome = stopped ? "stopped" : allFailed ? "failed" : unfinished.length ? "partial" : "complete";
+    const stage = stopped ? "stopped" : allFailed ? "error" : "complete";
     const finalMessage = stopped
       ? `智联 Chrome扫描已停止：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个`
-      : `智联 Chrome扫描完成：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个`;
+      : `智联 Chrome扫描${outcome === "failed" ? "失败" : outcome === "partial" ? "部分完成" : "完成"}：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个${unfinished.length ? `；未完成关键词：${unfinished.map(result => result.keyword).join("、")}` : ""}`;
     writeScanStatus({
       isRunning: false,
       stopRequested: stopped,
-      stage: stopped ? "stopped" : "complete",
+      stage, outcome, keywordResults,
       message: finalMessage,
       runId,
       keywordTotal: keywords.length,
@@ -692,9 +722,9 @@
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task, stopped ? "warning" : "success", finalMessage, {
+    postProgress(task, outcome === "failed" ? "error" : outcome === "complete" ? "success" : "warning", finalMessage, {
       operation: "scan",
-      stage: stopped ? "stopped" : "complete",
+      stage, outcome, keywordResults,
       keywordTotal: keywords.length,
       totalSaved,
       totalRead,
@@ -702,7 +732,7 @@
       totalInsufficient,
       saved: totalSaved
     });
-    return { success: true, saved: totalSaved, totalRead, totalReceived, totalInsufficient };
+    return { success: outcome !== "failed", outcome, keywordResults, saved: totalSaved, totalRead, totalReceived, totalInsufficient };
   }
 
   function collectJobs(keyword, message, baseMeta) {
@@ -761,21 +791,24 @@
     const jobs = resuming ? normalizeCollectedJobs(task.collectedJobs).filter(job => job.detailVerified === true) : [];
     const seenIds = new Set([...(resuming ? task.modernSeenIds || [] : []), ...jobs.map(job => job.id)]);
     const visitedCards = new WeakSet();
+    const attemptedCards = new Set();
     let historyDuplicateCount = resuming ? Number(task.historyDuplicateCount || 0) : 0;
     let detailFailures = resuming ? Number(task.modernDetailFailures || 0) : 0;
     let rounds = 0;
     let stagnant = 0;
-    const startedAt = Date.now();
+    const startedAt = resuming ? Number(task.collectionStartedAt || Date.now()) : Date.now();
+    const deadline = startedAt + 180000;
     let stopReason = "";
     const checkpoint = async () => storeScanTask({
       ...baseTask, phase: "collecting", searchLayout: "split", modernKeyword: keyword, searchPage: 1,
       navigationAttempts: 0, navigationStartedAt: 0,
       collectedJobs: jobs, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures,
-      historyDuplicateCount, totalSaved
+      historyDuplicateCount, totalSaved, collectionStartedAt: startedAt
     });
     const pausedForBlock = async () => handleBlockingState({
       ...baseTask, phase: "collecting", searchPage: 1, collectedJobs: jobs,
-      modernKeyword: keyword, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures, historyDuplicateCount, totalSaved
+      modernKeyword: keyword, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures, historyDuplicateCount, totalSaved,
+      collectionStartedAt: startedAt
     }, buildPageBlockDiagnostics(), baseMeta);
 
     await waitForJobCards();
@@ -789,7 +822,13 @@
     // These seeds carry IDs but only cover the initial response. Never use their
     // count or a synthetic page number as evidence of further loaded results.
     const seeds = collectZhilianInitialStateJobs(keyword);
-    const seedDedupe = await filterZhilianDuplicateJobs(seeds, task, keyword);
+    let seedDedupe;
+    try { seedDedupe = await filterZhilianDuplicateJobs(seeds, task, keyword, deadline); }
+    catch (error) {
+      if (error.errorType !== "COLLECTION_TIMEOUT") throw error;
+      await checkpoint();
+      return { jobs, detailsComplete: true, empty: !jobs.length, detailFailures, historyDuplicateCount, stopReason: "timeout_safety_cap" };
+    }
     const freshSeedIds = new Set(seedDedupe.jobs.map(job => job.id));
     for (const seed of seeds) {
       if (!freshSeedIds.has(seed.id) && !seenIds.has(seed.id)) {
@@ -805,35 +844,55 @@
       await window.GetJobsZhilianFilters.verify(document,config,task.filterCatalog,{sleep,shouldStop:hasStopRequested});
       const blocked = await pausedForBlock();
       if (blocked) return { paused: true, jobs, message: blocked.message };
-      const cards = Array.from(document.querySelectorAll(".job-list-panel .job-card"));
-      const countBefore = cards.length;
-      for (const card of cards) {
+      const countBefore = document.querySelectorAll(".job-list-panel .job-card").length;
+      for (let cardIndex = 0; cardIndex < countBefore; cardIndex++) {
         if (jobs.length >= searchJobLimit || Date.now() - startedAt >= 180000) break;
         if (await hasStopRequested()) return { stopped: true, jobs };
         if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取岗位时智联筛选发生变化，断点已保留");
-        if (visitedCards.has(card)) continue;
+        // Vue can replace the list after each selection. Resolve the current
+        // node at every step instead of retaining the initial NodeList.
+        const card = document.querySelectorAll(".job-list-panel .job-card")[cardIndex];
+        if (!card || visitedCards.has(card)) continue;
         visitedCards.add(card);
-        const summary = collector.readCard(card);
+        const prepared = await collector.prepareCard(document, card, { sleep, shouldStop: hasStopRequested, deadline });
+        const summary = prepared.summary;
         const matches = seeds.filter(seed => seed.title === summary.title && seed.company === summary.company && seed.salary === summary.salary);
         const expectedId = matches.length === 1 ? matches[0].id : "";
-        if (expectedId && seenIds.has(expectedId)) continue;
-        let job = null;
-        for (let attempt = 0; attempt < 2 && !job; attempt++) {
-          job = await collector.selectAndRead(document, card, { expectedId, sleep, shouldStop: hasStopRequested });
-          if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取详情时智联筛选发生变化，禁止提交当前岗位");
-          if (await hasStopRequested()) return { stopped: true, jobs };
-          const block = await pausedForBlock();
-          if (block) return { paused: true, jobs, message: block.message };
-        }
+        if (prepared.card && expectedId && seenIds.has(expectedId)) continue;
+        const cardKey = summary.title && summary.company
+          ? JSON.stringify([summary.title, summary.company, summary.salary, summary.location, expectedId]) : "";
+        if (cardKey && attemptedCards.has(cardKey)) continue;
+        if (cardKey) attemptedCards.add(cardKey);
+        const result = await collector.selectAndReadResult(document, prepared.card || card, {
+          expectedId, sleep, shouldStop: hasStopRequested, deadline, preparedCard: prepared
+        });
+        if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取详情时智联筛选发生变化，禁止提交当前岗位");
+        if (await hasStopRequested() || result.reason === "STOPPED") return { stopped: true, jobs };
+        const block = await pausedForBlock();
+        if (block) return { paused: true, jobs, message: block.message };
+        const job = result.job;
         if (!job) {
           detailFailures++;
-          postProgress(task, "warning", `智联岗位详情未通过身份或正文校验，跳过：${summary.title}`, { ...baseMeta, stage: "collecting", detailFailures });
+          const jobTitle = result.summary?.title || summary.title || `第 ${cardIndex + 1} 个岗位（标题未就绪）`;
+          const reason = result.reason || "DETAIL_TIMEOUT";
+          postProgress(task, "warning", `智联关键词「${keyword}」跳过 ${jobTitle}：${collector.failureLabels[reason]}（重试 ${result.retries || 0} 次）`, {
+            ...baseMeta, stage: "collecting", detailFailures, cardIndex: cardIndex + 1,
+            jobTitle, jobId: expectedId, reason, retries: result.retries || 0
+          });
           await checkpoint();
+          if (reason === "KEYWORD_TIMEOUT") break;
           continue;
         }
         if (seenIds.has(job.id)) continue;
         job.keyword = keyword;
-        const dedupe = await filterZhilianDuplicateJobs([job], task, keyword);
+        let dedupe;
+        try { dedupe = await filterZhilianDuplicateJobs([job], task, keyword, deadline); }
+        catch (error) {
+          if (error.errorType !== "COLLECTION_TIMEOUT") throw error;
+          stopReason = "timeout_safety_cap";
+          break;
+        }
+        if (await hasStopRequested()) return { stopped: true, jobs };
         seenIds.add(job.id);
         historyDuplicateCount += dedupe.duplicateCount;
         jobs.push(...dedupe.jobs);
@@ -844,12 +903,13 @@
         });
       }
       if (jobs.length >= searchJobLimit) break;
+      if (Date.now() >= deadline) { stopReason = "timeout_safety_cap"; break; }
       const lastCard = document.querySelector(".job-list-panel")?.lastElementChild;
       lastCard?.scrollIntoView({ block: "end" });
       window.scrollBy(0, Math.max(600, window.innerHeight || 0));
       let grew = false;
-      for (let poll = 0; poll < 10 && !await hasStopRequested(); poll++) {
-        await sleep(500);
+      for (let poll = 0; poll < 10 && Date.now() < deadline && !await hasStopRequested(); poll++) {
+        await sleep(Math.min(500, deadline - Date.now()));
         if (document.querySelectorAll(".job-list-panel .job-card").length > countBefore) { grew = true; break; }
       }
       stagnant = grew ? 0 : stagnant + 1;
@@ -862,9 +922,11 @@
         ...baseMeta, stage: "collecting", collected: jobs.length, historyDuplicates: historyDuplicateCount, detailFailures, stopReason
       });
     if (!jobs.length && !seeds.length && !document.querySelector(".job-card")) {
-      throw new Error("智联未识别到有效岗位数据，请检查空结果、登录或页面结构；未提交AI分析");
+      stopReason = "unrecognized_layout";
+      postProgress(task, "warning", "智联未识别到有效岗位数据，当前关键词未完成；继续下一个关键词", { ...baseMeta, stopReason });
     }
-    return { jobs, detailsComplete: true, empty: !jobs.length, candidateCount: seenIds.size, pagesScanned: rounds, stopReason };
+    return { jobs, detailsComplete: true, empty: !jobs.length, candidateCount: seenIds.size, pagesScanned: rounds,
+      stopReason, detailFailures, historyDuplicateCount };
   }
 
   async function collectJobsAcrossSearchPages(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved) {
@@ -1085,12 +1147,13 @@
     return { jobs, candidateCount, freshCount: jobs.length, historyDuplicateCount, pagesScanned, stopReason, empty: false };
   }
 
-  async function filterZhilianDuplicateJobs(jobs, task, keyword) {
+  async function filterZhilianDuplicateJobs(jobs, task, keyword, deadline = Infinity) {
     const list = Array.isArray(jobs) ? jobs : [];
     if (!list.length) return { jobs: [], duplicateCount: 0 };
     const data = await requestZhilianLocalApi("chrome-jobs-dedupe", {
       body: { profileId: normalizeProfileId(task?.profileId), runId: task?.runId, keyword, jobs: list },
-      pageTabId: task?.pageTabId
+      pageTabId: task?.pageTabId,
+      deadline
     });
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length !== list.length) {
@@ -1575,6 +1638,15 @@
     const nextTotalRead = totalRead + jobs.length;
     const nextTotalReceived = totalReceived + received;
     const nextTotalInsufficient = totalInsufficient + insufficient;
+    const keywordResult = message.keywordResults?.find(item => item.keywordIndex === Number(message.currentIndex || 0) + 1);
+    if (keywordResult) {
+      const invalidDetails = jobs.filter(job => job.detailNavigationFailed || String(job.description || "").trim().length < 30).length;
+      const failedDetails = Math.max(invalidDetails, insufficient);
+      keywordResult.collected = Math.max(0, jobs.length - failedDetails);
+      keywordResult.detailFailures = Number(keywordResult.detailFailures || 0) + failedDetails;
+      keywordResult.outcome = keywordResult.detailFailures || !["target_reached", "platform_exhausted"].includes(keywordResult.stopReason)
+        ? keywordResult.collected ? "partial" : "failed" : "complete";
+    }
     postProgress(message, "success", `智联 Chrome已提交后台AI队列：后台接收 ${received} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${insufficient} 个。`, {
       ...baseMeta,
       stage: "submitted",
@@ -1976,20 +2048,33 @@
 
   async function requestZhilianLocalApi(operation, options = {}) {
     let response;
+    let timer;
     try {
-      response = await chrome.runtime.sendMessage({
+      const remaining = options.deadline === undefined ? Infinity : options.deadline - Date.now();
+      const timeoutError = () => Object.assign(new Error("关键词采集时间已用尽，查重结果不再用于本次采集"), { errorType: "COLLECTION_TIMEOUT" });
+      if (remaining <= 0) throw timeoutError();
+      const request = chrome.runtime.sendMessage({
         source: "GET_JOBS_ZHILIAN_CONTENT",
         type: "ZHILIAN_LOCAL_API",
         operation,
         params: options.params,
         body: options.body,
-        timeoutMs: LOCAL_API_TIMEOUT_MS,
+        timeoutMs: Math.min(LOCAL_API_TIMEOUT_MS, remaining),
         pageTabId: options.pageTabId
       });
+      // Dedupe is read-only. Its late response must never add a job after the
+      // collection deadline, even if background transport performs retries.
+      response = Number.isFinite(remaining) ? await Promise.race([request, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(timeoutError()), remaining);
+      })]) : await request;
+      if (Number.isFinite(options.deadline) && Date.now() >= options.deadline) throw timeoutError();
     } catch (error) {
+      if (error.errorType === "COLLECTION_TIMEOUT") throw error;
       const wrapped = new Error(error?.message || String(error));
       wrapped.errorType = "LOCAL_SERVICE_UNAVAILABLE";
       throw wrapped;
+    } finally {
+      clearTimeout(timer);
     }
     if (!response?.success) {
       if (operation === "chrome-jobs" && response?.data?.partial === true && Array.isArray(response.data.items)) return response.data;

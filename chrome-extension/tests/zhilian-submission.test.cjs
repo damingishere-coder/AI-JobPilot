@@ -48,3 +48,29 @@ test('a background ownership change stops the prior scan loop',async()=>{
   const h=harness(()=>({items:[]}));h.window.api.setOwner('original-owner');
   assert.equal(await h.window.api.owned(),true);
 });
+
+test('legacy detail failures update keyword outcome before persisting the next keyword', async()=>{
+  const h=harness(()=>({items:[receipt('A','INSUFFICIENT'),receipt('B'),receipt('C')]}));
+  const jobs=['A','B','C'].map(id=>({id,url:`https://www.zhaopin.com/jobdetail/${id}.htm`,description:'岗位职责与任职要求。'.repeat(8),detailNavigationFailed:id==='A'}));
+  await h.run({jobs,currentIndex:0,keywordResults:[{keywordIndex:1,keyword:'AI',collected:0,detailFailures:0,stopReason:'target_reached',outcome:'running'}]});
+  assert.equal(h.stored.at(-1).keywordResults[0].outcome,'partial');
+  assert.equal(h.stored.at(-1).keywordResults[0].collected,2);
+  assert.equal(h.stored.at(-1).keywordResults[0].detailFailures,1);
+});
+
+test('collection deadline bounds a pending dedupe transport and ignores its late response', async()=>{
+  const functionSource=source.slice(source.indexOf('  async function requestZhilianLocalApi('),source.indexOf('  function postProgress('));
+  let expire, finish, requestOptions, cleared=false;
+  const request=vm.runInNewContext(`${functionSource}; requestZhilianLocalApi`,{
+    LOCAL_API_TIMEOUT_MS:30000, Date:{now:()=>1000},
+    chrome:{runtime:{sendMessage:options=>{requestOptions=options;return new Promise(resolve=>{finish=resolve})}}},
+    setTimeout:callback=>{expire=callback;return 1},clearTimeout:()=>{cleared=true}
+  });
+  const pending=request('chrome-jobs-dedupe',{deadline:1050});
+  assert.equal(requestOptions.timeoutMs,50);
+  expire();
+  await assert.rejects(pending,error=>error.errorType==='COLLECTION_TIMEOUT');
+  assert.equal(cleared,true);
+  finish({success:true,data:{jobs:[{id:'late'}]}});
+  await Promise.resolve();
+});
