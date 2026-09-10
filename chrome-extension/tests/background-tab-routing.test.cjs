@@ -167,6 +167,7 @@ function loadBackground({
   };
 
   const context = vm.createContext({
+    crypto: require("node:crypto").webcrypto,
     chrome,
     console,
     URL,

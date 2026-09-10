@@ -12,13 +12,13 @@ public final class SalaryParser {
     }
 
     public static ParsedSalary parse(String salary) {
-        if (salary == null) return null;
+        if (salary == null || salary.length() > 128) return null;
         String value = salary.trim();
         if (value.isEmpty() || value.contains("面议")) return null;
 
         Integer months = parseMonths(value);
         String main = value.replace(" ", "");
-        Matcher monthsMatcher = Pattern.compile("[·\\.\\-]?([0-9]+)薪").matcher(main);
+        Matcher monthsMatcher = Pattern.compile("[·\\.\\-]?([0-9]{1,3})薪").matcher(main);
         if (monthsMatcher.find()) {
             main = main.substring(0, monthsMatcher.start());
         }
@@ -68,7 +68,7 @@ public final class SalaryParser {
     }
 
     private static Integer parseMonths(String value) {
-        Matcher matcher = Pattern.compile("[·\\.\\-]?([0-9]+)薪").matcher(value);
+        Matcher matcher = Pattern.compile("[·\\.\\-]?([0-9]{1,3})薪").matcher(value);
         if (!matcher.find()) return 12;
         try {
             return Integer.parseInt(matcher.group(1));

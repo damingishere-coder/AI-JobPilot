@@ -277,15 +277,15 @@ export default function Job51Page() {
           // 城市允许手动输入，若下拉匹配不到则直接保存输入值
           const match = (options.jobArea || []).find((o) => o.code === t || o.name === t)
           const name = match?.name || t
-          return `["${name.replace(/"/g, '\\"')}"]`
+          return JSON.stringify([name])
         }
         if (type === 'salary') {
           // 薪资仅允许下拉单选，必须映射为中文名
           const match = (options.salary || []).find((o) => o.code === t || o.name === t)
           const name = match?.name || ''
-          return name ? `["${name.replace(/"/g, '\\"')}"]` : '[]'
+          return name ? JSON.stringify([name]) : '[]'
         }
-        return `["${t.replace(/"/g, '\\"')}"]`
+        return JSON.stringify([t])
       }
       const payload = {
         ...config,

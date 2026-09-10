@@ -93,14 +93,11 @@ class CrossPlatformCompatibilityTest {
     }
 
     @Test
-    void wrapsExternalToolCommandOnWindowsOnly() {
+    void externalToolArgumentsNeverPassThroughCmd() {
         List<String> command = ExternalToolSupport.buildProcessCommand("openclaw", List.of("browser", "tabs"));
 
-        if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
-            assertThat(command).startsWith("cmd", "/c", "openclaw");
-        } else {
-            assertThat(command).startsWith("openclaw");
-        }
+        assertThat(command.getFirst()).isIn("openclaw", "node");
+        assertThat(command).doesNotContain("cmd", "/c");
         assertThat(command).contains("browser", "tabs");
     }
 }

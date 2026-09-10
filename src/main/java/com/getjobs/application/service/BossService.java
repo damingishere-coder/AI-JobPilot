@@ -1702,8 +1702,8 @@ public class BossService {
         }
 
         int total = filtered.size();
-        int from = Math.max(0, (page - 1) * size);
-        int to = Math.min(total, from + size);
+        int from = PageWindow.start(page, size, total);
+        int to = PageWindow.end(from, size, total);
         List<BossJobDataEntity> pageItems = from >= to ? Collections.emptyList() : filtered.subList(from, to);
 
         PagedResult result = new PagedResult();

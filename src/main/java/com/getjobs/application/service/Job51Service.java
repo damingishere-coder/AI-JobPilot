@@ -622,8 +622,8 @@ public class Job51Service {
         }
 
         int total = filtered.size();
-        int from = Math.max(0, (page - 1) * size);
-        int to = Math.min(total, from + size);
+        int from = PageWindow.start(page, size, total);
+        int to = PageWindow.end(from, size, total);
         java.util.List<Job51Entity> pageItems = from >= to ? java.util.Collections.emptyList() : filtered.subList(from, to);
 
         java.util.List<Job51Row> rows = new java.util.ArrayList<>();

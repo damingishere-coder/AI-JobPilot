@@ -862,8 +862,8 @@ public class ZhilianService {
         }
 
         int total = filtered.size();
-        int from = Math.max(0, (page - 1) * size);
-        int to = Math.min(total, from + size);
+        int from = PageWindow.start(page, size, total);
+        int to = PageWindow.end(from, size, total);
 
         PagedResult pr = new PagedResult();
         pr.items = filtered.subList(from, to);

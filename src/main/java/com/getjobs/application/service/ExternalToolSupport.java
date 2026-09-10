@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public final class ExternalToolSupport {
     private ExternalToolSupport() {
@@ -24,13 +25,42 @@ public final class ExternalToolSupport {
 
     public static List<String> buildProcessCommand(String command, List<String> args) {
         List<String> processCommand = new ArrayList<>();
-        if (isWindows()) {
-            processCommand.add("cmd");
-            processCommand.add("/c");
+        String lower = command.toLowerCase(Locale.ROOT);
+        if (isWindows() && (lower.equals("openclaw") || lower.endsWith(".cmd") || lower.endsWith(".bat"))) {
+            Path entry = findOpenClawNodeEntry(command);
+            if (entry != null) {
+                processCommand.add("node");
+                processCommand.add(entry.toString());
+            } else if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+                throw new IllegalArgumentException("不允许通过 cmd 执行浏览器参数；请将 APP_OPENCLAW_COMMAND 设置为 openclaw.mjs 或可执行文件");
+            } else {
+                processCommand.add(command);
+            }
+        } else if (lower.endsWith(".mjs") || lower.endsWith(".js")) {
+            processCommand.add("node");
+            processCommand.add(command);
+        } else {
+            processCommand.add(command);
         }
-        processCommand.add(command);
         processCommand.addAll(args);
         return processCommand;
+    }
+
+    private static Path findOpenClawNodeEntry(String command) {
+        List<Path> directories = new ArrayList<>();
+        Path configured = Path.of(command).toAbsolutePath().normalize();
+        if (!command.equalsIgnoreCase("openclaw")) directories.add(configured.getParent());
+        String searchPath = System.getenv("PATH");
+        if (searchPath != null && command.equalsIgnoreCase("openclaw")) {
+            for (String directory : searchPath.split(java.io.File.pathSeparator)) {
+                if (!directory.isBlank()) directories.add(Path.of(directory));
+            }
+        }
+        for (Path directory : directories) {
+            Path entry = directory.resolve("node_modules/openclaw/openclaw.mjs");
+            if (Files.isRegularFile(entry)) return entry;
+        }
+        return null;
     }
 
     public static String buildOpenClawFailureMessage(String stdout, String stderr, int exitCode) {

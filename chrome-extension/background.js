@@ -841,7 +841,7 @@ async function acknowledgeBossHrOutbox(captureIds, profileId) {
 }
 
 function createBossHrId(prefix) {
-  const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const uuid = globalThis.crypto.randomUUID();
   return `${prefix}-${uuid}`;
 }
 
