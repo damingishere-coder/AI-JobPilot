@@ -58,6 +58,8 @@ secrets/
 **/hr-chat.key
 chromedriver
 *.jpg
+# Public, sanitized documentation screenshots only.
+!docs/images/screenshots/v1.5-*.jpg
 chrome-profile/
 **/chrome-profile/
 

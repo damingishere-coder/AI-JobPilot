@@ -34,36 +34,9 @@
 
 ## 本地开发
 
-### 环境
+使用 Java 21、Node.js 24 LTS、pnpm 10.20.0 和 Chrome。请按 [开发者指南](docs/development/setup.md) 准备环境、锁定安装依赖，并选择统一服务或热更新模式。
 
-- Windows 10 / 11
-- Java 21
-- Node.js 20.19 或更高版本
-- pnpm
-- Chrome
-- Git
-
-### 启动后端
-
-```powershell
-.\gradlew.bat bootRun
-```
-
-### 启动前端
-
-```powershell
-cd front
-pnpm install
-pnpm dev
-```
-
-默认地址：
-
-```text
-前端：http://localhost:6866
-后端：http://localhost:8888
-健康检查：http://localhost:8888/api/health
-```
+日常服务页面与 API 共用 6866；热更新时前端为 6866，后端需显式设置为 8888。不要同时启动两种模式。文件识别还需要单独准备本地 Python 解析器。
 
 ## 提交前检查
 
@@ -91,36 +64,16 @@ pnpm lint
 
 ## 分支与提交
 
-建议从最新 `main` 创建短生命周期分支：
+从最新 `main` 创建短生命周期的 `codex/*` 分支，例如 `codex/fix-boss-selector`、`codex/docs-windows-setup`。先检查工作区，保护已有改动，只暂存本次相关文件。
+
+提交说明遵循 [AGENTS.md](AGENTS.md)，使用中文类型与说明：
 
 ```text
-fix/boss-selector
-feat/platform-adapter
-refactor/job-analysis
-Docs/windows-setup
+修复：恢复验证后的岗位扫描
+文档：更新 Windows 安装指南
 ```
 
-推荐提交信息格式：
-
-```text
-类型: 简短说明
-```
-
-常用类型：
-
-- `feat`：新增能力
-- `fix`：修复问题
-- `docs`：文档修改
-- `refactor`：不改变外部行为的重构
-- `test`：测试相关
-- `chore`：构建、依赖和维护工作
-
-示例：
-
-```text
-fix: handle expired Boss login page
-Docs: clarify Chrome Bridge setup
-```
+每个提交解决一个独立问题，不混入无关文件、秘密或运行产物。
 
 ## Pull Request 要求
 

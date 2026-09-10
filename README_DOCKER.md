@@ -1,11 +1,13 @@
 # Docker 一键本地开发说明
 
-这个方式适合不想分别安装 Java、Node.js、pnpm 的本地开发场景。你只需要安装 Docker Desktop，然后用一键脚本启动项目。
+本文是进阶 Docker 开发路径。Windows 日常使用优先阅读 [统一服务启动指南](WINDOWS_SETUP.md)。Docker Compose 保留前端 6866、后端 8888 的分离模式，不能与 Windows 统一服务同时占用 6866。
+
+容器镜像提供 Java、Node.js、pnpm。当前 Docker 路径尚未完成 v1.5 真实运行验收：Dockerfile 沿用 Playwright 1.51.0 的 Node 基础镜像，完整测试依赖已要求更新的 Node（CI 使用 24）。本指南不把 Docker 视为已验证的免环境安装器；遇到运行时版本问题应先核验容器环境。文件识别所需的 Python、Docling 和模型也未由 Dockerfile 自动安装，基础使用请粘贴简历文本。
 
 启动成功后，只需要记住一个前台页面地址：
 
 ```text
-http://localhost:6866
+http://127.0.0.1:6866
 ```
 
 前端页面、Chrome 扩展回调、前端 API 请求都走这个地址。Docker 内部会自动把 `/api` 请求转发到后端服务。
@@ -35,7 +37,7 @@ docker compose up -d --build
 第一次启动会下载 Docker 镜像和前端依赖，时间可能比较久。启动完成后脚本会打开：
 
 ```text
-http://localhost:6866
+http://127.0.0.1:6866
 ```
 
 ## macOS / Linux 一键启动
@@ -58,14 +60,14 @@ chmod +x start_docker.sh
 前端代码，例如 `front/app/**`、`front/components/**`：
 
 ```text
-保存文件后，刷新 http://localhost:6866 即可看到。
+保存文件后，刷新 http://127.0.0.1:6866 即可看到。
 ```
 
 后端 Java 代码，例如 `src/main/java/**`：
 
 ```text
 容器会自动连续编译并触发 Spring Boot DevTools 重启。
-等待几秒后刷新 http://localhost:6866 查看。
+等待几秒后刷新 http://127.0.0.1:6866 查看。
 ```
 
 如果后端变化较大，自动重启没有生效，可以手动执行：
@@ -119,26 +121,26 @@ docker compose up -d --build
 2. 地址栏输入 `chrome://extensions/`。
 3. 打开右上角“开发者模式”。
 4. 点击“加载已解压的扩展程序”。
-5. 选择项目里的 `chrome-extension` 文件夹。
-6. 打开 `http://localhost:6866`，刷新页面。
+5. 选择项目里的 `chrome-extension` 文件夹；v1.5 配套版本为 1.8.0，更新后重新加载扩展。
+6. 打开 `http://127.0.0.1:6866`，刷新页面。
 
-扩展会通过 `http://localhost:6866/api/...` 回写结果，由前端开发服务代理到后端容器。
+扩展会通过 `http://127.0.0.1:6866/api/...` 回写结果，由前端开发服务代理到后端容器。
 
 ## 端口说明
 
 你日常只需要打开：
 
 ```text
-http://localhost:6866
+http://127.0.0.1:6866
 ```
 
 Docker 仍会在本机保留后端端口：
 
 ```text
-http://localhost:8888
+http://127.0.0.1:8888
 ```
 
-这个端口主要用于排查问题和兼容老流程；普通使用不需要打开它。
+这是 Docker 后端映射到本机的端口，普通浏览器使用无需直接访问；容器内的前端通过 `backend:8888` 转发 API 请求。
 
 ## 常见问题
 
@@ -158,17 +160,7 @@ http://localhost:8888
 docker compose down
 ```
 
-如果还是不行，修改 `.env`：
-
-```env
-FRONTEND_PORT=6867
-```
-
-然后重新执行：
-
-```bash
-docker compose up -d --build
-```
+如果仍然冲突，先确认端口归属，并在原管理器中停止对应的旧服务。不要随意改成 6867：Chrome Bridge 的工作台来源仅允许 6866，启动脚本的检查地址也不会自动同步。
 
 ### 页面打开但后端连接失败
 
@@ -182,7 +174,7 @@ docker compose logs -f backend
 
 ### 修改代码后页面没有变化
 
-前端代码：确认保存文件后刷新 `http://localhost:6866`。
+前端代码：确认保存文件后刷新 `http://127.0.0.1:6866`。
 
 后端代码：等待后端自动重启；如果仍不生效，执行：
 

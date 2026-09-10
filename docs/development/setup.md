@@ -1,194 +1,114 @@
 # 开发者本地启动指南
 
-本文面向准备修改 AI JobPilot 代码、运行测试或提交 Pull Request 的贡献者。普通用户优先阅读根目录的 `README.md` 和 `WINDOWS_SETUP.md`。
+本文对应应用 **1.5.0** / Chrome Bridge **1.8.0**。普通用户使用 [Windows 统一服务](../../WINDOWS_SETUP.md)；这里区分统一运行与热更新开发，避免两个程序争抢 6866。
 
-## 1. 环境要求
+## 环境与代码
 
-- Windows 10 / 11（当前主要开发与验证环境）
-- Git
-- Java 21
-- Node.js 20.19 或更高版本
-- pnpm 10.20.0
-- Chrome
-- 可选：Docker Desktop
-
-检查版本：
-
-```powershell
-git --version
-java -version
-node --version
-pnpm --version
-```
-
-如未安装 pnpm：
-
-```powershell
-corepack enable
-corepack prepare pnpm@10.20.0 --activate
-```
-
-## 2. 获取代码
+Windows 10 / 11、Git、Java 21、Node.js 24 LTS、pnpm 10.20.0、Chrome。当前 CI 使用 Node 24；jsdom 30 的依赖要求高于旧文档中的 Node 20.19，不再推荐旧组合。
 
 ```powershell
 git clone https://github.com/damingishere-coder/AI-JobPilot.git
 cd AI-JobPilot
+git switch main
+git pull --ff-only
+git switch -c codex/your-change
+cd front
+pnpm install --frozen-lockfile
+cd ..
 ```
 
-开发新功能前，从最新 `main` 创建独立分支：
+操作前检查 `git status`，保留已有未提交修改。需要文件识别时另外准备 [本地简历解析器](../../resume-parser/README.md)。粘贴文本不需要解析器。
+
+## 选择一种运行模式
+
+| 模式 | 页面 | 后端 | 适合场景 |
+| --- | --- | --- | --- |
+| 统一服务 | `127.0.0.1:6866` | 同端口 `/api` | 日常使用、现有 RunDock / Alter 部署 |
+| 热更新开发 | Next.js `127.0.0.1:6866` | Java `127.0.0.1:8888` | 修改界面和代码；需要明确设置后端端口 |
+
+两种模式不能同时占用 6866。已有日常服务时，先在原管理器停止它，再进入开发模式；确认使用哪份数据库，避免测试写入个人数据。
+
+### 统一服务
+
+项目根目录执行：
 
 ```powershell
-git checkout main
-git pull
-git checkout -b feat/your-change
+.\scripts\run_backend.ps1
 ```
 
-常用分支前缀：
+该脚本执行 `pnpm build:prod`，把静态资源复制到`src/main/resources/dist`，设置统一端口 6866 后运行 `bootRun`。独立 `run_frontend.ps1` 不属于此模式。
 
-- `feat/`：新功能
-- `fix/`：Bug 修复
-- `docs/`：文档
-- `test/`：测试
-- `chore/`：依赖或仓库治理
+### 热更新开发
 
-## 3. 本地配置
-
-复制示例配置：
+第一个 PowerShell 窗口，在项目根目录执行：
 
 ```powershell
-Copy-Item .env.example .env
-```
-
-只填写本地运行必需的值。不要把以下内容提交到 Git：
-
-- API Key、密码、Cookie、Token
-- 真实简历和聊天截图
-- SQLite 数据库及备份
-- Chrome 用户目录和浏览器缓存
-- `.env`、日志和运行输出
-
-## 4. 启动后端
-
-```powershell
+$env:SERVER_ADDRESS = '127.0.0.1'
+$env:SERVER_PORT = '8888'
+$env:APP_STATIC_SERVER_ENABLED = 'false'
+$env:APP_AUTO_OPEN_BROWSER = 'false'
+$env:APP_BROWSER_INITIALIZE_ON_STARTUP = 'false'
+New-Item -ItemType Directory -Force target\dev-data | Out-Null
+$env:SPRING_DATASOURCE_URL = 'jdbc:sqlite:./target/dev-data/getjobs.db'
 .\gradlew.bat bootRun
 ```
 
-默认地址：
-
-```text
-http://localhost:8888
-```
-
-健康检查：
-
-```text
-http://localhost:8888/api/health
-```
-
-返回 `UP` 表示后端基础服务正常。
-
-## 5. 启动前端
-
-另开一个 PowerShell 窗口：
+使用独立开发数据库，首次为空，需创建演示档案。第二个窗口：
 
 ```powershell
 cd front
-pnpm install --frozen-lockfile
+$env:API_PROXY_TARGET = 'http://127.0.0.1:8888'
+$env:API_BASE_URL = ''
 pnpm dev
 ```
 
-默认地址：
+`start-dev.mjs` 开启同源 `/api` 代理。浏览器只访问 **http://127.0.0.1:6866**；后端健康和就绪接口为 `http://127.0.0.1:8888/api/health`、`http://127.0.0.1:8888/api/ready`，也可经前端同源代理访问。
 
-```text
-http://localhost:6866
-```
+直接执行 `gradlew bootRun` 的默认端口是 **6866**，不会自动让给前端；开发模式必须显式设置上面的 8888。在各自终端按 `Ctrl+C` 停止；环境变量仅影响当前窗口及其子进程。
 
-## 6. 加载 Chrome Bridge
+## 配置和 Chrome Bridge
 
-1. 打开 `chrome://extensions/`。
-2. 开启“开发者模式”。
-3. 选择“加载已解压的扩展程序”。
-4. 选择仓库中的 `chrome-extension` 目录。
-5. 打开前端工作台并确认扩展连接状态。
+Windows 脚本和 `bootRun` 不会自动读取根目录 `.env`。通过页面设置模型配置，通过启动进程环境变量定制运行目录。Docker Compose 会读取 `.env`，其中 `backend:8888` 是容器内地址，不能直接套用到 Windows 原生环境。
 
-不要在测试代码、Issue 或截图中暴露真实 Cookie、账号信息或招聘平台个人数据。
+在 `chrome://extensions/` 开启开发者模式，加载项目 `chrome-extension` 目录。扩展更新后需手动重新加载，并刷新工作台与平台页面。正式发行配套版本为 1.8.0，独立于应用 1.5.0 编号。
 
-## 7. 运行检查
+不要在测试、截图或 Issue 中暴露真实 Cookie、Token、简历、对话、模型密钥或数据库。使用虚构数据；[demo/](../../demo/README.md) 是样例契约，不是已上线的一键 Demo。
 
-后端测试：
+## 运行检查
+
+从项目根目录运行后端与扩展检查：
 
 ```powershell
 .\gradlew.bat test
+node scripts/validate-chrome-extension.mjs
+node --test chrome-extension/tests/*.test.cjs
 ```
 
-后端完整构建：
+前端在 `front` 目录运行：
 
 ```powershell
-.\gradlew.bat build
-```
-
-前端代码检查：
-
-```powershell
-cd front
+pnpm test
 pnpm lint
+pnpm build:prod
 ```
 
-前端生产构建：
+`pnpm build:prod` 会生成 `front/out` 并同步`src/main/resources/dist`。检查与本次改动相关的测试和构建即可；CI 还检查 Docker 配置、CodeQL，并构建 Release 预览。构建产物与缓存不提交。
 
-```powershell
-cd front
-pnpm build
-```
+## 数据库与升级
 
-提交 PR 前，至少确保与改动相关的检查通过。
+默认日常数据库为 `db/getjobs.db`；上面的开发模式改用 `target/dev-data/getjobs.db`。部署环境还可能显式覆盖路径，不要依赖目录名猜测实际数据库。
 
-## 8. 数据库与测试数据
+结构变更使用 Flyway；先验证空库，再在一致性备份副本上演练，确认原库未改动。已有数据库中的业务记录必须保留。1.5 的迁移与回滚说明见 [发布说明](../releases/v1.5.0.md)。
 
-默认本地数据库：
+## 提交与 PR
+
+按 [AGENTS.md](../../AGENTS.md) 使用独立 `codex/*` 分支、中文提交说明，只暂存相关文件。例如：
 
 ```text
-db/getjobs.db
+修复：恢复验证后的岗位扫描
+文档：更新首次启动与截图说明
 ```
 
-数据库文件不能提交。结构变更优先通过 Flyway 迁移脚本完成，并验证：
+PR 应说明问题、变更、验证结果以及数据库、平台和安全边界。以 `main` 为目标，最终提交的必要检查通过且阻塞审查处理后合并。涉及运行代码时再部署到已有明确目标并验收实际服务；纯文档修改无需重启应用。
 
-- 新数据库能够完整初始化
-- 已有数据库可以向前迁移
-- 迁移不会删除用户数据
-- CI 使用临时 SQLite 数据库
-
-仓库中的 `demo/` 目录只包含虚构、脱敏的示例数据。当前阶段这些文件用于界面说明、测试设计和后续 Demo 模式开发，不代表已自动接入应用。
-
-## 9. 提交规范
-
-推荐使用清晰的英文或中文提交信息：
-
-```text
-feat: add offline demo data loader
-fix: restore Boss scan after verification
-chore: configure weekly dependency updates
-docs: improve contributor setup guide
-```
-
-一次提交尽量只解决一个问题，不要混入数据库、日志、缓存和个人配置。
-
-## 10. 创建 Pull Request
-
-PR 中应说明：
-
-- 为什么需要修改
-- 修改了哪些模块
-- 如何验证
-- 是否影响数据库、平台流程或安全边界
-- 是否包含界面变化和截图
-
-涉及招聘平台自动化时，请明确：
-
-- 是否仍然保留人工确认
-- 是否会绕过验证码、登录验证或平台限制
-- 是否会读取、保存或传输敏感信息
-
-项目不接受绕过风控、验证码或账号限制的实现。
-
-更多要求见根目录的 `CONTRIBUTING.md` 和 `SECURITY.md`。
+更多要求见 [参与贡献](../../CONTRIBUTING.md) 和 [安全说明](../../SECURITY.md)。
