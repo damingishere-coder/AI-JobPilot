@@ -68,7 +68,8 @@
     return (task.keywords || task.config?.keywords || []).map((keyword, index) => {
       const data = task.continuousScan?.keywords?.[keyword] || {};
       const accepted = Object.values(task.continuousScan?.credited || {}).filter(owner => owner === keyword).length;
-      const stopReason = accepted >= target ? "target_reached" : data.stopReason || "reason_unrecorded";
+      const stopReason = accepted >= target ? "target_reached"
+        : data.stopReason === "target_reached" ? "awaiting_submission" : data.stopReason || "reason_unrecorded";
       return { keywordIndex: index + 1, keyword, target, collected: accepted,
         historyDuplicates: Number(data.historyDuplicates || 0), sameRunDuplicates: Number(data.sameRunDuplicates || 0), submissionFailures: Number(data.submissionFailures || 0), detailFailures: Number(data.detailFailures || 0),
         recoveryAttempts: Math.min(3, Number(data.recoveryAttempts || 0)), stopReason,

@@ -32,7 +32,7 @@ const labels: Record<string, string> = { running: '进行中', complete: '全部
 const reasons: Record<string, string> = {
   target_reached: '已达到采集目标', platform_exhausted: '官网结果已到底',
   stagnation_safety_cap: '加载无进展，尚未确认官网结果已到底', timeout_safety_cap: '已达到关键词时间上限',
-  reason_unrecorded: '原因未记录',
+  reason_unrecorded: '原因未记录', awaiting_submission: '候选已收集，等待完整详情和入队确认',
   page_safety_cap: '已达到翻页上限', unrecognized_layout: '页面岗位结构未识别'
 }
 

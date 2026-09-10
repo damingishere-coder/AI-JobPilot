@@ -87,3 +87,15 @@ test('a server cancellation retains receipts already accepted in that batch', as
   assert.equal(result.cancelled,true);assert.equal(result.totalAccepted,1);
   assert.equal(stored.credited.accepted,'kw');assert.equal(stored.receipts.untouched,undefined);
 });
+
+test('a candidate target without queue receipts stays resumable after stop or refresh', () => {
+  const task={profileId:4,runId:'r',keywordCursorKey:'k',keywords:['kw'],currentIndex:0,phase:'detail',
+    jobs:[{id:'a'}],config:{searchJobLimit:1},continuousScan:{credited:{},receipts:{},keywords:{kw:{stopReason:'target_reached'}}}};
+  assert.equal(scan.results(task)[0].outcome,'partial');
+  assert.equal(scan.results(task)[0].stopReason,'awaiting_submission');
+  const storage=new Map();storage.setItem=storage.set.bind(storage);storage.getItem=storage.get.bind(storage);
+  scan.archive(storage,'boss',task);
+  assert.equal(scan.restore(storage,'boss',{profileId:4,runId:'r',keywordCursorKey:'k'}).phase,'detail');
+  scan.applyReceipts(task.continuousScan,[{jobKey:'a',freshAccepted:true}],'kw',1);
+  assert.equal(scan.results(task)[0].outcome,'complete');
+});

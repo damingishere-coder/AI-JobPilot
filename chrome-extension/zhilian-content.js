@@ -437,11 +437,12 @@
       const failures = Number(collection.detailFailures || 0);
       const pendingDetails = !collection.detailsComplete && !collection.empty;
       const collected = task.continuousScan ? window.GetJobsContinuousScan.applyReceipts(task.continuousScan, [], keyword, task.config?.searchJobLimit).accepted : pendingDetails ? 0 : Number(collection.jobs?.length || 0);
-      const stopReason = collection.stopReason || "target_reached";
+      const stopReason = task.continuousScan && collection.stopReason === "target_reached" && collected < normalizeSearchJobLimit(task.config?.searchJobLimit)
+        ? "awaiting_submission" : collection.stopReason || "reason_unrecorded";
       const finished = ["target_reached", "platform_exhausted"].includes(stopReason) && failures === 0;
       const result = { keywordIndex: keywordIndex + 1, keyword, collected, target: normalizeSearchJobLimit(task.config?.searchJobLimit),
         historyDuplicates: Number(collection.historyDuplicateCount || 0), detailFailures: failures,
-        stopReason, outcome: pendingDetails ? "running" : finished ? "complete" : collected ? "partial" : "failed" };
+        stopReason, outcome: pendingDetails || stopReason === "awaiting_submission" ? "running" : finished ? "complete" : collected ? "partial" : "failed" };
       const existing = keywordResults.findIndex(item => item.keywordIndex === result.keywordIndex);
       if (existing < 0) keywordResults.push(result); else keywordResults[existing] = result;
     };
