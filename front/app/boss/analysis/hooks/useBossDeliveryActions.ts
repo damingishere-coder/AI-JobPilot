@@ -58,10 +58,10 @@ function formatBatchDeliveryResult(result: Record<string, unknown>) {
   if (rows.length === 0) return summary
   const details = rows.slice(0, 50).map((row, index) => {
     const item = row && typeof row === "object"
-      ? row as { id?: unknown; requestKey?: unknown; outcome?: unknown; evidence?: unknown; greetingOutcome?: unknown; greetingEvidence?: unknown; skipped?: unknown; persisted?: unknown; message?: unknown }
+      ? row as { id?: unknown; requestKey?: unknown; outcome?: unknown; evidence?: unknown; greetingOutcome?: unknown; greetingEvidence?: unknown; skipped?: unknown; persisted?: unknown; actionStarted?: unknown; message?: unknown }
       : {}
     const persisted = item.persisted === true ? "已落库" : "待补偿"
-    const action = item.skipped === true ? "未触达" : "已执行"
+    const action = item.skipped === true || item.actionStarted === false || item.evidence === "PRE_ACTION_ERROR" ? "未执行" : item.outcome === "CONFIRMED" ? "已确认" : "已尝试"
     return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${action} · ${persisted}\n`
       + `平台证据：${String(item.evidence || "-")}；话术结果：${String(item.greetingOutcome || "-")}；话术证据：${String(item.greetingEvidence || "-")}\n`
       + String(item.message || "")
@@ -75,6 +75,11 @@ function formatBatchGreetingPreview(items: BatchPreviewItem[], title: string) {
     + `来源：${greetingSourceLabel(item.greetingSource)}\n${item.greeting || "【空白】"}`
   ))
   return `${title}\n\n将使用以下 ${items.length} 条沟通话术：\n\n${lines.join("\n\n")}\n\n确认后才会创建投递任务并交给 Chrome。`
+}
+
+async function ensureDeliveryReady() {
+  const result = await sendChromeBridgeMessage({ type: "BOSS_DELIVERY_PREFLIGHT", platform: "boss" }, 60000)
+  if (!result.success) throw new Error(result.message || "Boss投递页面预检查失败，请更新扩展并刷新页面")
 }
 
 async function loadBatchPreview(body: unknown) {
@@ -165,6 +170,7 @@ export function useBossDeliveryActions({
     let reservedTasks: ReservedTask[] = []
     try {
       setActingJobId(job.id)
+      await ensureDeliveryReady()
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/confirm`, { greetingSnapshot })
       if (!data.success) {
         openTextDialog("确认投递", data.message || "该岗位暂不能投递。")
@@ -182,7 +188,8 @@ export function useBossDeliveryActions({
       openTextDialog("确认投递", result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
       await refreshStats()
-    } catch {
+    } catch (error) {
+      if (reservedTasks.length === 0) { openTextDialog("投递预检查未通过", error instanceof Error ? error.message : "页面未就绪"); return }
       await markUnknownReservations(reservedTasks, "前端未收到 Chrome 投递执行结果")
       openTextDialog("待确认发送", "确认失败：网络或服务异常。")
     } finally {
@@ -224,6 +231,7 @@ export function useBossDeliveryActions({
       }
       const ok = window.confirm(`这会创建新的投递 attempt，并可能再次联系该 Boss HR。\n\n最终话术：\n${finalGreeting}\n\n确认显式重试？`)
       if (!ok) return
+      await ensureDeliveryReady()
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
       if (!data.success || !data.task) {
         openTextDialog("重试投递", data.message || "当前岗位不能重试。")
@@ -241,7 +249,8 @@ export function useBossDeliveryActions({
       openTextDialog("重试投递", result.message || "重试任务已结束。")
       await loadList(page, size)
       await refreshStats()
-    } catch {
+    } catch (error) {
+      if (reservedTasks.length === 0) { openTextDialog("投递预检查未通过", error instanceof Error ? error.message : "页面未就绪"); return }
       await markUnknownReservations(reservedTasks, "前端未收到 Chrome 重试执行结果")
       openTextDialog("重试投递", "重试失败：网络或服务异常，已保守标记待对账。")
     } finally {
@@ -281,6 +290,7 @@ export function useBossDeliveryActions({
       }
       const ok = window.confirm(formatBatchGreetingPreview(preview.items, "Boss 批量投递预览"))
       if (!ok) return
+      await ensureDeliveryReady()
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
         ...body,
         greetingSnapshots: greetingSnapshots(preview.items),
@@ -303,7 +313,8 @@ export function useBossDeliveryActions({
       openTextDialog("批量投递", formatBatchDeliveryResult(result))
       await loadList(page, size)
       await refreshStats()
-    } catch {
+    } catch (error) {
+      if (reservedTasks.length === 0) { openTextDialog("投递预检查未通过", error instanceof Error ? error.message : "页面未就绪"); return }
       await markUnknownReservations(reservedTasks, "前端未收到 Chrome 批量投递执行结果")
       openTextDialog("批量投递", "批量投递失败：网络或服务异常。")
     } finally {
@@ -334,6 +345,7 @@ export function useBossDeliveryActions({
       }
       const ok = window.confirm(formatBatchGreetingPreview(preview.items, "Boss AI 推荐投递预览"))
       if (!ok) return
+      await ensureDeliveryReady()
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
         ...body,
         greetingSnapshots: greetingSnapshots(preview.items),
@@ -356,7 +368,8 @@ export function useBossDeliveryActions({
       openTextDialog("AI推荐一键投递", formatBatchDeliveryResult(result))
       await loadList(page, size)
       await refreshStats()
-    } catch {
+    } catch (error) {
+      if (reservedTasks.length === 0) { openTextDialog("投递预检查未通过", error instanceof Error ? error.message : "页面未就绪"); return }
       await markUnknownReservations(reservedTasks, "前端未收到 Chrome AI 推荐批量投递结果")
       openTextDialog("AI推荐一键投递", "AI推荐批量投递失败：网络或服务异常。")
     } finally {
@@ -390,6 +403,7 @@ export function useBossDeliveryActions({
       }
       const ok = window.confirm(formatBatchGreetingPreview(preview.items, `人工覆盖 ${uniqueIds.length} 个 AI 不匹配岗位`))
       if (!ok) return false
+      await ensureDeliveryReady()
       const data = await postJsonWithRetry(`${API_BASE}/api/boss/jobs/confirm-batch`, {
         ...body,
         greetingSnapshots: greetingSnapshots(preview.items),
@@ -414,7 +428,8 @@ export function useBossDeliveryActions({
       await loadList(page, size)
       await refreshStats()
       return true
-    } catch {
+    } catch (error) {
+      if (reservedTasks.length === 0) { openTextDialog("投递预检查未通过", error instanceof Error ? error.message : "页面未就绪"); return }
       await markUnknownReservations(reservedTasks, "前端未收到 Chrome 人工批量投递结果")
       openTextDialog("人工投递", "人工批量投递失败：网络或服务异常。")
       return false
