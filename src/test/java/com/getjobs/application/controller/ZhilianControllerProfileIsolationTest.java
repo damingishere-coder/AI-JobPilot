@@ -104,4 +104,13 @@ class ZhilianControllerProfileIsolationTest {
         dto.setDescription("岗位职责：负责产品需求分析与运营推广。任职要求：熟悉人工智能应用与数据分析，能够独立完成产品规划和交付。");
         return dto;
     }
+    @Test void explicitResumeClearsOnlyTheCurrentRunCancelFlagWithoutEnqueueing() {
+        ChromeJobBatchRequest request = new ChromeJobBatchRequest(); request.setProfileId(3L); request.setRunId("run");
+        assertThat(controller.resumeChromeScan(request).getStatusCode().value()).isEqualTo(409);
+        verify(jobRunCoordinator, never()).clearCancel(any());
+        request.setProfileId(4L);
+        assertThat(controller.resumeChromeScan(request).getStatusCode().value()).isEqualTo(200);
+        verify(jobRunCoordinator).clearCancel("run");
+        verify(queueService, never()).enqueue(any());
+    }
 }

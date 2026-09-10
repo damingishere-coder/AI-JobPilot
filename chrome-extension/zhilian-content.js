@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-09-detail-scan";
+  const EXTENSION_VERSION = "2026-09-10-continuous-scan";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -174,7 +174,8 @@
     }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
-    const incomingTask = normalizeScanTask(message);
+    let incomingTask = normalizeScanTask(message);
+    if (message.resumeIncomplete) incomingTask = window.GetJobsContinuousScan.restore(localStorage, "zhilian", incomingTask);
     const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
     const configChanged = Boolean(
       existingTask?.keywordCursorKey
@@ -199,9 +200,12 @@
         && (isResumableScanTask(existingTask) || status.resumable || status.stage === "blocked")
     );
 
+    if (message.resumeIncomplete || canResumeExisting) {
+      await requestZhilianLocalApi("chrome-resume", { body: { profileId, runId: message.resumeIncomplete ? incomingTask.runId : existingTask.runId }, pageTabId: message.pageTabId });
+    }
     stopRequested = false;
     await clearStopRequested();
-    if (canResumeExisting) {
+    if (canResumeExisting && !message.resumeIncomplete) {
       resumeStoredScanTaskIfActive(true).catch((error) => {
         writeScanStatus({
           isRunning: false,
@@ -432,10 +436,10 @@
     const recordKeyword = (keywordIndex, keyword, collection) => {
       const failures = Number(collection.detailFailures || 0);
       const pendingDetails = !collection.detailsComplete && !collection.empty;
-      const collected = pendingDetails ? 0 : Number(collection.jobs?.length || 0);
+      const collected = task.continuousScan ? window.GetJobsContinuousScan.applyReceipts(task.continuousScan, [], keyword, task.config?.searchJobLimit).accepted : pendingDetails ? 0 : Number(collection.jobs?.length || 0);
       const stopReason = collection.stopReason || "target_reached";
       const finished = ["target_reached", "platform_exhausted"].includes(stopReason) && failures === 0;
-      const result = { keywordIndex: keywordIndex + 1, keyword, collected,
+      const result = { keywordIndex: keywordIndex + 1, keyword, collected, target: normalizeSearchJobLimit(task.config?.searchJobLimit),
         historyDuplicates: Number(collection.historyDuplicateCount || 0), detailFailures: failures,
         stopReason, outcome: pendingDetails ? "running" : finished ? "complete" : collected ? "partial" : "failed" };
       const existing = keywordResults.findIndex(item => item.keywordIndex === result.keywordIndex);
@@ -460,7 +464,11 @@
           break;
         }
       }
+      if (task.resumeIndices && !task.resumeIndices.includes(keywordIndex)) continue;
+      task.currentIndex = keywordIndex;
       const keyword = keywords[keywordIndex];
+      task.continuousScan ||= { credited: {}, receipts: {}, keywords: {} };
+      task.continuousScan.keywords[keyword] ||= { attempted: [], observed: [], elapsedMs: 0, historyDuplicates: 0, detailFailures: 0, recoveryAttempts: 0 };
       markKeywordCursorCurrent(task, keywordIndex, keyword);
       const searchPage = Math.max(1, Number(task.searchPage || 1));
       const searchUrl = buildSearchUrl(keyword, config, searchPage);
@@ -514,14 +522,16 @@
         updatedAt: Date.now()
       });
 
-      if (task.phase === "detail") {
+      if (["detail", "submitting"].includes(task.phase)) {
         const detailResult = await continueZhilianDetailScan(task, keyword, runId, baseMeta);
-        if (detailResult.pendingNavigation) return { success: true, saved: totalSaved, pendingNavigation: true };
+        if (detailResult.refillTask) return runScanInternal(detailResult.refillTask);
+      if (detailResult.pendingNavigation) return { success: true, saved: totalSaved, pendingNavigation: true };
         if (detailResult.paused) return { success: false, saved: totalSaved, paused: true, message: detailResult.message };
         totalSaved = detailResult.totalSaved;
         totalRead = Number(detailResult.totalRead ?? totalRead);
         totalReceived = Number(detailResult.totalReceived ?? totalReceived);
         totalInsufficient = Number(detailResult.totalInsufficient ?? totalInsufficient);
+        if (stopRequested) break;
         if (!stopRequested) advanceKeywordCursor(task, keywordIndex + 1, keyword);
         task = {
           ...task,
@@ -580,7 +590,7 @@
         stopRequested = true;
         break;
       }
-      const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
+      const searchJobLimit = Math.max(1, normalizeSearchJobLimit(task.config?.searchJobLimit) - window.GetJobsContinuousScan.applyReceipts(task.continuousScan, [], keyword, task.config.searchJobLimit).accepted);
       try {
         if(!window.GetJobsZhilianFilters)throw new Error("智联筛选模块未加载，请重新加载扩展");
         const catalog=await requestZhilianLocalApi("filter-options", {params:{cityCode:config.cityCode||"489"},pageTabId:task.pageTabId});
@@ -600,7 +610,14 @@
       }
       if (collectionResult.stopped) {
         stopRequested = true;
+        task = {...baseTask, phase: "collecting", collectedJobs: collectionResult.jobs, modernKeyword: keyword};
         break;
+      }
+      if (task.continuousScan) {
+        const discovery = task.continuousScan.keywords[keyword];
+        discovery.stopReason = collectionResult.stopReason || "reason_unrecorded";
+        discovery.historyDuplicates = Math.max(discovery.historyDuplicates, Number(collectionResult.historyDuplicateCount || 0));
+        discovery.detailFailures = Math.max(discovery.detailFailures, Number(collectionResult.detailFailures || 0));
       }
       recordKeyword(keywordIndex, keyword, collectionResult);
       writeScanStatus({ outcome: "running", keywordResults });
@@ -668,12 +685,14 @@
         detailTask.detailIndex = 1;
       }
       const detailResult = await continueZhilianDetailScan(detailTask, keyword, runId, baseMeta);
+      if (detailResult.refillTask) return runScanInternal(detailResult.refillTask);
       if (detailResult.pendingNavigation) return { success: true, saved: totalSaved, pendingNavigation: true };
       if (detailResult.paused) return { success: false, saved: totalSaved, paused: true, message: detailResult.message };
       totalSaved = detailResult.totalSaved;
       totalRead = Number(detailResult.totalRead ?? totalRead);
       totalReceived = Number(detailResult.totalReceived ?? totalReceived);
       totalInsufficient = Number(detailResult.totalInsufficient ?? totalInsufficient);
+      if (stopRequested) { task = detailTask; break; }
       if (!stopRequested) advanceKeywordCursor(task, keywordIndex + 1, keyword);
       task = {
         ...task,
@@ -697,16 +716,20 @@
     if (!stopRequested) {
       advanceKeywordCursor(task, keywords.length, "");
     }
-    clearStoredScanTask();
+    const continuousResults = task.continuousScan ? window.GetJobsContinuousScan.results(task) : [];
+    const continuousOutcome = task.continuousScan ? window.GetJobsContinuousScan.outcome(continuousResults, keywords.length) : "partial";
+    if (task.continuousScan) window.GetJobsContinuousScan.archive(localStorage, "zhilian", task);
+    clearStoredScanTask(false);
     const stopped = stopRequested;
     if (stopped) await clearStopRequested();
-    const unfinished = keywordResults.filter(result => result.outcome !== "complete");
+    if (task.continuousScan) keywordResults.splice(0, keywordResults.length, ...continuousResults);
+    const unfinished = keywordResults.filter(result => !["complete", "exhausted"].includes(result.outcome));
     const allFailed = keywordResults.length === keywords.length && keywordResults.every(result => result.outcome === "failed");
-    const outcome = stopped ? "stopped" : allFailed ? "failed" : unfinished.length ? "partial" : "complete";
+    const outcome = stopped ? "stopped" : task.continuousScan ? continuousOutcome : allFailed ? "failed" : unfinished.length ? "partial" : "complete";
     const stage = stopped ? "stopped" : allFailed ? "error" : "complete";
     const finalMessage = stopped
       ? `智联 Chrome扫描已停止：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个`
-      : `智联 Chrome扫描${outcome === "failed" ? "失败" : outcome === "partial" ? "部分完成" : "完成"}：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个${unfinished.length ? `；未完成关键词：${unfinished.map(result => result.keyword).join("、")}` : ""}`;
+      : `智联 Chrome扫描${outcome === "failed" ? "失败" : outcome === "partial" ? "部分完成" : outcome === "exhausted" ? "搜索已耗尽但不足目标" : "全部达标"}：已读取 ${totalRead} 个岗位，后台接收 ${totalReceived} 个，入库 ${totalSaved} 个，信息不足 ${totalInsufficient} 个${unfinished.length ? `；未完成关键词：${unfinished.map(result => result.keyword).join("、")}` : ""}`;
     writeScanStatus({
       isRunning: false,
       stopRequested: stopped,
@@ -787,24 +810,33 @@
   async function collectModernZhilianJobs(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved) {
     const collector = window.GetJobsZhilianModernCollector;
     if (!collector) throw new Error("智联新版采集脚本未加载，请重新加载扩展并刷新智联页面");
+    const support = window.GetJobsContinuousScan;
+    const discovery = task.continuousScan?.keywords[keyword];
     const resuming = task.modernKeyword === keyword;
     const jobs = resuming ? normalizeCollectedJobs(task.collectedJobs).filter(job => job.detailVerified === true) : [];
-    const seenIds = new Set([...(resuming ? task.modernSeenIds || [] : []), ...jobs.map(job => job.id)]);
-    const visitedCards = new WeakSet();
+    const seenIds = new Set([...(discovery?.attempted || (resuming ? task.modernSeenIds || [] : [])), ...jobs.map(job => job.id)]);
+    const visitedCards = new WeakMap();
     const attemptedCards = new Set();
-    let historyDuplicateCount = resuming ? Number(task.historyDuplicateCount || 0) : 0;
-    let detailFailures = resuming ? Number(task.modernDetailFailures || 0) : 0;
+    let historyDuplicateCount = Number(discovery?.historyDuplicates || (resuming ? task.historyDuplicateCount : 0) || 0);
+    let detailFailures = Number(discovery?.detailFailures || (resuming ? task.modernDetailFailures : 0) || 0);
     let rounds = 0;
     let stagnant = 0;
-    const startedAt = resuming ? Number(task.collectionStartedAt || Date.now()) : Date.now();
-    const deadline = startedAt + 180000;
+    const startedAt = Date.now();
+    let lastCheckpointAt = startedAt;
+    const deadline = startedAt + Math.max(0, (support?.MAX_ACTIVE_MS || 900000) - Number(discovery?.elapsedMs || 0));
     let stopReason = "";
-    const checkpoint = async () => storeScanTask({
+    const checkpoint = async () => {
+      if (discovery) {
+        discovery.elapsedMs += Date.now() - lastCheckpointAt; lastCheckpointAt = Date.now();
+        discovery.attempted = [...seenIds]; discovery.historyDuplicates = historyDuplicateCount; discovery.detailFailures = detailFailures;
+      }
+      await storeScanTask({
       ...baseTask, phase: "collecting", searchLayout: "split", modernKeyword: keyword, searchPage: 1,
       navigationAttempts: 0, navigationStartedAt: 0,
       collectedJobs: jobs, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures,
       historyDuplicateCount, totalSaved, collectionStartedAt: startedAt
     });
+    };
     const pausedForBlock = async () => handleBlockingState({
       ...baseTask, phase: "collecting", searchPage: 1, collectedJobs: jobs,
       modernKeyword: keyword, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures, historyDuplicateCount, totalSaved,
@@ -833,12 +865,14 @@
     for (const seed of seeds) {
       if (!freshSeedIds.has(seed.id) && !seenIds.has(seed.id)) {
         seenIds.add(seed.id);
-        historyDuplicateCount++;
+        if (baseTask.continuousScan?.credited?.[seed.id]) {
+          if (discovery) discovery.sameRunDuplicates = Number(discovery.sameRunDuplicates || 0) + 1;
+        } else historyDuplicateCount++;
       }
     }
 
     while (!(stopReason = zhilianCollectionStopReason({ target: searchJobLimit, fresh: jobs.length,
-      pages: rounds, stagnantPages: stagnant, elapsedMs: Date.now() - startedAt }))) {
+      pages: rounds, stagnantPages: 0, elapsedMs: Date.now() >= deadline ? 900000 : 0 }))) {
       if (await hasStopRequested()) return { stopped: true, jobs };
       if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("智联搜索条件已改变，已保留采集断点");
       await window.GetJobsZhilianFilters.verify(document,config,task.filterCatalog,{sleep,shouldStop:hasStopRequested});
@@ -846,23 +880,25 @@
       if (blocked) return { paused: true, jobs, message: blocked.message };
       const countBefore = document.querySelectorAll(".job-list-panel .job-card").length;
       for (let cardIndex = 0; cardIndex < countBefore; cardIndex++) {
-        if (jobs.length >= searchJobLimit || Date.now() - startedAt >= 180000) break;
+        if (jobs.length >= searchJobLimit || Date.now() >= deadline) break;
         if (await hasStopRequested()) return { stopped: true, jobs };
         if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取岗位时智联筛选发生变化，断点已保留");
         // Vue can replace the list after each selection. Resolve the current
         // node at every step instead of retaining the initial NodeList.
         const card = document.querySelectorAll(".job-list-panel .job-card")[cardIndex];
-        if (!card || visitedCards.has(card)) continue;
-        visitedCards.add(card);
+        if (!card) continue;
+        const visibleSignature = JSON.stringify(collector.readCard(card));
+        if (visitedCards.get(card) === visibleSignature) continue;
+        visitedCards.set(card, visibleSignature);
         const prepared = await collector.prepareCard(document, card, { sleep, shouldStop: hasStopRequested, deadline });
         const summary = prepared.summary;
         const matches = seeds.filter(seed => seed.title === summary.title && seed.company === summary.company && seed.salary === summary.salary);
-        const expectedId = matches.length === 1 ? matches[0].id : "";
+        const expectedId = summary.id || (matches.length === 1 ? matches[0].id : "");
         if (prepared.card && expectedId && seenIds.has(expectedId)) continue;
         const cardKey = summary.title && summary.company
           ? JSON.stringify([summary.title, summary.company, summary.salary, summary.location, expectedId]) : "";
-        if (cardKey && attemptedCards.has(cardKey)) continue;
-        if (cardKey) attemptedCards.add(cardKey);
+        if (expectedId && attemptedCards.has(expectedId)) continue;
+        if (expectedId) attemptedCards.add(expectedId);
         const result = await collector.selectAndReadResult(document, prepared.card || card, {
           expectedId, sleep, shouldStop: hasStopRequested, deadline, preparedCard: prepared
         });
@@ -872,6 +908,7 @@
         if (block) return { paused: true, jobs, message: block.message };
         const job = result.job;
         if (!job) {
+          if (expectedId) seenIds.add(expectedId);
           detailFailures++;
           const jobTitle = result.summary?.title || summary.title || `第 ${cardIndex + 1} 个岗位（标题未就绪）`;
           const reason = result.reason || "DETAIL_TIMEOUT";
@@ -894,7 +931,9 @@
         }
         if (await hasStopRequested()) return { stopped: true, jobs };
         seenIds.add(job.id);
-        historyDuplicateCount += dedupe.duplicateCount;
+        if (baseTask.continuousScan?.credited?.[job.id]) {
+          if (discovery) discovery.sameRunDuplicates = Number(discovery.sameRunDuplicates || 0) + 1;
+        } else historyDuplicateCount += dedupe.duplicateCount;
         jobs.push(...dedupe.jobs);
         await checkpoint();
         postProgress(task, "info", `智联新版列表：已读取完整详情 ${jobs.length}/${searchJobLimit} 个，历史重复 ${historyDuplicateCount} 个，详情失败 ${detailFailures} 个。`, {
@@ -904,19 +943,26 @@
       }
       if (jobs.length >= searchJobLimit) break;
       if (Date.now() >= deadline) { stopReason = "timeout_safety_cap"; break; }
-      const lastCard = document.querySelector(".job-list-panel")?.lastElementChild;
-      lastCard?.scrollIntoView({ block: "end" });
-      window.scrollBy(0, Math.max(600, window.innerHeight || 0));
-      let grew = false;
-      for (let poll = 0; poll < 10 && Date.now() < deadline && !await hasStopRequested(); poll++) {
-        await sleep(Math.min(500, deadline - Date.now()));
-        if (document.querySelectorAll(".job-list-panel .job-card").length > countBefore) { grew = true; break; }
-      }
-      stagnant = grew ? 0 : stagnant + 1;
+      const visibleKeys = () => Array.from(document.querySelectorAll(".job-list-panel .job-card"))
+        .map(card => { const summary = collector.readCard(card); return summary.id || summary.url || JSON.stringify(summary); });
+      const observed = new Set(discovery?.observed || []);
+      visibleKeys().forEach(key => observed.add(key));
+      if (discovery) discovery.observed = [...observed];
+      const moved = await support.advance({ doc: document, cards: () => Array.from(document.querySelectorAll(".job-list-panel .job-card")),
+        readKeys: visibleKeys, seen: observed, sleep, stopped: hasStopRequested, recovery: stagnant > 0 });
+      if (moved.stopped) return { stopped: true, jobs };
+      stagnant = moved.grew ? 0 : stagnant + 1;
+      if (discovery) discovery.recoveryAttempts = Math.min(stagnant, 3);
+      const container = support.selectScrollContainer(Array.from(document.querySelectorAll(".job-list-panel .job-card")), document);
+      const exhausted = container && [...container.querySelectorAll(".no-more, .load-more, [class*='no-more'], [class*='finished']")]
+        .some(node => node.getBoundingClientRect().height > 0 && /^(没有更多|暂无更多|已经到底|到底了|全部加载完).{0,15}$/.test(compact(node.textContent)));
+      if (exhausted) { stopReason = "platform_exhausted"; break; }
+      if (stagnant > support.MAX_RECOVERIES) { stopReason = "stagnation_safety_cap"; break; }
       rounds++;
     }
-    await checkpoint();
     stopReason = jobs.length >= searchJobLimit ? "target_reached" : stopReason;
+    if (discovery) discovery.stopReason = stopReason;
+    await checkpoint();
     postProgress(task, jobs.length >= searchJobLimit ? "info" : "warning",
       `智联完整岗位详情 ${jobs.length}/${searchJobLimit} 个，历史重复 ${historyDuplicateCount} 个，详情失败 ${detailFailures} 个。${collectionStopReasonLabel(stopReason)}`, {
         ...baseMeta, stage: "collecting", collected: jobs.length, historyDuplicates: historyDuplicateCount, detailFailures, stopReason
@@ -933,225 +979,74 @@
     if (/^\/jobs\/?$/i.test(window.location.pathname)) {
       return await collectModernZhilianJobs(task, baseTask, keyword, config, searchJobLimit, baseMeta, totalSaved);
     }
-    let collectedJobs = normalizeCollectedJobs(task.collectedJobs);
-    const seenJobUrls = new Set(collectedJobs.map((job) => normalizeJobUrlKey(job)).filter(Boolean));
+    const support = window.GetJobsContinuousScan;
+    const discovery = task.continuousScan.keywords[keyword];
+    const collectedJobs = normalizeCollectedJobs(task.collectedJobs?.length ? task.collectedJobs : discovery.pending || []);
+    const attempted = new Set(discovery.attempted || []);
+    const observed = new Set(discovery.observed || []);
     let pageNumber = Math.max(1, Number(task.searchPage || currentSearchPageNumber() || 1));
-    let pagesScanned = Number(task.pagesScanned || 0);
-    let stagnantPages = Number(task.stagnantPages || 0);
-    let historyDuplicateCount = Number(task.historyDuplicateCount || 0);
-    let candidateCount = Number(task.candidateCount || collectedJobs.length);
-    const collectionStartedAt = Number(task.collectionStartedAt || Date.now());
-    const maxPages = Number(SCAN_SUPPORT.DEEP_COLLECTION_MAX_PAGES || 50);
-    let lastDiagnostics = null;
-    let platformExhausted = false;
-    let stopReason = "";
-
-    while (collectedJobs.length < searchJobLimit && pagesScanned < maxPages) {
-      stopReason = zhilianCollectionStopReason({
-        target: searchJobLimit,
-        fresh: collectedJobs.length,
-        pages: pagesScanned,
-        stagnantPages,
-        elapsedMs: Date.now() - collectionStartedAt
-      });
-      if (stopReason) break;
-      if (await hasStopRequested()) {
-        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount, freshCount: collectedJobs.length, historyDuplicateCount, pagesScanned, stopReason: "stopped" };
-      }
-
+    let tick = Date.now(), reason = "";
+    const checkpoint = async () => {
+      discovery.elapsedMs += Date.now() - tick; tick = Date.now();
+      discovery.attempted = [...attempted]; discovery.observed = [...observed]; discovery.pending = collectedJobs;
+      await storeScanTask({ ...baseTask, phase: "collecting", searchPage: pageNumber, collectedJobs, totalSaved });
+    };
+    while (!reason) {
+      if (await hasStopRequested()) { reason = "stopped"; break; }
+      if (discovery.elapsedMs + Date.now() - tick >= support.MAX_ACTIVE_MS) { reason = "timeout_safety_cap"; break; }
       if (!isCurrentSearchPage(keyword, config, pageNumber)) {
-        const pageUrl = buildSearchUrl(keyword, config, pageNumber);
-        postProgress(task, "info", `智联 Chrome准备打开第 ${pageNumber} 页继续采集：${keyword}，目标URL：${pageUrl}`, {
-          ...baseMeta,
-          stage: "collecting",
-          pageNumber,
-          collected: collectedJobs.length,
-          searchJobLimit,
-          targetUrl: pageUrl
-        });
-        await storeScanTask({
-          ...baseTask,
-          phase: "collecting",
-          searchPage: pageNumber,
-          pagesScanned,
-          stagnantPages,
-          historyDuplicateCount,
-          candidateCount,
-          collectionStartedAt,
-          collectedJobs,
-          totalSaved
-        });
-        window.location.assign(pageUrl);
-        return { pendingNavigation: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+        await checkpoint();
+        window.location.assign(buildSearchUrl(keyword, config, pageNumber));
+        return { pendingNavigation: true, jobs: collectedJobs };
       }
-
       const waitState = await waitForJobCards();
-      if (await hasStopRequested()) {
-        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
+      const blocked = await handleBlockingState({ ...baseTask, phase: "collecting", searchPage: pageNumber, collectedJobs }, waitState.diagnostics, baseMeta);
+      if (blocked) return { paused: true, jobs: collectedJobs, message: blocked.message };
+      const read = () => collectJobs(keyword, task, baseMeta).jobs;
+      const candidates = read();
+      const pending = candidates.filter(job => {
+        const key = support.jobKey(job); observed.add(key);
+        if (!key || attempted.has(key)) return false;
+        if (task.continuousScan.credited[key]) {
+          attempted.add(key); discovery.sameRunDuplicates = Number(discovery.sameRunDuplicates || 0) + 1; return false;
+        }
+        return true;
+      });
+      const dedupe = await filterZhilianDuplicateJobs(pending, task, keyword);
+      const fresh = new Set(dedupe.jobs.map(support.jobKey));
+      for (const job of pending) {
+        const key = support.jobKey(job);
+        if (!fresh.has(key)) { attempted.add(key); discovery.historyDuplicates++; }
+        else if (collectedJobs.length < searchJobLimit) { attempted.add(key); collectedJobs.push(job); }
       }
-      lastDiagnostics = waitState.diagnostics;
-      const blockResult = await handleBlockingState({
-        ...baseTask,
-        phase: "collecting",
-        searchPage: pageNumber,
-        pagesScanned,
-        collectedJobs,
-        totalSaved
-      }, waitState.diagnostics, { ...baseMeta, pageNumber });
-      if (blockResult) {
-        return {
-          paused: true,
-          message: blockResult.message,
-          jobs: collectedJobs.slice(0, searchJobLimit),
-          candidateCount: collectedJobs.length,
-          pagesScanned
-        };
-      }
-
-      postProgress(task, "info", `智联第 ${pageNumber} 页加载完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，岗位节点 ${waitState.diagnostics.jobNodes} 个。`, {
-        ...baseMeta,
-        stage: "collecting",
-        pageNumber,
-        collected: collectedJobs.length,
-        searchJobLimit,
-        ...waitState.diagnostics
-      });
-
-      await scrollForCards(searchJobLimit - collectedJobs.length);
-      if (await hasStopRequested()) {
-        return { stopped: true, jobs: collectedJobs.slice(0, searchJobLimit), candidateCount: collectedJobs.length, pagesScanned };
-      }
-
-      const collectResult = collectJobs(keyword, task, { ...baseMeta, pageNumber });
-      const pendingJobs = collectResult.jobs.filter((job) => {
-        const key = normalizeJobUrlKey(job);
-        return key && !seenJobUrls.has(key);
-      });
-      candidateCount += pendingJobs.length;
-      const dedupeResult = await filterZhilianDuplicateJobs(pendingJobs, task, keyword);
-      historyDuplicateCount += dedupeResult.duplicateCount;
-      let added = 0;
-      for (const job of dedupeResult.jobs) {
-        const key = normalizeJobUrlKey(job);
-        if (!key || seenJobUrls.has(key)) continue;
-        seenJobUrls.add(key);
-        collectedJobs.push(job);
-        added += 1;
-        if (collectedJobs.length >= searchJobLimit) break;
-      }
-      pagesScanned += 1;
-      stagnantPages = added > 0 ? 0 : stagnantPages + 1;
-      const nextPageNumber = pageNumber + 1;
-      const hasNextPage = hasNextSearchPage(nextPageNumber);
-      platformExhausted = !hasNextPage;
-      stopReason = zhilianCollectionStopReason({
-        target: searchJobLimit,
-        fresh: collectedJobs.length,
-        pages: pagesScanned,
-        stagnantPages,
-        elapsedMs: Date.now() - collectionStartedAt,
-        platformExhausted
-      });
-
-      postProgress(task, collectResult.parsed > 0 ? "info" : "warning", `智联第 ${pageNumber} 页解析完成：候选节点 ${collectResult.nodeCount} 个，首屏数据 ${collectResult.initialStateParsed || 0} 个，解析 ${collectResult.parsed} 个，历史重复 ${dedupeResult.duplicateCount} 个，本页新增 ${added} 个，累计新增 ${collectedJobs.length}/${searchJobLimit} 个，跳过 ${collectResult.skipped} 个。${stopReason ? ` 停止原因：${collectionStopReasonLabel(stopReason)}。` : ""}`, {
-        ...baseMeta,
-        stage: "collecting",
-        pageNumber,
-        collected: collectedJobs.length,
-        searchJobLimit,
-        nodeCount: collectResult.nodeCount,
-        parsed: collectResult.parsed,
-        added,
-        skipped: collectResult.skipped,
-        conditionFiltered: 0,
-        duplicated: collectResult.duplicated,
-        historyDuplicates: historyDuplicateCount,
-        candidateCount,
-        fresh: collectedJobs.length,
-        stagnantPages,
-        stopReason,
-        initialStateParsed: collectResult.initialStateParsed || 0,
-        errorCount: collectResult.errorCount,
-        pagesScanned
-      });
-
-      await storeScanTask({
-        ...baseTask,
-        phase: "collecting",
-        searchPage: pageNumber,
-        pagesScanned,
-        stagnantPages,
-        historyDuplicateCount,
-        candidateCount,
-        collectionStartedAt,
-        collectedJobs,
-        totalSaved
-      });
-
-      if (stopReason) break;
-      pageNumber = nextPageNumber;
+      await checkpoint();
+      if (collectedJobs.length >= searchJobLimit) { reason = "target_reached"; break; }
+      if (waitState.diagnostics.hasEmptyPrompt) { reason = "platform_exhausted"; break; }
+      const moved = await support.advance({ doc: document, cards: () => collectJobEntries().map(entry => entry.root),
+        readKeys: () => read().map(support.jobKey), seen: observed, sleep, stopped: hasStopRequested,
+        recovery: discovery.recoveryAttempts > 0 });
+      if (moved.stopped) { reason = "stopped"; break; }
+      if (moved.grew) discovery.recoveryAttempts = 0;
+      else if (hasNextSearchPage(pageNumber + 1)) {
+        pageNumber++; discovery.recoveryAttempts = 0;
+        await checkpoint();
+        window.location.assign(buildSearchUrl(keyword, config, pageNumber));
+        return { pendingNavigation: true, jobs: collectedJobs };
+      } else if (support.pagination(document).exhausted) { reason = "platform_exhausted"; break; }
+      else if (++discovery.recoveryAttempts > support.MAX_RECOVERIES) { reason = "stagnation_safety_cap"; break; }
+      postProgress(task, "info", `智联继续向后采集：候选 ${collectedJobs.length}/${searchJobLimit}，历史重复 ${discovery.historyDuplicates}`, baseMeta);
     }
-
-    if (!stopReason) {
-      stopReason = zhilianCollectionStopReason({
-        target: searchJobLimit,
-        fresh: collectedJobs.length,
-        pages: pagesScanned,
-        stagnantPages,
-        elapsedMs: Date.now() - collectionStartedAt,
-        platformExhausted
-      }) || "page_safety_cap";
-    }
-
-    if (collectedJobs.length < searchJobLimit) {
-      postProgress(task, "warning", `智联关键词 ${keyword} 未补足目标：新增岗位 ${collectedJobs.length}/${searchJobLimit}，候选 ${candidateCount} 个，历史重复 ${historyDuplicateCount} 个，停止原因：${collectionStopReasonLabel(stopReason)}。`, {
-        ...baseMeta,
-        stage: "collecting",
-        collected: collectedJobs.length,
-        candidateCount,
-        conditionFiltered: 0,
-        historyDuplicates: historyDuplicateCount,
-        fresh: collectedJobs.length,
-        searchJobLimit,
-        pagesScanned,
-        stagnantPages,
-        stopReason,
-        elapsedMs: Date.now() - collectionStartedAt
-      });
-    }
-
-    const jobs = collectedJobs.slice(0, searchJobLimit);
-    if (!jobs.length) {
-      const diagnostics = lastDiagnostics || buildListDiagnostics();
-      const blockResult = await handleBlockingState({
-        ...baseTask,
-        phase: "collecting",
-        searchPage: pageNumber,
-        pagesScanned,
-        collectedJobs,
-        totalSaved
-      }, diagnostics, baseMeta);
-      if (blockResult) {
-        return { paused: true, message: blockResult.message, empty: true, jobs: [], candidateCount: 0, pagesScanned };
-      }
-      postProgress(task, "warning", `智联 Chrome未采集到岗位：${keyword}。当前URL=${diagnostics.currentUrl}，标题=${diagnostics.title}，详情链接=${diagnostics.detailLinks}，岗位节点=${diagnostics.jobNodes}，首屏数据=${diagnostics.initialStateJobs || 0}，状态=${diagnostics.pageState}。可能未登录/安全验证/页面结构变化/筛选无结果。`, {
-        ...baseMeta,
-        stage: "empty",
-        collected: 0,
-        searchJobLimit,
-        ...diagnostics
-      });
-      return { empty: true, jobs: [], candidateCount, freshCount: 0, historyDuplicateCount, pagesScanned, stopReason };
-    }
-
-    return { jobs, candidateCount, freshCount: jobs.length, historyDuplicateCount, pagesScanned, stopReason, empty: false };
+    discovery.stopReason = reason;
+    await checkpoint();
+    return { jobs: collectedJobs, empty: !collectedJobs.length, stopped: reason === "stopped", stopReason: reason,
+      candidateCount: observed.size, historyDuplicateCount: discovery.historyDuplicates, pagesScanned: pageNumber };
   }
 
   async function filterZhilianDuplicateJobs(jobs, task, keyword, deadline = Infinity) {
     const list = Array.isArray(jobs) ? jobs : [];
     if (!list.length) return { jobs: [], duplicateCount: 0 };
     const data = await requestZhilianLocalApi("chrome-jobs-dedupe", {
-      body: { profileId: normalizeProfileId(task?.profileId), runId: task?.runId, keyword, jobs: list },
+      body: { profileId: normalizeProfileId(task?.profileId), runId: task?.runId, keyword, freshOnly: Boolean(task.continuousScan), jobs: list },
       pageTabId: task?.pageTabId,
       deadline
     });
@@ -1170,7 +1065,7 @@
     if (list.some((job) => !decisions.has(normalizeJobUrlKey(job)))) {
       throw new Error("智联查重接口没有覆盖全部候选岗位");
     }
-    const freshJobs = list.filter((job) => decisions.get(normalizeJobUrlKey(job)) === false);
+    const freshJobs = list.filter((job) => decisions.get(normalizeJobUrlKey(job)) === false && !task.continuousScan?.credited?.[job.id]);
     return { jobs: freshJobs, duplicateCount: list.length - freshJobs.length };
   }
 
@@ -1180,9 +1075,9 @@
     }
     if (Number(state?.fresh || 0) >= Number(state?.target || 20)) return "target_reached";
     if (state?.platformExhausted) return "platform_exhausted";
-    if (Number(state?.stagnantPages || 0) >= 5) return "stagnation_safety_cap";
-    if (Number(state?.elapsedMs || 0) >= 180000) return "timeout_safety_cap";
-    if (Number(state?.pages || 0) >= 50) return "page_safety_cap";
+    if (Number(state?.stagnantPages || 0) >= 4) return "stagnation_safety_cap";
+    if (Number(state?.elapsedMs || 0) >= 900000) return "timeout_safety_cap";
+
     return "";
   }
 
@@ -1229,7 +1124,7 @@
     const diagnostics = buildListDiagnostics();
     if (diagnostics.hasEmptyPrompt) return false;
     const nextSelectors = [
-      "a.soupager__btn:has-text('下一页')",
+      "a.soupager__btn",
       "a[class*='pager']:not([class*='disable'])",
       "button[class*='next']",
       "a[aria-label*='下一页']",
@@ -1250,7 +1145,7 @@
         // Try the next selector.
       }
     }
-    return diagnostics.detailLinks > 0 && nextPageNumber <= 50;
+    return false; // Advance only when the page exposes an enabled next-page control.
   }
 
   function collectJobEntries() {
@@ -1391,7 +1286,16 @@
 
   async function continueZhilianDetailScan(message, keyword, runId, baseMeta = {}) {
     const jobs = Array.isArray(message.jobs) ? message.jobs : [];
-    const detailIndex = Number(message.detailIndex || 0);
+    let detailIndex = Number(message.detailIndex || 0);
+    if (message.continuousScan) {
+      window.GetJobsContinuousScan.accountDetailTime(message);
+      const discovery = message.continuousScan.keywords[keyword];
+      if (discovery.elapsedMs >= window.GetJobsContinuousScan.MAX_ACTIVE_MS && detailIndex < jobs.length) {
+        discovery.stopReason = "timeout_safety_cap";
+        for (let index = detailIndex; index < jobs.length; index++) jobs[index] = { ...jobs[index], detailVerified: false, detailNavigationFailed: true };
+        detailIndex = jobs.length; message.detailIndex = detailIndex;
+      }
+    }
     const totalSaved = Number(message.totalSaved || 0);
     const totalRead = Number(message.totalRead || 0);
     const totalReceived = Number(message.totalReceived || 0);
@@ -1562,6 +1466,7 @@
       stage: "submitting",
       collected: jobs.length
     });
+    if (message.continuousScan) return submitContinuousZhilian(message, jobs, keyword, runId, baseMeta);
     let data;
     const receipts = { ...(message.submissionReceipts || {}) };
     const jobReceiptKey = job => String(job.id || extractUrlId(job.url) || job.url || "");
@@ -1684,6 +1589,42 @@
     };
   }
 
+  async function submitContinuousZhilian(message, jobs, keyword, runId, baseMeta) {
+    const support = window.GetJobsContinuousScan, state = message.continuousScan;
+    const discovery = state.keywords[keyword], target = normalizeSearchJobLimit(message.config?.searchJobLimit);
+    let data;
+    try {
+      data = await support.submit({ jobs, state, keyword, target,
+        send: batch => requestZhilianLocalApi("chrome-jobs", { body: { profileId: message.profileId, runId, keyword, freshOnly: true, jobs: batch }, pageTabId: message.pageTabId }),
+        checkpoint: () => storeScanTask({ ...message, phase: "submitting", detailIndex: jobs.length }),
+        stopped: hasStopRequested, sleep,
+        progress: counts => postProgress(message, "info", counts.waitingForCapacity ? "后台队列暂满，保留岗位等待入队" : `新增岗位入队 ${counts.accepted}/${target}；AI分析独立继续`, { ...baseMeta, ...counts, stage: "submitting" }) });
+    } catch (error) { return pauseZhilianSubmission(message, jobs, Number(message.totalSaved || 0), error, baseMeta); }
+    if (data.cancelled) { stopRequested = true; return { success: true, totalSaved: data.totalAccepted }; }
+    discovery.pending = [];
+    discovery.detailFailures += data.insufficient;
+    discovery.submissionFailures = Number(discovery.submissionFailures || 0) + Number(data.submissionFailures || 0);
+    const previous = message.keywordResults?.find(item => item.keywordIndex === Number(message.currentIndex || 0) + 1);
+    const reason = data.accepted >= target ? "target_reached" : (discovery.stopReason || previous?.stopReason || "unrecognized_layout");
+    discovery.stopReason = reason;
+    if (previous) Object.assign(previous, { collected: data.accepted, target, stopReason: reason, historyDuplicates: discovery.historyDuplicates,
+      detailFailures: discovery.detailFailures, recoveryAttempts: discovery.recoveryAttempts,
+      outcome: reason === "target_reached" ? "complete" : reason === "platform_exhausted" ? "exhausted" : "partial" });
+    const result = { success: true, totalSaved: data.totalAccepted,
+      totalRead: Number(message.totalRead || 0) + jobs.length, totalReceived: Number(message.totalReceived || 0) + jobs.length,
+      totalInsufficient: Number(message.totalInsufficient || 0) + data.insufficient };
+    const refill = data.accepted < target && reason === "target_reached";
+    const next = { ...message, ...result, phase: refill ? "collecting" : "nextKeyword", jobs: [], detailIndex: 0,
+      collectedJobs: [], modernKeyword: "", modernSeenIds: [], collectionStartedAt: 0, pagesScanned: 0,
+      currentIndex: Number(message.currentIndex || 0) + (refill ? 0 : 1) };
+    await storeScanTask(next);
+    postProgress(message, "info", `智联新增 ${data.accepted}/${target}，跳过历史重复 ${discovery.historyDuplicates}；${collectionStopReasonLabel(reason)}`, {
+      ...baseMeta, stage: "submitted", keywordResults: message.keywordResults, fresh: data.accepted, target });
+    if (refill) return { ...result, refillTask: next };
+    advanceKeywordCursor(message, next.currentIndex, keyword);
+    return result;
+  }
+
   async function pauseZhilianSubmission(message, jobs, totalSaved, error, baseMeta) {
     const reason = error?.message || String(error || "未知错误");
     const errorType = error?.errorType || "LOCAL_API_ERROR";
@@ -1802,6 +1743,7 @@
         degree: tags.degree || job.degree,
         deliveryStatus: detectZhilianDeliveryStatus(document) || job.deliveryStatus || "",
         description,
+        detailVerified: description.trim().length >= 30,
         url: detailUrl
       };
     } catch (error) {
@@ -2098,6 +2040,7 @@
         message: text,
         timestamp: Date.now(),
         runId: message?.runId || "",
+        ...(message.continuousScan ? { keywordResults: window.GetJobsContinuousScan.results(message) } : {}),
         ...meta
       }
     });
@@ -2262,6 +2205,7 @@
 
   async function storeScanTask(task) {
     if (scanOwnershipLost || window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
+    window.GetJobsContinuousScan?.accountDetailTime(task);
     const normalized = {
       ...normalizeScanTask(task),
       source: "GET_JOBS_BACKGROUND",
@@ -2282,7 +2226,19 @@
     }
   }
 
-  function clearStoredScanTask() {
+  function clearStoredScanTask(preserve = true) {
+    if (preserve && window.GetJobsContinuousScan) {
+      try {
+        const raw = sessionStorage.getItem(SCAN_TASK_KEY);
+        const previous = raw ? JSON.parse(raw) : null;
+        if (previous?.continuousScan) {
+          window.GetJobsContinuousScan.accountDetailTime({ ...previous, pausedAt: Date.now() });
+          window.GetJobsContinuousScan.archive(localStorage, "zhilian", previous);
+          writeScanStatus({ runId: previous.runId, profileId: previous.profileId,
+            keywordResults: window.GetJobsContinuousScan.results(previous), outcome: stopRequested ? "stopped" : "partial" });
+        }
+      } catch (error) { console.warn("采集断点归档失败，保留原断点", error); return; }
+    }
     if (scanOwnershipLost || window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
     sessionStorage.removeItem(SCAN_TASK_KEY);
     clearSharedScanTask();

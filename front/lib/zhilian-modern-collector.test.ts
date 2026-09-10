@@ -15,6 +15,9 @@ const scope: Record<string, unknown> = {}
 for (const file of ['zhilian-scan-support.js', 'zhilian-modern-collector.js']) {
   runInNewContext(readFileSync(resolve(process.cwd(), '../chrome-extension', file), 'utf8'), { window: scope, URL, URLSearchParams })
 }
+const continuousScope: Record<string, unknown> = {}
+runInNewContext(readFileSync(resolve(process.cwd(), '../chrome-extension/continuous-scan-support.js'), 'utf8'), continuousScope)
+const continuous = continuousScope.GetJobsContinuousScan as { applyReceipts: (state: unknown, items: unknown[], keyword: string, target: number) => unknown }
 const collector = scope.GetJobsZhilianModernCollector as Collector
 const description = '岗位职责：负责产品需求分析、运营推广和数据跟踪。任职要求：熟悉人工智能产品并具备项目交付经验。'
 
@@ -217,7 +220,7 @@ describe('Zhilian modern split list', () => {
     const functionSource = code.slice(code.indexOf('  async function collectModernZhilianJobs('), code.indexOf('  async function collectJobsAcrossSearchPages('))
     const context = {
       window: {
-        GetJobsZhilianFilters: {verify:async()=>({verified:true})},
+        GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters: {verify:async()=>({verified:true})},
         GetJobsZhilianModernCollector: collector, innerHeight: 800,
         scrollBy: () => {
           const card = addCard('滚动新增岗位')
@@ -233,6 +236,8 @@ describe('Zhilian modern split list', () => {
       zhilianCollectionStopReason: support.deepCollectionStopReason,
       isCurrentSearchPage: () => true, sleep: async () => {}, postProgress: () => {}, collectionStopReasonLabel: (s: string) => s
     }
+    const onScroll = () => context.window.scrollBy()
+    document.documentElement.addEventListener('wheel', onScroll)
     const collect = runInNewContext(`${functionSource}\ncollectModernZhilianJobs`, context)
     const result = await collect({}, {}, 'AI产品运营', {}, 1, {}, 0)
     expect(result.detailsComplete).toBe(true)
@@ -253,6 +258,7 @@ describe('Zhilian modern split list', () => {
     const duplicatesOnly = await collect({}, {}, 'AI产品运营', {}, 1, {}, 0)
     expect(duplicatesOnly.empty).toBe(true)
     expect(duplicatesOnly.jobs).toHaveLength(0)
+    document.documentElement.removeEventListener('wheel', onScroll)
   })
 
   it('submits verified panel jobs once without navigating them to standalone details', async () => {
@@ -260,12 +266,13 @@ describe('Zhilian modern split list', () => {
     const source = readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-content.js'), 'utf8')
     const functionSource = source.slice(source.indexOf('  async function runScanInternal('), source.indexOf('  function collectJobs('))
     const navigation = vi.fn()
-    const submit = vi.fn(async (task: { detailIndex: number }) => {
+    const submit = vi.fn(async (task: { detailIndex: number; continuousScan: unknown }) => {
+      continuous.applyReceipts(task.continuousScan, jobs.map(job => ({jobKey: job.id, freshAccepted: true})), 'AI产品运营', 20)
       expect(task.detailIndex).toBe(20)
       return { totalSaved: 20, totalRead: 20, totalReceived: 20, totalInsufficient: 0 }
     })
     const context = {
-      stopRequested: false, Date, document, window: { GetJobsZhilianFilters:{verify:async()=>({verified:true})}, location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营' } },
+      stopRequested: false, Date, document, localStorage, window: { GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters:{verify:async()=>({verified:true})}, location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营' } },
       requestZhilianLocalApi:async()=>({version:'2026-09-08'}),
       normalizeScanTask: (m: unknown) => m, scanKeywords: () => ['AI产品运营'], normalizeTaskIndex: () => 0,
       hasStopRequested: async () => false, markKeywordCursorCurrent: () => {}, buildSearchUrl: () => '', buildSearchNavigationKey: () => '',
@@ -275,7 +282,7 @@ describe('Zhilian modern split list', () => {
       navigateToDetail: navigation, continueZhilianDetailScan: submit, advanceKeywordCursor: () => {}, clearStoredScanTask: () => {}
     }
     const run = runInNewContext(`${functionSource}\nrunScanInternal`, context)
-    expect((await run({ config: {}, runId: 'test-run', currentIndex: 0 })).saved).toBe(20)
+    expect((await run({ config: {keywords: ['AI产品运营'], searchJobLimit: 20}, keywords: ['AI产品运营'], runId: 'test-run', currentIndex: 0 })).saved).toBe(20)
     expect(navigation).not.toHaveBeenCalled()
     expect(submit).toHaveBeenCalledTimes(1)
   })
@@ -288,24 +295,29 @@ describe('Zhilian keyword outcomes', () => {
     const checkpoints: Array<Record<string, unknown>> = []
     const events: Array<{ type: string; meta: Record<string, unknown> }> = []
     const keywords = ['关键词一', '关键词二', '关键词三'].slice(0, collections.length)
-    const collect = vi.fn(async (_task, base) => collections[base.currentIndex])
-    const submit = vi.fn(async (task) => ({ totalSaved: task.totalSaved + task.jobs.length,
-      totalRead: task.totalRead + task.jobs.length, totalReceived: task.totalReceived + task.jobs.length, totalInsufficient: 0 }))
+    const collect = vi.fn(async (_task, base) => {
+      const data = collections[base.currentIndex]
+      return { ...data, jobs: (data.jobs as Job[]).map(job => ({...job, id: `${job.id}-${base.currentIndex}`})) }
+    })
+    const submit = vi.fn(async (task) => {
+      continuous.applyReceipts(task.continuousScan, task.jobs.map((job: Job) => ({jobKey: job.id, freshAccepted: true})), keywords[task.currentIndex], 1)
+      return { totalSaved: task.totalSaved + task.jobs.length,
+      totalRead: task.totalRead + task.jobs.length, totalReceived: task.totalReceived + task.jobs.length, totalInsufficient: 0 } })
     const context = {
-      stopRequested: false, Date, document,
-      window: { GetJobsZhilianFilters: { verify: async () => ({ verified: true }) }, location: { href: 'https://www.zhaopin.com/jobs' } },
+      stopRequested: false, Date, document, localStorage,
+      window: { GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters: { verify: async () => ({ verified: true }) }, location: { href: 'https://www.zhaopin.com/jobs' } },
       requestZhilianLocalApi: async () => ({}), normalizeScanTask: (m: unknown) => m,
       scanKeywords: () => keywords, normalizeTaskIndex: (index: number) => index || 0,
       hasStopRequested: async () => false, markKeywordCursorCurrent: () => {}, buildSearchUrl: () => '', buildSearchNavigationKey: () => '',
       writeScanStatus: vi.fn(), isCurrentSearchPage: () => true,
       storeScanTask: async (task: Record<string, unknown>) => { checkpoints.push(structuredClone(task)) },
       postProgress: (_task: unknown, type: string, _message: string, meta: Record<string, unknown>) => events.push({ type, meta }),
-      waitForPage: async () => {}, sleep: async () => {}, humanPause: async () => {}, normalizeSearchJobLimit: () => 30,
+      waitForPage: async () => {}, sleep: async () => {}, humanPause: async () => {}, normalizeSearchJobLimit: () => 1,
       collectJobsAcrossSearchPages: collect, navigateToDetail: vi.fn(), continueZhilianDetailScan: submit,
       advanceKeywordCursor: () => {}, clearStoredScanTask: () => {}
     }
     const run = runInNewContext(`${functionSource}\nrunScanInternal`, context)
-    return { run: () => run({ config: {}, runId: 'test-run', profileId: 4, currentIndex: 0, ...storedTask }), checkpoints, events, collect, submit, navigation: context.navigateToDetail }
+    return { run: () => run({ config: {keywords, searchJobLimit: 1}, keywords, runId: 'test-run', profileId: 4, currentIndex: 0, ...storedTask }), checkpoints, events, collect, submit, navigation: context.navigateToDetail }
   }
 
   const complete = { jobs: [{ id: 'CC100J200', title: '岗位', detailVerified: true }], detailsComplete: true, stopReason: 'target_reached' }
@@ -317,27 +329,27 @@ describe('Zhilian keyword outcomes', () => {
     expect(h.collect).toHaveBeenCalledTimes(3)
     expect(h.submit).toHaveBeenCalledTimes(2)
     expect(result).toMatchObject({ outcome: 'partial', saved: 2, totalRead: 2, totalReceived: 2 })
-    expect(result.keywordResults.map((item: {outcome: string}) => item.outcome)).toEqual(['complete', 'failed', 'complete'])
+    expect(result.keywordResults.map((item: {outcome: string}) => item.outcome)).toEqual(['complete', 'partial', 'complete'])
     expect(result.keywordResults[1]).toMatchObject({ detailFailures: 4, historyDuplicates: 19, collected: 0 })
     expect(h.events.at(-1)).toMatchObject({ type: 'warning', meta: { stage: 'complete', outcome: 'partial' } })
     expect(h.checkpoints.at(-1)?.keywordResults).toHaveLength(3)
   })
 
-  it('reports an error when every keyword fails, without submitting empty jobs', async () => {
+  it('reports partial when every keyword hits the collection limit, without submitting empty jobs', async () => {
     const h = runner([failed, failed]); const result = await h.run()
-    expect(result).toMatchObject({ success: false, outcome: 'failed', totalRead: 0 })
+    expect(result).toMatchObject({ success: true, outcome: 'partial', totalRead: 0 })
     expect(h.submit).not.toHaveBeenCalled()
-    expect(h.events.at(-1)).toMatchObject({ type: 'error', meta: { stage: 'error' } })
+    expect(h.events.at(-1)).toMatchObject({ type: 'warning', meta: { stage: 'complete' } })
   })
 
-  it('treats proven empty or historical-only exhausted results as complete', async () => {
+  it('distinguishes proven exhaustion from reaching the fresh target', async () => {
     const h = runner([
       { jobs: [], empty: true, stopReason: 'platform_exhausted' },
       { jobs: [], empty: true, stopReason: 'platform_exhausted', historyDuplicateCount: 20 }
     ])
-    expect(await h.run()).toMatchObject({ outcome: 'complete', totalRead: 0 })
+    expect(await h.run()).toMatchObject({ outcome: 'exhausted', totalRead: 0 })
     expect(h.submit).not.toHaveBeenCalled()
-    expect(h.events.at(-1)?.type).toBe('success')
+    expect(h.events.at(-1)?.type).toBe('warning')
   })
 
   it('restores failed keyword outcomes from a navigation checkpoint without re-submitting prior keywords', async () => {

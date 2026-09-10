@@ -17,17 +17,17 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-09-09-detail-scan");
+  assert.equal(support.version, "2026-09-10-continuous-scan");
   assert.equal(typeof support.isZhilianUrl, "function");
 });
 
 test("uses history-aware deep collection safety bounds for Zhilian", () => {
   const support = loadSupport();
-  assert.equal(support.DEEP_COLLECTION_MAX_PAGES, 50);
-  assert.equal(support.DEEP_COLLECTION_MAX_DURATION_MS, 180000);
-  assert.equal(support.DEEP_COLLECTION_MAX_STAGNANT_PAGES, 5);
+  assert.equal(support.DEEP_COLLECTION_MAX_PAGES, Number.MAX_SAFE_INTEGER);
+  assert.equal(support.DEEP_COLLECTION_MAX_DURATION_MS, 900000);
+  assert.equal(support.DEEP_COLLECTION_MAX_STAGNANT_PAGES, 4);
   assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 20 }), "target_reached");
-  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 4 }), "");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 3 }), "");
   assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 5 }), "stagnation_safety_cap");
   assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, platformExhausted: true }), "platform_exhausted");
 });

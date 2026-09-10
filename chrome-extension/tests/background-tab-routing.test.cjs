@@ -249,6 +249,7 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",
@@ -266,6 +267,7 @@ test("reinjects all Zhilian dependencies when the content script is stale", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",

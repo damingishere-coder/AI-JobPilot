@@ -18,6 +18,8 @@ public class ChromeJobDto {
     private String hrTitle;
     private String hrActive;
     private String description;
+    private Boolean detailVerified;
+    private Boolean detailNavigationFailed;
     private String deliveryStatus;
     private String collectionAction;
     private String url;

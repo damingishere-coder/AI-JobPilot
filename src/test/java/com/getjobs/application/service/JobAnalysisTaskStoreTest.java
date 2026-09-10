@@ -78,6 +78,8 @@ class JobAnalysisTaskStoreTest {
         assertThat(store.submit(req).accepted()).isTrue();
         assertThat(((Number)store.zhilianRunProgress(4L,"progress-run").get("enqueued")).intValue()).isEqualTo(1);
         assertThat(((Number)store.zhilianRunProgress(5L,"progress-run").get("collected")).intValue()).isZero();
+        jdbcTemplate.update("UPDATE zhilian_data SET scan_run_id=? WHERE id=?", "later-run", req.getJobRowId());
+        assertThat(((Number)store.zhilianRunProgress(4L,"later-run").get("enqueued")).intValue()).isZero();
     }
 
     @Test

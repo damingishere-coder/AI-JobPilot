@@ -435,4 +435,19 @@ class BossControllerListOnlyTest {
         entity.setDeliveryStatus(status);
         return entity;
     }
+    @Test void explicitResumeClearsOnlyTheCurrentRunCancelFlagWithoutEnqueueing() {
+        BossService bossService = mock(BossService.class);
+        ProfileService profileService = mock(ProfileService.class);
+        ChromeJobAnalysisQueueService queueService = mock(ChromeJobAnalysisQueueService.class);
+        JobRunCoordinator jobRunCoordinator = mock(JobRunCoordinator.class);
+        BossController controller = controller(bossService, profileService, queueService, jobRunCoordinator);
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(4L);
+        ChromeJobBatchRequest request = new ChromeJobBatchRequest(); request.setProfileId(3L); request.setRunId("run");
+        assertThat(controller.resumeChromeScan(request).getStatusCode().value()).isEqualTo(409);
+        verify(jobRunCoordinator, never()).clearCancel(any());
+        request.setProfileId(4L);
+        assertThat(controller.resumeChromeScan(request).getStatusCode().value()).isEqualTo(200);
+        verify(jobRunCoordinator).clearCancel("run");
+        verify(queueService, never()).enqueue(any());
+    }
 }

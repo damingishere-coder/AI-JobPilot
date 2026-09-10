@@ -7,7 +7,7 @@ import { validateSetupForPlatform } from '@/lib/setupChecklist'
 vi.mock('@/lib/zhilian-page-status', () => ({ getZhilianPageStatus: async () => ({ connected: true, ready: true, message: 'Chrome 智联可用' }) }))
 vi.mock('@/lib/setupChecklist', () => ({ validateSetupForPlatform: vi.fn(async () => ({ ready: true, missing: [] })), formatSetupMissingMessage: () => '' }))
 vi.mock('@/lib/chromeBridge', () => ({ sendChromeBridgeMessage: vi.fn(async () => ({ success: true })), subscribeChromeBridgeEvents: vi.fn(() => () => {}) }))
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks() })
+afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.clearAllMocks() })
 
 it('配置页不再嵌入分析；启动后提供带档案与批次的独立结果入口', async () => {
   sessionStorage.clear()
@@ -56,7 +56,7 @@ it('刷新后从扩展恢复部分完成结果和批次入口', async () => {
   render(<Page />)
   await screen.findByText('采集结果 · 部分完成')
   expect(screen.getByText(/未完成关键词：运营/)).toBeInTheDocument()
-  expect(screen.getByText(/历史重复 19 个，详情失败 4 个/)).toBeInTheDocument()
+  expect(screen.getByText(/历史重复 19 个，同轮重复 0 个，详情失败 4 个/)).toBeInTheDocument()
   expect(screen.getByRole('link', { name: '查看本次扫描结果' })).toHaveAttribute('href', '/zhilian/analysis?profileId=4&scanRunId=zhilian-test-partial')
   expect(screen.getByRole('button', { name: '开始扫描' })).toBeEnabled()
 })
@@ -95,4 +95,17 @@ it('同档案旧批次事件不能覆盖新批次结果', async () => {
   act(() => handler?.({ payload: { ...partialResult, runId: 'zhilian-100', outcome: 'complete', keywordResults: [], platform: 'zhilian', operation: 'scan' } }))
   expect(screen.getByText('采集结果 · 部分完成')).toBeInTheDocument()
   expect(screen.getByRole('link', { name: '查看本次扫描结果' })).toHaveAttribute('href', '/zhilian/analysis?profileId=4&scanRunId=zhilian-200')
+})
+
+it('扩展暂时离线时刷新仍保留本档案关键词结束原因', async () => {
+  stubConfig()
+  localStorage.setItem('getjobs-scan-result:zhilian:4', JSON.stringify(partialResult))
+  vi.mocked(sendChromeBridgeMessage).mockResolvedValue({success:false,message:'扩展离线'})
+  const first = render(<Page />)
+  expect(await screen.findByText('采集结果 · 部分完成')).toBeInTheDocument()
+  expect(screen.getByText(/已达到关键词时间上限/)).toBeInTheDocument()
+  first.unmount()
+  render(<Page />)
+  expect(await screen.findByText('采集结果 · 部分完成')).toBeInTheDocument()
+  expect(screen.getByRole('button',{name:'继续未完成关键词'})).toBeEnabled()
 })

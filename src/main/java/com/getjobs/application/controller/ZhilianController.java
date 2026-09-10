@@ -53,6 +53,8 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/zhilian")
 public class ZhilianController {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.FreshScanReceiptService freshScanReceiptService;
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -380,6 +382,7 @@ public class ZhilianController {
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
         if (profileError != null) return profileError;
+        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("zhilian", request, this::receiveChromeJobs);
         Long profileId = request.getProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int savedCount = 0;
@@ -540,6 +543,15 @@ public class ZhilianController {
     public ResponseEntity<Map<String, Object>> dedupeChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
         if (profileError != null) return profileError;
+        if (Boolean.TRUE.equals(request.getFreshOnly())) {
+            var freshItems = (request.getJobs() == null ? java.util.List.<ChromeJobDto>of() : request.getJobs()).stream().map(dto -> {
+                String key = com.getjobs.application.service.FreshScanReceiptService.key(dto);
+                boolean duplicate = !key.isBlank() && freshScanReceiptService.exists("zhilian", request.getProfileId(), key);
+                return Map.<String, Object>of("id", key, "url", Objects.toString(dto.getUrl(), ""), "duplicate", duplicate, "action", duplicate ? "SKIP" : "NEW");
+            }).toList();
+            long duplicates = freshItems.stream().filter(i -> Boolean.TRUE.equals(i.get("duplicate"))).count();
+            return ResponseEntity.ok(Map.of("success", true, "items", freshItems, "duplicateCount", duplicates, "newCount", freshItems.size() - duplicates));
+        }
         Long profileId = request.getProfileId();
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
@@ -574,6 +586,16 @@ public class ZhilianController {
                 "duplicateCount", duplicateCount,
                 "newCount", Math.max(0, jobs.size() - duplicateCount)
         ));
+    }
+
+    @PostMapping("/chrome/resume")
+    public ResponseEntity<Map<String, Object>> resumeChromeScan(@RequestBody ChromeJobBatchRequest request) {
+        var error = validateChromeProfile(request == null ? null : request.getProfileId());
+        if (error != null) return error;
+        String runId = normalizeRunId(request.getRunId());
+        if (runId == null) return ResponseEntity.badRequest().body(Map.of("success", false, "message", "恢复采集缺少批次ID"));
+        jobRunCoordinator.clearCancel(runId);
+        return ResponseEntity.ok(Map.of("success", true, "runId", runId, "message", "采集停止标记已解除，等待扩展恢复断点"));
     }
 
     @PostMapping("/chrome/stop")
