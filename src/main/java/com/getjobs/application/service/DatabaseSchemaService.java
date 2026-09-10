@@ -744,10 +744,11 @@ public class DatabaseSchemaService {
     }
 
     private static boolean columnExists(Statement stmt, String table, String column) throws Exception {
-        try (ResultSet rs = stmt.executeQuery("PRAGMA table_info('" + table + "')")) {
-            while (rs.next()) {
-                if (column.equalsIgnoreCase(rs.getString("name"))) {
-                    return true;
+        try (PreparedStatement query = stmt.getConnection().prepareStatement("SELECT name FROM pragma_table_info(?)")) {
+            query.setString(1, table);
+            try (ResultSet rs = query.executeQuery()) {
+                while (rs.next()) {
+                    if (column.equalsIgnoreCase(rs.getString("name"))) return true;
                 }
             }
         }
@@ -760,12 +761,12 @@ public class DatabaseSchemaService {
         if (!hasUniqueIndex(connection, table, uniqueColumns)) {
             throw new SQLException("缺少必要唯一约束: " + table + uniqueColumns);
         }
-        try (Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("PRAGMA foreign_key_list('" + table + "')")) {
-            while (resultSet.next()) {
-                if ("profile".equalsIgnoreCase(resultSet.getString("table"))
-                        && "profile_id".equalsIgnoreCase(resultSet.getString("from"))) {
-                    return;
+        try (PreparedStatement query = connection.prepareStatement("SELECT * FROM pragma_foreign_key_list(?)")) {
+            query.setString(1, table);
+            try (ResultSet resultSet = query.executeQuery()) {
+                while (resultSet.next()) {
+                    if ("profile".equalsIgnoreCase(resultSet.getString("table"))
+                            && "profile_id".equalsIgnoreCase(resultSet.getString("from"))) return;
                 }
             }
         }
@@ -776,11 +777,11 @@ public class DatabaseSchemaService {
                                           String table,
                                           List<String> expectedColumns) throws SQLException {
         List<String> indexNames = new ArrayList<>();
-        try (Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("PRAGMA index_list('" + table + "')")) {
-            while (resultSet.next()) {
-                if (resultSet.getInt("unique") == 1) {
-                    indexNames.add(resultSet.getString("name"));
+        try (PreparedStatement query = connection.prepareStatement("SELECT * FROM pragma_index_list(?)")) {
+            query.setString(1, table);
+            try (ResultSet resultSet = query.executeQuery()) {
+                while (resultSet.next()) {
+                    if (resultSet.getInt("unique") == 1) indexNames.add(resultSet.getString("name"));
                 }
             }
         }
