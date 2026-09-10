@@ -1236,11 +1236,19 @@ public class ZhilianController {
     }
 
     private boolean isZhilianJobLink(String url) {
-        if (url == null || url.isBlank()) return false;
-        String value = url.toLowerCase();
-        if (!value.contains("zhaopin.com")) return false;
-        if (value.matches(".*(company|gongsi|qiye|enterprise|firm|business|corp).*")) return false;
-        return value.contains("/job/") || value.contains("jobs.zhaopin.com") || value.contains("jobdetail");
+        if (url == null || url.isBlank() || url.length() > 4096) return false;
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String host = java.util.Objects.toString(uri.getHost(), "").toLowerCase(java.util.Locale.ROOT);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getUserInfo() != null
+                    || !(host.equals("zhaopin.com") || host.endsWith(".zhaopin.com"))) return false;
+            String path = java.util.Objects.toString(uri.getPath(), "").toLowerCase(java.util.Locale.ROOT);
+            if (java.util.stream.Stream.of("company", "gongsi", "qiye", "enterprise", "firm", "business", "corp")
+                    .anyMatch(path::contains)) return false;
+            return path.contains("/job/") || host.equals("jobs.zhaopin.com") || path.contains("jobdetail");
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private boolean looksLikeCompanyOnlyPage(String text) {

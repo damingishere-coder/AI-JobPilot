@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -512,18 +513,8 @@ public class DatabaseSchemaService {
                     continue;
                 }
                 String indexName = indexes.getString("name");
-                try (Statement columnStatement = stmt.getConnection().createStatement();
-                     ResultSet columns = columnStatement.executeQuery("PRAGMA index_info('" + indexName.replace("'", "''") + "')")) {
-                    int count = 0;
-                    boolean companyNameOnly = true;
-                    while (columns.next()) {
-                        count++;
-                        companyNameOnly &= "company_name".equalsIgnoreCase(columns.getString("name"));
-                    }
-                    if (count == 1 && companyNameOnly) {
-                        return true;
-                    }
-                }
+                List<String> columns = indexColumns(stmt.getConnection(), indexName);
+                if (columns.size() == 1 && "company_name".equalsIgnoreCase(columns.getFirst())) return true;
             }
         } catch (Exception e) {
             throw new IllegalStateException("检查 priority_company 唯一约束失败: " + e.getMessage(), e);
@@ -737,15 +728,18 @@ public class DatabaseSchemaService {
     }
 
     private static boolean tableExists(Statement stmt, String table) throws Exception {
-        try (ResultSet rs = stmt.executeQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name='" + table + "' LIMIT 1")) {
-            return rs.next();
+        try (PreparedStatement query = stmt.getConnection().prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1")) {
+            query.setString(1, table);
+            try (ResultSet rs = query.executeQuery()) { return rs.next(); }
         }
     }
 
     private static boolean indexExists(Statement stmt, String index) throws Exception {
-        try (ResultSet rs = stmt.executeQuery(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='" + index + "' LIMIT 1")) {
-            return rs.next();
+        try (PreparedStatement query = stmt.getConnection().prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1")) {
+            query.setString(1, index);
+            try (ResultSet rs = query.executeQuery()) { return rs.next(); }
         }
     }
 
@@ -791,18 +785,22 @@ public class DatabaseSchemaService {
             }
         }
         for (String indexName : indexNames) {
-            List<String> columns = new ArrayList<>();
-            try (Statement statement = connection.createStatement();
-                 ResultSet resultSet = statement.executeQuery(
-                         "PRAGMA index_info('" + indexName.replace("'", "''") + "')")) {
-                while (resultSet.next()) {
-                    columns.add(resultSet.getString("name"));
-                }
-            }
+            List<String> columns = indexColumns(connection, indexName);
             if (columns.equals(expectedColumns)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static List<String> indexColumns(Connection connection, String indexName) throws SQLException {
+        List<String> columns = new ArrayList<>();
+        try (PreparedStatement query = connection.prepareStatement("SELECT name FROM pragma_index_info(?)")) {
+            query.setString(1, indexName);
+            try (ResultSet resultSet = query.executeQuery()) {
+                while (resultSet.next()) columns.add(resultSet.getString("name"));
+            }
+        }
+        return columns;
     }
 }

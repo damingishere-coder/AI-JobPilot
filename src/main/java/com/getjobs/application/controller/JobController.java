@@ -408,7 +408,7 @@ public class JobController {
                 try {
                     java.util.function.Consumer<JobProgressMessage> progress = pm -> {
                         sendJob51Progress(pm);
-                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
+                        log.info("51job 进度事件已发送");
                     };
                     if (deliveryMode) job51JobService.executeDelivery(progress);
                     else job51JobService.executeCollection(progress);

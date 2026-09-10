@@ -35,6 +35,17 @@ class ZhilianDeliveryControllerTest {
     }
 
     @Test
+    void jobLinkValidationRejectsSpoofedHostsAndOversizedInput() {
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(controller, "isZhilianJobLink",
+                "https://jobs.zhaopin.com/CC123456789J123456789.htm")).isTrue();
+        for (String url : java.util.List.of("https://jobs.zhaopin.com.attacker.test/job/123",
+                "https://attacker.test/job/?next=jobs.zhaopin.com", "https://zhaopin.com@attacker.test/job/123",
+                "https://www.zhaopin.com/company/123", "https://jobs.zhaopin.com/" + "qiye".repeat(2000))) {
+            assertThat((Boolean) ReflectionTestUtils.invokeMethod(controller, "isZhilianJobLink", url)).isFalse();
+        }
+    }
+
+    @Test
     void skipDoesNotReportSuccessWhenConcurrentReservationWins() {
         ZhilianJobDataEntity pending = new ZhilianJobDataEntity();
         pending.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
