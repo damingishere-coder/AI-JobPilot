@@ -87,3 +87,58 @@ it('Chrome 返回未知结果时只回写 UNKNOWN，不重复投递', async () =
   expect(sendChromeBridgeMessage).toHaveBeenCalledTimes(1)
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/delivery-result'))).toHaveLength(1)
 })
+
+it('图表默认折叠并位于岗位列表之后，可以展开再收起', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes('/stats?') ? stats : list())))
+  render(<AnalysisContent profileId={4} />)
+  const table = await screen.findByRole('table', { name: '智联岗位列表' })
+  const charts = screen.getByRole('region', { name: '分析图表' })
+  expect(table.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  const toggle = screen.getByRole('button', { name: /展开图表/ })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByText('投递状态分布')).not.toBeInTheDocument()
+  fireEvent.click(toggle)
+  expect(screen.getByText('投递状态分布')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /收起图表/ }))
+  expect(screen.queryByText('投递状态分布')).not.toBeInTheDocument()
+})
+
+it('不感兴趣使用跳过接口，移出待确认并保留记录，不调用Chrome或删除接口', async () => {
+  let skipped = false
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.includes('/skip?')) { skipped = true; return response({ success: true }) }
+    return response(url.includes('/stats?') ? stats : { ...list(), items: [{ ...list().items[0], deliveryStatus: skipped ? '已跳过' : '待确认' }] })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  render(<AnalysisContent profileId={4} />)
+  fireEvent.click((await screen.findAllByRole('button', { name: '不感兴趣' }))[0])
+  await waitFor(() => expect(screen.queryByRole('button', { name: '不感兴趣' })).not.toBeInTheDocument())
+  expect(screen.getByText(/标记为不感兴趣/)).toBeInTheDocument()
+  expect(fetcher).toHaveBeenCalledWith('/api/zhilian/jobs/1/skip?profileId=4', expect.objectContaining({ method: 'POST' }))
+  expect(fetcher.mock.calls.filter(([url]) => url.includes('/skip?'))).toHaveLength(1)
+  expect(sendChromeBridgeMessage).not.toHaveBeenCalled()
+})
+
+it('跳过失败保留待确认岗位，不自动重发写入', async () => {
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.includes('/skip?')) return response({ success: false, message: '投递已经开始，无法跳过' })
+    return response(url.includes('/stats?') ? stats : list())
+  })
+  vi.stubGlobal('fetch', fetcher)
+  render(<AnalysisContent profileId={4} />)
+  fireEvent.click((await screen.findAllByRole('button', { name: '不感兴趣' }))[0])
+  expect(await screen.findByText('投递已经开始，无法跳过')).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: '不感兴趣' })).toHaveLength(2)
+  expect(fetcher.mock.calls.filter(([url]) => url.includes('/skip?'))).toHaveLength(1)
+})
+
+it('匹配理由解析JSON为摘要和风险，列表使用宽列而不是挤压所有字段', async () => {
+  const aiReason = JSON.stringify({ summary: '有真实的内容运营经验', risks: ['缺少保险行业经验'], strengths: ['内容制作'] })
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes('/stats?') ? stats : { ...list(), items: [{ ...list().items[0], aiReason }] })))
+  render(<AnalysisContent profileId={4} />)
+  await screen.findAllByText('有真实的内容运营经验')
+  expect(screen.queryByText(aiReason)).not.toBeInTheDocument()
+  expect(screen.getByText('缺少保险行业经验')).toBeInTheDocument()
+  expect(screen.getByRole('table', { name: '智联岗位列表' })).toHaveClass('table-fixed', 'min-w-[1120px]')
+  expect(screen.getAllByRole('columnheader')).toHaveLength(5)
+})

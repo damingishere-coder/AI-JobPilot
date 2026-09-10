@@ -47,6 +47,21 @@ class JobAnalysisTaskStoreTest {
     }
 
     @Test
+    void zhilianTaskKeyIncludesCurrentIntroductionButBossKeyIsUnchanged() {
+        var first = store.submit(request(4L, "zhilian", "job-intro", "run-a"));
+        var boss = store.submit(request(4L, "boss", "boss-intro", "run-a"));
+        jdbcTemplate.update("INSERT INTO ai(profile_id,introduce) VALUES(4,'新增AI产品运营项目')");
+        var whileActive = store.submit(request(4L, "zhilian", "job-intro", "run-b"));
+        assertThat(whileActive.task().id()).isEqualTo(first.task().id());
+        jdbcTemplate.update("UPDATE job_analysis_task SET status='SUCCEEDED' WHERE id IN (?,?)", first.task().id(), boss.task().id());
+        var second = store.submit(request(4L, "zhilian", "job-intro", "run-b"));
+        var bossAgain = store.submit(request(4L, "boss", "boss-intro", "run-b"));
+        assertThat(second.created()).isTrue();
+        assertThat(second.task().id()).isNotEqualTo(first.task().id());
+        assertThat(bossAgain.task().id()).isEqualTo(boss.task().id());
+    }
+
+    @Test
     void stableTaskKeyDeduplicatesAcrossRunIdsButSeparatesProfiles() {
         JobAnalysisTaskStore.SubmitResult first = store.submit(request(1L, "boss", "job-1", "run-a"));
         JobAnalysisTaskStore.SubmitResult duplicate = store.submit(request(1L, "boss", "job-1", "run-b"));

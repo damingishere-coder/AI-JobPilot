@@ -395,6 +395,12 @@ public class JobAiAnalysisService {
             return completed;
         }
 
+        if (prepared.stream().allMatch(job -> "zhilian".equalsIgnoreCase(job.job().request().getPlatform()))) {
+            AiEntity config = aiService.getAiConfig(profileId);
+            if (config != null && config.getIntroduce() != null && !config.getIntroduce().isBlank()) {
+                resumeText += "\n\n候选人当前保存的技能介绍（补充材料；若与简历事实冲突应列为待核实，不得自行拼接经历）：\n" + config.getIntroduce();
+            }
+        }
         String prompt = buildBatchPrompt(resumeText, prepared);
         List<Long> expectedTaskIds = prepared.stream().map(job -> job.job().taskId()).toList();
         Set<Long> bossTaskIds = prepared.stream()
@@ -579,6 +585,20 @@ public class JobAiAnalysisService {
                 .collect(Collectors.toList());
     }
 
+    public Map<String, Object> zhilianAnalysisBasis(Long profileId) {
+        ResumeProfileEntity resume = getResumeProfile(profileId);
+        AiEntity config = aiService.getAiConfig(profileId);
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("profileId", profileId);
+        basis.put("resumeText", resume == null ? "" : safe(resume.getResumeText()));
+        basis.put("sourceFilename", resume == null ? "" : safe(resume.getSourceFilename()));
+        basis.put("resumeUpdatedAt", resume == null ? null : resume.getUpdatedAt());
+        basis.put("introduce", config == null ? "" : safe(config.getIntroduce()));
+        basis.put("introduceUpdatedAt", config == null ? null : config.getUpdatedAt());
+        basis.put("applyThreshold", config == null || config.getApplyThreshold() == null ? DEFAULT_APPLY_THRESHOLD : config.getApplyThreshold());
+        return basis;
+    }
+
     private String buildBatchPrompt(String resumeText, List<PreparedJob> jobs) {
         boolean bossBatch = jobs.stream()
                 .allMatch(prepared -> "boss".equalsIgnoreCase(prepared.job().request().getPlatform()));
@@ -596,7 +616,7 @@ public class JobAiAnalysisService {
             job.put("experience", safe(request.getExperience()));
             job.put("degree", safe(request.getDegree()));
             job.put("companyInfo", limit(safe(request.getCompanyInfo()), 2000));
-            job.put("jobDescription", bossBatch
+            job.put("jobDescription", (bossBatch || "zhilian".equalsIgnoreCase(request.getPlatform()))
                     ? safe(request.getJobDescription())
                     : limit(safe(request.getJobDescription()), 5000));
             jobArray.put(job);
@@ -604,15 +624,22 @@ public class JobAiAnalysisService {
         String greetingInstruction = bossBatch
                 ? "greeting 必须是20到120字的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n\n"
                 : "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n";
-        String promptResume = bossBatch ? safe(resumeText) : limit(resumeText, 6000);
+        boolean containsZhilian = jobs.stream().anyMatch(prepared ->
+                "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
+        String promptResume = bossBatch || containsZhilian ? safe(resumeText) : limit(resumeText, 6000);
+        String intentInstruction = containsZhilian
+                ? "对 platform=zhilian 的岗位，先核对候选人明确写出的求职方向、岗位层级及排除项，再分析能力。搜索关键词只是召回来源，不代表候选人愿意从事官网返回的所有岗位。\n"
+                  + "相邻职能或可迁移技能不能等同于目标岗位经验；必须对照岗位实际职责，不得仅凭相同关键词判 MATCH。\n"
+                  + "明确的求职意向与岗位职责冲突时，在 RELEVANT_EXPERIENCE 分项及 hardConflicts 中引用双方原文；意向不明确则写入 unknowns，不能猜测。summary 必须先说明方向是否符合，再说明能力匹配。\n"
+                : "";
         return "你是求职岗位证据分析助手。请比较一份候选人简历和多个岗位，但不要计算分数，也不要给出 APPLY/SKIP 决策。\n" +
                 "只返回符合 Schema 的 JSON，不要使用 Markdown 或额外解释。每个输入 taskId 必须且只能返回一次。\n" +
                 "六个维度必须各返回一次：CORE_SKILLS、RELEVANT_EXPERIENCE、ACHIEVEMENTS_COMPLEXITY、INDUSTRY_TRANSFER、EDUCATION_TENURE、LOCATION_SALARY。\n" +
                 "每个维度的 status 只能是 MATCH、PARTIAL、UNKNOWN、CONFLICT。\n" +
-                "采用宁可多投原则：简历没有写明的信息只能判 UNKNOWN，不能推断为不具备；只有岗位明确要求且简历明确冲突时才能判 CONFLICT。\n" +
+                (containsZhilian ? "" : "采用宁可多投原则：") + "简历没有写明的信息只能判 UNKNOWN，不能推断为不具备；只有岗位明确要求且简历明确冲突时才能判 CONFLICT。\n" +
                 "jobEvidence 和 resumeEvidence 必须摘录对应原文短句。硬冲突必须同时具有岗位原文和简历原文，并复用对应 CONFLICT 分项中的双方证据；证据不足的差异放入 unknowns，不得放入 hardConflicts。\n" +
                 "summary 用一句自然中文给出总体结论，不要提分数、阈值或投递决策；matches 写具体匹配证据，gaps 只写有明确证据的差距，unknowns 写待核实信息。\n" +
-                greetingInstruction +
+                intentInstruction + greetingInstruction +
                 "候选人简历（本批岗位共用，只出现一次）：\n" + promptResume + "\n\n" +
                 "待分析岗位 JSON：\n" + jobArray;
     }
@@ -882,7 +909,7 @@ public class JobAiAnalysisService {
                                       String resumeText) {
         if (result == null) return;
         String jobSource = String.join("\n",
-                safe(request.getKeyword()),
+                "zhilian".equalsIgnoreCase(request.getPlatform()) ? "" : safe(request.getKeyword()),
                 safe(request.getCompanyName()),
                 safe(request.getJobName()),
                 safe(request.getSalary()),
