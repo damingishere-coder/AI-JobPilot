@@ -4,9 +4,30 @@
 
 ## 当前发布状态
 
-AI JobPilot 当前主要面向 Windows 本地开发与个人使用。
+当前正式版为 [v1.5.0](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0)，应用版本 **1.5.0**，配套 Chrome Bridge **1.8.0**。主要面向 Windows 本地开发与个人使用。
 
-仓库已建立自动化 Release 构建流程，但现阶段产物属于**技术预览包**，还不是不依赖 Java、Node.js 和 pnpm 的完整桌面安装器。Windows 一键发行包仍通过 GitHub Issue 持续跟踪。
+普通用户优先使用源码包与 [Windows 启动指南](../WINDOWS_SETUP.md)。JAR 已包含页面，前端静态 ZIP 用于独立集成，扩展 ZIP 需要在 Chrome 中单独加载；它们不是多个不同的应用版本。
+
+### 使用 JAR 运行
+
+需要 Java 21。新安装时，将下载的 JAR 放入你选定的独立程序文件夹，在该目录打开 PowerShell：
+
+```powershell
+New-Item -ItemType Directory -Force db,data,output,target\logs | Out-Null
+$env:SERVER_ADDRESS = '127.0.0.1'
+$env:SERVER_PORT = '6866'
+$env:APP_AUTO_OPEN_BROWSER = 'false'
+$env:APP_BROWSER_INITIALIZE_ON_STARTUP = 'false'
+java -jar .\AI-JobPilot-v1.5.0.jar
+```
+
+打开 **http://127.0.0.1:6866**，检查 **http://127.0.0.1:6866/api/ready**，再配置模型与简历。该路径无需安装 Node / pnpm，但不是 Windows 安装器。基础使用可以粘贴简历；上传 PDF、Word、图片所需的 `resume-parser` 脚本、Python 环境和模型不包含在 JAR 中，需从同版本源码准备，见 [本机识别器](../resume-parser/README.md)。
+
+把扩展 ZIP 解压到固定目录，在 `chrome://extensions/` 加载该目录。已有扩展则重新加载并刷新页面，核对扩展版本 1.8.0。
+
+已有部署不要直接另起一个 6866 服务，也不要随意改数据库路径。先备份并沿用原管理器和配置，参考 [1.5 升级与回滚](releases/v1.5.0.md)。`v1.5.0` 标签及发行包保持不可变；发布后的文档勘误以 `main` 的最新指南为准。
+
+仓库已发布正式版本及自动化构建产物，但还没有免运行环境的完整 Windows 桌面安装器。源码启动需要 Java、Node.js 和 pnpm；已构建 JAR 的基础运行只需 Java 21。完整 Windows 安装包仍在路线图中。
 
 ## Release 产物
 
@@ -106,7 +127,7 @@ v1.4.0-beta.1
 - [ ] `main` 分支 CI 全部通过
 - [ ] CodeQL 没有未处理的高危告警
 - [ ] `CHANGELOG.md` 已更新
-- [ ] `package.json` 与 Gradle 的应用版本一致，并记录配套 Chrome Bridge 版本（扩展独立递增，不为对齐应用而降级）
+- [ ] `front/package.json` 与 Gradle 的应用版本一致，并记录配套 Chrome Bridge 版本（扩展独立递增，不为对齐应用而降级）
 - [ ] 示例截图和文档没有 Cookie、API Key、简历或个人账号信息
 - [ ] `.env`、数据库、日志和 Chrome 用户目录未进入提交
 - [ ] 已知限制已写入 Release Notes

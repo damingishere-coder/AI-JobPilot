@@ -1,292 +1,133 @@
 <div align="center">
 
+<img src="front/public/toudi-niuma.svg" width="88" alt="投递牛马标志" />
+
 # AI JobPilot · 投递牛马
 
-**一个本地运行、由用户确认后执行的 AI 求职工作台。**  
-采集岗位、分析匹配度、管理待确认任务，并持续记录投递结果。
+**把时间留给值得投的岗位。**
 
-[English](README.en.md) · [快速开始](#快速开始) · [下载与版本](docs/releases.md) · [文档中心](docs/README.md) · [路线图](ROADMAP.md) · [安全说明](SECURITY.md)
+在自己的电脑上整理简历、采集岗位、查看 AI 匹配依据，确认后再投递。
 
-[![Version](https://img.shields.io/badge/version-1.3.0-4f46e5.svg)](CHANGELOG.md)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](WINDOWS_SETUP.md)
-[![Java](https://img.shields.io/badge/Java-21-E76F00.svg)](build.gradle.kts)
-[![Node](https://img.shields.io/badge/Node.js-20.19%2B-339933.svg)](front/package.json)
-[![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml)
-[![Release](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml)
-[![License](https://img.shields.io/badge/license-Non--Commercial-f59e0b.svg)](LICENSE)
+[English](README.en.md) · [下载 1.5](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) · [快速开始](#快速开始) · [使用文档](docs/README.md) · [反馈问题](https://github.com/damingishere-coder/AI-JobPilot/issues)
+
+[![Release](https://img.shields.io/github/v/release/damingishere-coder/AI-JobPilot?color=2563eb&label=release)](https://github.com/damingishere-coder/AI-JobPilot/releases/latest) [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml) [![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml) [![License](https://img.shields.io/badge/license-Non--Commercial-64748b)](LICENSE)
+
+![1.5 投递工作台：投递概览、快捷入口和配置检查；虚构演示数据](docs/images/screenshots/v1.5-dashboard.jpg)
+
+*v1.5 实际界面 · 虚构演示数据 · 截图预览未连接招聘平台*
 
 </div>
 
-![AI JobPilot cover](docs/images/hero.svg)
+## 从岗位发现，到你来决定
 
-## 一图看懂 AI JobPilot
+AI JobPilot 是面向个人求职者的本地工作台。把分散在浏览器、简历文件和投递记录里的信息集中起来，让每一次投递都有据可查。
 
-![AI JobPilot 产品总览](docs/images/readme-overview.svg)
+| 你要做的事 | 工作台怎样帮你 |
+| --- | --- |
+| 找到目标岗位 | 通过 Chrome Bridge 采集 BOSS 直聘、智联招聘岗位，保留扫描进度与异常信息 |
+| 判断是否适合 | 结合简历、求职方向和岗位描述，展示匹配评分、依据与风险；评分不等于你的求职意愿 |
+| 准备开场沟通 | 查看、编辑岗位沟通草稿，在确认界面核对最终话术 |
+| 保持投递有序 | 按档案管理记录，区分待确认、已投递、失败和结果待确认；跳过不感兴趣的岗位 |
 
-> AI JobPilot 不会替你绕过登录验证、验证码或平台限制。岗位进入“待确认”后，仍需由你决定是否执行投递。
+**保存资料 → 设置搜索条件 → 采集与分析 → 核对岗位和话术 → 确认投递 → 查看结果**
 
-## 为什么使用 AI JobPilot
+## 看看新版界面
 
-求职过程中最耗时间的并不只是“找到岗位”，而是反复筛选、判断匹配度、记录投递结果，以及在多个平台之间来回切换。
+### 匹配依据看得见
 
-AI JobPilot 将这些步骤集中到一个本地工作台中：
+智联分析页展示当前保存的简历、扫描关键词和确认阈值。修改资料不会自动重算历史评分，页面会明确提示这一区别。
 
-- **少做重复筛选**：根据简历、目标岗位、城市、薪资和黑名单分析岗位匹配度。
-- **保留最终控制权**：AI 命中的岗位先进入待确认队列，不默认替你直接投递。
-- **复用现有登录状态**：Chrome Bridge 在你已经登录的招聘页面中辅助采集，不要求把 Cookie 写进项目配置。
-- **数据保存在本机**：简历、配置、岗位与任务记录默认保存在本地 SQLite 数据库中。
-- **统一查看结果**：通过统计卡片、筛选、任务状态和失败原因持续跟踪求职进展。
+![智联分析页的匹配依据与当前档案，使用虚构演示资料](docs/images/screenshots/v1.5-analysis-basis.jpg)
 
-## 工作流程
+### 投递前，先看理由和话术
 
-![AI JobPilot workflow](docs/images/workflow.svg)
+待确认卡片集中展示岗位要求、匹配理由、风险和最终沟通语。你可以编辑草稿、查看原岗位，或标记「不感兴趣」。
 
-## 产品预览
+![待确认岗位、匹配理由与沟通草稿，所有公司及岗位均为虚构](docs/images/screenshots/v1.5-job-review.jpg)
 
-### 投递工作台
+<details>
+<summary><strong>查看更多：按档案管理求职资料</strong></summary>
 
-![投递牛马工作台](docs/images/screenshots/dashboard.png)
+简历、求职意向和分析配置集中维护。文件识别先生成预览，确认保存后才更新简历。
 
-### BOSS 投递分析
+![1.5 简历配置页，使用虚构内容运营档案](docs/images/screenshots/v1.5-resume.jpg)
 
-![BOSS 投递分析](docs/images/screenshots/boss-analysis.png)
+</details>
 
-### AI 配置与求职档案
-
-![AI 配置与求职档案](docs/images/screenshots/ai-config.png)
-
-## 核心能力
-
-### 多候选人求职配置
-
-管理候选人档案、简历文本、目标岗位、城市、薪资、AI 模型配置、平台配置和黑名单。
-
-### 浏览器辅助岗位采集
-
-Boss 直聘和智联招聘支持 Chrome Bridge，复用你已登录的 Chrome 页面采集结构化岗位信息，并支持中断恢复和异常页诊断。
-
-### AI 匹配分析
-
-将岗位信息与简历和求职偏好进行匹配，提供评分、筛选和分析结果。命中分数线的岗位进入待确认队列。
-
-### 人工确认后执行
-
-系统不会默认绕过人工判断。用户可在分析页查看岗位详情，确认单个或批量任务后再进入投递流程。
-
-### 本地任务与结果追踪
-
-使用 SQLite 保存岗位、任务状态、统计结果和失败原因，便于后续复盘和继续处理。
-
-### Windows 一键启动
-
-提供 Windows 批处理和 PowerShell 启动脚本，同时保留 Docker 与手动开发启动方式。
-
-## 平台支持
-
-| 平台 | 质量等级 | 岗位采集 | AI 分析 / 待确认 | 正式执行模式 |
-| --- | --- | --- | :---: | --- |
-| Boss 直聘 | 一级日常链 | Chrome Bridge；含受限 API POC 与页面降级采集 | ✅ | Chrome Bridge |
-| 智联招聘 | 一级日常链 | Chrome Bridge | ✅ | Chrome Bridge |
-| 猎聘 | 二级兼容链 | 旧 Playwright，默认只读采集 | ✅ | 旧 Playwright；真实投递必须显式二次确认 |
-| 前程无忧 51job | 二级兼容链 | 旧 Playwright，默认只读采集 | ✅ | 旧 Playwright；真实投递必须显式二次确认 |
-
-`✅` 表示代码与自动化契约已经接通，不代表当前账号和当天页面已经完成真实 smoke。四个平台的当前声明可通过只读接口 `GET /api/platforms/capabilities` 查看；招聘网站改版后仍应先小范围验证到“待确认”。
-
-## 下载与版本
-
-GitHub Release 工作流会在版本标签发布前自动执行后端测试、前端 lint 与构建、Chrome 扩展校验，并生成 SHA256 校验文件。
-
-当前自动化产物包括：
-
-```text
-AI-JobPilot-vX.Y.Z.jar
-AI-JobPilot-vX.Y.Z-chrome-extension.zip
-AI-JobPilot-vX.Y.Z-frontend-static.zip
-AI-JobPilot-vX.Y.Z-source.zip
-SHA256SUMS.txt
-```
-
-这些产物目前属于技术预览包，**还不是不依赖 Java、Node.js 和 pnpm 的完整 Windows 安装器**。详细说明、校验方法和发布边界见 [docs/releases.md](docs/releases.md)。
-
-正式版本发布后，可在 [GitHub Releases](https://github.com/damingishere-coder/AI-JobPilot/releases) 下载。
+图片来自 v1.5 前端构建，保留浏览器原始截图。所有公司、岗位、简历与统计均为演示数据，不代表真实投递结果。详见 [截图说明](docs/images/screenshots/README.md)。
 
 ## 快速开始
 
-### Windows 本机启动
+**推荐环境：Windows 10 / 11、Java 21、Node.js 24 LTS、pnpm 10.20.0、Chrome、Git。**
 
-环境要求：
+### 1. 获取并启动
 
-- Windows 10 / 11
-- Java 21
-- Node.js 20.19 或更高版本
-- pnpm
-- Chrome
-- Git
-
-克隆项目后，在仓库根目录双击：
-
-```text
-start_windows.bat
-```
-
-也可以在 PowerShell 中运行：
+在 PowerShell 中执行：
 
 ```powershell
-.\start_windows.ps1
-```
-
-启动成功后打开：
-
-```text
-页面与 API：http://localhost:6866
-存活检查：http://localhost:6866/api/health
-就绪检查：http://localhost:6866/api/ready
-```
-
-`/api/health` 返回 `UP` 只表示进程存活；首页检查项正常且 `/api/ready` 返回就绪，才表示数据库、Schema 和任务队列可用于业务操作。
-
-完整的新手安装与排错步骤见 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)。
-
-### Docker 启动
-
-安装 Docker Desktop 后，在根目录运行：
-
-```powershell
-.\start_docker.ps1
-```
-
-或者双击：
-
-```text
-start_docker.bat
-```
-
-Docker 方式会读取 `.env`。请从 `.env.example` 复制本地配置，不要提交真实密钥或账号信息。
-
-## Chrome Bridge
-
-Boss 直聘和智联招聘推荐使用 Chrome Bridge：
-
-1. 打开 `chrome://extensions/`。
-2. 开启“开发者模式”。
-3. 点击“加载已解压的扩展程序”。
-4. 选择仓库中的 `chrome-extension` 目录。
-5. 打开 `http://localhost:6866`，确认扩展连接正常。
-6. 在 Chrome 中登录招聘平台，再从工作台开始扫描。
-
-扩展只负责辅助本地流程，不会绕过登录验证、验证码或平台投递限制。
-
-## AI 沟通助手
-
-Boss 和智联的待确认岗位现在会显示最终沟通话术及其来源，并支持编辑、复制和恢复 AI 原稿。话术优先级固定为：
-
-```text
-人工编辑稿 → AI greeting → 当前档案默认话术 → 空白警告
-```
-
-人工稿与 AI 原稿分开保存，重新分析岗位不会覆盖人工编辑。保存接口使用只在本机内存中存在的操作令牌和 `expectedUpdatedAt` 并发校验；单个、批量确认和显式重试还会再次校验页面预览快照，话术变化时会停止并要求重新确认。
-
-该能力不会增加独立的自动发消息入口。Boss 的确认任务会把核对后的话术交给现有 Chrome Bridge；智联当前把话术随任务保存并提供复制，但现有扩展不会自动发送聊天消息。
-
-## 手动开发启动
-
-后端：
-
-```powershell
-.\gradlew.bat bootRun
-```
-
-前端：
-
-```powershell
+git clone --branch v1.5.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
+cd AI-JobPilot
 cd front
-pnpm install
-pnpm dev
+pnpm install --frozen-lockfile
+cd ..
+.\start_windows.bat
 ```
 
-常用检查：
+首次启动会下载依赖。启动后，在 **Chrome** 打开 **http://127.0.0.1:6866**。
 
-```powershell
-# 后端测试
-.\gradlew.bat test
+还没安装运行环境？按 [Windows 新手指南](WINDOWS_SETUP.md) 逐步操作。已有服务正在运行时，先使用现有入口，避免重复启动。
 
-# 后端构建
-.\gradlew.bat build
+### 2. 连接 Chrome Bridge
 
-# 前端检查
-cd front
-pnpm lint
-```
+打开 `chrome://extensions/`，开启「开发者模式」，点击「加载已解压的扩展程序」，选择项目的 `chrome-extension` 文件夹。v1.5 配套的扩展版本为 **1.8.0**；更新文件后还需在扩展页点击「重新加载」，并刷新工作台和平台页面。
 
-## 数据与安全边界
+### 3. 开始第一次分析
 
-AI JobPilot 设计为个人电脑上的本地工具，不建议直接部署到公网供多人共用。
+在「环境配置」设置模型连接，在「AI配置」新建档案并保存简历和求职方向；然后登录目标招聘平台，设置关键词和筛选条件。先完成一轮采集，查看分析页的待确认岗位，再决定是否投递。完整步骤见 [首次使用与任务流程](TASK_FLOW.md)。
 
-请勿提交以下内容：
+> 本地保存不等于完全离线：AI 分析会把相关简历和岗位内容发送给你配置的模型服务。招聘平台连接、模型服务与本地工作台需要分别配置。
 
-- `.env`、API Key、账号密码、Cookie、Token
-- 本地 SQLite 数据库及备份
-- 简历、聊天截图和其他个人敏感资料
-- Chrome 用户数据、浏览器缓存和 Playwright 缓存
+## 下载哪个文件？
 
-默认数据库位于：
+[v1.5.0 正式版下载](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) 提供以下产物：
 
-```text
-db/getjobs.db
-```
-
-更多说明见 [SECURITY.md](SECURITY.md)。
-
-## 当前限制
-
-- 招聘网站页面结构变化后，选择器和采集逻辑可能需要更新。
-- 项目不能保证所有平台、账号和岗位场景下都能稳定运行。
-- 项目不会绕过平台风控、登录验证、验证码或投递频率限制。
-- OpenClaw 通路仍属于实验能力，不是 Windows 主流程的必需项。
-- 当前以 Windows 单机使用为主，不是面向公网多人使用的 SaaS 服务。
-- Release 自动化已经建立，但完整 Windows 免开发环境安装器尚未完成。
-
-## 文档
-
-| 文档 | 用途 |
+| 文件 | 用途 |
 | --- | --- |
-| [docs/README.md](docs/README.md) | 使用、开发、安全、Demo 与版本发布的统一文档导航 |
-| [WINDOWS_SETUP.md](WINDOWS_SETUP.md) | Windows 安装、启动、验证和排错 |
-| [TASK_FLOW.md](TASK_FLOW.md) | 从简历配置到确认投递的完整流程 |
-| [docs/releases.md](docs/releases.md) | Release 产物、版本命名和 SHA256 校验 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构、模块职责与数据流 |
-| [SECURITY.md](SECURITY.md) | 本地数据、Cookie、API Key 与安全边界 |
-| [ROADMAP.md](ROADMAP.md) | 当前阶段、后续方向与优先事项 |
-| [CHANGELOG.md](CHANGELOG.md) | 版本更新记录 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Bug、功能建议和代码贡献方式 |
-| [doc/BOSS_API_POC.md](doc/BOSS_API_POC.md) | Boss 搜索 API POC 与 Windows 验证 |
-| [doc/文档索引.md](doc/文档索引.md) | 历史资料和补充文档索引 |
+| `AI-JobPilot-v1.5.0-source.zip` | 源码及启动脚本；按 Windows 指南准备运行环境 |
+| `AI-JobPilot-v1.5.0.jar` | 包含前端的 Java 应用；需要 Java 21 与本地配置，适合进阶部署 |
+| `AI-JobPilot-v1.5.0-chrome-extension.zip` | 解压后加载到 Chrome；内部扩展版本为 1.8.0 |
+| `AI-JobPilot-v1.5.0-frontend-static.zip` | 前端静态资源，供已有后端集成使用 |
+| `SHA256SUMS.txt` | 下载文件的完整性校验值 |
 
-## 项目状态
+目前没有免环境安装的 Windows `.exe` 安装器。JAR、静态包与扩展分别承担不同职责，详见 [下载、校验与运行](docs/releases.md) 和 [1.5 发布说明](docs/releases/v1.5.0.md)。
 
-最新正式版本为 `1.3.0`。`codex/stable-v1-completion` 已作为待验收基线整理为面向 `main` 的 PR；当前功能分支已完成四平台能力注册表、统一 AI 分析契约和 Boss / 智联 AI 沟通助手的代码与自动化验证。
+## 平台支持与当前边界
 
-真实平台 smoke 仍未执行：Boss / 智联、猎聘 / 51job 都需要在操作当时由用户明确确认，并且第一轮只运行到待确认队列。验收前不会合并 `main`，也不会关闭被替代分支。详见 [ROADMAP.md](ROADMAP.md)。
+| 平台 | 当前定位 | 使用方式 |
+| --- | --- | --- |
+| BOSS 直聘 | 主要维护 | Chrome Bridge 采集、AI 分析、人工确认后投递 |
+| 智联招聘 | 主要维护 | Chrome Bridge 采集、分析依据、待确认队列与结果核对 |
+| 猎聘 / 51job | 实验兼容 | 保留旧适配器；侧栏入口禁用，普通启动默认只读采集，不能视为已完整验收 |
 
-## 参与贡献
+- 招聘网站改版、登录失效或验证提示可能中断流程，需要在 Chrome 中处理后再继续。
+- 结果不明确时需核对记录，避免重复投递；AI 分数和话术都需要人工审阅。
+- 当前以 Windows 本地单人使用为主，不适合直接暴露到公网。Docker 是进阶开发路径，见 [Docker 指南](README_DOCKER.md)。
+- [Demo 示例文件](demo/README.md) 尚未接入应用，不提供一键 Demo；OpenClaw 等实验通路不是主流程必需项。
 
-欢迎通过 Issue 提交：
+## 文档与贡献
 
-- 招聘平台页面改版导致的采集问题
-- Windows 安装或启动问题
-- 平台适配建议
-- 文档改进
-- 可复现的 Bug
+| 想了解什么 | 从这里开始 |
+| --- | --- |
+| 安装、首次使用、常见问题 | [Windows 指南](WINDOWS_SETUP.md) · [任务流程](TASK_FLOW.md) |
+| 所有文档和版本记录 | [文档中心](docs/README.md) · [更新日志](CHANGELOG.md) · [路线图](ROADMAP.md) |
+| 本地开发与测试 | [开发指南](docs/development/setup.md) · [架构](ARCHITECTURE.md) |
+| 报告问题、贡献代码 | [参与贡献](CONTRIBUTING.md) · [Issues](https://github.com/damingishere-coder/AI-JobPilot/issues) |
+| 数据存储与安全报告 | [安全说明](SECURITY.md) |
 
-提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。涉及账号、Cookie、简历或密钥的问题，请先阅读 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中粘贴敏感信息。
+欢迎提交可复现的问题、脱敏测试样本和文档改进。请勿在 Issue、截图或提交中公开真实简历、聊天、Cookie、API Key 或数据库。
 
-## License
+## 许可
 
-本项目使用自定义 **TOUDI NIUMA Non-Commercial License 1.0**。
+采用 [TOUDI NIUMA Non-Commercial License 1.0](LICENSE)：保留署名和许可证声明后可用于非商业目的；商业使用、付费托管或商业集成需要另行授权。
 
-允许在保留署名和许可证声明的前提下，为非商业目的使用、复制、修改和分发；商业使用、付费托管、商业产品集成或付费咨询等用途需要获得版权所有者授权。完整条款见 [LICENSE](LICENSE)。
-
-## 免责声明
-
-本项目仅用于个人求职辅助、技术研究和学习。使用者需要自行遵守招聘平台规则以及适用的法律法规，并对自己的账号操作、数据处理和投递行为负责。
+本项目用于个人求职辅助、技术研究与学习。请遵守招聘平台规则，并对自己的账号操作、数据处理和投递行为负责。

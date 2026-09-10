@@ -1,247 +1,133 @@
 <div align="center">
 
-# AI JobPilot
+<img src="front/public/toudi-niuma.svg" width="88" alt="AI JobPilot logo" />
 
-**A local-first, human-in-the-loop AI workspace for job searching.**  
-Collect job listings, analyze fit, review suggested actions, and track application results from one place.
+# AI JobPilot · 投递牛马
 
-[简体中文](README.md) · [Quick Start](#quick-start) · [Downloads](docs/releases.md) · [Documentation](docs/README.md) · [Roadmap](ROADMAP.md) · [Security](SECURITY.md)
+**Spend your time on jobs worth applying for.**
 
-[![Version](https://img.shields.io/badge/version-1.3.0-4f46e5.svg)](CHANGELOG.md)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](WINDOWS_SETUP.md)
-[![Java](https://img.shields.io/badge/Java-21-E76F00.svg)](build.gradle.kts)
-[![Node](https://img.shields.io/badge/Node.js-20.19%2B-339933.svg)](front/package.json)
-[![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml)
-[![Release](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/release.yml)
-[![License](https://img.shields.io/badge/license-Non--Commercial-f59e0b.svg)](LICENSE)
+Organize your resume, collect jobs, review AI matching evidence, and confirm applications from your own computer.
+
+[简体中文](README.md) · [Download 1.5](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Report an issue](https://github.com/damingishere-coder/AI-JobPilot/issues)
+
+[![Release](https://img.shields.io/github/v/release/damingishere-coder/AI-JobPilot?color=2563eb&label=release)](https://github.com/damingishere-coder/AI-JobPilot/releases/latest) [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml) [![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml) [![License](https://img.shields.io/badge/license-Non--Commercial-64748b)](LICENSE)
+
+![v1.5 dashboard: application overview, shortcuts and setup checks with synthetic data](docs/images/screenshots/v1.5-dashboard.jpg)
+
+*Actual v1.5 interface · Synthetic data · Screenshot preview disconnected from recruitment platforms*
 
 </div>
 
-![AI JobPilot cover](docs/images/hero.svg)
+## From job discovery to your decision
 
-> AI JobPilot does not bypass sign-in checks, CAPTCHAs, anti-abuse controls, or platform limits. Jobs enter a review queue first, and the user decides whether an application action should proceed.
+AI JobPilot is a local workspace for individual job seekers. It brings together information scattered across browser tabs, resume files and application records.
 
-## Why AI JobPilot
+| Your task | How the workspace helps |
+| --- | --- |
+| Find relevant jobs | Collect BOSS Zhipin and Zhilian jobs through Chrome Bridge, with scan progress and failure information |
+| Assess the fit | Review scores, supporting evidence and risks against your resume and goals; a score does not express your willingness to apply |
+| Prepare a conversation | Read and edit a job-specific greeting, then review its final text before confirming |
+| Track applications | Keep profile-scoped records, distinguish pending, delivered, failed and uncertain outcomes, and skip jobs you are not interested in |
 
-Job searching involves more than discovering vacancies. Candidates repeatedly filter listings, compare requirements with their resume, switch between platforms, and track what happened after each application.
+**Save your profile → Set search criteria → Collect and analyze → Review jobs and greetings → Confirm → Check results**
 
-AI JobPilot brings these steps into a local workspace:
+## Inside the workspace
 
-- **Reduce repetitive screening** with resume- and preference-based job analysis.
-- **Keep the user in control** by placing matched jobs in a review queue before application actions.
-- **Reuse existing browser sessions** through a local Chrome Bridge instead of storing platform cookies in project configuration.
-- **Keep personal data local** with SQLite-based profiles, jobs, tasks, and result tracking.
-- **Understand failures** through status views, filters, statistics, and diagnostic information.
+### Visible matching evidence
 
-## How it works
+The Zhilian analysis page shows the current saved resume, search keywords and confirmation threshold. Editing your profile does not automatically recalculate historical scores, and the interface makes that distinction explicit.
 
-![AI JobPilot workflow](docs/images/workflow.svg)
+![Zhilian matching evidence and current profile, using synthetic data](docs/images/screenshots/v1.5-analysis-basis.jpg)
 
-## Product preview
+### Review the evidence and greeting before applying
 
-### Application dashboard
+Pending-confirmation cards bring together requirements, matching reasons, risks and the final greeting. Edit the draft, open the original job, or mark it as not interested.
 
-![AI JobPilot application dashboard](docs/images/screenshots/dashboard.png)
+![Pending jobs with matching reasons and greeting drafts; all companies and jobs are fictional](docs/images/screenshots/v1.5-job-review.jpg)
 
-### BOSS application analysis
+<details>
+<summary><strong>See more: a separate set of documents for each profile</strong></summary>
 
-![BOSS application analysis](docs/images/screenshots/boss-analysis.png)
+Maintain your resume, job preferences and analysis configuration together. File parsing produces a preview before you confirm and save it.
 
-### AI configuration and candidate profile
+![v1.5 resume configuration with a fictional content-operations profile](docs/images/screenshots/v1.5-resume.jpg)
 
-![AI configuration and candidate profile](docs/images/screenshots/ai-config.png)
+</details>
 
-## Core capabilities
-
-- Multiple candidate profiles, resume text, preferences, model configuration, platform settings, and blacklists.
-- Chrome Bridge collection for Boss Zhipin and Zhaopin using an already authenticated browser page.
-- AI-assisted job fit analysis, scoring, filtering, and review queues.
-- Human confirmation before single or batch application actions.
-- Local SQLite persistence for jobs, task states, statistics, and failure reasons.
-- Windows launch scripts, Docker support, and manual development commands.
-
-## Platform support
-
-| Platform | Quality tier | Collection | AI analysis / review queue | Formal execution mode |
-| --- | --- | --- | :---: | --- |
-| Boss Zhipin | Tier 1 | Chrome Bridge; limited API POC and page fallback | ✅ | Chrome Bridge |
-| Zhaopin | Tier 1 | Chrome Bridge | ✅ | Chrome Bridge |
-| Liepin | Tier 2 compatibility | Legacy Playwright, read-only collection by default | ✅ | Legacy Playwright with explicit real-action confirmation |
-| 51job | Tier 2 compatibility | Legacy Playwright, read-only collection by default | ✅ | Legacy Playwright with explicit real-action confirmation |
-
-The read-only `GET /api/platforms/capabilities` endpoint exposes the current capability declarations. Automated coverage does not replace a small real-account smoke test that stops at the review queue.
-
-Boss and Zhaopin review cards also expose the final communication draft, its source, editing, copying, and AI-original restore. User edits are stored separately from AI output. Single and batch confirmation validate the exact reviewed text before creating a browser task; this does not add a separate automatic messaging entry point.
-
-## Downloads and releases
-
-The GitHub Release workflow runs backend tests, frontend lint and build, Chrome extension validation, and SHA256 generation before publishing a tagged version.
-
-Current automated artifacts are:
-
-```text
-AI-JobPilot-vX.Y.Z.jar
-AI-JobPilot-vX.Y.Z-chrome-extension.zip
-AI-JobPilot-vX.Y.Z-frontend-static.zip
-AI-JobPilot-vX.Y.Z-source.zip
-SHA256SUMS.txt
-```
-
-These are technical preview artifacts, **not yet a complete Windows installer that removes the Java, Node.js, and pnpm requirements**. See [docs/releases.md](docs/releases.md) for artifact details, checksum instructions, and release boundaries.
-
-Published versions are available from [GitHub Releases](https://github.com/damingishere-coder/AI-JobPilot/releases).
+These are unmodified browser captures of the v1.5 frontend. All companies, jobs, resumes and statistics are synthetic, not evidence of real applications. See [screenshot provenance](docs/images/screenshots/README.md).
 
 ## Quick start
 
-### Windows
+**Recommended: Windows 10 / 11, Java 21, Node.js 24 LTS, pnpm 10.20.0, Chrome and Git.**
 
-Requirements:
+### 1. Download and start
 
-- Windows 10 or 11
-- Java 21
-- Node.js 20.19 or newer
-- pnpm
-- Chrome
-- Git
-
-After cloning the repository, run from the project root:
-
-```text
-start_windows.bat
-```
-
-Or use PowerShell:
+Run in PowerShell:
 
 ```powershell
-.\start_windows.ps1
-```
-
-Open the workspace and health endpoint:
-
-```text
-Frontend: http://localhost:6866
-Backend health: http://localhost:8888/api/health
-Backend readiness: http://localhost:8888/api/ready
-```
-
-`/api/health` returning `UP` only proves that the process is alive. The workspace is ready for business operations only when the dashboard checks pass and `/api/ready` reports readiness for the database, schema, and task queue.
-
-See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for the full beginner setup and troubleshooting guide.
-
-### Docker
-
-With Docker Desktop installed, run:
-
-```powershell
-.\start_docker.ps1
-```
-
-Or double-click:
-
-```text
-start_docker.bat
-```
-
-Copy local configuration from `.env.example`. Never commit real API keys, account credentials, cookies, resume files, or browser profiles.
-
-## Chrome Bridge setup
-
-1. Open `chrome://extensions/`.
-2. Enable Developer mode.
-3. Choose **Load unpacked**.
-4. Select the repository's `chrome-extension` directory.
-5. Open `http://localhost:6866` and verify that the extension is connected.
-6. Sign in to the supported recruitment platform in Chrome, then start collection from the workspace.
-
-The extension supports the local workflow only. It does not bypass platform verification or usage limits.
-
-## Development
-
-Backend:
-
-```powershell
-.\gradlew.bat bootRun
-```
-
-Frontend:
-
-```powershell
+git clone --branch v1.5.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
+cd AI-JobPilot
 cd front
-pnpm install
-pnpm dev
+pnpm install --frozen-lockfile
+cd ..
+.\start_windows.bat
 ```
 
-Checks:
+The first launch downloads dependencies. Open **http://127.0.0.1:6866 in Chrome** after startup. For prerequisites and troubleshooting, follow the [Windows guide (Chinese)](WINDOWS_SETUP.md). If an instance is already running, use that instance to avoid port conflicts.
 
-```powershell
-.\gradlew.bat test
-.\gradlew.bat build
+### 2. Connect Chrome Bridge
 
-cd front
-pnpm lint
-```
+Open `chrome://extensions/`, enable **Developer mode**, select **Load unpacked**, and choose the repository's `chrome-extension` folder. Application v1.5 ships with **Chrome Bridge 1.8.0**. After updating extension files, reload the extension and refresh both the workspace and platform tabs.
 
-## Privacy and security
+### 3. Run your first analysis
 
-AI JobPilot is designed for personal, local use and should not be exposed directly as a public multi-user service.
+Configure your model connection in Environment settings. Create a profile and save your resume and preferences in AI configuration. Log in to your chosen recruitment platform, set search criteria, and collect jobs. Review the pending-confirmation queue before deciding whether to apply. Follow the [task flow (Chinese)](TASK_FLOW.md) for details.
 
-Do not commit:
+> Local storage does not mean fully offline: AI analysis sends relevant resume and job content to your configured model service. The model service, recruitment platform login and local workspace each need their own configuration.
 
-- `.env` files, API keys, passwords, cookies, or tokens
-- Local SQLite databases or backups
-- Resumes, screenshots, chat records, or other personal data
-- Chrome profiles, browser caches, or Playwright caches
+## Choose a download
 
-The default database path is:
+The [v1.5.0 release](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) includes:
 
-```text
-db/getjobs.db
-```
-
-Read [SECURITY.md](SECURITY.md) before reporting a security issue or sharing diagnostics.
-
-## Current limitations
-
-- Recruitment website changes can break selectors and collection logic.
-- Stability is not guaranteed for every platform, account, region, or listing type.
-- The project does not bypass authentication, CAPTCHAs, anti-abuse controls, or application rate limits.
-- OpenClaw integration remains experimental and is not required for the primary Windows workflow.
-- The current product is a Windows-focused single-user local application, not a hosted SaaS platform.
-- Release automation is available, but a full Windows installer without development prerequisites is not finished yet.
-
-## Documentation
-
-| Document | Purpose |
+| Asset | Purpose |
 | --- | --- |
-| [docs/README.md](docs/README.md) | Unified navigation for usage, development, security, demo, and release documents |
-| [WINDOWS_SETUP.md](WINDOWS_SETUP.md) | Windows installation, startup, verification, and troubleshooting |
-| [TASK_FLOW.md](TASK_FLOW.md) | End-to-end flow from resume configuration to reviewed application actions |
-| [docs/releases.md](docs/releases.md) | Release artifacts, versioning, and SHA256 verification |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture, module responsibilities, and data flow |
-| [SECURITY.md](SECURITY.md) | Local data, cookies, API keys, and security boundaries |
-| [ROADMAP.md](ROADMAP.md) | Current stage, priorities, and future direction |
-| [CHANGELOG.md](CHANGELOG.md) | Release history |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Bug reports, feature proposals, and code contributions |
+| `AI-JobPilot-v1.5.0-source.zip` | Source and startup scripts; install prerequisites using the Windows guide |
+| `AI-JobPilot-v1.5.0.jar` | Java application with bundled frontend; requires Java 21 and local configuration |
+| `AI-JobPilot-v1.5.0-chrome-extension.zip` | Unpack and load in Chrome; internal extension version is 1.8.0 |
+| `AI-JobPilot-v1.5.0-frontend-static.zip` | Static frontend for integration with an existing backend |
+| `SHA256SUMS.txt` | Download integrity checksums |
 
-## Project status
+A standalone Windows `.exe` installer is not available. See [download and verification instructions](docs/releases.md) and [v1.5 release notes](docs/releases/v1.5.0.md).
 
-The repository now includes backend and frontend CI, Chrome extension validation, Docker configuration validation, CodeQL security analysis, Dependabot maintenance, and validated Release artifacts.
+## Platform support and limitations
 
-The next priorities are the unified platform adapter, offline Demo mode, a complete Windows distribution, and carefully scoped communication or interview-assistance capabilities that preserve platform compliance and human confirmation. See [ROADMAP.md](ROADMAP.md).
+| Platform | Status | Execution path |
+| --- | --- | --- |
+| BOSS Zhipin | Primary maintenance | Chrome Bridge collection, AI analysis and user-confirmed applications |
+| Zhilian | Primary maintenance | Chrome Bridge collection, matching evidence, confirmation queue and result reconciliation |
+| Liepin / 51job | Experimental compatibility | Legacy adapters remain; sidebar entries are disabled and ordinary starts default to read-only collection; full real-platform acceptance is incomplete |
 
-## Contributing
+- Website changes, expired sessions and verification prompts can interrupt a scan. Resolve them in Chrome before continuing.
+- Review uncertain outcomes before retrying to avoid duplicate applications. Scores and greetings require human judgment.
+- Windows on a personal computer is the primary environment. Do not directly expose the workspace to the public internet. Docker is an advanced development option; see the [Docker guide](README_DOCKER.md).
+- [Demo fixtures](demo/README.md) are not wired into a one-click demo. Experimental integrations such as OpenClaw are not required for the main workflow.
 
-Bug reports, documentation improvements, reproducible platform issues, and adapter contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+## Documentation and contributions
 
-Never post real credentials, cookies, API keys, resumes, or personal account information in a public issue.
+Most detailed guides are currently in Chinese.
+
+| Topic | Entry point |
+| --- | --- |
+| Installation and first use | [Windows](WINDOWS_SETUP.md) · [Task flow](TASK_FLOW.md) |
+| Documentation and versions | [Documentation hub](docs/README.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) |
+| Development and testing | [Development guide](docs/development/setup.md) · [Architecture](ARCHITECTURE.md) |
+| Contributing | [Contribution guide](CONTRIBUTING.md) · [Issues](https://github.com/damingishere-coder/AI-JobPilot/issues) |
+| Data and security | [Security policy](SECURITY.md) |
+
+Reproducible reports, sanitized test fixtures and documentation improvements are welcome. Never publish real resumes, conversations, cookies, API keys or databases in issues, screenshots or commits.
 
 ## License
 
-This repository uses the custom **TOUDI NIUMA Non-Commercial License 1.0**.
+Licensed under the [TOUDI NIUMA Non-Commercial License 1.0](LICENSE). Non-commercial use is permitted with attribution and license notices retained. Commercial use, paid hosting and commercial integration require separate authorization.
 
-Non-commercial use, copying, modification, and distribution are allowed when attribution and the license notice are retained. Commercial use, paid hosting, commercial product integration, or paid consulting requires authorization from the copyright owner. See [LICENSE](LICENSE) for the full terms.
-
-## Disclaimer
-
-This project is intended for personal job-search assistance, technical research, and learning. Users are responsible for complying with recruitment platform rules and applicable laws, and for all actions performed with their accounts and data.
+This project is intended for personal job-search assistance, research and learning. Follow recruitment platform rules and take responsibility for your account actions, data handling and applications.

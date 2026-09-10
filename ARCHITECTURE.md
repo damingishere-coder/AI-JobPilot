@@ -2,14 +2,14 @@
 
 投递牛马当前是本地单机架构。前端负责配置和结果展示，后端负责 API、SQLite 持久化、AI 分析和任务编排，执行层通过 Playwright 或 Chrome Bridge 操作招聘网站。
 
-当前版本不按 SaaS 多用户服务设计，默认所有数据都保存在使用者自己的电脑上。
+当前版本为 1.5.0，配套 Chrome Bridge 1.8.0。业务数据默认保存在本机；AI 分析会向所配置的模型服务发送必要内容。本项目不按公网 SaaS 多用户服务设计。
 
 ## 总体架构
 
 ```text
 用户浏览器
   │
-  │ 访问 http://localhost:6866
+  │ 访问 http://127.0.0.1:6866
   ▼
 front/ Next.js 前端
   │
@@ -26,7 +26,7 @@ chrome-extension/
 front/
   │
   ▼
-Spring Boot 后端 8888
+Spring Boot 统一服务 6866（静态页面 + API）
   │
   ├─ SQLite + Flyway
   ├─ AI 服务调用
@@ -44,11 +44,12 @@ Spring Boot 后端 8888
 | Chrome Bridge | `chrome-extension` | 连接本地前端、招聘平台页面和本地后端 |
 | 数据库 | `db/getjobs.db` | 保存配置、Cookie、简历、岗位、AI 分析、投递状态 |
 | 迁移脚本 | `src/main/resources/db/migration` | Flyway 管理新数据库表结构 |
+| 本地简历识别 | `resume-parser` | Docling + RapidOCR，在本机解析文件并生成待确认预览 |
 | 启动脚本 | `start_windows.*`、`start_docker.*` | Windows 和 Docker 本地启动 |
 
 ## 前端
 
-前端使用 Next.js App Router，默认运行在 `6866` 端口。
+前端使用 Next.js App Router。日常运行时先静态导出，由 Spring Boot 在 `6866` 提供页面；无需另起 Node 前端服务。热更新开发时才启动 Next.js 开发服务器。
 
 主要页面：
 
@@ -64,7 +65,7 @@ Spring Boot 后端 8888
 
 ## 后端
 
-后端使用 Spring Boot 3.5，默认运行在 `8888` 端口。
+后端使用 Spring Boot 3.5，默认运行在 `6866` 端口。Windows `start_windows.bat` 和托管脚本 `scripts/run_backend.ps1` 均使用此统一服务。热更新开发 / Docker 分离模式显式改用 `8888`，详见 [开发指南](docs/development/setup.md)。
 
 核心职责：
 
@@ -114,8 +115,8 @@ Worker 位于 `src/main/java/com/getjobs/worker`。它保留了 Boss、猎聘、
 
 当前推荐：
 
-- Boss 和智联优先走 Chrome Bridge 确认式流程。
-- 猎聘和 51job 仍主要依赖既有 Playwright worker。
+- Boss 和智联主流程走 Chrome Bridge；Boss 后端 `/api/boss/start` 已禁用。
+- 猎聘和 51job 保留既有 Playwright worker，普通启动默认只读采集，真实投递需额外明确确认；侧栏入口禁用。
 - 所有平台都可能受页面改版、登录态、风控、网络环境影响。
 
 ## AI 分析
@@ -205,7 +206,7 @@ worker 使用 Playwright 打开招聘网站
 - 默认不部署公网，不做多人权限隔离。
 - Cookie 和 API Key 暂存在本地数据库或本地配置中。
 - Chrome Bridge 不绕过用户确认。
-- 平台适配层 `application/platform` 是后续统一接口的预留，不替换当前 Controller。
+- 平台适配层 `application/platform` 已提供分级能力声明与统一分析契约，保留各平台 Controller 和采集实现。
 - OpenClaw 是实验通路，不是主流程依赖。
 
 ## SaaS 化演进方向
