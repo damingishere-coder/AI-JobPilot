@@ -22,7 +22,7 @@ class ZhilianAnalysisProfileTest {
         ReflectionTestUtils.setField(controller, "zhilianService", service);
         var mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
-        for (String endpoint : new String[]{"list", "stats"}) {
+        for (String endpoint : new String[]{"list", "stats", "analysis-basis"}) {
             mvc.perform(get("/api/zhilian/" + endpoint).param("profileId", "4"))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.success").value(false))

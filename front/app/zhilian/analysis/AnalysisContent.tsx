@@ -38,6 +38,7 @@ import {
   BiLinkExternal,
   BiMessageDetail,
 } from "react-icons/bi"
+import { formatAiReasonDetail, parseAiReason } from "@/app/boss/analysis/utils"
 import { useZhilianAnalysisSync } from "./useZhilianAnalysisSync"
 
 type NameValue = { name: string; value: number }
@@ -508,15 +509,18 @@ function PendingJobCard({
   acting,
   onConfirm,
   onEditGreeting,
+  onSkip,
 }: {
   job: ZhilianJob
   acting: boolean
   onConfirm: () => void
   onEditGreeting: () => void
+  onSkip: () => void
 }) {
   const jobTitle = job.jobTitle || "未命名岗位"
   const company = job.companyName || "未知公司"
-  const riskText = job.aiReason?.trim() || (!job.jobLink ? "缺少原岗位链接，确认前建议核对岗位来源。" : "暂无明显风险点。")
+  const reason = parseAiReason(job.aiReason)
+  const riskText = [...reason.gaps, ...reason.hardConflicts.map(item => item.requirement), ...reason.unknowns.map(item => `待核实：${item}`)].join("；") || (!job.jobLink ? "缺少原岗位链接，确认前建议核对岗位来源。" : "分析未列出明确风险，仍需核对求职意向。")
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/50 dark:border-cyan-900/60 dark:bg-cyan-950/10">
@@ -558,13 +562,15 @@ function PendingJobCard({
         <div className="grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-white/60 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-neutral-900/50">
             <div className="mb-1 text-xs font-semibold text-muted-foreground">AI理由</div>
-            <div className="line-clamp-3 leading-6">{job.aiReason || "暂无AI理由"}</div>
+            <div className="line-clamp-3 leading-6">{reason.summary}</div>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
             <div className="mb-1 text-xs font-semibold">风险点</div>
             <div className="line-clamp-3 leading-6">{riskText}</div>
           </div>
         </div>
+
+        <details className="text-sm"><summary className="cursor-pointer text-primary">查看完整匹配依据</summary><div className="mt-3 whitespace-pre-wrap leading-7">{formatAiReasonDetail(job.aiReason)}</div></details>
 
         <button type="button" className="w-full rounded-lg border border-cyan-200 bg-white/80 p-3 text-left text-sm dark:border-cyan-900/60 dark:bg-neutral-900/50" onClick={onEditGreeting}>
           <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
@@ -592,6 +598,7 @@ function PendingJobCard({
           <Button size="sm" variant="outline" disabled={acting} onClick={onEditGreeting}>
             <BiMessageDetail className="mr-1" /> 编辑沟通语
           </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onSkip}>不感兴趣</Button>
         </div>
       </CardContent>
     </Card>
@@ -637,6 +644,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   const [clearingAnalysis, setClearingAnalysis] = useState(false)
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
+  const [chartsExpanded, setChartsExpanded] = useState(false)
+  const [jobNotice, setJobNotice] = useState("")
+  const actionLock = useRef(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
   const [greetingJob, setGreetingJob] = useState<ZhilianJob | null>(null)
   const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
@@ -975,6 +985,25 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
     pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
   ), [pendingCardsExpanded, pendingJobs])
 
+  const handleSkipJob = async (job: ZhilianJob) => {
+    if (!job.id || actionLock.current || actingBatch) return
+    actionLock.current = true
+    setActingJobId(job.id)
+    setJobNotice("")
+    try {
+      const result = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/skip?profileId=${profileId}`)
+      if (result.success === false) throw new Error(result.message || "跳过失败，请刷新后重试。")
+      if (!alive.current) return
+      setJobNotice(`已将“${job.jobTitle || "该岗位"}”标记为不感兴趣，可在“已跳过”筛选中查看。`)
+      await loadList(page, size)
+    } catch (cause) {
+      if (alive.current) setJobNotice(cause instanceof Error ? cause.message : "操作失败，请刷新岗位状态后重试。")
+    } finally {
+      actionLock.current = false
+      if (alive.current) setActingJobId(null)
+    }
+  }
+
   const openGreetingDialog = (job: ZhilianJob, confirmMode: boolean) => {
     if (!job.id) {
       alert("该智联岗位缺少内部 ID，无法编辑沟通草稿。")
@@ -996,7 +1025,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   } : null
 
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 space-y-8">
       {showHeader && (
         <PageHeader
           title="智联 投递分析"
@@ -1026,6 +1055,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
 
         <OverviewPanel stats={dashboardStats} loading={loadingDashboardStats} />
       </div>}
+
+      {jobNotice && <p role="status" className="rounded-lg border bg-muted/40 p-4 text-sm">{jobNotice}</p>}
 
       {/* 操作栏 */}
       <Card>
@@ -1104,7 +1135,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
               <BiCheckCircle className="text-cyan-600" />
               待确认岗位卡片
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">优先处理待确认投递，确认前可查看原岗位和 AI 理由。</div>
+            <div className="mt-1 text-xs text-muted-foreground">只显示当前页待确认岗位。不想考虑的岗位可标记“不感兴趣”，保留记录并移出待确认。</div>
           </div>
           <div className="flex flex-wrap gap-2">
             {pendingJobs.length > 2 && (
@@ -1132,21 +1163,127 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
               <PendingJobCard
                 key={job.id || job.jobId}
                 job={job}
-                acting={actingJobId === job.id}
+                acting={actingJobId !== null || actingBatch}
                 onConfirm={() => openGreetingDialog(job, true)}
                 onEditGreeting={() => openGreetingDialog(job, false)}
+                onSkip={() => void handleSkipJob(job)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* 图表区 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* 列表区 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">岗位列表</CardTitle>
+          <CardDescription>按岗位查看薪资、匹配依据和操作；可展开详情，窄屏可横向滚动。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="w-full overflow-x-auto rounded-lg border">
+            <table aria-label="智联岗位列表" className="w-full min-w-[1120px] table-fixed text-sm">
+              <thead><tr className="bg-muted/70 text-left [&>th]:px-4 [&>th]:py-4 [&>th]:font-medium [&>th]:whitespace-nowrap">
+                <th className="w-[270px]">岗位 / 公司</th><th className="w-[180px]">薪资与要求</th><th className="w-[310px]">匹配分析</th><th className="w-[140px]">投递状态</th><th className="w-[200px]">操作</th>
+              </tr></thead>
+              <tbody>
+                {!items.length && <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">{loadError ? "数据加载失败，请点击重新加载。" : loadingStats ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : statuses.length || location || experience || degree || minK || maxK || keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
+                {items.map((it, idx) => (
+                  <tr key={`${it.jobId}-${idx}`} className={`border-t align-top [&>td]:px-4 [&>td]:py-5 ${it.deliveryStatus === "已投递" ? "bg-emerald-50/60 dark:bg-emerald-950/20" : "odd:bg-muted/10 hover:bg-blue-50/40 dark:hover:bg-blue-950/20"}`}>
+                    <td>
+                      <div className="break-words text-base font-semibold leading-7">{it.jobTitle || "未命名岗位"}</div>
+                      <div className="mt-2 break-words leading-6 text-muted-foreground">{it.companyName || "未知公司"}</div>
+                      <div className="mt-3 text-xs text-muted-foreground">{formatDateOnly(it.createTime)} 入库{it.priorityCompany ? " · 优先公司" : ""}</div>
+                      <details className="mt-3"><summary className="cursor-pointer text-primary">岗位详情</summary><div className="mt-2 whitespace-pre-wrap break-words leading-6">{it.jobDescription || "暂无完整岗位描述，请查看原岗位。"}</div></details>
+                    </td>
+                    <td><div className="font-semibold text-primary">{it.salary || "薪资未提供"}</div><div className="mt-2 leading-6">{it.location || "地点未提供"}</div><div className="mt-2 text-muted-foreground">{it.experience || "经验未提供"} · {it.degree || "学历未提供"}</div></td>
+                    <td>
+                      <div className="mb-2 flex flex-wrap items-center gap-2"><span className="font-semibold">匹配分 {it.aiScore ?? "—"}</span><span className="text-xs text-muted-foreground">{it.aiDecision === "APPLY" ? "建议人工确认" : it.aiDecision === "SKIP" ? "暂不推荐" : "待分析"}</span></div>
+                      <p className="line-clamp-3 break-words leading-7">{parseAiReason(it.aiReason).summary}</p>
+                      <details className="mt-3"><summary className="cursor-pointer text-primary">完整匹配依据</summary><div className="mt-2 whitespace-pre-wrap break-words leading-7">{formatAiReasonDetail(it.aiReason)}</div></details>
+                    </td>
+                    <td><span className={`${badgeClass("delivery", it.deliveryStatus)} inline-block whitespace-nowrap`}>{it.deliveryStatus === "LIST_COLLECTED" ? "已采集待分析" : it.deliveryStatus || "未投递"}</span>{it.deliveryStatus === "投递失败" && <p className="mt-3 break-words text-xs leading-6 text-red-700">{failureReasonText(it)}</p>}</td>
+                    <td><div className="flex flex-col items-start gap-3">
+                      {it.deliveryStatus === "待确认" || it.deliveryStatus === "投递确认中" ? (
+                        <Button
+                          size="sm"
+                          disabled={actingJobId !== null || actingBatch}
+                          onClick={() => openGreetingDialog(it, true)}
+                          className="h-7 rounded-lg px-3 text-xs"
+                        >
+                          {it.deliveryStatus === "投递确认中" ? "恢复投递" : "Chrome投递"}
+                        </Button>
+                      ) : it.deliveryStatus === "投递结果待确认" ? (
+                        <div className="flex flex-col gap-2">
+                          <Button size="sm" disabled={actingJobId !== null || actingBatch} onClick={() => handleReconcileJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            对账
+                          </Button>
+                          <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            重试
+                          </Button>
+                        </div>
+                      ) : it.deliveryStatus === "投递失败" ? (
+                        <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                          重试
+                        </Button>
+                      ) : (it.deliveryStatus || "").trim() === "已投递" ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                          <BiCheckCircle className="h-3.5 w-3.5" />
+                          已投递
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+
+                      {it.deliveryStatus === "待确认" && <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => void handleSkipJob(it)}>不感兴趣</Button>}
+                      {it.jobLink && <a href={it.jobLink} target="_blank" rel="noreferrer" className="text-primary hover:underline">查看原岗位 ↗</a>}
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 分页 */}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Label className="text-sm">页码</Label>
+            <Input
+              className="w-20"
+              value={inputPage}
+              onChange={(e) => setInputPage(e.target.value)}
+              onBlur={() => {
+                const p = Number(inputPage)
+                const s = Number(size)
+                if (!isNaN(p) && p > 0) loadList(p, s)
+              }}
+            />
+            <Label className="text-sm">每页条数</Label>
+            <Input
+              className="w-24"
+              value={inputSize}
+              onChange={(e) => setInputSize(e.target.value)}
+              onBlur={() => {
+                const p = Number(page)
+                const s = Number(inputSize)
+                if (!isNaN(s) && s > 0) loadList(p, s)
+              }}
+            />
+            <Button variant="outline" onClick={() => loadList(Number(page), Number(size))}>
+              跳转
+            </Button>
+            <div className="text-sm text-muted-foreground">共 {total} 条</div>
+          </div>
+        </CardContent>
+      </Card>
+      <section aria-label="分析图表" className="rounded-xl border p-4">
+        <Button variant="ghost" className="w-full justify-between" aria-expanded={chartsExpanded} aria-controls="zhilian-charts" onClick={() => setChartsExpanded(value => !value)}>
+          <span className="flex items-center gap-2"><BiBarChart /> 分析图表</span>
+          <span className="flex items-center gap-2">{chartsExpanded ? "收起图表" : "展开图表"}{chartsExpanded ? <BiChevronUp /> : <BiChevronDown />}</span>
+        </Button>
+        {chartsExpanded && <div id="zhilian-charts" className="mt-4"><div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 投递状态分布</CardTitle>
-            <CardDescription>按 delivery_status 聚合</CardDescription>
+            <CardDescription>各投递状态的岗位数量</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
@@ -1160,7 +1297,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 失败类型统计</CardTitle>
-            <CardDescription>按 failure_type 聚合投递失败原因</CardDescription>
+            <CardDescription>查看已记录的投递失败原因</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
@@ -1183,7 +1320,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
           </CardHeader>
           <CardContent>
             {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byCity.map((x) => x.name)} data={stats.charts.byCity.map((x) => x.value)} color="#3b82f6" />
+              <ChartCanvas type="bar" labels={[...stats.charts.byCity].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.name)} data={[...stats.charts.byCity].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.value)} color="#3b82f6" />
             ) : (
               <div className="text-muted-foreground">加载中...</div>
             )}
@@ -1197,7 +1334,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
           </CardHeader>
           <CardContent>
             {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byCompany.map((x) => x.name)} data={stats.charts.byCompany.map((x) => x.value)} color="#10b981" />
+              <ChartCanvas type="bar" labels={[...stats.charts.byCompany].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.name)} data={[...stats.charts.byCompany].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.value)} color="#10b981" />
             ) : (
               <div className="text-muted-foreground">加载中...</div>
             )}
@@ -1235,7 +1372,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle>
-            <CardDescription>基于中位数K的桶聚合（后端或前端计算）</CardDescription>
+            <CardDescription>按岗位月薪中位数统计</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
@@ -1250,149 +1387,8 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
             )}
           </CardContent>
         </Card>
-      </div>
-
-      {/* 列表区 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">岗位列表</CardTitle>
-          <CardDescription>分页展示符合筛选条件的岗位</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="bg-muted">
-                  <th className="py-2 px-3 text-left">操作</th>
-                  <th className="py-2 px-3 text-left">公司</th>
-                  <th className="py-2 px-3 text-left">岗位</th>
-                  <th className="py-2 px-3 text-left">薪资</th>
-                  <th className="py-2 px-3 text-left">地点</th>
-                  <th className="py-2 px-3 text-left">经验</th>
-                  <th className="py-2 px-3 text-left">学历</th>
-                  <th className="py-2 px-3 text-left">投递状态</th>
-                  <th className="py-2 px-3 text-left">失败原因</th>
-                  <th className="py-2 px-3 text-left">AI分</th>
-                  <th className="py-2 px-3 text-left">AI决策</th>
-                  <th className="py-2 px-3 text-left">优先</th>
-                  <th className="py-2 px-3 text-left">AI原因</th>
-                  <th className="py-2 px-3 text-left">链接</th>
-                  <th className="py-2 px-3 text-left">创建时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!items.length && <tr><td colSpan={15} className="p-8 text-center text-muted-foreground">{loadError ? "数据加载失败，请点击重新加载。" : loadingStats ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : statuses.length || location || experience || degree || minK || maxK || keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
-                {items.map((it, idx) => (
-                  <tr
-                    key={`${it.jobId}-${idx}`}
-                    className={`border-t transition-colors ${
-                      (it.deliveryStatus || "").trim() === "已投递"
-                        ? "border-emerald-200 bg-emerald-50/80 hover:bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/20"
-                        : "hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
-                    }`}
-                  >
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      {it.deliveryStatus === "待确认" || it.deliveryStatus === "投递确认中" ? (
-                        <Button
-                          size="sm"
-                          disabled={actingJobId === it.id}
-                          onClick={() => openGreetingDialog(it, true)}
-                          className="h-7 rounded-lg px-3 text-xs"
-                        >
-                          {it.deliveryStatus === "投递确认中" ? "恢复投递" : "Chrome投递"}
-                        </Button>
-                      ) : it.deliveryStatus === "投递结果待确认" ? (
-                        <div className="flex flex-col gap-2">
-                          <Button size="sm" disabled={actingJobId === it.id} onClick={() => handleReconcileJob(it)} className="h-7 rounded-lg px-3 text-xs">
-                            对账
-                          </Button>
-                          <Button size="sm" variant="outline" disabled={actingJobId === it.id} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
-                            重试
-                          </Button>
-                        </div>
-                      ) : it.deliveryStatus === "投递失败" ? (
-                        <Button size="sm" variant="outline" disabled={actingJobId === it.id} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
-                          重试
-                        </Button>
-                      ) : (it.deliveryStatus || "").trim() === "已投递" ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
-                          <BiCheckCircle className="h-3.5 w-3.5" />
-                          已投递
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.companyName || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.jobTitle || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.salary || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.location || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.experience || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.degree || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.deliveryStatus)}>
-                        {(it.deliveryStatus || "").trim() === "已投递" ? (
-                          <span className="inline-flex items-center gap-1">
-                            <BiCheckCircle className="h-3.5 w-3.5" />
-                            已投递
-                          </span>
-                        ) : (
-                          it.deliveryStatus || ""
-                        )}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3 max-w-[260px] truncate" title={failureReasonText(it)}>{failureReasonText(it)}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.aiScore ?? "-"}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.aiDecision)}>{it.aiDecision || "-"}</span>
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.priorityCompany ? "是" : "-"}</td>
-                    <td className="py-2 px-3 max-w-[280px] truncate" title={it.aiReason || ""}>{it.aiReason || "-"}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      {it.jobLink ? (
-                        <a href={it.jobLink} target="_blank" rel="noreferrer" className="text-primary hover:underline">打开</a>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{formatDateOnly(it.createTime)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* 分页 */}
-          <div className="mt-4 flex items-center gap-2">
-            <Label className="text-sm">页码</Label>
-            <Input
-              className="w-20"
-              value={inputPage}
-              onChange={(e) => setInputPage(e.target.value)}
-              onBlur={() => {
-                const p = Number(inputPage)
-                const s = Number(size)
-                if (!isNaN(p) && p > 0) loadList(p, s)
-              }}
-            />
-            <Label className="text-sm">每页条数</Label>
-            <Input
-              className="w-24"
-              value={inputSize}
-              onChange={(e) => setInputSize(e.target.value)}
-              onBlur={() => {
-                const p = Number(page)
-                const s = Number(inputSize)
-                if (!isNaN(s) && s > 0) loadList(p, s)
-              }}
-            />
-            <Button variant="outline" onClick={() => loadList(Number(page), Number(size))}>
-              跳转
-            </Button>
-            <div className="text-sm text-muted-foreground">共 {total} 条</div>
-          </div>
-        </CardContent>
-      </Card>
+      </div></div>}
+      </section>
       <GreetingDraftDialog
         open={Boolean(greetingJob)}
         platform="zhilian"

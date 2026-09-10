@@ -646,6 +646,13 @@ public class JobAnalysisTaskStore {
         inputs.put("companyInfo", canonical(request.getCompanyInfo()));
         inputs.put("jobDescription", canonical(request.getJobDescription()));
         inputs.put("resumeFingerprint", currentResumeFingerprint(request.getProfileId()));
+        if ("zhilian".equalsIgnoreCase(platform)) {
+            List<String> introductions = jdbcTemplate.query(
+                    "SELECT COALESCE(introduce, '') FROM ai WHERE profile_id=? ORDER BY updated_at DESC, id DESC LIMIT 1",
+                    (rs, rowNum) -> rs.getString(1), request.getProfileId());
+            inputs.put("introduceFingerprint", sha256(introductions.isEmpty() ? "" : introductions.get(0)));
+            inputs.put("analysisPolicy", "zhilian-intent-20260910");
+        }
         try {
             String digest = sha256(objectMapper.writeValueAsString(inputs));
             return "ai:v2:" + request.getProfileId() + ":" + platform + ":" + digest;

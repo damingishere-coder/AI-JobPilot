@@ -35,6 +35,17 @@ class ZhilianDeliveryControllerTest {
     }
 
     @Test
+    void skipDoesNotReportSuccessWhenConcurrentReservationWins() {
+        ZhilianJobDataEntity pending = new ZhilianJobDataEntity();
+        pending.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
+        ZhilianJobDataEntity reserved = new ZhilianJobDataEntity();
+        reserved.setDeliveryStatus(DeliveryStatus.DELIVERY_REQUESTED);
+        when(zhilianService.getZhilianJobById(9L)).thenReturn(pending);
+        when(zhilianService.updateDeliveryStatusById(9L, DeliveryStatus.SKIPPED)).thenReturn(reserved);
+        assertThat(controller.skipZhilianJob(9L, null)).containsEntry("success", false);
+    }
+
+    @Test
     void deliveryCallbackPassesRequestIdentityAndEvidenceToAttemptService() {
         ZhilianJobDataEntity job = new ZhilianJobDataEntity();
         job.setId(8L);

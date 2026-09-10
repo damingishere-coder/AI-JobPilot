@@ -334,6 +334,45 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void zhilianPromptIncludesFullResumeAndJobAndChecksExplicitIntentBeforeSkills() {
+        ResumeProfileEntity latest = resume();
+        latest.setResumeText("经历".repeat(3500) + "只考虑内容运营，不考虑保险销售");
+        AiEntity config = aiConfig(60, 50);
+        config.setIntroduce("最新补充：AI应用PoC与RAG项目实践");
+        when(aiService.getAiConfig(PROFILE_ID)).thenReturn(config);
+        when(resumeProfileMapper.selectOne(any())).thenReturn(latest);
+        when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("方向待核实"));
+        var request = zhilianRequest();
+        request.setJobDescription("岗位".repeat(3000) + "实际工作是保险销售");
+        service.analyzeJob(request);
+        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+        verify(aiService, atLeastOnce()).sendStructuredRequest(prompt.capture(), any());
+        assertThat(prompt.getValue()).contains("只考虑内容运营，不考虑保险销售", "实际工作是保险销售",
+                "搜索关键词只是召回来源", "summary 必须先说明方向是否符合", "最新补充：AI应用PoC与RAG项目实践").doesNotContain("宁可多投");
+    }
+
+    @Test
+    void zhilianSearchKeywordIsNotEvidenceOfActualJobRequirements() {
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(batchResult("需核实实际职责"));
+        var request = zhilianRequest();
+        request.setKeyword("Java");
+        request.setJobName("保险代理人");
+        request.setJobDescription("负责保险产品销售");
+        var result = service.analyzeJob(request);
+        assertThat(result.getDimensions()).allSatisfy(dimension -> assertThat(dimension.getStatus()).isEqualTo("UNKNOWN"));
+    }
+
+    @Test
+    void skippedZhilianJobIsNotReturnedToWaitingConfirmByLateAnalysis() {
+        when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.SKIPPED));
+        service.updatePlatformCache(zhilianRequest(), analysis("APPLY"));
+        assertThat(lastZhilianUpdate().getDeliveryStatus()).isNull();
+    }
+
+    @Test
     void nonBossAnalysisStillRequiresGreetingField() {
         when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
@@ -828,7 +867,7 @@ class JobAiAnalysisServiceStatusTest {
         when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.WAITING_CONFIRM));
 
         zhilianService.updateDeliveryStatusById(1L, DeliveryStatus.SKIPPED);
-        assertThat(lastZhilianUpdateById().getDeliveryStatus()).isEqualTo(DeliveryStatus.SKIPPED);
+        assertThat(lastZhilianUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.SKIPPED);
 
         zhilianService.updateDeliveryStatusById(1L, DeliveryStatus.DELIVERY_FAILED, "PAGE_ERROR", "按钮不可点击");
         ZhilianJobDataEntity failureUpdate = lastZhilianUpdateById();

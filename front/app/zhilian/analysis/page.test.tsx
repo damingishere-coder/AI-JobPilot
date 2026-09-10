@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import Page from './page'
 
+vi.mock('./AnalysisBasis', () => ({ default: () => null }))
 vi.mock('./AnalysisContent', () => ({ default: ({ profileId, activeScanRunId }: { profileId: number; activeScanRunId: string }) => <div data-testid="analysis">{profileId}:{activeScanRunId || 'all'}</div> }))
 
 let profile = { id: 4, name: '测试档案' }

@@ -1,6 +1,7 @@
 package com.getjobs.application.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.getjobs.application.entity.ZhilianConfigEntity;
 import com.getjobs.application.entity.ZhilianOptionEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
@@ -510,7 +511,15 @@ public class ZhilianService {
             update.setFailureReason(firstNonBlank(failureReason, DeliveryStatus.DELIVERY_FAILED));
         }
         update.setUpdateTime(LocalDateTime.now());
-        zhilianJobDataMapper.updateById(update);
+        if (DeliveryStatus.SKIPPED.equals(status)) {
+            UpdateWrapper<ZhilianJobDataEntity> wrapper = new UpdateWrapper<>();
+            wrapper.eq("id", id).eq("profile_id", current.getProfileId());
+            if (current.getDeliveryStatus() == null) wrapper.isNull("delivery_status");
+            else wrapper.eq("delivery_status", current.getDeliveryStatus());
+            zhilianJobDataMapper.update(update, wrapper);
+        } else {
+            zhilianJobDataMapper.updateById(update);
+        }
         return getZhilianJobById(id);
     }
 

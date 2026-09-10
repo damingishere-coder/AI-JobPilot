@@ -59,6 +59,9 @@ public class ZhilianController {
     private ZhilianService zhilianService;
 
     @Autowired
+    private JobAiAnalysisService jobAiAnalysisService;
+
+    @Autowired
     private com.getjobs.application.service.ProfileService profileService;
 
     @Autowired
@@ -362,6 +365,16 @@ public class ZhilianController {
         enrichGreetings(result == null ? null : result.items);
         assertAnalysisProfile(profileId);
         return result;
+    }
+
+    @GetMapping("/analysis-basis")
+    public Map<String, Object> analysisBasis(@RequestParam("profileId") Long expectedProfileId) {
+        assertAnalysisProfile(expectedProfileId);
+        Map<String, Object> basis = jobAiAnalysisService.zhilianAnalysisBasis(expectedProfileId);
+        ZhilianConfigEntity config = zhilianService.getFirstConfig();
+        basis.put("keywords", config == null ? "" : Objects.toString(config.getKeywords(), ""));
+        assertAnalysisProfile(expectedProfileId);
+        return basis;
     }
 
     private void assertAnalysisProfile(Long expectedProfileId) {
@@ -770,7 +783,9 @@ public class ZhilianController {
     }
 
     @PostMapping("/jobs/{id}/skip")
-    public Map<String, Object> skipZhilianJob(@PathVariable("id") Long id) {
+    public Map<String, Object> skipZhilianJob(@PathVariable("id") Long id,
+            @RequestParam(value = "profileId", required = false) Long expectedProfileId) {
+        assertAnalysisProfile(expectedProfileId);
         ZhilianJobDataEntity current = getZhilianJobById(id);
         if (current != null && DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())) {
             return Map.of("success", false, "message", "投递已进入请求或结果状态，不能再跳过", "status", current.getDeliveryStatus());
@@ -778,6 +793,9 @@ public class ZhilianController {
         ZhilianJobDataEntity updated = zhilianService.updateDeliveryStatusById(id, DeliveryStatus.SKIPPED);
         if (updated == null) {
             return Map.of("success", false, "message", "岗位不存在");
+        }
+        if (!DeliveryStatus.SKIPPED.equals(updated.getDeliveryStatus())) {
+            return Map.of("success", false, "message", "岗位状态已变化，请刷新后核对", "status", updated.getDeliveryStatus() == null ? "" : updated.getDeliveryStatus());
         }
         return Map.of("success", true, "message", "已跳过该岗位", "status", DeliveryStatus.SKIPPED);
     }

@@ -1,5 +1,6 @@
 "use client"
 
+import AnalysisBasis from "./AnalysisBasis"
 import AnalysisContent from "@/app/zhilian/analysis/AnalysisContent"
 import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
@@ -76,6 +77,6 @@ export default function ZhilianAnalysisPage() {
     {error ? <div role="alert">{error} <Button onClick={() => void loadProfile()}>重试</Button></div>
       : !loaded ? <p role="status">正在加载当前档案…</p>
       : !profile ? <p>请先新建或选择简历档案。</p>
-      : <AnalysisContent key={`${profile.id}:${scanRunId}`} profileId={profile.id} activeScanRunId={scanRunId} showHeader />}
+      : <><AnalysisBasis key={profile.id} profileId={profile.id} /><AnalysisContent key={`${profile.id}:${scanRunId}`} profileId={profile.id} activeScanRunId={scanRunId} showHeader /></>}
   </div>
 }
