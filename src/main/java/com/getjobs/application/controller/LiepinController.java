@@ -1,11 +1,15 @@
 package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.LiepinConfigEntity;
 import com.getjobs.application.entity.LiepinOptionEntity;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.LiepinService;
 import com.getjobs.worker.manager.PlaywrightManager;
+import com.getjobs.worker.dto.JobProgressMessage;
 import com.getjobs.worker.service.LiepinJobService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -40,6 +45,9 @@ public class LiepinController {
 
     @Autowired
     private LiepinService liepinService;
+
+    @Autowired
+    private DeliveryAttemptService deliveryAttemptService;
 
     @Autowired
     @Qualifier("jobTaskExecutor")
@@ -73,10 +81,19 @@ public class LiepinController {
      * @return 响应结果
      */
     @PostMapping("/start")
-    public ResponseEntity<Map<String, Object>> startLiepinJob() {
+    public ResponseEntity<Map<String, Object>> startLiepinJob(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "X-Real-Delivery-Confirmation", required = false) String deliveryConfirmation) {
         Map<String, Object> response = new HashMap<>();
 
         try {
+            boolean deliveryMode = request != null && "delivery".equalsIgnoreCase(Objects.toString(request.get("mode"), ""));
+            if (deliveryMode && !"CONFIRM_REAL_DELIVERY".equals(deliveryConfirmation)) {
+                response.put("success", false);
+                response.put("message", "真实投递模式需要操作当时再次确认；未提供有效确认头");
+                response.put("status", "confirmation_required");
+                return ResponseEntity.badRequest().body(response);
+            }
             // 未登录则不允许启动
             if (!playwrightManager.isLoggedIn("liepin")) {
                 response.put("success", false);
@@ -96,9 +113,11 @@ public class LiepinController {
             // 异步启动新任务
             CompletableFuture.runAsync(() -> {
                 try {
-                    liepinJobService.executeDelivery(progressMessage -> {
+                    java.util.function.Consumer<JobProgressMessage> progress = progressMessage -> {
                         log.info("[{}] {}", progressMessage.getPlatform(), progressMessage.getMessage());
-                    });
+                    };
+                    if (deliveryMode) liepinJobService.executeDelivery(progress);
+                    else liepinJobService.executeCollection(progress);
                 } catch (Exception e) {
                     log.error("猎聘异步任务执行失败", e);
                     log.warn("猎聘任务执行失败，请查看后端日志");
@@ -106,8 +125,9 @@ public class LiepinController {
             }, jobTaskExecutor);
 
             response.put("success", true);
-            response.put("message", "猎聘任务启动成功");
+            response.put("message", deliveryMode ? "猎聘投递任务启动成功" : "猎聘只读采集任务启动成功，不会执行真实投递");
             response.put("status", "started");
+            response.put("mode", deliveryMode ? "delivery" : "collection");
 
             log.info("通过API启动猎聘任务成功");
             return ResponseEntity.ok(response);
@@ -271,6 +291,32 @@ public class LiepinController {
         return liepinService.listLiepinJobs(statusList, location, experience, degree, minK, maxK, keyword, page, size);
     }
 
+    @PostMapping("/jobs/{jobId}/delivery-reconcile")
+    public Map<String, Object> reconcileDelivery(@PathVariable("jobId") Long jobId,
+                                                 @RequestBody DeliveryResultRequest request) {
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatestLegacy(
+                "liepin", jobId, target, request == null ? null : request.getMessage());
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/jobs/{jobId}/delivery-retry")
+    public Map<String, Object> prepareDeliveryRetry(@PathVariable("jobId") Long jobId) {
+        DeliveryAttemptService.RequestResult result = deliveryAttemptService.prepareLegacyRetry("liepin", jobId);
+        return Map.of(
+                "success", result.accepted(),
+                "prepared", result.accepted(),
+                "message", result.message()
+        );
+    }
+
     /**
      * 调试接口：读取数据库中的猎聘 Cookie 记录
      */
@@ -279,19 +325,7 @@ public class LiepinController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("liepin");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "liepin");
-                data.put("cookie_value", null);
-                data.put("message", "未找到猎聘Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "liepin", "未找到猎聘Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);

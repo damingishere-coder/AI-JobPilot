@@ -62,42 +62,7 @@ public class StaticResourceConfiguration implements WebMvcConfigurer {
                     )
                     .setCachePeriod(0)
                     .resourceChain(true)
-                    .addResolver(new PathResourceResolver() {
-                        @Override
-                        protected Resource getResource(String resourcePath, Resource location) {
-                            try {
-                                Resource requestedResource = location.createRelative(resourcePath);
-
-                                // 如果请求的资源存在，直接返回
-                                if (requestedResource.exists() && requestedResource.isReadable()) {
-                                    return requestedResource;
-                                }
-
-                                // Next.js 静态导出：无后缀路径优先匹配同名 .html / .txt
-                                if (!resourcePath.startsWith("api/") && !resourcePath.contains(".")) {
-                                    // 1) 尝试同名 .html
-                                    Resource htmlResource = location.createRelative(resourcePath + ".html");
-                                    if (htmlResource.exists() && htmlResource.isReadable()) {
-                                        return htmlResource;
-                                    }
-                                    // 2) 尝试同名 .txt（App Router RSC 数据）
-                                    Resource txtResource = location.createRelative(resourcePath + ".txt");
-                                    if (txtResource.exists() && txtResource.isReadable()) {
-                                        return txtResource;
-                                    }
-                                    // 3) 兜底返回 index.html（SPA fallback）
-                                    Resource indexResource = location.createRelative("index.html");
-                                    if (indexResource.exists() && indexResource.isReadable()) {
-                                        return indexResource;
-                                    }
-                                }
-                            } catch (IOException e) {
-                                // 返回 null
-                            }
-
-                            return null;
-                        }
-                    });
+                    .addResolver(new BoundedStaticPathResourceResolver());
         } else {
             log.warn("未找到静态资源目录 (dist 或 static)");
         }
@@ -144,5 +109,51 @@ public class StaticResourceConfiguration implements WebMvcConfigurer {
     @Override
     public void addViewControllers(ViewControllerRegistry registry) {
         registry.addViewController("/").setViewName("forward:/index.html");
+    }
+
+    static final class BoundedStaticPathResourceResolver extends PathResourceResolver {
+        @Override
+        protected Resource getResource(String resourcePath, Resource location) {
+            try {
+                Resource requestedResource = location.createRelative(resourcePath);
+                if (isReadableWithinLocation(requestedResource, location)) {
+                    return requestedResource;
+                }
+
+                if (!resourcePath.startsWith("api/") && !resourcePath.contains(".")) {
+                    Resource htmlResource = location.createRelative(resourcePath + ".html");
+                    if (isReadableWithinLocation(htmlResource, location)) {
+                        return htmlResource;
+                    }
+                    Resource txtResource = location.createRelative(resourcePath + ".txt");
+                    if (isReadableWithinLocation(txtResource, location)) {
+                        return txtResource;
+                    }
+                    Resource indexResource = location.createRelative("index.html");
+                    if (isReadableWithinLocation(indexResource, location)) {
+                        return indexResource;
+                    }
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // 无法证明位于静态根目录时按不存在处理，不向响应暴露本地路径。
+            }
+            return null;
+        }
+
+        Resource resolveForTest(String resourcePath, Resource location) {
+            return getResource(resourcePath, location);
+        }
+
+        private boolean isReadableWithinLocation(Resource resource, Resource location) throws IOException {
+            if (!resource.exists() || !resource.isReadable() || !checkResource(resource, location)) {
+                return false;
+            }
+            if (resource.isFile() && location.isFile()) {
+                Path root = location.getFile().toPath().toRealPath();
+                Path candidate = resource.getFile().toPath().toRealPath();
+                return candidate.startsWith(root);
+            }
+            return true;
+        }
     }
 }

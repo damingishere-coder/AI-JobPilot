@@ -34,6 +34,8 @@ class JobAiAnalysisServicePriorityCompanyCacheTest {
                 priorityCompanyMapper,
                 null,
                 null,
+                null,
+                null,
                 null
         );
     }

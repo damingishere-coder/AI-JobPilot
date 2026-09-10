@@ -100,13 +100,13 @@
   function parsePageResult(pageResult, request) {
     const httpStatus = Number(pageResult?.httpStatus || 0);
     const pageState = pageResult?.pageState || {};
-    if (pageState.isSecurityPage) {
+    if (pageState.isSecurityPage === true) {
       return diagnosticResult("SECURITY_VERIFICATION", { httpStatus, request, apiMessage: "Boss 页面要求安全验证" });
     }
-    if (pageState.isLoginPage) {
+    if (pageState.isLoginPage === true) {
       return diagnosticResult("LOGIN_REQUIRED", { httpStatus, request, apiMessage: "Boss 登录状态已失效" });
     }
-    if (!pageResult?.success) {
+    if (pageResult?.success !== true) {
       return diagnosticResult("API_REQUEST_FAILED", {
         httpStatus,
         request,
@@ -116,7 +116,7 @@
 
     const data = pageResult.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return diagnosticResult(pageResult?.responseOk ? "API_SCHEMA_CHANGED" : "API_REQUEST_FAILED", {
+      return diagnosticResult(pageResult?.responseOk === true ? "API_SCHEMA_CHANGED" : "API_REQUEST_FAILED", {
         httpStatus,
         request,
         apiMessage: compact(pageResult?.parseError) || "Boss 搜索接口未返回 JSON 对象"
@@ -134,7 +134,7 @@
     if (looksLikeLoginMessage(apiMessage)) {
       return diagnosticResult("LOGIN_REQUIRED", { apiCode, apiMessage, httpStatus, request });
     }
-    if (!pageResult?.responseOk) {
+    if (pageResult?.responseOk !== true) {
       return diagnosticResult("API_REQUEST_FAILED", { apiCode, apiMessage, httpStatus, request });
     }
     if (apiCode !== 0) {
@@ -150,7 +150,18 @@
       return diagnosticResult("API_EMPTY", { apiCode, apiMessage, httpStatus, request });
     }
 
-    const jobs = data.zpData.jobList.slice(0, request.pageSize).map((job) => mapJob(job, request.keyword));
+    const mappedJobs = data.zpData.jobList.slice(0, request.pageSize).map((job) => mapJob(job, request.keyword));
+    const invalidJobCount = mappedJobs.filter((job) => !isValidApiCandidateJob(job)).length;
+    if (invalidJobCount > 0) {
+      return diagnosticResult("API_SCHEMA_CHANGED", {
+        apiCode,
+        apiMessage: `Boss 搜索接口包含 ${invalidJobCount} 条缺少稳定标识、岗位、公司或链接的记录`,
+        httpStatus,
+        request,
+        invalidJobCount
+      });
+    }
+    const jobs = mappedJobs;
     const missingSalaryCount = jobs.filter((job) => !job.salary).length;
     const diagnosticType = missingSalaryCount > 0 ? "API_SALARY_MISSING" : "API_SUCCESS";
     return diagnosticResult(diagnosticType, {
@@ -211,10 +222,23 @@
       jobs,
       candidateCount: Number(details.candidateCount ?? jobs.length ?? 0),
       missingSalaryCount: Number(details.missingSalaryCount || 0),
+      invalidJobCount: Number(details.invalidJobCount || 0),
       fallbackUsed: false,
       collectorSource: details.collectorSource || (jobs.length ? "boss-search-api" : "none"),
       request: details.request || null
     };
+  }
+
+  function isValidApiCandidateJob(job) {
+    if (!compact(job?.id) || !compact(job?.title) || !compact(job?.company) || !compact(job?.url)) return false;
+    try {
+      const url = new URL(job.url);
+      return url.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(url.hostname)
+        && /^\/job_detail\/[^/?#]+\.html$/i.test(url.pathname);
+    } catch {
+      return false;
+    }
   }
 
   async function requestInPage(request) {

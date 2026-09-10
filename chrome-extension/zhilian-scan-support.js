@@ -1,9 +1,12 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-07-29-zhilian-security-resume-fix";
+  const SUPPORT_VERSION = "2026-09-10-continuous-scan";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
   const DEFAULT_SALARY_CODE = "0000,9999999";
+  const DEEP_COLLECTION_MAX_PAGES = Number.MAX_SAFE_INTEGER;
+  const DEEP_COLLECTION_MAX_DURATION_MS = 15 * 60 * 1000;
+  const DEEP_COLLECTION_MAX_STAGNANT_PAGES = 4;
   const OFFICIAL_SALARY_CODES = new Set([
     DEFAULT_SALARY_CODE,
     "0000,4000",
@@ -89,6 +92,18 @@
     return OFFICIAL_SALARY_CODES.has(raw) ? raw : DEFAULT_SALARY_CODE;
   }
 
+  function deepCollectionStopReason(state = {}) {
+    const target = Math.max(1, Math.min(200, Math.floor(Number(state.target) || 20)));
+    if (state.stopped) return "stopped";
+    if (Number(state.fresh || 0) >= target) return "target_reached";
+    if (state.blocked) return "blocked";
+    if (state.platformExhausted) return "platform_exhausted";
+    if (Number(state.elapsedMs || 0) >= DEEP_COLLECTION_MAX_DURATION_MS) return "timeout_safety_cap";
+    if (Number(state.stagnantPages || 0) >= DEEP_COLLECTION_MAX_STAGNANT_PAGES) return "stagnation_safety_cap";
+    if (Number(state.pages || 0) >= DEEP_COLLECTION_MAX_PAGES) return "page_safety_cap";
+    return "";
+  }
+
   function isUnlimitedZhilianSalary(value) {
     return normalizeZhilianSalaryCode(value) === DEFAULT_SALARY_CODE;
   }
@@ -96,7 +111,8 @@
   function normalizedSearchParamsForCursor(config = {}) {
     return {
       cityCode: normalizeZhilianCityCode(config.cityCode || config.cityId || config.city),
-      salary: normalizeZhilianSalaryCode(config.salary || config.salaryTypeCode || config.sl)
+      salary: normalizeZhilianSalaryCode(config.salary || config.salaryTypeCode || config.sl),
+      filters: root.GetJobsZhilianFilters ? root.GetJobsZhilianFilters.normalize(config.filters) : config.filters || {}
     };
   }
 
@@ -114,7 +130,7 @@
   function isZhilianSearchUrl(value) {
     if (!isZhilianUrl(value)) return false;
     try {
-      return /^\/sou(?:\/|$)/i.test(new URL(String(value)).pathname);
+      return /^(?:\/sou(?:\/|$)|\/jobs\/?$)/i.test(new URL(String(value)).pathname);
     } catch {
       return false;
     }
@@ -144,9 +160,15 @@
     return Boolean(zhilianSecurityReason(options));
   }
 
-  function prepareTaskForResume(task) {
+  function prepareTaskForResume(task, now = Date.now()) {
     if (!task || typeof task !== "object") return task;
     const resumed = { ...task };
+    const pausedAt = Number(task.pausedAt || task.blockedAt || 0);
+    if (task.collectionStartedAt && pausedAt > 0) {
+      // Human login/verification time is not active collection time. A normal
+      // page reload still consumes the original keyword budget.
+      resumed.collectionStartedAt = Number(task.collectionStartedAt) + Math.max(0, now - pausedAt);
+    }
     delete resumed.blockedAt;
     delete resumed.blockState;
     delete resumed.pausedAt;
@@ -155,13 +177,19 @@
   }
 
   function mergeScanStatus(previous, nextStatus, now = Date.now()) {
+    const identityChanged = ["profileId", "runId"].some(key => nextStatus?.[key] !== undefined
+      && String(nextStatus[key] ?? "") !== String(previous?.[key] ?? ""));
     const next = {
-      ...(previous || {}),
+      ...(identityChanged ? {} : previous || {}),
       ...(nextStatus || {}),
       updatedAt: Number(now)
     };
     const stage = String(next.stage || "");
+    if (stage === "idle") { next.outcome = "idle"; next.keywordResults = []; }
+    else if (stage === "stopped") next.outcome = "stopped";
+    else if (stage === "error") next.outcome = "failed";
     if (next.isRunning === true) {
+      next.outcome = "running";
       next.paused = false;
       next.resumable = true;
       next.diagnosticType = "";
@@ -177,16 +205,67 @@
     const search = normalizedSearchParamsForCursor(config);
     const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
     const params = new URLSearchParams();
+    params.set("jl", search.cityCode);
     params.set("kw", String(keyword || ""));
     if (!isUnlimitedZhilianSalary(search.salary)) params.set("sl", search.salary);
-    if (page > 1) params.set("p", String(page));
-    return `https://www.zhaopin.com/sou/jl${search.cityCode}/?${params.toString()}`;
+    if(root.GetJobsZhilianFilters) Object.entries(root.GetJobsZhilianFilters.query(search.filters)).forEach(([key,value])=>params.set(key,value));
+    else if(Object.keys(search.filters).length) throw new Error("智联筛选模块未加载，禁止忽略筛选扫描");
+    // Explicit page numbers are only used by the legacy paged layout.
+    if (page > 1) {
+      params.delete("jl");
+      params.set("p", String(page));
+      return `https://www.zhaopin.com/sou/jl${search.cityCode}/?${params.toString()}`;
+    }
+    return `https://www.zhaopin.com/jobs?${params.toString()}`;
+  }
+
+  function matchesSearchUrl(value, keyword, config = {}, pageNumber = 1) {
+    if (!isZhilianSearchUrl(value)) return false;
+    const current = new URL(value);
+    const search = normalizedSearchParamsForCursor(config);
+    const city = current.searchParams.get("jl") || current.pathname.match(/\/jl(\d+)/i)?.[1];
+    let word = current.searchParams.get("kw") || current.searchParams.get("keyword") || current.searchParams.get("query");
+    if (!word) {
+      try { word = decodeURIComponent(current.pathname.match(/\/kw([^/]+)/)?.[1] || ""); } catch { return false; }
+    }
+    const salary = current.searchParams.get("sl") || DEFAULT_SALARY_CODE;
+    const page = Number(current.searchParams.get("p") || current.searchParams.get("page") || current.searchParams.get("pageIndex") || current.pathname.match(/\/p(\d+)/)?.[1] || 1);
+    return compact(word).toLowerCase() === compact(keyword).toLowerCase()
+      && city === search.cityCode && salary === search.salary
+      && (!root.GetJobsZhilianFilters || root.GetJobsZhilianFilters.matches(value, search.filters))
+      && page === Math.max(1, Math.floor(Number(pageNumber) || 1));
+  }
+
+  function normalizeJobUrl(value, origin = "https://www.zhaopin.com") {
+    try {
+      const url = new URL(String(value || ""), origin);
+      if (!/^(?:www\.)?zhaopin\.com$|^jobs\.zhaopin\.com$/i.test(url.hostname)
+          || url.username || url.password || url.port) return "";
+      if (url.protocol === "http:" && /^\/(?:jobdetail|job_detail|positiondetail|job)\//i.test(url.pathname)) url.protocol = "https:";
+      if (url.protocol !== "https:") return "";
+      url.hash = "";
+      return url.href;
+    } catch { return ""; }
+  }
+
+  function pageStatus({ hasLoginPrompt = false, hasSecurityPrompt = false, loading = false } = {}) {
+    const chromePageReady = !loading && !hasLoginPrompt && !hasSecurityPrompt;
+    return { success: true, chromePageReady, hasLoginPrompt, hasSecurityPrompt,
+      pageState: hasSecurityPrompt ? "SECURITY_REQUIRED" : hasLoginPrompt ? "LOGIN_REQUIRED" : loading ? "LOADING" : "READY",
+      message: hasSecurityPrompt ? "智联页面需要安全验证" : hasLoginPrompt ? "智联页面需要登录" : loading ? "智联页面正在加载，请稍后重新检查" : "Chrome 中的智联页面可用" };
   }
 
   root.GetJobsZhilianScanSupport = Object.freeze({
+    matchesSearchUrl,
+    normalizeJobUrl,
+    pageStatus,
     version: SUPPORT_VERSION,
     DEFAULT_CITY_CODE,
     DEFAULT_SALARY_CODE,
+    DEEP_COLLECTION_MAX_PAGES,
+    DEEP_COLLECTION_MAX_DURATION_MS,
+    DEEP_COLLECTION_MAX_STAGNANT_PAGES,
+    deepCollectionStopReason,
     normalizeKeywordList,
     normalizeZhilianCityCode,
     normalizeZhilianSalaryCode,

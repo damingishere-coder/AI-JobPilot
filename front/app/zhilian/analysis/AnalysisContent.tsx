@@ -21,8 +21,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { GreetingDraftDialog, type GreetingJob } from "@/components/communication/GreetingDraftDialog"
 import PageHeader from "@/app/components/PageHeader"
-import { API_BASE } from "@/lib/api"
+import { API_BASE, readApiResponse } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
 import {
   BiRefresh,
@@ -35,14 +36,18 @@ import {
   BiChevronDown,
   BiChevronUp,
   BiLinkExternal,
+  BiMessageDetail,
 } from "react-icons/bi"
-import { parseSalary } from "@/lib/salary"
+import { formatAiReasonDetail, parseAiReason } from "@/app/boss/analysis/utils"
+import { useZhilianAnalysisSync } from "./useZhilianAnalysisSync"
 
 type NameValue = { name: string; value: number }
 type BucketValue = { bucket: string; value: number }
 type SalaryBucketLike = BucketValue | { bucket?: string; name?: string; value: number }
 
 type StatsResponse = {
+  overview?: { aiAvgScore: number | null; priorityCompanyCount: number; missingLinkCount: number; missingSalaryCount: number; latestCreatedAt: string | null }
+
   kpi: {
 	    total: number
 	    delivered: number
@@ -84,6 +89,11 @@ type ZhilianJob = {
   priorityCompany?: number
   scanRunId?: string
   createTime?: string
+  aiGreeting?: string
+  greetingDraft?: string
+  greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
+  greetingUpdatedAt?: string | null
+  finalGreeting?: string
 }
 
 type PagedResult = {
@@ -91,6 +101,88 @@ type PagedResult = {
   total: number
   page: number
   size: number
+}
+
+async function markZhilianUnknownReservations(
+  tasks: Array<{ id?: number; requestKey?: string }>,
+  reason: string,
+) {
+  const results = await Promise.allSettled(tasks.map(async (task) => {
+    if (!task.id || !task.requestKey) return
+    const response = await fetch(`${API_BASE}/api/zhilian/jobs/${task.id}/delivery-result`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestKey: task.requestKey,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        message: reason,
+      }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.success === false) {
+      throw new Error(data.message || "智联 UNKNOWN 状态回写失败")
+    }
+  }))
+  const failed = results.filter((result) => result.status === "rejected")
+  if (failed.length > 0) console.error("智联 UNKNOWN 状态回写失败", failed)
+}
+
+async function postZhilianJsonOnce(url: string, body?: unknown) {
+  // A missing response may follow a successful reservation; never replay a write automatically.
+  const response = await fetch(url, {
+    method: "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.message || "智联操作失败，请刷新状态后核对。")
+  return result
+}
+
+function unresolvedZhilianReservations(
+  tasks: Array<{ id?: number; requestKey?: string }>,
+  result: Record<string, unknown>,
+) {
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return tasks
+  const persistedKeys = new Set(rows.map((row) => {
+    if (!row || typeof row !== "object") return ""
+    const item = row as { requestKey?: unknown; persisted?: unknown }
+    return item.persisted === true ? String(item.requestKey || "") : ""
+  }))
+  return tasks.filter((task) => !task.requestKey || !persistedKeys.has(task.requestKey))
+}
+
+function formatZhilianBatchResult(result: Record<string, unknown>) {
+  const summary = String(result.message || "批量投递任务已结束。")
+  const rows = Array.isArray(result.results) ? result.results : []
+  if (rows.length === 0) return summary
+  const details = rows.slice(0, 50).map((row, index) => {
+    const item = row && typeof row === "object"
+      ? row as { id?: unknown; outcome?: unknown; evidence?: unknown; persisted?: unknown; message?: unknown }
+      : {}
+    const persisted = item.persisted === true ? "已落库" : "待补偿"
+    return `${index + 1}. 岗位 ${String(item.id || "-")} · ${String(item.outcome || "UNKNOWN")} · ${persisted} · ${String(item.evidence || "-")}\n${String(item.message || "")}`
+  })
+  return `${summary}\n\n逐条结果：\n${details.join("\n")}`
+}
+
+type ZhilianBatchPreviewItem = { id?: number; companyName?: string; jobName?: string; greeting?: string; greetingSource?: string; empty?: boolean }
+
+function zhilianGreetingSnapshots(items: ZhilianBatchPreviewItem[]) {
+  return Object.fromEntries(items
+    .filter((item): item is ZhilianBatchPreviewItem & { id: number; greeting: string } => (
+      typeof item.id === "number" && typeof item.greeting === "string"
+    ))
+    .map((item) => [String(item.id), item.greeting]))
+}
+
+function formatZhilianGreetingPreview(items: ZhilianBatchPreviewItem[]) {
+  return `智联批量投递预览\n\n将使用以下 ${items.length} 条沟通话术：\n\n${items.map((item, index) => (
+    `${index + 1}. ${item.companyName || "未知公司"} / ${item.jobName || "未命名岗位"}\n`
+    + `来源：${item.greetingSource || "EMPTY"}\n${item.greeting || "【空白】"}`
+  )).join("\n\n")}\n\n确认后才会创建投递任务并交给 Chrome。`
 }
 
 type ChartRef = { destroy: () => void }
@@ -311,11 +403,9 @@ function topName(items?: NameValue[]) {
 
 function OverviewPanel({
   stats,
-  items,
   loading,
 }: {
   stats: StatsResponse | null
-  items: ZhilianJob[]
   loading: boolean
 }) {
   const k = stats?.kpi
@@ -336,22 +426,19 @@ function OverviewPanel({
     { label: "失败/跳过", value: failed + skipped, className: "bg-amber-500" },
     { label: "其他", value: remainder, className: "bg-slate-400" },
   ].filter((segment) => segment.value > 0)
-  const scoredItems = items.filter((item) => item.aiScore || item.aiScore === 0)
-  const aiAvgScore = scoredItems.length
-    ? Math.round((scoredItems.reduce((sum, item) => sum + (item.aiScore || 0), 0) / scoredItems.length) * 10) / 10
-    : "暂无数据"
+  const aiAvgScore = stats?.overview?.aiAvgScore ?? "暂无数据"
   const aiRejectCount = statusCount("AI不匹配")
   const aiFailedCount = statusCount("AI分析失败")
-  const priorityCompanyCount = items.filter((item) => item.priorityCompany).length
-  const missingLinkCount = items.filter((item) => !item.jobLink?.trim()).length
-  const missingSalaryCount = items.filter((item) => !item.salary?.trim()).length
-  const latestCreatedAt = items[0]?.createTime ? formatDateOnly(items[0].createTime) : "暂无数据"
+  const priorityCompanyCount = stats?.overview?.priorityCompanyCount ?? 0
+  const missingLinkCount = stats?.overview?.missingLinkCount ?? 0
+  const missingSalaryCount = stats?.overview?.missingSalaryCount ?? 0
+  const latestCreatedAt = stats?.overview?.latestCreatedAt ? formatDateOnly(stats.overview.latestCreatedAt) : "暂无数据"
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 数据总览</CardTitle>
-        <CardDescription>基于当前智联岗位库生成的投递进度、AI 判断、岗位画像与数据质量概况</CardDescription>
+        <CardDescription>基于当前档案、扫描范围和筛选条件的全部岗位统计</CardDescription>
       </CardHeader>
       <CardContent>
         {loading && !stats ? (
@@ -421,14 +508,19 @@ function PendingJobCard({
   job,
   acting,
   onConfirm,
+  onEditGreeting,
+  onSkip,
 }: {
   job: ZhilianJob
   acting: boolean
   onConfirm: () => void
+  onEditGreeting: () => void
+  onSkip: () => void
 }) {
   const jobTitle = job.jobTitle || "未命名岗位"
   const company = job.companyName || "未知公司"
-  const riskText = job.aiReason?.trim() || (!job.jobLink ? "缺少原岗位链接，确认前建议核对岗位来源。" : "暂无明显风险点。")
+  const reason = parseAiReason(job.aiReason)
+  const riskText = [...reason.gaps, ...reason.hardConflicts.map(item => item.requirement), ...reason.unknowns.map(item => `待核实：${item}`)].join("；") || (!job.jobLink ? "缺少原岗位链接，确认前建议核对岗位来源。" : "分析未列出明确风险，仍需核对求职意向。")
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/50 dark:border-cyan-900/60 dark:bg-cyan-950/10">
@@ -470,13 +562,23 @@ function PendingJobCard({
         <div className="grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-white/60 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-neutral-900/50">
             <div className="mb-1 text-xs font-semibold text-muted-foreground">AI理由</div>
-            <div className="line-clamp-3 leading-6">{job.aiReason || "暂无AI理由"}</div>
+            <div className="line-clamp-3 leading-6">{reason.summary}</div>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
             <div className="mb-1 text-xs font-semibold">风险点</div>
             <div className="line-clamp-3 leading-6">{riskText}</div>
           </div>
         </div>
+
+        <details className="text-sm"><summary className="cursor-pointer text-primary">查看完整匹配依据</summary><div className="mt-3 whitespace-pre-wrap leading-7">{formatAiReasonDetail(job.aiReason)}</div></details>
+
+        <button type="button" className="w-full rounded-lg border border-cyan-200 bg-white/80 p-3 text-left text-sm dark:border-cyan-900/60 dark:bg-neutral-900/50" onClick={onEditGreeting}>
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+            <span>最终沟通话术</span>
+            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "AI 原稿" : job.greetingSource === "PROFILE_DEFAULT" ? "档案默认" : "空白警告"}</span>
+          </div>
+          <div className="line-clamp-2 leading-6">{job.finalGreeting || "暂无可用话术，请先编辑后再确认"}</div>
+        </button>
 
         <div className="flex flex-wrap gap-2">
           {job.jobLink ? (
@@ -493,17 +595,35 @@ function PendingJobCard({
           <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
             <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
           </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onEditGreeting}>
+            <BiMessageDetail className="mr-1" /> 编辑沟通语
+          </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onSkip}>不感兴趣</Button>
         </div>
       </CardContent>
     </Card>
   )
 }
 
-export default function AnalysisContent({ showHeader = false, refreshSignal = 0 }: { showHeader?: boolean; refreshSignal?: number }) {
+export default function AnalysisContent({ showHeader = false, refreshSignal = 0, profileId, activeScanRunId = "" }: {
+  showHeader?: boolean; refreshSignal?: number; profileId: number; activeScanRunId?: string
+}) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
-  const [dashboardStats, setDashboardStats] = useState<StatsResponse | null>(null)
+  const dashboardStats = stats
   const [loadingStats, setLoadingStats] = useState(true)
-  const [loadingDashboardStats, setLoadingDashboardStats] = useState(true)
+  const loadingDashboardStats = loadingStats
+  const [loadError, setLoadError] = useState("")
+  const requestSequence = useRef(0)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      // Invalidate every request, including the first Strict Mode mount.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++requestSequence.current
+    }
+  }, [])
 
   const [items, setItems] = useState<ZhilianJob[]>([])
   const [total, setTotal] = useState(0)
@@ -522,17 +642,22 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
 
   const [exporting, setExporting] = useState(false)
   const [clearingAnalysis, setClearingAnalysis] = useState(false)
-  const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
   const [actingJobId, setActingJobId] = useState<number | null>(null)
   const [actingBatch, setActingBatch] = useState(false)
+  const [chartsExpanded, setChartsExpanded] = useState(false)
+  const [jobNotice, setJobNotice] = useState("")
+  const actionLock = useRef(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
-  const activeScanRunId = ""
+  const [greetingJob, setGreetingJob] = useState<ZhilianJob | null>(null)
+  const [greetingConfirmMode, setGreetingConfirmMode] = useState(false)
 
-	  const statusOptions = ["待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败"]
+	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败", "采集信息不足", "已跳过", "LIST_COLLECTED"]
 
   const loadList = async (toPage = page, toSize = size) => {
+    const sequence = ++requestSequence.current
+    setLoadingStats(true)
     try {
-      const params = new URLSearchParams()
+      const params = new URLSearchParams({ profileId: String(profileId) })
       if (statuses.length) params.set("statuses", statuses.join(","))
       if (location) params.set("location", location)
       if (experience) params.set("experience", experience)
@@ -541,58 +666,38 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       if (maxK) params.set("maxK", String(Number(maxK)))
       if (keyword) params.set("keyword", keyword)
       if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      params.set("page", String(toPage))
-      params.set("size", String(toSize))
-      const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
-      const data: PagedResult = await res.json()
-      setItems(data.items || [])
-      setTotal(data.total || 0)
-      setPage(data.page || toPage)
-      setSize(data.size || toSize)
-    } catch (e) {
-      console.error("fetch zhilian list failed", e)
-    }
-  }
-
-  const loadStats = async () => {
-    try {
-      setLoadingStats(true)
-      const params = new URLSearchParams()
-      if (statuses.length) params.set("statuses", statuses.join(","))
-      if (location) params.set("location", location)
-      if (experience) params.set("experience", experience)
-      if (degree) params.set("degree", degree)
-      if (minK) params.set("minK", String(Number(minK)))
-      if (maxK) params.set("maxK", String(Number(maxK)))
-      if (keyword) params.set("keyword", keyword)
-      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
-      setStats(data)
-    } catch (e) {
-      console.error("fetch zhilian stats failed", e)
+      const listParams = new URLSearchParams(params)
+      listParams.set("page", String(toPage)); listParams.set("size", String(toSize))
+      const read = async (url: string) => {
+        const res = await fetch(url, { cache: "no-store" })
+        const data = await res.json().catch(() => { throw new Error("分析服务返回异常，请重新加载。") })
+        if (!res.ok || data.success === false) throw new Error(res.status === 409 ? "当前档案已切换，正在重新加载。" : data.message || `加载失败（HTTP ${res.status}）`)
+        return data
+      }
+      const [data, nextStats]: [PagedResult, StatsResponse] = await Promise.all([
+        read(`${API_BASE}/api/zhilian/list?${listParams}`), read(`${API_BASE}/api/zhilian/stats?${params}`),
+      ])
+      if (!alive.current || sequence !== requestSequence.current) return
+      if (!Array.isArray(data.items) || !nextStats.kpi || !nextStats.charts) throw new Error("分析接口返回格式异常，请检查服务版本。")
+      setItems(data.items); setTotal(data.total)
+      setPage(data.page || toPage); setSize(data.size || toSize)
+      setInputPage(data.page || toPage); setInputSize(data.size || toSize)
+      setStats(nextStats); setLoadError("")
+    } catch (cause) {
+      if (alive.current && sequence === requestSequence.current) {
+        setItems([]); setStats(null)
+        setLoadError(cause instanceof Error ? cause.message : "分析数据加载失败，请重试。")
+      }
     } finally {
-      setLoadingStats(false)
+      if (alive.current && sequence === requestSequence.current) setLoadingStats(false)
     }
   }
-
-  const loadDashboardStats = async () => {
-    try {
-      setLoadingDashboardStats(true)
-      const params = new URLSearchParams()
-      if (activeScanRunId) params.set("scanRunId", activeScanRunId)
-      const res = await fetch(`${API_BASE}/api/zhilian/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
-      setDashboardStats(data)
-    } catch (e) {
-      console.error("fetch zhilian dashboard stats failed", e)
-    } finally {
-      setLoadingDashboardStats(false)
-    }
-  }
+  const loadStats = () => loadList(page, size)
+  const hasPending = Boolean(stats?.charts.byStatus.some(row => ["AI分析中", "LIST_COLLECTED"].includes(row.name) && row.value > 0))
+  const working = useZhilianAnalysisSync(profileId, () => loadList(page, size), hasPending)
 
   const clearAnalysisData = async () => {
-    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
+    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，此操作不能撤销，切换档案无需清空历史数据。")
     if (!ok) return
     try {
       setClearingAnalysis(true)
@@ -606,11 +711,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       setPage(1)
       setInputPage(1)
       setStats(null)
-      setDashboardStats(null)
-      setComputedSalaryBuckets([])
       await loadList(1, size)
-      await loadStats()
-      await loadDashboardStats()
       alert(data.message || "智联投递分析数据已清空。")
     } catch (error) {
       alert(error instanceof Error ? error.message : "清空失败：网络或服务异常。")
@@ -620,29 +721,21 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
   }
 
   useEffect(() => {
-    loadList(1, size)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
     if (!refreshSignal) return
     loadList(1, size)
-    loadStats()
-    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal])
 
   useEffect(() => {
     loadList(1, size)
-    loadStats()
-    loadDashboardStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statuses.join(","), location, experience, degree, minK, maxK, keyword])
+  }, [statuses.join(","), location, experience, degree, minK, maxK, keyword, activeScanRunId, profileId])
 
   const exportCSV = async () => {
     try {
       setExporting(true)
-      const baseParams = new URLSearchParams()
+      const baseParams = new URLSearchParams({ profileId: String(profileId) })
+      if (activeScanRunId) baseParams.set("scanRunId", activeScanRunId)
       if (statuses.length) baseParams.set("statuses", statuses.join(","))
       if (location) baseParams.set("location", location)
       if (experience) baseParams.set("experience", experience)
@@ -661,7 +754,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         params.set("page", String(currentPage))
         params.set("size", String(pageSize))
         const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
+        if (!res.ok) throw new Error("读取导出数据失败，请重新加载当前档案。")
         const data: PagedResult = await res.json()
+        if (!alive.current) return
         const chunk = data.items || []
         if (currentPage === 1) totalCount = data.total || chunk.length
         all = all.concat(chunk)
@@ -721,55 +816,6 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     }
   }
 
-  const refreshComputedSalaryBuckets = async () => {
-    try {
-      const baseParams = new URLSearchParams()
-      if (statuses.length) baseParams.set("statuses", statuses.join(","))
-      if (location) baseParams.set("location", location)
-      if (experience) baseParams.set("experience", experience)
-      if (degree) baseParams.set("degree", degree)
-      if (minK) baseParams.set("minK", String(Number(minK)))
-      if (maxK) baseParams.set("maxK", String(Number(maxK)))
-      if (keyword) baseParams.set("keyword", keyword)
-
-      const pageSize = 1000
-      let currentPage = 1
-      let totalCount = 0
-      const ks: number[] = []
-
-      while (true) {
-        const params = new URLSearchParams(baseParams)
-        params.set("page", String(currentPage))
-        params.set("size", String(pageSize))
-        const res = await fetch(`${API_BASE}/api/zhilian/list?${params.toString()}`)
-        const data: PagedResult = await res.json()
-        const chunk = data.items || []
-        if (currentPage === 1) totalCount = data.total || chunk.length
-        for (const it of chunk) {
-          const info = parseSalary(it.salary)
-          if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-        }
-        if (currentPage * pageSize >= totalCount || chunk.length === 0) break
-        currentPage += 1
-      }
-
-      if (!ks.length) { setComputedSalaryBuckets([]); return }
-
-      const buckets: { key: string; min: number; max: number | null }[] = [
-        { key: "0-10K", min: 0, max: 10 },
-        { key: "10-15K", min: 10, max: 15 },
-        { key: "15-20K", min: 15, max: 20 },
-        { key: "20-25K", min: 20, max: 25 },
-        { key: ">=25K", min: 25, max: null },
-      ]
-      const counts = buckets.map((b) => ks.filter((k) => (b.max == null ? k >= b.min : k >= b.min && k < b.max)).length)
-      setComputedSalaryBuckets(buckets.map((b, i) => ({ bucket: b.key, value: counts[i] })))
-    } catch (e) {
-      console.error("compute salary buckets failed", e)
-      setComputedSalaryBuckets([])
-    }
-  }
-
   const currentBatchFilters = () => ({
     location: location || undefined,
     experience: experience || undefined,
@@ -780,94 +826,146 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     scanRunId: activeScanRunId || undefined,
   })
 
-  const handleConfirmJob = async (job: ZhilianJob) => {
+  const handleConfirmJob = async (job: ZhilianJob, greetingSnapshot: string) => {
     if (!job.id) {
       alert("该智联岗位缺少内部ID，无法确认投递。")
       return
     }
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingJobId(job.id)
-      const res = await fetch(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { method: "POST" })
-      const data = await res.json()
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/confirm`, { greetingSnapshot })
       if (!data.success) {
         alert(data.message || "该智联岗位暂不能投递。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实申请智联岗位：${job.companyName || ""} / ${job.jobTitle || ""}。确认继续？`)
-      if (!ok) return
+      reservedTasks = [data.task]
       const result = await sendChromeBridgeMessage({
         type: "ZHILIAN_DELIVER_ONE",
         platform: "zhilian",
         task: data.task,
       }, 120000)
+      if (result.persisted !== true) {
+        await markZhilianUnknownReservations(reservedTasks, result.message || "Chrome Bridge 未返回岗位结果")
+      }
       alert(result.message || (result.success ? "已发送投递请求。" : "Chrome投递失败。"))
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 投递执行结果")
       alert("确认投递失败：网络或服务异常。")
     } finally {
       setActingJobId(null)
     }
   }
 
+  const handleReconcileJob = async (job: ZhilianJob) => {
+    if (!job.id) return
+    const answer = window.prompt(
+      "请先在智联平台核对该岗位。输入“已投递”确认成功，输入“未投递”确认失败；其他内容不会修改状态。",
+    )?.trim()
+    if (answer !== "已投递" && answer !== "未投递") return
+    try {
+      setActingJobId(job.id)
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-reconcile`, {
+        outcome: answer === "已投递" ? "CONFIRMED" : "FAILED",
+        message: `用户在智联平台人工核对：${answer}`,
+      })
+      alert(data.message || (data.success ? "人工对账已保存。" : "人工对账失败。"))
+      await loadList(page, size)
+    } catch {
+      alert("人工对账失败：网络或服务异常。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
+  const handleRetryJob = async (job: ZhilianJob) => {
+    if (!job.id) return
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
+    try {
+      setActingJobId(job.id)
+      const greetingResponse = await fetch(`${API_BASE}/api/platforms/zhilian/jobs/${job.id}/greeting`)
+      const greetingResult = await readApiResponse<{ finalGreeting: string }>(greetingResponse, "读取最终沟通话术失败")
+      const finalGreeting = greetingResult.data?.finalGreeting || ""
+      if (!finalGreeting.trim()) {
+        alert("最终沟通话术为空，请先编辑后再重试。")
+        return
+      }
+      const ok = window.confirm(`这会创建新的投递 attempt，并可能再次申请该智联岗位。\n\n最终话术：\n${finalGreeting}\n\n确认显式重试？`)
+      if (!ok) return
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/delivery-retry`, { greetingSnapshot: finalGreeting })
+      if (!data.success || !data.task) {
+        alert(data.message || "当前岗位不能重试。")
+        return
+      }
+      reservedTasks = [data.task]
+      const result = await sendChromeBridgeMessage({
+        type: "ZHILIAN_DELIVER_ONE",
+        platform: "zhilian",
+        task: data.task,
+      }, 120000)
+      if (result.persisted !== true) {
+        await markZhilianUnknownReservations(reservedTasks, result.message || "Chrome 重试结果未确认写入")
+      }
+      alert(result.message || "重试任务已结束。")
+      await loadList(page, size)
+    } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 重试执行结果")
+      alert("重试失败：网络或服务异常，已保守标记待对账。")
+    } finally {
+      setActingJobId(null)
+    }
+  }
+
   const handleConfirmBatch = async () => {
+    let reservedTasks: Array<{ id?: number; requestKey?: string }> = []
     try {
       setActingBatch(true)
-      const res = await fetch(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentBatchFilters()),
+      const body = currentBatchFilters()
+      const preview = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/confirm-batch/preview`, body)
+      const previewItems = Array.isArray(preview.items) ? preview.items as ZhilianBatchPreviewItem[] : []
+      if (preview.success === false || previewItems.length === 0) {
+        alert(preview.message || "当前筛选条件下没有智联待确认岗位。")
+        return
+      }
+      if (previewItems.some((item) => item.empty || !item.greeting?.trim())) {
+        alert("批量范围内存在空白沟通话术，请逐条编辑后再确认。")
+        return
+      }
+      const ok = window.confirm(formatZhilianGreetingPreview(previewItems))
+      if (!ok) return
+      const data = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/confirm-batch`, {
+        ...body,
+        greetingSnapshots: zhilianGreetingSnapshots(previewItems),
       })
-      const data = await res.json()
       const tasks = data.tasks || []
+      reservedTasks = tasks
       if (!data.success || tasks.length === 0) {
         alert(data.message || "当前筛选条件下没有智联待确认岗位。")
         return
       }
-      const ok = window.confirm(`将通过 Chrome 真实申请 ${tasks.length} 个智联待确认岗位。确认继续？`)
-      if (!ok) return
       const result = await sendChromeBridgeMessage({
         type: "ZHILIAN_DELIVER_BATCH",
         platform: "zhilian",
         tasks,
       }, Math.max(120000, tasks.length * 30000))
-      alert(result.message || "批量投递任务已结束。")
+      const unresolved = unresolvedZhilianReservations(reservedTasks, result)
+      if (unresolved.length > 0) {
+        await markZhilianUnknownReservations(unresolved, result.message || "Chrome Bridge 未确认写入完整批量结果")
+      }
+      alert(formatZhilianBatchResult(result))
       await loadList(page, size)
-      await loadStats()
-      await loadDashboardStats()
     } catch {
+      await markZhilianUnknownReservations(reservedTasks, "前端未收到 Chrome 批量投递执行结果")
       alert("批量投递失败：网络或服务异常。")
     } finally {
       setActingBatch(false)
     }
   }
 
-  useEffect(() => {
-    const apiBuckets = stats?.charts?.salaryBuckets || []
-    const sum = apiBuckets.reduce((a, b) => a + (b?.value || 0), 0)
-    if (apiBuckets.length === 0 || sum === 0) {
-      refreshComputedSalaryBuckets()
-    } else {
-      setComputedSalaryBuckets([])
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stats, statuses.join(","), location, experience, degree, minK, maxK, keyword])
-
   const kpiCards = useMemo(() => {
     const k = dashboardStats?.kpi
     const statusCount = (name: string) => dashboardStats?.charts.byStatus.find((item) => item.name === name)?.value ?? 0
-    const avgMonthlyKFromItems = (() => {
-      if (!items?.length) return undefined
-      const ks: number[] = []
-      for (const it of items) {
-        const info = parseSalary(it.salary)
-        if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-      }
-      if (!ks.length) return undefined
-      const sum = ks.reduce((a, b) => a + b, 0)
-      return Math.round((sum / ks.length) * 10) / 10
-    })()
     return [
       { title: "总岗位数", value: k?.total ?? 0 },
       { title: "已投递", value: k?.delivered ?? 0 },
@@ -876,9 +974,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
       { title: "未投递", value: k?.pending ?? 0 },
       { title: "已过滤", value: k?.filtered ?? 0 },
       { title: "投递失败", value: k?.failed ?? 0 },
-      { title: "平均月薪(K)", value: (k?.avgMonthlyK ?? avgMonthlyKFromItems ?? 0) },
+      { title: "平均月薪(K)", value: (k?.avgMonthlyK == null ? "暂无数据" : Math.round(k.avgMonthlyK * 10) / 10) },
     ]
-  }, [dashboardStats, items])
+  }, [dashboardStats])
 
   const pendingJobs = useMemo(() => (
     items.filter((item) => item.deliveryStatus === "待确认")
@@ -887,12 +985,51 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
     pendingCardsExpanded ? pendingJobs : pendingJobs.slice(0, 2)
   ), [pendingCardsExpanded, pendingJobs])
 
+  const handleSkipJob = async (job: ZhilianJob) => {
+    if (!job.id || actionLock.current || actingBatch) return
+    actionLock.current = true
+    setActingJobId(job.id)
+    setJobNotice("")
+    try {
+      const result = await postZhilianJsonOnce(`${API_BASE}/api/zhilian/jobs/${job.id}/skip?profileId=${profileId}`)
+      if (result.success === false) throw new Error(result.message || "跳过失败，请刷新后重试。")
+      if (!alive.current) return
+      setJobNotice(`已将“${job.jobTitle || "该岗位"}”标记为不感兴趣，可在“已跳过”筛选中查看。`)
+      await loadList(page, size)
+    } catch (cause) {
+      if (alive.current) setJobNotice(cause instanceof Error ? cause.message : "操作失败，请刷新岗位状态后重试。")
+    } finally {
+      actionLock.current = false
+      if (alive.current) setActingJobId(null)
+    }
+  }
+
+  const openGreetingDialog = (job: ZhilianJob, confirmMode: boolean) => {
+    if (!job.id) {
+      alert("该智联岗位缺少内部 ID，无法编辑沟通草稿。")
+      return
+    }
+    setGreetingJob(job)
+    setGreetingConfirmMode(confirmMode)
+  }
+
+  const greetingDialogJob: GreetingJob | null = greetingJob?.id ? {
+    id: greetingJob.id,
+    companyName: greetingJob.companyName,
+    jobName: greetingJob.jobTitle,
+    aiGreeting: greetingJob.aiGreeting || "",
+    greetingDraft: greetingJob.greetingDraft || "",
+    greetingSource: greetingJob.greetingSource || "EMPTY",
+    greetingUpdatedAt: greetingJob.greetingUpdatedAt || null,
+    finalGreeting: greetingJob.finalGreeting || "",
+  } : null
+
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 space-y-8">
       {showHeader && (
         <PageHeader
           title="智联 投递分析"
-          subtitle="基于 zhilian_data 表的统计图与列表分析"
+          subtitle="查看岗位匹配结果，筛选并逐条确认投递"
           icon={<BiBarChart size={28} />}
           actions={
             <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
@@ -902,7 +1039,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         />
       )}
 
-      <div className="space-y-4">
+      {loadError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{loadError} <Button variant="outline" onClick={() => loadList(page, size)}>重新加载</Button></div>}
+      {working && <p role="status" className="text-sm text-blue-700">扫描或 AI 分析进行中，结果每 5 秒自动更新。</p>}
+      {!loadError && <div className="space-y-4">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
           {kpiCards.map((c, idx) => (
             <Card key={idx} className="border">
@@ -914,8 +1053,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           ))}
         </div>
 
-        <OverviewPanel stats={dashboardStats} items={items} loading={loadingDashboardStats} />
-      </div>
+        <OverviewPanel stats={dashboardStats} loading={loadingDashboardStats} />
+      </div>}
+
+      {jobNotice && <p role="status" className="rounded-lg border bg-muted/40 p-4 text-sm">{jobNotice}</p>}
 
       {/* 操作栏 */}
       <Card>
@@ -932,10 +1073,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
                   onClick={() => setStatuses((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))}
                   className={`px-3 py-1.5 rounded-full text-xs border ${statuses.includes(s) ? "bg-primary text-white border-primary" : "bg-transparent text-primary border-primary"}`}
                 >
-                  {s}
+                  {s === "LIST_COLLECTED" ? "已采集待分析" : s}
                 </button>
               ))}
-              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={() => setStatuses([])}>重置</button>
+              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={() => { setStatuses([]); setLocation(""); setExperience(""); setDegree(""); setMinK(""); setMaxK(""); setKeyword("") }}>重置筛选</button>
             </div>
           </div>
         </CardHeader>
@@ -980,7 +1121,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             <Button variant="outline" onClick={exportCSV} disabled={exporting}>
               <BiDownload className="mr-1" /> 导出CSV
             </Button>
-            <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+            <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || loadingStats || !!loadError}>
               <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
             </Button>
           </div>
@@ -994,7 +1135,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               <BiCheckCircle className="text-cyan-600" />
               待确认岗位卡片
             </div>
-            <div className="mt-1 text-xs text-muted-foreground">优先处理待确认投递，确认前可查看原岗位和 AI 理由。</div>
+            <div className="mt-1 text-xs text-muted-foreground">只显示当前页待确认岗位。不想考虑的岗位可标记“不感兴趣”，保留记录并移出待确认。</div>
           </div>
           <div className="flex flex-wrap gap-2">
             {pendingJobs.length > 2 && (
@@ -1006,7 +1147,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             <Button size="sm" variant="outline" onClick={() => setStatuses(["待确认"])}>
               <BiBarChart className="mr-1" /> 只看待确认
             </Button>
-            <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch}>
+            <Button size="sm" variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || loadingStats || !!loadError}>
               <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
             </Button>
           </div>
@@ -1022,20 +1163,127 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
               <PendingJobCard
                 key={job.id || job.jobId}
                 job={job}
-                acting={actingJobId === job.id}
-                onConfirm={() => handleConfirmJob(job)}
+                acting={actingJobId !== null || actingBatch}
+                onConfirm={() => openGreetingDialog(job, true)}
+                onEditGreeting={() => openGreetingDialog(job, false)}
+                onSkip={() => void handleSkipJob(job)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* 图表区 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* 列表区 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">岗位列表</CardTitle>
+          <CardDescription>按岗位查看薪资、匹配依据和操作；可展开详情，窄屏可横向滚动。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="w-full overflow-x-auto rounded-lg border">
+            <table aria-label="智联岗位列表" className="w-full min-w-[1120px] table-fixed text-sm">
+              <thead><tr className="bg-muted/70 text-left [&>th]:px-4 [&>th]:py-4 [&>th]:font-medium [&>th]:whitespace-nowrap">
+                <th className="w-[270px]">岗位 / 公司</th><th className="w-[180px]">薪资与要求</th><th className="w-[310px]">匹配分析</th><th className="w-[140px]">投递状态</th><th className="w-[200px]">操作</th>
+              </tr></thead>
+              <tbody>
+                {!items.length && <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">{loadError ? "数据加载失败，请点击重新加载。" : loadingStats ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : statuses.length || location || experience || degree || minK || maxK || keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
+                {items.map((it, idx) => (
+                  <tr key={`${it.jobId}-${idx}`} className={`border-t align-top [&>td]:px-4 [&>td]:py-5 ${it.deliveryStatus === "已投递" ? "bg-emerald-50/60 dark:bg-emerald-950/20" : "odd:bg-muted/10 hover:bg-blue-50/40 dark:hover:bg-blue-950/20"}`}>
+                    <td>
+                      <div className="break-words text-base font-semibold leading-7">{it.jobTitle || "未命名岗位"}</div>
+                      <div className="mt-2 break-words leading-6 text-muted-foreground">{it.companyName || "未知公司"}</div>
+                      <div className="mt-3 text-xs text-muted-foreground">{formatDateOnly(it.createTime)} 入库{it.priorityCompany ? " · 优先公司" : ""}</div>
+                      <details className="mt-3"><summary className="cursor-pointer text-primary">岗位详情</summary><div className="mt-2 whitespace-pre-wrap break-words leading-6">{it.jobDescription || "暂无完整岗位描述，请查看原岗位。"}</div></details>
+                    </td>
+                    <td><div className="font-semibold text-primary">{it.salary || "薪资未提供"}</div><div className="mt-2 leading-6">{it.location || "地点未提供"}</div><div className="mt-2 text-muted-foreground">{it.experience || "经验未提供"} · {it.degree || "学历未提供"}</div></td>
+                    <td>
+                      <div className="mb-2 flex flex-wrap items-center gap-2"><span className="font-semibold">匹配分 {it.aiScore ?? "—"}</span><span className="text-xs text-muted-foreground">{it.aiDecision === "APPLY" ? "建议人工确认" : it.aiDecision === "SKIP" ? "暂不推荐" : "待分析"}</span></div>
+                      <p className="line-clamp-3 break-words leading-7">{parseAiReason(it.aiReason).summary}</p>
+                      <details className="mt-3"><summary className="cursor-pointer text-primary">完整匹配依据</summary><div className="mt-2 whitespace-pre-wrap break-words leading-7">{formatAiReasonDetail(it.aiReason)}</div></details>
+                    </td>
+                    <td><span className={`${badgeClass("delivery", it.deliveryStatus)} inline-block whitespace-nowrap`}>{it.deliveryStatus === "LIST_COLLECTED" ? "已采集待分析" : it.deliveryStatus || "未投递"}</span>{it.deliveryStatus === "投递失败" && <p className="mt-3 break-words text-xs leading-6 text-red-700">{failureReasonText(it)}</p>}</td>
+                    <td><div className="flex flex-col items-start gap-3">
+                      {it.deliveryStatus === "待确认" || it.deliveryStatus === "投递确认中" ? (
+                        <Button
+                          size="sm"
+                          disabled={actingJobId !== null || actingBatch}
+                          onClick={() => openGreetingDialog(it, true)}
+                          className="h-7 rounded-lg px-3 text-xs"
+                        >
+                          {it.deliveryStatus === "投递确认中" ? "恢复投递" : "Chrome投递"}
+                        </Button>
+                      ) : it.deliveryStatus === "投递结果待确认" ? (
+                        <div className="flex flex-col gap-2">
+                          <Button size="sm" disabled={actingJobId !== null || actingBatch} onClick={() => handleReconcileJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            对账
+                          </Button>
+                          <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                            重试
+                          </Button>
+                        </div>
+                      ) : it.deliveryStatus === "投递失败" ? (
+                        <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => handleRetryJob(it)} className="h-7 rounded-lg px-3 text-xs">
+                          重试
+                        </Button>
+                      ) : (it.deliveryStatus || "").trim() === "已投递" ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                          <BiCheckCircle className="h-3.5 w-3.5" />
+                          已投递
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+
+                      {it.deliveryStatus === "待确认" && <Button size="sm" variant="outline" disabled={actingJobId !== null || actingBatch} onClick={() => void handleSkipJob(it)}>不感兴趣</Button>}
+                      {it.jobLink && <a href={it.jobLink} target="_blank" rel="noreferrer" className="text-primary hover:underline">查看原岗位 ↗</a>}
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 分页 */}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Label className="text-sm">页码</Label>
+            <Input
+              className="w-20"
+              value={inputPage}
+              onChange={(e) => setInputPage(e.target.value)}
+              onBlur={() => {
+                const p = Number(inputPage)
+                const s = Number(size)
+                if (!isNaN(p) && p > 0) loadList(p, s)
+              }}
+            />
+            <Label className="text-sm">每页条数</Label>
+            <Input
+              className="w-24"
+              value={inputSize}
+              onChange={(e) => setInputSize(e.target.value)}
+              onBlur={() => {
+                const p = Number(page)
+                const s = Number(inputSize)
+                if (!isNaN(s) && s > 0) loadList(p, s)
+              }}
+            />
+            <Button variant="outline" onClick={() => loadList(Number(page), Number(size))}>
+              跳转
+            </Button>
+            <div className="text-sm text-muted-foreground">共 {total} 条</div>
+          </div>
+        </CardContent>
+      </Card>
+      <section aria-label="分析图表" className="rounded-xl border p-4">
+        <Button variant="ghost" className="w-full justify-between" aria-expanded={chartsExpanded} aria-controls="zhilian-charts" onClick={() => setChartsExpanded(value => !value)}>
+          <span className="flex items-center gap-2"><BiBarChart /> 分析图表</span>
+          <span className="flex items-center gap-2">{chartsExpanded ? "收起图表" : "展开图表"}{chartsExpanded ? <BiChevronUp /> : <BiChevronDown />}</span>
+        </Button>
+        {chartsExpanded && <div id="zhilian-charts" className="mt-4"><div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 投递状态分布</CardTitle>
-            <CardDescription>按 delivery_status 聚合</CardDescription>
+            <CardDescription>各投递状态的岗位数量</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
@@ -1049,7 +1297,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiBarChart /> 失败类型统计</CardTitle>
-            <CardDescription>按 failure_type 聚合投递失败原因</CardDescription>
+            <CardDescription>查看已记录的投递失败原因</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
@@ -1072,7 +1320,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           </CardHeader>
           <CardContent>
             {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byCity.map((x) => x.name)} data={stats.charts.byCity.map((x) => x.value)} color="#3b82f6" />
+              <ChartCanvas type="bar" labels={[...stats.charts.byCity].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.name)} data={[...stats.charts.byCity].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.value)} color="#3b82f6" />
             ) : (
               <div className="text-muted-foreground">加载中...</div>
             )}
@@ -1086,7 +1334,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
           </CardHeader>
           <CardContent>
             {stats ? (
-              <ChartCanvas type="bar" labels={stats.charts.byCompany.map((x) => x.name)} data={stats.charts.byCompany.map((x) => x.value)} color="#10b981" />
+              <ChartCanvas type="bar" labels={[...stats.charts.byCompany].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.name)} data={[...stats.charts.byCompany].sort((a, b) => b.value - a.value).slice(0, 10).map((x) => x.value)} color="#10b981" />
             ) : (
               <div className="text-muted-foreground">加载中...</div>
             )}
@@ -1124,14 +1372,14 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle>
-            <CardDescription>基于中位数K的桶聚合（后端或前端计算）</CardDescription>
+            <CardDescription>按岗位月薪中位数统计</CardDescription>
           </CardHeader>
           <CardContent>
             {stats ? (
               <ChartCanvas
                 type="line"
-                labels={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x: SalaryBucketLike) => salaryBucketLabel(x))}
-                data={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x) => x.value)}
+                labels={stats.charts.salaryBuckets.map((x: SalaryBucketLike) => salaryBucketLabel(x))}
+                data={stats.charts.salaryBuckets.map((x) => x.value)}
                 color="#ef4444"
               />
             ) : (
@@ -1139,135 +1387,24 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0 
             )}
           </CardContent>
         </Card>
-      </div>
-
-      {/* 列表区 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">岗位列表</CardTitle>
-          <CardDescription>分页展示符合筛选条件的岗位</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="bg-muted">
-                  <th className="py-2 px-3 text-left">操作</th>
-                  <th className="py-2 px-3 text-left">公司</th>
-                  <th className="py-2 px-3 text-left">岗位</th>
-                  <th className="py-2 px-3 text-left">薪资</th>
-                  <th className="py-2 px-3 text-left">地点</th>
-                  <th className="py-2 px-3 text-left">经验</th>
-                  <th className="py-2 px-3 text-left">学历</th>
-                  <th className="py-2 px-3 text-left">投递状态</th>
-                  <th className="py-2 px-3 text-left">失败原因</th>
-                  <th className="py-2 px-3 text-left">AI分</th>
-                  <th className="py-2 px-3 text-left">AI决策</th>
-                  <th className="py-2 px-3 text-left">优先</th>
-                  <th className="py-2 px-3 text-left">AI原因</th>
-                  <th className="py-2 px-3 text-left">链接</th>
-                  <th className="py-2 px-3 text-left">创建时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((it, idx) => (
-                  <tr
-                    key={`${it.jobId}-${idx}`}
-                    className={`border-t transition-colors ${
-                      (it.deliveryStatus || "").trim() === "已投递"
-                        ? "border-emerald-200 bg-emerald-50/80 hover:bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/20"
-                        : "hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
-                    }`}
-                  >
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      {it.deliveryStatus === "待确认" ? (
-                        <Button
-                          size="sm"
-                          disabled={actingJobId === it.id}
-                          onClick={() => handleConfirmJob(it)}
-                          className="h-7 rounded-lg px-3 text-xs"
-                        >
-                          Chrome投递
-                        </Button>
-                      ) : (it.deliveryStatus || "").trim() === "已投递" ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
-                          <BiCheckCircle className="h-3.5 w-3.5" />
-                          已投递
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.companyName || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.jobTitle || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.salary || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.location || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.experience || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.degree || ""}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.deliveryStatus)}>
-                        {(it.deliveryStatus || "").trim() === "已投递" ? (
-                          <span className="inline-flex items-center gap-1">
-                            <BiCheckCircle className="h-3.5 w-3.5" />
-                            已投递
-                          </span>
-                        ) : (
-                          it.deliveryStatus || ""
-                        )}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3 max-w-[260px] truncate" title={failureReasonText(it)}>{failureReasonText(it)}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.aiScore ?? "-"}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", it.aiDecision)}>{it.aiDecision || "-"}</span>
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{it.priorityCompany ? "是" : "-"}</td>
-                    <td className="py-2 px-3 max-w-[280px] truncate" title={it.aiReason || ""}>{it.aiReason || "-"}</td>
-                    <td className="py-2 px-3 whitespace-nowrap">
-                      {it.jobLink ? (
-                        <a href={it.jobLink} target="_blank" rel="noreferrer" className="text-primary hover:underline">打开</a>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{formatDateOnly(it.createTime)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* 分页 */}
-          <div className="mt-4 flex items-center gap-2">
-            <Label className="text-sm">页码</Label>
-            <Input
-              className="w-20"
-              value={inputPage}
-              onChange={(e) => setInputPage(e.target.value)}
-              onBlur={() => {
-                const p = Number(inputPage)
-                const s = Number(size)
-                if (!isNaN(p) && p > 0) loadList(p, s)
-              }}
-            />
-            <Label className="text-sm">每页条数</Label>
-            <Input
-              className="w-24"
-              value={inputSize}
-              onChange={(e) => setInputSize(e.target.value)}
-              onBlur={() => {
-                const p = Number(page)
-                const s = Number(inputSize)
-                if (!isNaN(s) && s > 0) loadList(p, s)
-              }}
-            />
-            <Button variant="outline" onClick={() => loadList(Number(page), Number(size))}>
-              跳转
-            </Button>
-            <div className="text-sm text-muted-foreground">共 {total} 条</div>
-          </div>
-        </CardContent>
-      </Card>
+      </div></div>}
+      </section>
+      <GreetingDraftDialog
+        open={Boolean(greetingJob)}
+        platform="zhilian"
+        job={greetingDialogJob}
+        confirmMode={greetingConfirmMode}
+        submitting={actingJobId === greetingJob?.id}
+        onClose={() => setGreetingJob(null)}
+        onSaved={async () => {
+          await loadList(page, size)
+        }}
+        onConfirm={async (reviewedJob) => {
+          if (!greetingJob) return
+          await handleConfirmJob(greetingJob, reviewedJob.finalGreeting)
+          setGreetingJob(null)
+        }}
+      />
     </div>
   )
 }

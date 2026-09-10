@@ -5,37 +5,46 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.entity.BossJobDataEntity;
 import com.getjobs.application.entity.JobAiAnalysisEntity;
+import com.getjobs.application.entity.LiepinEntity;
+import com.getjobs.application.entity.Job51Entity;
 import com.getjobs.application.entity.PriorityCompanyEntity;
 import com.getjobs.application.entity.ResumeProfileEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.mapper.BossJobDataMapper;
 import com.getjobs.application.mapper.JobAiAnalysisMapper;
+import com.getjobs.application.mapper.LiepinMapper;
+import com.getjobs.application.mapper.Job51Mapper;
 import com.getjobs.application.mapper.PriorityCompanyMapper;
 import com.getjobs.application.mapper.ResumeProfileMapper;
 import com.getjobs.application.mapper.ZhilianJobDataMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.context.annotation.DependsOn;
 
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -43,6 +52,89 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
+    public static final int MAX_BATCH_SIZE = 5;
+    private static final String JOB_ANALYSIS_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "results": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "taskId": {"type": "integer"},
+                      "summary": {"type": "string"},
+                      "matches": {"type": "array", "items": {"type": "string"}},
+                      "gaps": {"type": "array", "items": {"type": "string"}},
+                      "unknowns": {"type": "array", "items": {"type": "string"}},
+                      "dimensions": {
+                        "type": "array",
+                        "minItems": 6,
+                        "maxItems": 6,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {"type": "string", "enum": ["CORE_SKILLS", "RELEVANT_EXPERIENCE", "ACHIEVEMENTS_COMPLEXITY", "INDUSTRY_TRANSFER", "EDUCATION_TENURE", "LOCATION_SALARY"]},
+                            "status": {"type": "string", "enum": ["MATCH", "PARTIAL", "UNKNOWN", "CONFLICT"]},
+                            "jobEvidence": {"type": "array", "items": {"type": "string"}},
+                            "resumeEvidence": {"type": "array", "items": {"type": "string"}},
+                            "note": {"type": "string"}
+                          },
+                          "required": ["key", "status", "jobEvidence", "resumeEvidence", "note"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "hardConflicts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "requirement": {"type": "string"},
+                            "jobEvidence": {"type": "array", "items": {"type": "string"}},
+                            "resumeEvidence": {"type": "array", "items": {"type": "string"}}
+                          },
+                          "required": ["requirement", "jobEvidence", "resumeEvidence"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "greeting": {"type": "string"}
+                    },
+                    "required": ["taskId", "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts", "greeting"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["results"],
+              "additionalProperties": false
+            }
+            """;
+    private static final String BOSS_GREETING_OUTPUT_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "greeting": {"type": "string", "minLength": 20, "maxLength": 120},
+                "jobEvidence": {"type": "string", "minLength": 2},
+                "resumeEvidence": {"type": "string", "minLength": 2}
+              },
+              "required": ["greeting", "jobEvidence", "resumeEvidence"],
+              "additionalProperties": false
+            }
+            """;
+    private static final List<DimensionSpec> DIMENSION_SPECS = List.of(
+            new DimensionSpec("CORE_SKILLS", "核心职责与技能", 35),
+            new DimensionSpec("RELEVANT_EXPERIENCE", "相关经历", 25),
+            new DimensionSpec("ACHIEVEMENTS_COMPLEXITY", "成果与复杂度", 15),
+            new DimensionSpec("INDUSTRY_TRANSFER", "行业可迁移性", 10),
+            new DimensionSpec("EDUCATION_TENURE", "学历与年限", 10),
+            new DimensionSpec("LOCATION_SALARY", "地点与薪资", 5)
+    );
+    private static final Map<String, DimensionSpec> DIMENSION_BY_KEY = DIMENSION_SPECS.stream()
+            .collect(Collectors.toUnmodifiableMap(DimensionSpec::key, spec -> spec));
+    private static final Set<String> GENERIC_GREETING_EVIDENCE_FRAGMENTS = Set.of(
+            "岗位", "职位", "工作", "要求", "负责", "经验", "熟悉", "相关", "能力", "项目",
+            "沟通", "希望", "您好", "你好", "进一步", "开发"
+    );
     public static final int DEFAULT_APPLY_THRESHOLD = 75;
     public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
@@ -53,23 +145,67 @@ public class JobAiAnalysisService {
     private final JobAiAnalysisMapper jobAiAnalysisMapper;
     private final BossJobDataMapper bossJobDataMapper;
     private final ZhilianJobDataMapper zhilianJobDataMapper;
+    private final LiepinMapper liepinMapper;
+    private final Job51Mapper job51Mapper;
     private final ConcurrentMap<Long, List<PriorityCompanyEntity>> enabledPriorityCompanyCache = new ConcurrentHashMap<>();
+
+    /**
+     * 保存当前档案的投递分数线，并让历史 Boss AI 不匹配岗位应用新分数线。
+     * 这里只复用已经保存的 AI 分数，不重新调用 Provider，也不创建投递请求。
+     */
+    @Transactional
+    public ThresholdApplicationResult saveThresholdsAndPromoteBossHistory(
+            Integer applyThreshold,
+            Integer priorityApplyThreshold
+    ) {
+        AiEntity saved = aiService.saveOrUpdateAiThresholds(applyThreshold, priorityApplyThreshold);
+        if (saved == null || saved.getProfileId() == null) {
+            throw new IllegalStateException("AI分数线保存后缺少档案信息");
+        }
+
+        BossJobDataEntity update = new BossJobDataEntity();
+        update.setDeliveryStatus(DeliveryStatus.WAITING_CONFIRM);
+        update.setAiDecision("APPLY");
+        update.setUpdatedAt(LocalDateTime.now());
+
+        UpdateWrapper<BossJobDataEntity> wrapper = new UpdateWrapper<>();
+        wrapper.eq("profile_id", saved.getProfileId())
+                .eq("delivery_status", DeliveryStatus.AI_NOT_MATCH)
+                .isNotNull("ai_score")
+                .and(group -> group
+                        .eq("priority_company", 1)
+                        .ge("ai_score", saved.getPriorityApplyThreshold())
+                        .or(normal -> normal
+                                .and(priorityFlag -> priorityFlag
+                                        .isNull("priority_company")
+                                        .or()
+                                        .ne("priority_company", 1))
+                                .ge("ai_score", saved.getApplyThreshold())));
+
+        int promotedCount = bossJobDataMapper.update(update, wrapper);
+        log.info("Boss历史岗位已应用新分数线: profileId={}, promotedCount={}",
+                saved.getProfileId(), promotedCount);
+        return new ThresholdApplicationResult(saved, promotedCount);
+    }
 
     @Transactional
     public ResumeProfileEntity saveResumeText(String resumeText, String sourceFilename, String status, String message) {
         Long profileId = profileService.getCurrentProfileId();
         ResumeProfileEntity current = getResumeProfile();
         LocalDateTime now = LocalDateTime.now();
+        String nextResumeText = resumeText == null ? "" : resumeText;
+        boolean resumeChanged = current == null || !Objects.equals(current.getResumeText(), nextResumeText);
         if (current == null) {
             current = new ResumeProfileEntity();
             current.setProfileId(profileId);
             current.setCreatedAt(now);
         }
         current.setProfileId(profileId);
-        current.setResumeText(resumeText == null ? "" : resumeText);
+        current.setResumeText(nextResumeText);
         current.setSourceFilename(sourceFilename);
         current.setParseStatus(status == null ? "manual" : status);
         current.setParseMessage(message);
+        if (resumeChanged) current.setRecommendedJobKeywords(null);
         current.setUpdatedAt(now);
         if (current.getId() == null) {
             resumeProfileMapper.insert(current);
@@ -77,6 +213,29 @@ public class JobAiAnalysisService {
             resumeProfileMapper.updateById(current);
         }
         return current;
+    }
+
+    @Transactional
+    public List<String> saveRecommendedJobKeywords(List<String> keywords) {
+        List<String> normalized = JobKeywordCodec.normalize(keywords, JobKeywordCodec.MAX_SELECTED);
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException("AI未生成有效的岗位关键词");
+        }
+        ResumeProfileEntity current = getResumeProfile();
+        if (current == null || current.getId() == null) {
+            throw new IllegalArgumentException("请先保存当前档案的简历内容");
+        }
+        ResumeProfileEntity update = new ResumeProfileEntity();
+        update.setId(current.getId());
+        update.setRecommendedJobKeywords(JobKeywordCodec.serialize(normalized));
+        update.setUpdatedAt(LocalDateTime.now());
+        resumeProfileMapper.updateById(update);
+        return normalized;
+    }
+
+    public List<String> getRecommendedJobKeywords() {
+        ResumeProfileEntity current = getResumeProfile();
+        return current == null ? List.of() : JobKeywordCodec.parse(current.getRecommendedJobKeywords());
     }
 
     public ResumeProfileEntity getResumeProfile() {
@@ -91,40 +250,6 @@ public class JobAiAnalysisService {
         wrapper.eq("profile_id", profileId);
         wrapper.orderByDesc("updated_at").last("LIMIT 1");
         return resumeProfileMapper.selectOne(wrapper);
-    }
-
-    public ResumeProfileEntity parseAndSaveResumeFile(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("上传文件不能为空");
-        }
-        String filename = file.getOriginalFilename() == null ? "resume" : file.getOriginalFilename();
-        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
-        try {
-            byte[] bytes = file.getBytes();
-            String text;
-            if (filename.toLowerCase(Locale.ROOT).endsWith(".pdf") || contentType.contains("pdf")) {
-                text = extractPdfText(bytes);
-                if (text == null || text.trim().isEmpty()) {
-                    return saveResumeText("", filename, "empty_text_pdf", "PDF未解析到文字，可能是扫描版PDF，请粘贴文本或上传图片简历");
-                }
-                return saveResumeText(text, filename, "parsed", "PDF解析成功");
-            }
-            if (contentType.startsWith("image/") || filename.toLowerCase(Locale.ROOT).matches(".*\\.(png|jpg|jpeg|webp)$")) {
-                text = aiService.extractResumeFromImage(bytes, contentType.isEmpty() ? "image/jpeg" : contentType);
-                return saveResumeText(text, filename, "parsed", "图片简历已通过AI解析");
-            }
-            text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-            return saveResumeText(text, filename, "parsed", "文本文件解析成功");
-        } catch (Exception e) {
-            log.warn("简历文件解析失败: {}", e.getMessage());
-            return saveResumeText("", filename, "failed", e.getMessage());
-        }
-    }
-
-    private String extractPdfText(byte[] bytes) throws Exception {
-        try (PDDocument document = Loader.loadPDF(bytes)) {
-            return new PDFTextStripper().getText(document).trim();
-        }
     }
 
     @Transactional
@@ -205,55 +330,240 @@ public class JobAiAnalysisService {
     }
 
     public AnalysisResult analyzeJob(JobAnalysisRequest request) {
-        if (request == null) throw new IllegalArgumentException("岗位分析请求不能为空");
-        Long profileId = resolveAnalysisProfileId(request);
-        request.setProfileId(profileId);
-        markPlatformAnalysisStarted(request);
-        boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
-        int threshold = resolveApplyThreshold(profileId, priority);
+        return analyzeJob(request, () -> true, action -> {
+            action.run();
+            return true;
+        });
+    }
+
+    public AnalysisResult analyzeJob(JobAnalysisRequest request,
+                                     BooleanSupplier leaseIsCurrent,
+                                     LeaseWriteGuard leaseWriteGuard) {
+        BatchAnalysisJob job = new BatchAnalysisJob(1L, request, leaseIsCurrent, leaseWriteGuard);
+        return analyzeJobs(List.of(job)).getOrDefault(1L,
+                AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "AI 分析未返回结果"));
+    }
+
+    /**
+     * 同一档案、同一平台的岗位批量分析。模型只判断维度与证据，分数和决策始终由后端计算。
+     */
+    public Map<Long, AnalysisResult> analyzeJobs(List<BatchAnalysisJob> jobs) {
+        validateBatch(jobs);
+        Map<Long, AnalysisResult> completed = new LinkedHashMap<>();
+        List<PreparedJob> prepared = new ArrayList<>();
+
+        for (BatchAnalysisJob job : jobs) {
+            JobAnalysisRequest request = job.request();
+            if (!isLeaseCurrent(job.leaseIsCurrent())) {
+                completed.put(job.taskId(), AnalysisResult.staleLease());
+                continue;
+            }
+            Long profileId = resolveAnalysisProfileId(request);
+            request.setProfileId(profileId);
+            AtomicBoolean platformReserved = new AtomicBoolean();
+            if (!executeLeaseWrite(job.leaseWriteGuard(),
+                    () -> platformReserved.set(markPlatformAnalysisStarted(request)))) {
+                completed.put(job.taskId(), AnalysisResult.staleLease());
+                continue;
+            }
+            if (!platformReserved.get()) {
+                completed.put(job.taskId(), AnalysisResult.failed(
+                        DeliveryStatus.AI_ANALYSIS_FAILED,
+                        "岗位状态已变化或岗位不存在，未调用 AI Provider"));
+                continue;
+            }
+            boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
+            prepared.add(new PreparedJob(
+                    job,
+                    priority,
+                    resolveApplyThreshold(profileId, priority)
+            ));
+        }
+
+        if (prepared.isEmpty()) return completed;
+        Long profileId = prepared.get(0).job().request().getProfileId();
         ResumeProfileEntity resume = getResumeProfile(profileId);
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
-            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
-            result.setPriorityCompany(priority);
-            persistAnalysis(request, result, "{\"error\":\"missing resume\"}");
-            updatePlatformCache(request, result);
-            return result;
+            for (PreparedJob job : prepared) {
+                AnalysisResult failure = AnalysisResult.failed(
+                        DeliveryStatus.AI_ANALYSIS_FAILED, "请先在AI配置页保存简历内容");
+                failure.setErrorCode("AI_RESUME_MISSING");
+                completed.put(job.job().taskId(), finalizeResult(
+                        job, failure, "{\"errorCode\":\"AI_RESUME_MISSING\"}", false));
+            }
+            return completed;
         }
 
-        String prompt = buildPrompt(resumeText, request, priority, threshold);
-        String raw;
+        if (prepared.stream().allMatch(job -> "zhilian".equalsIgnoreCase(job.job().request().getPlatform()))) {
+            AiEntity config = aiService.getAiConfig(profileId);
+            if (config != null && config.getIntroduce() != null && !config.getIntroduce().isBlank()) {
+                resumeText += "\n\n候选人当前保存的技能介绍（补充材料；若与简历事实冲突应列为待核实，不得自行拼接经历）：\n" + config.getIntroduce();
+            }
+        }
+        String prompt = buildBatchPrompt(resumeText, prepared);
+        List<Long> expectedTaskIds = prepared.stream().map(job -> job.job().taskId()).toList();
+        Set<Long> bossTaskIds = prepared.stream()
+                .filter(job -> "boss".equalsIgnoreCase(job.job().request().getPlatform()))
+                .map(job -> job.job().taskId())
+                .collect(Collectors.toSet());
+        String raw = null;
         try {
-            raw = aiService.sendRequest(prompt);
-            AnalysisResult result = parseResult(raw);
-            result.setPriorityCompany(priority);
-            result.setThreshold(threshold);
-            if (result.getScore() == null) result.setScore(0);
-            if (result.getDecision() == null || result.getDecision().isBlank()) {
-                result.setDecision(result.getScore() >= threshold ? "APPLY" : "SKIP");
+            raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            BatchParse parsed;
+            try {
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
+            } catch (AiOutputException outputError) {
+                if (!isWholeBatchFormatError(outputError)) throw outputError;
+                if (prepared.stream().noneMatch(job -> isLeaseCurrent(job.job().leaseIsCurrent()))) {
+                    prepared.forEach(job -> completed.putIfAbsent(
+                            job.job().taskId(), AnalysisResult.staleLease()));
+                    return completed;
+                }
+                log.warn("AI岗位批量分析返回无效 JSON，将使用同一 Provider、模型和 Schema 重试一次: {}",
+                        outputError.getMessage());
+                raw = aiService.sendStructuredRequest(
+                        prompt + "\n\n重要：上一次输出不是有效的批量 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
+                        JOB_ANALYSIS_OUTPUT_SCHEMA
+                );
+                parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             }
-            if (!"APPLY".equalsIgnoreCase(result.getDecision()) && result.getScore() >= threshold) {
-                result.setDecision("APPLY");
+
+            Map<Long, PreparedJob> byTaskId = prepared.stream().collect(Collectors.toMap(
+                    job -> job.job().taskId(), job -> job, (left, right) -> left, LinkedHashMap::new));
+            for (Map.Entry<Long, AnalysisResult> entry : parsed.results().entrySet()) {
+                PreparedJob job = byTaskId.get(entry.getKey());
+                if (job != null) {
+                    verifyQuotedEvidence(entry.getValue(), job.job().request(), resumeText);
+                    ensureBossGreeting(entry.getValue(), job, resumeText);
+                    completed.put(entry.getKey(), finalizeResult(
+                            job, entry.getValue(), responseDiagnostic(raw), true));
+                }
             }
-            if ("APPLY".equalsIgnoreCase(result.getDecision()) && result.getScore() < threshold) {
-                result.setDecision("SKIP");
+            for (Map.Entry<Long, AiOutputException> entry : parsed.errors().entrySet()) {
+                PreparedJob job = byTaskId.get(entry.getKey());
+                if (job == null || completed.containsKey(entry.getKey())) continue;
+                completed.put(entry.getKey(), retrySingleInvalidJob(
+                        resumeText, job, entry.getValue()));
             }
-            persistAnalysis(request, result, raw);
-            updatePlatformCache(request, result);
-            return result;
+            return completed;
         } catch (Exception e) {
-            log.warn("AI岗位分析失败: {}", e.getMessage());
-            AnalysisResult result = AnalysisResult.failed(DeliveryStatus.AI_ANALYSIS_FAILED, e.getMessage());
-            result.setPriorityCompany(priority);
-            result.setThreshold(threshold);
-            persistAnalysis(request, result, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-            updatePlatformCache(request, result);
-            return result;
+            log.warn("AI岗位批量分析失败: {}", e.getMessage());
+            for (PreparedJob job : prepared) {
+                if (completed.containsKey(job.job().taskId())) continue;
+                completed.put(job.job().taskId(), finalizeFailure(job, e, true));
+            }
+            return completed;
+        }
+    }
+
+    private AnalysisResult retrySingleInvalidJob(String resumeText,
+                                                 PreparedJob job,
+                                                 AiOutputException initialError) {
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        try {
+            log.warn("AI岗位批量结果中的任务 {} 缺失或无效，将只重试该岗位一次: {}",
+                    job.job().taskId(), initialError.getMessage());
+            String retryPrompt = buildBatchPrompt(resumeText, List.of(job))
+                    + "\n\n重要：上一次批量结果中这个岗位缺失或字段无效。本次只返回这个 taskId 的完整结果。";
+            String retryRaw = aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            Set<Long> bossTaskIds = "boss".equalsIgnoreCase(job.job().request().getPlatform())
+                    ? Set.of(job.job().taskId())
+                    : Set.of();
+            BatchParse retried = parseBatchResults(retryRaw, List.of(job.job().taskId()), bossTaskIds);
+            AnalysisResult result = retried.results().get(job.job().taskId());
+            if (result == null) {
+                throw retried.errors().getOrDefault(job.job().taskId(), initialError);
+            }
+            verifyQuotedEvidence(result, job.job().request(), resumeText);
+            ensureBossGreeting(result, job, resumeText);
+            return finalizeResult(job, result, responseDiagnostic(retryRaw), true);
+        } catch (Exception e) {
+            return finalizeFailure(job, e, true);
+        }
+    }
+
+    private AnalysisResult finalizeFailure(PreparedJob job, Exception error, boolean providerWasCalled) {
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        AnalysisResult result = AnalysisResult.failed(
+                DeliveryStatus.AI_ANALYSIS_FAILED,
+                error == null ? "AI 分析失败" : error.getMessage());
+        result.setErrorCode(errorCode(error));
+        result.setProviderOutcomeUnknown(
+                error instanceof AiProviderException providerError && providerError.isOutcomeUnknown());
+        return finalizeResult(job, result, errorDiagnostic(error), providerWasCalled);
+    }
+
+    private AnalysisResult finalizeResult(PreparedJob job,
+                                          AnalysisResult result,
+                                          String diagnostic,
+                                          boolean providerWasCalled) {
+        result.setPriorityCompany(job.priority());
+        result.setThreshold(job.threshold());
+        if (!result.isFailure() && !result.isStaleLease()) {
+            boolean hasHardConflict = result.getHardConflicts() != null
+                    && !result.getHardConflicts().isEmpty();
+            result.setDecision(!hasHardConflict && result.getScore() != null
+                    && result.getScore() >= job.threshold() ? "APPLY" : "SKIP");
+        }
+        if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
+        AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
+        if (!executeLeaseWrite(job.job().leaseWriteGuard(), () -> storedResult.set(persistAndUpdate(
+                job.job().request(), result, diagnostic, providerWasCalled)))) {
+            return AnalysisResult.staleLease();
+        }
+        return storedResult.get();
+    }
+
+    private boolean isWholeBatchFormatError(AiOutputException error) {
+        return error != null && Set.of(
+                "AI_OUTPUT_EMPTY", "AI_OUTPUT_INVALID_JSON", "AI_OUTPUT_INVALID_BATCH"
+        ).contains(error.code());
+    }
+
+    private void validateBatch(List<BatchAnalysisJob> jobs) {
+        if (jobs == null || jobs.isEmpty()) throw new IllegalArgumentException("岗位分析批次不能为空");
+        if (jobs.size() > MAX_BATCH_SIZE) throw new IllegalArgumentException("岗位分析批次最多包含5个岗位");
+        Set<Long> taskIds = new HashSet<>();
+        Long profileId = null;
+        String platform = null;
+        for (BatchAnalysisJob job : jobs) {
+            if (job == null || job.request() == null) throw new IllegalArgumentException("岗位分析请求不能为空");
+            if (job.taskId() <= 0 || !taskIds.add(job.taskId())) {
+                throw new IllegalArgumentException("岗位分析批次包含无效或重复的 taskId");
+            }
+            Long resolvedProfileId = resolveAnalysisProfileId(job.request());
+            String normalizedPlatform = safe(job.request().getPlatform()).trim().toLowerCase(Locale.ROOT);
+            if (profileId == null) profileId = resolvedProfileId;
+            if (platform == null) platform = normalizedPlatform;
+            if (!Objects.equals(profileId, resolvedProfileId) || !Objects.equals(platform, normalizedPlatform)) {
+                throw new IllegalArgumentException("岗位分析批次只能包含同一档案和同一平台的任务");
+            }
+        }
+    }
+
+    private boolean isLeaseCurrent(BooleanSupplier leaseIsCurrent) {
+        if (leaseIsCurrent == null) return false;
+        try {
+            return leaseIsCurrent.getAsBoolean();
+        } catch (RuntimeException e) {
+            log.warn("验证 AI 分析任务租约失败，保守停止结果写入: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean executeLeaseWrite(LeaseWriteGuard leaseWriteGuard, Runnable action) {
+        if (leaseWriteGuard == null || action == null) return false;
+        try {
+            return leaseWriteGuard.execute(action);
+        } catch (RuntimeException e) {
+            log.warn("AI 分析结果的租约事务失败，保守停止结果写入: {}", e.getMessage());
+            return false;
         }
     }
 
     public List<String> generateBossSearchKeywords(List<String> existingKeywords, int limitCount) {
-        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, 5));
+        int max = Math.max(1, Math.min(limitCount <= 0 ? 5 : limitCount, JobKeywordCodec.MAX_SELECTED));
         ResumeProfileEntity resume = getResumeProfile();
         String resumeText = resume == null ? "" : resume.getResumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
@@ -268,47 +578,406 @@ public class JobAiAnalysisService {
                 "只返回JSON数组，不要使用Markdown代码块，不要解释。关键词要适合直接填入 Boss 搜索框，优先2到8个字，避免过宽泛。\n" +
                 "已配置关键词（不要重复）：\n" + new JSONArray(existing).toString() + "\n\n" +
                 "简历：\n" + limit(resumeText, 5000);
+        String raw = aiService.sendRequest(prompt);
+        return parseKeywordArray(raw).stream()
+                .filter(s -> existing.stream().noneMatch(e -> e.equalsIgnoreCase(s)))
+                .limit(max)
+                .collect(Collectors.toList());
+    }
+
+    public Map<String, Object> zhilianAnalysisBasis(Long profileId) {
+        ResumeProfileEntity resume = getResumeProfile(profileId);
+        AiEntity config = aiService.getAiConfig(profileId);
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("profileId", profileId);
+        basis.put("resumeText", resume == null ? "" : safe(resume.getResumeText()));
+        basis.put("sourceFilename", resume == null ? "" : safe(resume.getSourceFilename()));
+        basis.put("resumeUpdatedAt", resume == null ? null : resume.getUpdatedAt());
+        basis.put("introduce", config == null ? "" : safe(config.getIntroduce()));
+        basis.put("introduceUpdatedAt", config == null ? null : config.getUpdatedAt());
+        basis.put("applyThreshold", config == null || config.getApplyThreshold() == null ? DEFAULT_APPLY_THRESHOLD : config.getApplyThreshold());
+        return basis;
+    }
+
+    private String buildBatchPrompt(String resumeText, List<PreparedJob> jobs) {
+        boolean bossBatch = jobs.stream()
+                .allMatch(prepared -> "boss".equalsIgnoreCase(prepared.job().request().getPlatform()));
+        JSONArray jobArray = new JSONArray();
+        for (PreparedJob prepared : jobs) {
+            JobAnalysisRequest request = prepared.job().request();
+            JSONObject job = new JSONObject();
+            job.put("taskId", prepared.job().taskId());
+            job.put("platform", safe(request.getPlatform()));
+            job.put("keyword", safe(request.getKeyword()));
+            job.put("companyName", safe(request.getCompanyName()));
+            job.put("jobName", safe(request.getJobName()));
+            job.put("salary", safe(request.getSalary()));
+            job.put("location", safe(request.getLocation()));
+            job.put("experience", safe(request.getExperience()));
+            job.put("degree", safe(request.getDegree()));
+            job.put("companyInfo", limit(safe(request.getCompanyInfo()), 2000));
+            job.put("jobDescription", (bossBatch || "zhilian".equalsIgnoreCase(request.getPlatform()))
+                    ? safe(request.getJobDescription())
+                    : limit(safe(request.getJobDescription()), 5000));
+            jobArray.put(job);
+        }
+        String greetingInstruction = bossBatch
+                ? "greeting 必须是20到120字的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n\n"
+                : "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n";
+        boolean containsZhilian = jobs.stream().anyMatch(prepared ->
+                "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
+        String promptResume = bossBatch || containsZhilian ? safe(resumeText) : limit(resumeText, 6000);
+        String intentInstruction = containsZhilian
+                ? "对 platform=zhilian 的岗位，先核对候选人明确写出的求职方向、岗位层级及排除项，再分析能力。搜索关键词只是召回来源，不代表候选人愿意从事官网返回的所有岗位。\n"
+                  + "相邻职能或可迁移技能不能等同于目标岗位经验；必须对照岗位实际职责，不得仅凭相同关键词判 MATCH。\n"
+                  + "明确的求职意向与岗位职责冲突时，在 RELEVANT_EXPERIENCE 分项及 hardConflicts 中引用双方原文；意向不明确则写入 unknowns，不能猜测。summary 必须先说明方向是否符合，再说明能力匹配。\n"
+                : "";
+        return "你是求职岗位证据分析助手。请比较一份候选人简历和多个岗位，但不要计算分数，也不要给出 APPLY/SKIP 决策。\n" +
+                "只返回符合 Schema 的 JSON，不要使用 Markdown 或额外解释。每个输入 taskId 必须且只能返回一次。\n" +
+                "六个维度必须各返回一次：CORE_SKILLS、RELEVANT_EXPERIENCE、ACHIEVEMENTS_COMPLEXITY、INDUSTRY_TRANSFER、EDUCATION_TENURE、LOCATION_SALARY。\n" +
+                "每个维度的 status 只能是 MATCH、PARTIAL、UNKNOWN、CONFLICT。\n" +
+                (containsZhilian ? "" : "采用宁可多投原则：") + "简历没有写明的信息只能判 UNKNOWN，不能推断为不具备；只有岗位明确要求且简历明确冲突时才能判 CONFLICT。\n" +
+                "jobEvidence 和 resumeEvidence 必须摘录对应原文短句。硬冲突必须同时具有岗位原文和简历原文，并复用对应 CONFLICT 分项中的双方证据；证据不足的差异放入 unknowns，不得放入 hardConflicts。\n" +
+                "summary 用一句自然中文给出总体结论，不要提分数、阈值或投递决策；matches 写具体匹配证据，gaps 只写有明确证据的差距，unknowns 写待核实信息。\n" +
+                intentInstruction + greetingInstruction +
+                "候选人简历（本批岗位共用，只出现一次）：\n" + promptResume + "\n\n" +
+                "待分析岗位 JSON：\n" + jobArray;
+    }
+
+    private BatchParse parseBatchResults(String raw,
+                                         List<Long> expectedTaskIds,
+                                         Set<Long> bossTaskIds) {
+        JSONObject root = new JSONObject(repairJsonObject(extractJson(raw)));
+        if (!(root.opt("results") instanceof JSONArray values)) {
+            throw outputError("AI_OUTPUT_INVALID_BATCH", "AI 返回缺少 results 数组", raw);
+        }
+        Set<Long> expected = new HashSet<>(expectedTaskIds);
+        Set<Long> seen = new HashSet<>();
+        Map<Long, AnalysisResult> results = new LinkedHashMap<>();
+        Map<Long, AiOutputException> errors = new LinkedHashMap<>();
+        for (int i = 0; i < values.length(); i++) {
+            Object value = values.opt(i);
+            if (!(value instanceof JSONObject item)) continue;
+            Object taskIdValue = item.opt("taskId");
+            if (!(taskIdValue instanceof Number number)
+                    || number.doubleValue() != Math.rint(number.doubleValue())) continue;
+            long taskId = number.longValue();
+            if (!expected.contains(taskId)) continue;
+            if (!seen.add(taskId)) {
+                errors.put(taskId, outputError(
+                        "AI_OUTPUT_INVALID_SCHEMA", "AI 返回重复 taskId: " + taskId, raw));
+                results.remove(taskId);
+                continue;
+            }
+            try {
+                results.put(taskId, parseEvidenceResult(item, raw, bossTaskIds.contains(taskId)));
+            } catch (AiOutputException e) {
+                errors.put(taskId, e);
+            }
+        }
+        for (Long taskId : expectedTaskIds) {
+            if (!results.containsKey(taskId) && !errors.containsKey(taskId)) {
+                errors.put(taskId, outputError(
+                        "AI_OUTPUT_MISSING_ITEM", "AI 返回缺少 taskId: " + taskId, raw));
+            }
+        }
+        return new BatchParse(results, errors);
+    }
+
+    private AnalysisResult parseEvidenceResult(JSONObject item, String raw, boolean allowMissingGreeting) {
+        List<String> requiredFields = new ArrayList<>(List.of(
+                "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts"));
+        if (!allowMissingGreeting) requiredFields.add("greeting");
+        for (String field : requiredFields) {
+            if (!item.has(field) || item.isNull(field)) {
+                throw outputError("AI_OUTPUT_MISSING_FIELD", "AI 返回缺少字段: " + field, raw);
+            }
+        }
+        if (!(item.opt("summary") instanceof String summary) || summary.isBlank()) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回 summary 不能为空", raw);
+        }
+        if (!(item.opt("matches") instanceof JSONArray matches)
+                || !(item.opt("gaps") instanceof JSONArray gaps)
+                || !(item.opt("unknowns") instanceof JSONArray unknowns)
+                || !(item.opt("dimensions") instanceof JSONArray dimensions)
+                || !(item.opt("hardConflicts") instanceof JSONArray hardConflicts)
+                || (!allowMissingGreeting && !(item.opt("greeting") instanceof String))
+                || !containsOnlyStrings(matches)
+                || !containsOnlyStrings(gaps)
+                || !containsOnlyStrings(unknowns)) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回字段类型不符合约定", raw);
+        }
+
+        List<String> unknownItems = new ArrayList<>(toStringList(unknowns));
+        List<DimensionScore> dimensionScores = parseDimensions(dimensions, unknownItems, raw);
+        List<HardConflict> validHardConflicts = parseHardConflicts(hardConflicts, unknownItems, raw);
+        int score = (int) Math.round(dimensionScores.stream()
+                .mapToDouble(value -> value.getWeight() * MatchStatus.valueOf(value.getStatus()).factor)
+                .sum());
+
+        AnalysisResult result = new AnalysisResult();
+        result.setScore(score);
+        result.setDecision("SKIP");
+        result.setSummary(summary.trim());
+        result.setMatches(toStringList(matches));
+        result.setGaps(toStringList(gaps));
+        result.setUnknowns(List.copyOf(unknownItems));
+        result.setDimensions(dimensionScores);
+        result.setHardConflicts(validHardConflicts);
+        result.setStrengths(result.getMatches());
+        result.setRisks(result.getGaps());
+        result.setGreeting(item.opt("greeting") instanceof String greeting ? greeting.trim() : "");
+        return result;
+    }
+
+    private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText) {
+        JobAnalysisRequest request = prepared.job().request();
+        if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
+        String jobDescription = safe(request.getJobDescription()).trim();
+        if (jobDescription.length() < 20) {
+            log.warn("Boss岗位 {} 缺少可用 JD，无法生成岗位定制打招呼语，将使用档案默认兜底", request.getJobKey());
+            result.setGreeting("");
+            return;
+        }
+        if (isUsableBossGreeting(result.getGreeting())
+                && greetingReferencesVerifiedEvidence(result.getGreeting(), result.getDimensions())) return;
+        if (!isLeaseCurrent(prepared.job().leaseIsCurrent())) {
+            result.setGreeting("");
+            return;
+        }
         try {
-            String raw = aiService.sendRequest(prompt);
-            return parseKeywordArray(raw).stream()
-                    .filter(s -> existing.stream().noneMatch(e -> e.equalsIgnoreCase(s)))
-                    .limit(max)
-                    .collect(Collectors.toList());
-        } catch (Exception e) {
-            log.warn("AI生成Boss关键词失败: {}", e.getMessage());
-            return List.of();
+            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到120字的中文招呼语。\n" +
+                    "必须明确结合一项岗位 JD 要求和一项候选人简历中的真实匹配经历；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
+                    "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
+                    "公司：" + safe(request.getCompanyName()) + "\n" +
+                    "岗位：" + safe(request.getJobName()) + "\n" +
+                    "岗位 JD：\n" + jobDescription + "\n\n" +
+                    "候选人简历：\n" + safe(resumeText);
+            String raw = aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA);
+            JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
+            String greeting = parsed.optString("greeting", "").trim();
+            String jobEvidence = parsed.optString("jobEvidence", "").trim();
+            String resumeEvidence = parsed.optString("resumeEvidence", "").trim();
+            if (!isUsableBossGreeting(greeting)
+                    || !quotesExist(List.of(jobEvidence), jobDescription)
+                    || !quotesExist(List.of(resumeEvidence), resumeText)
+                    || !sharesMeaningfulGreetingPhrase(greeting, jobEvidence)
+                    || !sharesMeaningfulGreetingPhrase(greeting, resumeEvidence)) {
+                throw outputError("AI_GREETING_INVALID", "AI 返回的 BOSS 话术缺少可核验的 JD 或简历依据", raw);
+            }
+            result.setGreeting(greeting);
+        } catch (Exception error) {
+            log.warn("Boss岗位 {} 的定制打招呼语重试失败，将使用档案默认兜底: {}",
+                    request.getJobKey(), error.getMessage());
+            result.setGreeting("");
         }
     }
 
-    private String buildPrompt(String resumeText, JobAnalysisRequest request, boolean priority, int threshold) {
-        return "你是求职投递决策助手。请根据候选人简历和岗位信息判断是否值得自动投递。\n" +
-                "只返回JSON，不要使用Markdown代码块。JSON字段必须包含 score, decision, summary, strengths, risks, greeting。\n" +
-                "score 必须是0到100之间的整数，请综合评估核心技能、工作经验、学历、地点、薪资和岗位硬性要求，不要为了达到阈值而抬高分数。\n" +
-                "decision 只能是 APPLY 或 SKIP。当前公司" +
-                (priority ? "是" : "不是") + "优先公司，当前阈值为" + threshold + "。\n" +
-                "简历：\n" + limit(resumeText, 6000) + "\n\n" +
-                "平台：" + safe(request.getPlatform()) + "\n" +
-                "搜索关键词：" + safe(request.getKeyword()) + "\n" +
-                "公司：" + safe(request.getCompanyName()) + "\n" +
-                "岗位：" + safe(request.getJobName()) + "\n" +
-                "薪资：" + safe(request.getSalary()) + "\n" +
-                "地点：" + safe(request.getLocation()) + "\n" +
-                "经验：" + safe(request.getExperience()) + "\n" +
-                "学历：" + safe(request.getDegree()) + "\n" +
-                "公司信息：" + safe(request.getCompanyInfo()) + "\n" +
-                "岗位描述：\n" + limit(safe(request.getJobDescription()), 5000) + "\n";
+    private boolean isUsableBossGreeting(String greeting) {
+        String normalized = safe(greeting).replaceAll("\\s+", "").trim();
+        if (normalized.length() < 20 || normalized.length() > 120) return false;
+        String withoutPunctuation = normalized.replaceAll("[，。！？、,.!?~～]", "");
+        if (Set.of(
+                "您好我对这个岗位很感兴趣希望可以进一步沟通谢谢",
+                "您好我对贵司岗位很感兴趣期待与您进一步沟通",
+                "BOSS好我对这份工作很感兴趣你看我有机会深入沟通下吗",
+                "你好我对这个职位很感兴趣可以聊聊吗"
+        ).contains(withoutPunctuation)) return false;
+        String meaningful = withoutPunctuation.replaceAll(
+                "(?i)boss|您好|你好|贵司|这份|这个|这个岗位|该岗位|该职位|职位|岗位|工作|"
+                        + "很|非常|十分|比较|真的|我|您|对|喜欢|感兴趣|希望|期待|想|可以|有机会|"
+                        + "进一步|深入|沟通|交流|聊聊|一下|下|谢谢|感谢|请问|吗|呀|啊|的|了",
+                "").replaceAll("[^\\p{L}\\p{N}]", "");
+        return meaningful.length() >= 4;
     }
 
-    private AnalysisResult parseResult(String raw) {
-        JSONObject obj = new JSONObject(repairJsonObject(extractJson(raw)));
-        AnalysisResult result = new AnalysisResult();
-        result.setScore(clampScore(obj.has("score") ? obj.optInt("score") : 0));
-        result.setDecision(obj.optString("decision", "SKIP"));
-        result.setSummary(obj.optString("summary", ""));
-        result.setStrengths(toStringList(obj.opt("strengths")));
-        result.setRisks(toStringList(obj.opt("risks")));
-        result.setGreeting(obj.optString("greeting", ""));
-        return result;
+    private boolean greetingReferencesVerifiedEvidence(String greeting, List<DimensionScore> dimensions) {
+        if (dimensions == null || dimensions.isEmpty()) return false;
+        boolean jobGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getJobEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        boolean resumeGrounded = dimensions.stream()
+                .flatMap(dimension -> safeStrings(dimension.getResumeEvidence()).stream())
+                .anyMatch(evidence -> sharesMeaningfulGreetingPhrase(greeting, evidence));
+        return jobGrounded && resumeGrounded;
+    }
+
+    private List<String> safeStrings(List<String> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private boolean sharesMeaningfulGreetingPhrase(String greeting, String evidence) {
+        String normalizedGreeting = normalizeEvidence(greeting);
+        String normalizedEvidence = normalizeEvidence(evidence);
+        int maxLength = Math.min(12, normalizedEvidence.length());
+        for (int length = maxLength; length >= 2; length--) {
+            for (int start = 0; start + length <= normalizedEvidence.length(); start++) {
+                String fragment = normalizedEvidence.substring(start, start + length);
+                boolean asciiOnly = fragment.codePoints().allMatch(codePoint -> codePoint <= 0x7f);
+                if (GENERIC_GREETING_EVIDENCE_FRAGMENTS.contains(fragment) || (asciiOnly && fragment.length() < 4)) continue;
+                if (normalizedGreeting.contains(fragment)) return true;
+            }
+        }
+        return false;
+    }
+
+    private List<DimensionScore> parseDimensions(JSONArray dimensions,
+                                                 List<String> unknowns,
+                                                 String raw) {
+        if (dimensions.length() != DIMENSION_SPECS.size()) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回必须包含六个评分维度", raw);
+        }
+        Map<String, DimensionScore> parsed = new LinkedHashMap<>();
+        for (int i = 0; i < dimensions.length(); i++) {
+            Object value = dimensions.opt(i);
+            if (!(value instanceof JSONObject dimension)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回维度必须是对象", raw);
+            }
+            String key = dimension.optString("key", "").trim().toUpperCase(Locale.ROOT);
+            String statusText = dimension.optString("status", "").trim().toUpperCase(Locale.ROOT);
+            DimensionSpec spec = DIMENSION_BY_KEY.get(key);
+            MatchStatus status;
+            try {
+                status = MatchStatus.valueOf(statusText);
+            } catch (IllegalArgumentException e) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回未知维度状态: " + statusText, raw);
+            }
+            if (spec == null || parsed.containsKey(key)
+                    || !(dimension.opt("jobEvidence") instanceof JSONArray jobEvidence)
+                    || !(dimension.opt("resumeEvidence") instanceof JSONArray resumeEvidence)
+                    || !(dimension.opt("note") instanceof String note)
+                    || !containsOnlyStrings(jobEvidence)
+                    || !containsOnlyStrings(resumeEvidence)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回维度字段无效或重复", raw);
+            }
+            List<String> jobEvidenceItems = toStringList(jobEvidence);
+            List<String> resumeEvidenceItems = toStringList(resumeEvidence);
+            if (status == MatchStatus.CONFLICT
+                    && (jobEvidenceItems.isEmpty() || resumeEvidenceItems.isEmpty())) {
+                status = MatchStatus.UNKNOWN;
+                unknowns.add(spec.label() + "存在差异描述，但缺少双方原文证据，已降级为待核实");
+            }
+            DimensionScore score = new DimensionScore();
+            score.setKey(spec.key());
+            score.setLabel(spec.label());
+            score.setWeight(spec.weight());
+            score.setStatus(status.name());
+            score.setAwarded(spec.weight() * status.factor);
+            score.setJobEvidence(jobEvidenceItems);
+            score.setResumeEvidence(resumeEvidenceItems);
+            score.setNote(note.trim());
+            parsed.put(key, score);
+        }
+        if (!parsed.keySet().equals(DIMENSION_BY_KEY.keySet())) {
+            throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回评分维度不完整", raw);
+        }
+        return DIMENSION_SPECS.stream().map(spec -> parsed.get(spec.key())).toList();
+    }
+
+    private List<HardConflict> parseHardConflicts(JSONArray conflicts,
+                                                  List<String> unknowns,
+                                                  String raw) {
+        List<HardConflict> valid = new ArrayList<>();
+        for (int i = 0; i < conflicts.length(); i++) {
+            Object value = conflicts.opt(i);
+            if (!(value instanceof JSONObject conflict)
+                    || !(conflict.opt("requirement") instanceof String requirement)
+                    || !(conflict.opt("jobEvidence") instanceof JSONArray jobEvidence)
+                    || !(conflict.opt("resumeEvidence") instanceof JSONArray resumeEvidence)
+                    || !containsOnlyStrings(jobEvidence)
+                    || !containsOnlyStrings(resumeEvidence)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回硬冲突字段无效", raw);
+            }
+            List<String> jobEvidenceItems = toStringList(jobEvidence);
+            List<String> resumeEvidenceItems = toStringList(resumeEvidence);
+            if (requirement.isBlank() || jobEvidenceItems.isEmpty() || resumeEvidenceItems.isEmpty()) {
+                String label = requirement.isBlank() ? "疑似硬性要求" : requirement.trim();
+                unknowns.add(label + "缺少双方原文证据，已降级为待核实");
+                continue;
+            }
+            HardConflict hardConflict = new HardConflict();
+            hardConflict.setRequirement(requirement.trim());
+            hardConflict.setJobEvidence(jobEvidenceItems);
+            hardConflict.setResumeEvidence(resumeEvidenceItems);
+            valid.add(hardConflict);
+        }
+        return List.copyOf(valid);
+    }
+
+    private void verifyQuotedEvidence(AnalysisResult result,
+                                      JobAnalysisRequest request,
+                                      String resumeText) {
+        if (result == null) return;
+        String jobSource = String.join("\n",
+                "zhilian".equalsIgnoreCase(request.getPlatform()) ? "" : safe(request.getKeyword()),
+                safe(request.getCompanyName()),
+                safe(request.getJobName()),
+                safe(request.getSalary()),
+                safe(request.getLocation()),
+                safe(request.getExperience()),
+                safe(request.getDegree()),
+                safe(request.getCompanyInfo()),
+                safe(request.getJobDescription()));
+        List<String> unknowns = new ArrayList<>(result.getUnknowns() == null
+                ? List.of() : result.getUnknowns());
+        for (DimensionScore dimension : result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()) {
+            MatchStatus status = MatchStatus.valueOf(dimension.getStatus());
+            if (status == MatchStatus.UNKNOWN) continue;
+            if (quotesExist(dimension.getJobEvidence(), jobSource)
+                    && quotesExist(dimension.getResumeEvidence(), resumeText)) continue;
+            dimension.setStatus(MatchStatus.UNKNOWN.name());
+            dimension.setAwarded(dimension.getWeight() * MatchStatus.UNKNOWN.factor);
+            unknowns.add(dimension.getLabel() + "的双方原文证据无法核验，已降级为待核实");
+        }
+
+        List<DimensionScore> conflictDimensions = (result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()).stream()
+                .filter(dimension -> MatchStatus.CONFLICT.name().equals(dimension.getStatus()))
+                .toList();
+        List<HardConflict> verifiedHardConflicts = new ArrayList<>();
+        for (HardConflict conflict : result.getHardConflicts() == null
+                ? List.<HardConflict>of() : result.getHardConflicts()) {
+            if (quotesExist(conflict.getJobEvidence(), jobSource)
+                    && quotesExist(conflict.getResumeEvidence(), resumeText)
+                    && conflictDimensions.stream().anyMatch(dimension ->
+                    sharesEvidence(conflict.getJobEvidence(), dimension.getJobEvidence())
+                            && sharesEvidence(conflict.getResumeEvidence(), dimension.getResumeEvidence()))) {
+                verifiedHardConflicts.add(conflict);
+            } else {
+                unknowns.add(conflict.getRequirement() + "的原文证据无法核验或与冲突分项不一致，已降级为待核实");
+            }
+        }
+
+        int verifiedScore = (int) Math.round((result.getDimensions() == null
+                ? List.<DimensionScore>of() : result.getDimensions()).stream()
+                .mapToDouble(value -> value.getAwarded() == null ? 0.0 : value.getAwarded())
+                .sum());
+        result.setScore(verifiedScore);
+        result.setUnknowns(List.copyOf(unknowns));
+        result.setHardConflicts(List.copyOf(verifiedHardConflicts));
+    }
+
+    private boolean quotesExist(List<String> quotes, String source) {
+        if (quotes == null || quotes.isEmpty()) return false;
+        String normalizedSource = normalizeEvidence(source);
+        return quotes.stream()
+                .map(this::normalizeEvidence)
+                .allMatch(quote -> !quote.isBlank() && normalizedSource.contains(quote));
+    }
+
+    private boolean sharesEvidence(List<String> left, List<String> right) {
+        if (left == null || right == null) return false;
+        Set<String> normalizedRight = right.stream()
+                .map(this::normalizeEvidence)
+                .filter(value -> !value.isBlank())
+                .collect(Collectors.toSet());
+        return left.stream().map(this::normalizeEvidence)
+                .anyMatch(value -> !value.isBlank() && normalizedRight.contains(value));
+    }
+
+    private String normalizeEvidence(String value) {
+        return safe(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     private List<String> parseKeywordArray(String raw) {
@@ -316,7 +985,11 @@ public class JobAiAnalysisService {
         JSONArray arr = new JSONArray(json);
         List<String> out = new ArrayList<>();
         for (int i = 0; i < arr.length(); i++) {
-            String keyword = arr.optString(i, "").trim();
+            Object value = arr.opt(i);
+            if (!(value instanceof String)) {
+                throw outputError("AI_OUTPUT_INVALID_SCHEMA", "AI 返回的搜索关键词必须是字符串数组", raw);
+            }
+            String keyword = ((String) value).trim();
             if (!keyword.isEmpty() && out.stream().noneMatch(existing -> existing.equalsIgnoreCase(keyword))) {
                 out.add(keyword);
             }
@@ -325,7 +998,9 @@ public class JobAiAnalysisService {
     }
 
     private String extractJson(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return "{}";
+        if (raw == null || raw.trim().isEmpty()) {
+            throw outputError("AI_OUTPUT_EMPTY", "AI 返回空内容", raw);
+        }
         String s = raw.trim();
         if (s.startsWith("```")) {
             s = s.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("\\s*```$", "").trim();
@@ -337,8 +1012,17 @@ public class JobAiAnalysisService {
     }
 
     private String repairJsonObject(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return "{}";
-        String s = raw.trim()
+        if (raw == null || raw.trim().isEmpty()) {
+            throw outputError("AI_OUTPUT_EMPTY", "AI 返回空内容", raw);
+        }
+        String original = raw.trim();
+        try {
+            new JSONObject(original);
+            return original;
+        } catch (Exception ignored) {
+        }
+
+        String s = original
                 .replace('\u201c', '"')
                 .replace('\u201d', '"')
                 .replace('\u2018', '\'')
@@ -356,7 +1040,10 @@ public class JobAiAnalysisService {
         }
 
         s = s.replaceAll(",\\s*([}\\]])", "$1");
-        for (String key : List.of("score", "decision", "summary", "strengths", "risks", "greeting")) {
+        for (String key : List.of(
+                "results", "taskId", "summary", "matches", "gaps", "unknowns", "dimensions",
+                "hardConflicts", "greeting", "key", "status", "jobEvidence", "resumeEvidence",
+                "note", "requirement")) {
             s = s.replaceAll("(?m)([{,]\\s*)" + key + "\\s*:", "$1\"" + key + "\":");
         }
         try {
@@ -365,35 +1052,7 @@ public class JobAiAnalysisService {
         } catch (Exception ignored) {
         }
 
-        return fallbackJsonFromText(raw);
-    }
-
-    private String fallbackJsonFromText(String raw) {
-        String text = raw == null ? "" : raw.trim();
-        JSONObject obj = new JSONObject();
-        obj.put("score", extractScore(text));
-        obj.put("decision", extractDecision(text));
-        obj.put("summary", limit(text.isEmpty() ? "AI返回格式异常，已按跳过处理" : text, 500));
-        obj.put("strengths", new JSONArray());
-        obj.put("risks", new JSONArray(List.of("AI返回不是标准JSON，建议检查模型输出或重试分析")));
-        obj.put("greeting", "");
-        return obj.toString();
-    }
-
-    private int extractScore(String text) {
-        if (text == null) return 0;
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(?i)(score|分数|得分)\\D{0,12}(\\d{1,3})").matcher(text);
-        if (matcher.find()) {
-            try {
-                return Math.max(0, Math.min(100, Integer.parseInt(matcher.group(2))));
-            } catch (Exception ignored) {
-            }
-        }
-        return 0;
-    }
-
-    private int clampScore(int score) {
-        return Math.max(0, Math.min(100, score));
+        throw outputError("AI_OUTPUT_INVALID_JSON", "AI 返回无法修复为有效 JSON", raw);
     }
 
     private int resolveApplyThreshold(Long profileId, boolean priority) {
@@ -406,16 +1065,10 @@ public class JobAiAnalysisService {
         return configured == null ? fallback : Math.max(0, Math.min(100, configured));
     }
 
-    private String extractDecision(String text) {
-        if (text == null) return "SKIP";
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("(?i)(decision|决策)\\D{0,20}(APPLY|SKIP)")
-                .matcher(text);
-        return matcher.find() ? matcher.group(2).toUpperCase(Locale.ROOT) : "SKIP";
-    }
-
     private String extractJsonArray(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return "[]";
+        if (raw == null || raw.trim().isEmpty()) {
+            throw outputError("AI_OUTPUT_EMPTY", "AI 返回空内容", raw);
+        }
         String s = raw.trim();
         if (s.startsWith("```")) {
             s = s.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("\\s*```$", "").trim();
@@ -424,6 +1077,13 @@ public class JobAiAnalysisService {
         int end = s.lastIndexOf(']');
         if (start >= 0 && end > start) return s.substring(start, end + 1);
         return s;
+    }
+
+    private boolean containsOnlyStrings(JSONArray values) {
+        for (int i = 0; i < values.length(); i++) {
+            if (!(values.opt(i) instanceof String)) return false;
+        }
+        return true;
     }
 
     private List<String> toStringList(Object value) {
@@ -436,7 +1096,49 @@ public class JobAiAnalysisService {
         return out.stream().filter(s -> s != null && !s.isBlank()).collect(Collectors.toList());
     }
 
-    private void persistAnalysis(JobAnalysisRequest request, AnalysisResult result, String raw) {
+    private AnalysisResult persistAndUpdate(JobAnalysisRequest request,
+                                            AnalysisResult result,
+                                            String diagnostic,
+                                            boolean providerWasCalled) {
+        if (!persistAnalysis(request, result, diagnostic)) {
+            AnalysisResult failure = AnalysisResult.failed(
+                    DeliveryStatus.AI_ANALYSIS_FAILED,
+                    "AI 分析结果持久化失败，任务未标记成功"
+            );
+            failure.setErrorCode("AI_PERSISTENCE_FAILED");
+            failure.setProviderOutcomeUnknown(providerWasCalled);
+            failure.setPriorityCompany(result.getPriorityCompany());
+            failure.setThreshold(result.getThreshold());
+            if (!updatePlatformCache(request, failure)) {
+                safelyResetAnalyzingStatus(request, failure.getSummary());
+            }
+            return failure;
+        }
+        if (!updatePlatformCache(request, result)) {
+            AnalysisResult failure = AnalysisResult.failed(
+                    DeliveryStatus.AI_ANALYSIS_FAILED,
+                    "AI 结果已生成，但岗位状态写回失败，需要人工对账"
+            );
+            failure.setErrorCode("AI_PLATFORM_WRITE_FAILED");
+            failure.setProviderOutcomeUnknown(providerWasCalled);
+            failure.setPriorityCompany(result.getPriorityCompany());
+            failure.setThreshold(result.getThreshold());
+            safelyResetAnalyzingStatus(request, failure.getSummary());
+            return failure;
+        }
+        return result;
+    }
+
+    private void safelyResetAnalyzingStatus(JobAnalysisRequest request, String reason) {
+        try {
+            markAnalysisInterrupted(request, reason);
+        } catch (RuntimeException recoveryError) {
+            log.warn("AI 岗位状态写回失败后的安全复位也失败: platform={}, rowId={}, error={}",
+                    request.getPlatform(), request.getJobRowId(), recoveryError.getMessage());
+        }
+    }
+
+    private boolean persistAnalysis(JobAnalysisRequest request, AnalysisResult result, String diagnostic) {
         try {
             JobAiAnalysisEntity entity = new JobAiAnalysisEntity();
             entity.setProfileId(request.getProfileId());
@@ -452,78 +1154,300 @@ public class JobAiAnalysisService {
             entity.setRisks(toJsonArray(result.getRisks()));
             entity.setGreeting(result.getGreeting());
             entity.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
-            entity.setRawResponse(raw);
+            entity.setRawResponse(diagnostic);
             entity.setCreatedAt(LocalDateTime.now());
             entity.setUpdatedAt(LocalDateTime.now());
-            jobAiAnalysisMapper.insert(entity);
+            return jobAiAnalysisMapper.insert(entity) == 1;
         } catch (Exception e) {
             log.warn("保存AI分析结果失败: {}", e.getMessage());
+            return false;
         }
     }
 
-    public void updatePlatformCache(JobAnalysisRequest request, AnalysisResult result) {
-        if (request == null || result == null) return;
-        String reason = result.toReasonText();
+    public boolean updatePlatformCache(JobAnalysisRequest request, AnalysisResult result) {
+        if (request == null || result == null) return false;
+        try {
+            String reason = result.toReasonText();
+            if ("boss".equalsIgnoreCase(request.getPlatform())) {
+                BossJobDataEntity existing = findBossJobForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result)
+                );
+                BossJobDataEntity update = new BossJobDataEntity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                    update.setScanRunId(request.getScanRunId());
+                }
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdatedAt(LocalDateTime.now());
+                UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+                applyExpectedBossStatus(wrapper, existing);
+                return bossJobDataMapper.update(update, wrapper) == 1;
+            }
+            if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+                ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result)
+                );
+                ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+                    update.setScanRunId(request.getScanRunId());
+                }
+                if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
+                    update.setJobDescription(request.getJobDescription());
+                }
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdateTime(LocalDateTime.now());
+                UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+                applyExpectedZhilianStatus(wrapper, existing);
+                return zhilianJobDataMapper.update(update, wrapper) == 1;
+            }
+            if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+                LiepinEntity existing = findLiepinJobForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result));
+                LiepinEntity update = new LiepinEntity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdateTime(LocalDateTime.now());
+                UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+                applyExpectedLegacyStatus(wrapper, existing == null ? null : existing.getDeliveryStatus());
+                return liepinMapper.update(update, wrapper) == 1;
+            }
+            if ("51job".equalsIgnoreCase(request.getPlatform())) {
+                Job51Entity existing = findJob51ForAnalysis(request);
+                String nextStatus = DeliveryStatus.protectDelivered(
+                        existing == null ? null : existing.getDeliveryStatus(),
+                        DeliveryStatus.fromAiResult(result));
+                Job51Entity update = new Job51Entity();
+                update.setAiScore(result.getScore());
+                update.setAiDecision(result.getDecision());
+                update.setAiReason(reason);
+                update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
+                if (existing == null || !DeliveryStatus.isFinalStatus(existing.getDeliveryStatus())) {
+                    update.setDeliveryStatus(nextStatus);
+                }
+                update.setUpdateTime(LocalDateTime.now().toString());
+                UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+                applyExpectedLegacyStatus(wrapper, existing == null ? null : existing.getDeliveryStatus());
+                return job51Mapper.update(update, wrapper) == 1;
+            }
+            return false;
+        } catch (RuntimeException e) {
+            log.warn("写回 AI 平台状态失败: platform={}, rowId={}, error={}",
+                    request.getPlatform(), request.getJobRowId(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 只读取平台兼容状态，用于进程重启后判断过期租约是否已经完成结果写回。
+     */
+    public PlatformAnalysisState inspectPlatformAnalysis(JobAnalysisRequest request) {
+        if (request == null) return PlatformAnalysisState.incomplete("MISSING_REQUEST");
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
             BossJobDataEntity existing = findBossJobForAnalysis(request);
-            String nextStatus = DeliveryStatus.protectDelivered(
-                    existing == null ? null : existing.getDeliveryStatus(),
-                    DeliveryStatus.fromAiResult(result)
-            );
-            BossJobDataEntity update = new BossJobDataEntity();
-            update.setAiScore(result.getScore());
-            update.setAiDecision(result.getDecision());
-            update.setAiReason(reason);
-            update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
-            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
-                update.setScanRunId(request.getScanRunId());
-            }
-            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
-                update.setDeliveryStatus(nextStatus);
-            }
-            update.setUpdatedAt(LocalDateTime.now());
-            bossJobDataMapper.update(update, bossUpdateWrapper(request));
-        } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
-            String nextStatus = DeliveryStatus.protectDelivered(
-                    existing == null ? null : existing.getDeliveryStatus(),
-                    DeliveryStatus.fromAiResult(result)
-            );
-            ZhilianJobDataEntity update = new ZhilianJobDataEntity();
-            update.setAiScore(result.getScore());
-            update.setAiDecision(result.getDecision());
-            update.setAiReason(reason);
-            update.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
-            if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
-                update.setScanRunId(request.getScanRunId());
-            }
-            if (request.getJobDescription() != null && !request.getJobDescription().isBlank()) {
-                update.setJobDescription(request.getJobDescription());
-            }
-            if (!DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) {
-                update.setDeliveryStatus(nextStatus);
-            }
-            update.setUpdateTime(LocalDateTime.now());
-            zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
         }
+        if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity existing = findLiepinJobForAnalysis(request);
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity existing = findJob51ForAnalysis(request);
+            if (existing == null) return PlatformAnalysisState.incomplete("MISSING_JOB");
+            return platformAnalysisState(existing.getDeliveryStatus());
+        }
+        return PlatformAnalysisState.incomplete("UNSUPPORTED_PLATFORM");
     }
 
-    private void markPlatformAnalysisStarted(JobAnalysisRequest request) {
-        if (request == null) return;
+    /**
+     * 仅把仍停留在 AI_ANALYZING 的岗位转成明确失败；不会覆盖投递锁或已落库的 AI 结果。
+     */
+    public boolean markAnalysisInterrupted(JobAnalysisRequest request, String reason) {
+        if (request == null) return false;
+        String message = reason == null || reason.isBlank()
+                ? "AI 分析被中断，结果未知"
+                : reason.trim();
         if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            BossJobDataEntity update = new BossJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdatedAt(LocalDateTime.now());
+            UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return bossJobDataMapper.update(update, wrapper) == 1;
+        }
+        if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return zhilianJobDataMapper.update(update, wrapper) == 1;
+        }
+        if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity update = new LiepinEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return liepinMapper.update(update, wrapper) == 1;
+        }
+        if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity update = new Job51Entity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiDecision(DeliveryStatus.AI_ANALYSIS_FAILED);
+            update.setAiReason(message);
+            update.setUpdateTime(LocalDateTime.now().toString());
+            UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+            wrapper.eq("delivery_status", DeliveryStatus.AI_ANALYZING);
+            return job51Mapper.update(update, wrapper) == 1;
+        }
+        return false;
+    }
+
+    private PlatformAnalysisState platformAnalysisState(String status) {
+        String normalizedStatus = status == null ? "" : status.trim();
+        if (DeliveryStatus.AI_ANALYZING.equals(normalizedStatus)) {
+            return PlatformAnalysisState.incomplete(normalizedStatus);
+        }
+        boolean failed = DeliveryStatus.AI_ANALYSIS_FAILED.equals(normalizedStatus);
+        boolean completed = failed
+                || DeliveryStatus.WAITING_CONFIRM.equals(normalizedStatus)
+                || DeliveryStatus.AI_NOT_MATCH.equals(normalizedStatus);
+        return new PlatformAnalysisState(completed, failed,
+                normalizedStatus.isBlank() ? "NO_STATUS" : normalizedStatus);
+    }
+
+    private boolean markPlatformAnalysisStarted(JobAnalysisRequest request) {
+        if (request == null) return false;
+        if ("boss".equalsIgnoreCase(request.getPlatform())) {
+            if (request.getJobRowId() != null) {
+                BossJobDataEntity update = new BossJobDataEntity();
+                update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+                update.setUpdatedAt(LocalDateTime.now());
+                UpdateWrapper<BossJobDataEntity> wrapper = bossUpdateWrapper(request);
+                wrapper.and(w -> w.in("delivery_status", List.of(
+                                DeliveryStatus.NOT_DELIVERED,
+                                DeliveryStatus.LIST_COLLECTED,
+                                DeliveryStatus.AI_ANALYSIS_FAILED
+                        ))
+                        .or()
+                        .isNull("delivery_status"));
+                return bossJobDataMapper.update(update, wrapper) == 1;
+            }
             BossJobDataEntity existing = findBossJobForAnalysis(request);
-            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return false;
             BossJobDataEntity update = new BossJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdatedAt(LocalDateTime.now());
             bossJobDataMapper.update(update, bossUpdateWrapper(request));
+            return true;
         } else if ("zhilian".equalsIgnoreCase(request.getPlatform())) {
+            if (request.getJobRowId() != null) {
+                ZhilianJobDataEntity update = new ZhilianJobDataEntity();
+                update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+                update.setUpdateTime(LocalDateTime.now());
+                UpdateWrapper<ZhilianJobDataEntity> wrapper = zhilianUpdateWrapper(request);
+                wrapper.and(w -> w.in("delivery_status", List.of(
+                                DeliveryStatus.NOT_DELIVERED,
+                                DeliveryStatus.LIST_COLLECTED,
+                                DeliveryStatus.AI_ANALYSIS_FAILED
+                        ))
+                        .or()
+                        .isNull("delivery_status"));
+                return zhilianJobDataMapper.update(update, wrapper) == 1;
+            }
             ZhilianJobDataEntity existing = findZhilianJobForAnalysis(request);
-            if (DeliveryStatus.isDelivered(existing == null ? null : existing.getDeliveryStatus())) return;
+            if (DeliveryStatus.isDeliveryLocked(existing == null ? null : existing.getDeliveryStatus())) return false;
             ZhilianJobDataEntity update = new ZhilianJobDataEntity();
             update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
             update.setUpdateTime(LocalDateTime.now());
             zhilianJobDataMapper.update(update, zhilianUpdateWrapper(request));
+            return true;
+        } else if ("liepin".equalsIgnoreCase(request.getPlatform())) {
+            LiepinEntity update = new LiepinEntity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdateTime(LocalDateTime.now());
+            UpdateWrapper<LiepinEntity> wrapper = liepinUpdateWrapper(request);
+            wrapper.and(w -> w.in("delivery_status", List.of(
+                            DeliveryStatus.NOT_DELIVERED,
+                            DeliveryStatus.LIST_COLLECTED,
+                            DeliveryStatus.AI_ANALYSIS_FAILED
+                    )).or().isNull("delivery_status"));
+            return liepinMapper.update(update, wrapper) == 1;
+        } else if ("51job".equalsIgnoreCase(request.getPlatform())) {
+            Job51Entity update = new Job51Entity();
+            update.setDeliveryStatus(DeliveryStatus.AI_ANALYZING);
+            update.setUpdateTime(LocalDateTime.now().toString());
+            UpdateWrapper<Job51Entity> wrapper = job51UpdateWrapper(request);
+            wrapper.and(w -> w.in("delivery_status", List.of(
+                            DeliveryStatus.NOT_DELIVERED,
+                            DeliveryStatus.LIST_COLLECTED,
+                            DeliveryStatus.AI_ANALYSIS_FAILED
+                    )).or().isNull("delivery_status"));
+            return job51Mapper.update(update, wrapper) == 1;
+        }
+        return request.getJobRowId() == null;
+    }
+
+    private void applyExpectedBossStatus(UpdateWrapper<BossJobDataEntity> wrapper,
+                                         BossJobDataEntity existing) {
+        if (existing == null) return;
+        if (existing.getDeliveryStatus() == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existing.getDeliveryStatus());
+        }
+    }
+
+    private void applyExpectedZhilianStatus(UpdateWrapper<ZhilianJobDataEntity> wrapper,
+                                            ZhilianJobDataEntity existing) {
+        if (existing == null) return;
+        if (existing.getDeliveryStatus() == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existing.getDeliveryStatus());
+        }
+    }
+
+    private <T> void applyExpectedLegacyStatus(UpdateWrapper<T> wrapper, String existingStatus) {
+        if (existingStatus == null) {
+            wrapper.isNull("delivery_status");
+        } else {
+            wrapper.eq("delivery_status", existingStatus);
         }
     }
 
@@ -532,12 +1456,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             uw.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            uw.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             uw.eq("encrypt_id", request.getJobKey());
         } else {
             uw.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             uw.eq("scan_run_id", request.getScanRunId());
         }
         return uw;
@@ -548,15 +1474,43 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             uw.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            uw.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             uw.eq("job_id", request.getJobKey());
         } else {
             uw.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             uw.eq("scan_run_id", request.getScanRunId());
         }
         return uw;
+    }
+
+    private UpdateWrapper<LiepinEntity> liepinUpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<LiepinEntity> wrapper = new UpdateWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        return wrapper;
+    }
+
+    private UpdateWrapper<Job51Entity> job51UpdateWrapper(JobAnalysisRequest request) {
+        UpdateWrapper<Job51Entity> wrapper = new UpdateWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        return wrapper;
     }
 
     private BossJobDataEntity findBossJobForAnalysis(JobAnalysisRequest request) {
@@ -564,12 +1518,14 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             wrapper.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("encrypt_id", request.getJobKey());
         } else {
             wrapper.eq("company_name", request.getCompanyName()).eq("job_name", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             wrapper.eq("scan_run_id", request.getScanRunId());
         }
         wrapper.last("LIMIT 1");
@@ -581,16 +1537,46 @@ public class JobAiAnalysisService {
         if (request.getProfileId() != null) {
             wrapper.eq("profile_id", request.getProfileId());
         }
-        if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
             wrapper.eq("job_id", request.getJobKey());
         } else {
             wrapper.eq("company_name", request.getCompanyName()).eq("job_title", request.getJobName());
         }
-        if (request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
+        if (request.getJobRowId() == null && request.getScanRunId() != null && !request.getScanRunId().isBlank()) {
             wrapper.eq("scan_run_id", request.getScanRunId());
         }
         wrapper.last("LIMIT 1");
         return zhilianJobDataMapper.selectOne(wrapper);
+    }
+
+    private LiepinEntity findLiepinJobForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<LiepinEntity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        wrapper.last("LIMIT 1");
+        return liepinMapper.selectOne(wrapper);
+    }
+
+    private Job51Entity findJob51ForAnalysis(JobAnalysisRequest request) {
+        QueryWrapper<Job51Entity> wrapper = new QueryWrapper<>();
+        if (request.getProfileId() != null) wrapper.eq("profile_id", request.getProfileId());
+        if (request.getJobRowId() != null) {
+            wrapper.eq("id", request.getJobRowId());
+        } else if (request.getJobKey() != null && !request.getJobKey().isBlank()) {
+            wrapper.eq("job_id", request.getJobKey());
+        } else {
+            wrapper.eq("comp_name", request.getCompanyName()).eq("job_title", request.getJobName());
+        }
+        wrapper.last("LIMIT 1");
+        return job51Mapper.selectOne(wrapper);
     }
 
     private String toJsonArray(List<String> values) {
@@ -608,8 +1594,53 @@ public class JobAiAnalysisService {
         return s == null ? "" : s;
     }
 
-    private String escape(String s) {
-        return s == null ? "" : s.replace("\"", "\\\"");
+    private AiOutputException outputError(String code, String message, String raw) {
+        return new AiOutputException(code, message + "（" + responseFingerprint(raw) + "）");
+    }
+
+    private String responseDiagnostic(String raw) {
+        JSONObject diagnostic = new JSONObject();
+        diagnostic.put("kind", "provider_response_fingerprint");
+        diagnostic.put("length", raw == null ? 0 : raw.length());
+        diagnostic.put("sha256", sha256(raw));
+        return diagnostic.toString();
+    }
+
+    private String errorDiagnostic(Exception error) {
+        JSONObject diagnostic = new JSONObject();
+        diagnostic.put("kind", "ai_error");
+        diagnostic.put("errorCode", errorCode(error));
+        diagnostic.put("message", limit(error == null ? "AI 分析失败" : safe(error.getMessage()), 300));
+        if (error instanceof AiProviderException providerError) {
+            diagnostic.put("clientRequestId", safe(providerError.getClientRequestId()));
+            diagnostic.put("providerRequestId", safe(providerError.getProviderRequestId()));
+            diagnostic.put("httpStatus", providerError.getHttpStatus() == null
+                    ? JSONObject.NULL
+                    : providerError.getHttpStatus());
+        }
+        return diagnostic.toString();
+    }
+
+    private String errorCode(Exception error) {
+        if (error instanceof AiOutputException outputError) return outputError.code();
+        if (error instanceof AiProviderException providerError) {
+            return "AI_PROVIDER_" + providerError.getCode().name();
+        }
+        return "AI_ANALYSIS_FAILED";
+    }
+
+    private String responseFingerprint(String raw) {
+        return "length=" + (raw == null ? 0 : raw.length()) + ", sha256=" + sha256(raw);
+    }
+
+    private String sha256(String raw) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((raw == null ? "" : raw).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception ignored) {
+            return "unavailable";
+        }
     }
 
     private Long resolveAnalysisProfileId(JobAnalysisRequest request) {
@@ -631,6 +1662,7 @@ public class JobAiAnalysisService {
         private Long profileId;
         private String platform;
         private String jobKey;
+        private Long jobRowId;
         private String keyword;
         private String companyName;
         private String jobName;
@@ -643,16 +1675,81 @@ public class JobAiAnalysisService {
         private String scanRunId;
     }
 
+    public record ThresholdApplicationResult(AiEntity thresholds, int bossHistoricalPromotedCount) {
+    }
+
+    public record PlatformAnalysisState(boolean completed, boolean failed, String status) {
+        public static PlatformAnalysisState incomplete(String status) {
+            return new PlatformAnalysisState(false, false, status);
+        }
+    }
+
+    public record BatchAnalysisJob(long taskId,
+                                   JobAnalysisRequest request,
+                                   BooleanSupplier leaseIsCurrent,
+                                   LeaseWriteGuard leaseWriteGuard) {
+    }
+
+    private record PreparedJob(BatchAnalysisJob job, boolean priority, int threshold) {
+    }
+
+    private record BatchParse(Map<Long, AnalysisResult> results,
+                              Map<Long, AiOutputException> errors) {
+    }
+
+    private record DimensionSpec(String key, String label, int weight) {
+    }
+
+    private enum MatchStatus {
+        MATCH(1.0),
+        PARTIAL(0.75),
+        UNKNOWN(0.6),
+        CONFLICT(0.0);
+
+        private final double factor;
+
+        MatchStatus(double factor) {
+            this.factor = factor;
+        }
+    }
+
+    private static final class AiOutputException extends RuntimeException {
+        private final String code;
+
+        private AiOutputException(String code, String message) {
+            super(message);
+            this.code = code;
+        }
+
+        private String code() {
+            return code;
+        }
+    }
+
+    @FunctionalInterface
+    public interface LeaseWriteGuard {
+        boolean execute(Runnable action);
+    }
+
     @Data
     public static class AnalysisResult {
+        private Integer schemaVersion = 2;
         private Integer score;
         private String decision;
         private String summary;
         private List<String> strengths = new ArrayList<>();
         private List<String> risks = new ArrayList<>();
+        private List<String> matches = new ArrayList<>();
+        private List<String> gaps = new ArrayList<>();
+        private List<String> unknowns = new ArrayList<>();
+        private List<DimensionScore> dimensions = new ArrayList<>();
+        private List<HardConflict> hardConflicts = new ArrayList<>();
         private String greeting;
         private Boolean priorityCompany;
         private Integer threshold;
+        private boolean staleLease;
+        private String errorCode;
+        private boolean providerOutcomeUnknown;
 
         public boolean shouldApply() {
             return "APPLY".equalsIgnoreCase(decision);
@@ -663,11 +1760,18 @@ public class JobAiAnalysisService {
         }
 
         public String toReasonText() {
-            Map<String, Object> map = new HashMap<>();
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("schemaVersion", schemaVersion);
             map.put("summary", summary);
-            map.put("strengths", strengths);
-            map.put("risks", risks);
+            map.put("matches", matches == null || matches.isEmpty() ? strengths : matches);
+            map.put("gaps", gaps == null || gaps.isEmpty() ? risks : gaps);
+            map.put("unknowns", unknowns);
+            map.put("dimensions", dimensions == null ? List.of() : dimensions.stream()
+                    .map(DimensionScore::toMap).toList());
+            map.put("hardConflicts", hardConflicts == null ? List.of() : hardConflicts.stream()
+                    .map(HardConflict::toMap).toList());
             map.put("threshold", threshold);
+            map.put("errorCode", errorCode);
             return new JSONObject(map).toString();
         }
 
@@ -678,6 +1782,52 @@ public class JobAiAnalysisService {
             result.setSummary(message == null ? DeliveryStatus.AI_ANALYSIS_FAILED : message);
             result.setGreeting("");
             return result;
+        }
+
+        public static AnalysisResult staleLease() {
+            AnalysisResult result = failed(DeliveryStatus.AI_ANALYSIS_FAILED, "AI 分析任务租约已失效，已丢弃旧执行结果");
+            result.setStaleLease(true);
+            return result;
+        }
+    }
+
+    @Data
+    public static class DimensionScore {
+        private String key;
+        private String label;
+        private Integer weight;
+        private String status;
+        private Double awarded;
+        private List<String> jobEvidence = new ArrayList<>();
+        private List<String> resumeEvidence = new ArrayList<>();
+        private String note;
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("key", key);
+            map.put("label", label);
+            map.put("weight", weight);
+            map.put("status", status);
+            map.put("awarded", awarded);
+            map.put("jobEvidence", jobEvidence);
+            map.put("resumeEvidence", resumeEvidence);
+            map.put("note", note);
+            return map;
+        }
+    }
+
+    @Data
+    public static class HardConflict {
+        private String requirement;
+        private List<String> jobEvidence = new ArrayList<>();
+        private List<String> resumeEvidence = new ArrayList<>();
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("requirement", requirement);
+            map.put("jobEvidence", jobEvidence);
+            map.put("resumeEvidence", resumeEvidence);
+            return map;
         }
     }
 }

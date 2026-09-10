@@ -38,10 +38,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Resolve version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
+            VERSION="$INPUT_VERSION"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             VERSION="v0.0.0-pr${{ github.event.pull_request.number }}"
           else
@@ -70,7 +72,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
           cache-dependency-path: front/pnpm-lock.yaml
 
@@ -85,7 +87,9 @@ jobs:
           pnpm build
 
       - name: Validate Chrome extension
-        run: node scripts/validate-chrome-extension.mjs
+        run: |
+          node scripts/validate-chrome-extension.mjs
+          node --test chrome-extension/tests/*.test.cjs
 
       - name: Build backend JAR with frontend assets
         shell: bash

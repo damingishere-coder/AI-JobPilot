@@ -2,6 +2,7 @@ package com.getjobs.application.controller;
 
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.service.AiService;
+import com.getjobs.application.service.JobAiAnalysisService;
 import com.getjobs.application.service.ProfileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,23 +17,28 @@ import static org.mockito.Mockito.when;
 
 class AiConfigControllerThresholdTest {
     private AiService aiService;
+    private JobAiAnalysisService jobAiAnalysisService;
     private AiConfigController controller;
 
     @BeforeEach
     void setUp() {
         aiService = mock(AiService.class);
+        jobAiAnalysisService = mock(JobAiAnalysisService.class);
         ProfileService profileService = mock(ProfileService.class);
         controller = new AiConfigController();
         ReflectionTestUtils.setField(controller, "aiService", aiService);
+        ReflectionTestUtils.setField(controller, "jobAiAnalysisService", jobAiAnalysisService);
         ReflectionTestUtils.setField(controller, "profileService", profileService);
     }
 
     @Test
     void savesAndReturnsServerThresholdValues() {
         AiEntity saved = new AiEntity();
+        saved.setProfileId(1L);
         saved.setApplyThreshold(60);
         saved.setPriorityApplyThreshold(50);
-        when(aiService.saveOrUpdateAiThresholds(60, 50)).thenReturn(saved);
+        when(jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(60, 50))
+                .thenReturn(new JobAiAnalysisService.ThresholdApplicationResult(saved, 7));
 
         AiConfigController.AiThresholdRequest request = new AiConfigController.AiThresholdRequest();
         request.setApplyThreshold(60);
@@ -46,12 +52,14 @@ class AiConfigControllerThresholdTest {
         Map<String, Object> data = (Map<String, Object>) response.getBody().get("data");
         assertThat(data)
                 .containsEntry("applyThreshold", 60)
-                .containsEntry("priorityApplyThreshold", 50);
+                .containsEntry("priorityApplyThreshold", 50)
+                .containsEntry("bossHistoricalPromotedCount", 7);
+        assertThat(response.getBody().get("message").toString()).contains("历史Boss岗位已更新");
     }
 
     @Test
     void returnsReadableValidationError() {
-        when(aiService.saveOrUpdateAiThresholds(60, 70))
+        when(jobAiAnalysisService.saveThresholdsAndPromoteBossHistory(60, 70))
                 .thenThrow(new IllegalArgumentException("优先公司分数线不能高于普通公司分数线"));
 
         AiConfigController.AiThresholdRequest request = new AiConfigController.AiThresholdRequest();

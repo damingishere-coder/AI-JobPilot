@@ -31,6 +31,23 @@ public class ZhilianConfigEntity {
     /** 每个关键词进入AI分析的岗位数量上限 */
     private Integer searchJobLimit;
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String filtersJson;
+
+    public com.getjobs.application.dto.ZhilianFilters getFilters() {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                    filtersJson == null || filtersJson.isBlank() ? "{}" : filtersJson,
+                    com.getjobs.application.dto.ZhilianFilters.class);
+        } catch (Exception e) { throw new IllegalStateException("智联筛选配置无法读取，请修复配置后扫描", e); }
+    }
+
+    public void setFilters(com.getjobs.application.dto.ZhilianFilters filters) {
+        try { filtersJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                filters == null ? new com.getjobs.application.dto.ZhilianFilters() : filters); }
+        catch (Exception e) { throw new IllegalArgumentException("智联筛选配置无效", e); }
+    }
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

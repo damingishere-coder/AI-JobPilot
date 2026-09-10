@@ -21,20 +21,20 @@ module.exports = {
     // 生产环境端口
     port: 6866,
     // 主机名
-    hostname: '0.0.0.0',
+    hostname: process.env.FRONTEND_HOST || '127.0.0.1',
   },
 
   // API 配置（如果需要在构建时使用）
   api: {
     // 浏览器侧默认使用同源 /api，这样本地开发只需要记住 http://localhost:6866
     baseUrl: process.env.API_BASE_URL ?? '',
-    // Docker 开发容器内使用 http://backend:8888，本机开发使用 http://localhost:8888
-    proxyTarget: process.env.API_PROXY_TARGET || 'http://localhost:8888',
+    // Docker 开发容器内使用 http://backend:8888，本机固定 IPv4 回环地址。
+    proxyTarget: process.env.API_PROXY_TARGET || 'http://127.0.0.1:8888',
   },
 
   // 其他自定义配置
   app: {
     name: '投递牛马',
-    version: '1.3.0',
+    version: '1.5.0',
   }
 }

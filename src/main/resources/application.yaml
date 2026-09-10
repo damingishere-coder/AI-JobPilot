@@ -17,6 +17,7 @@ spring:
     hikari:
       maximum-pool-size: 5
       connection-test-query: SELECT 1
+      connection-init-sql: PRAGMA foreign_keys=ON
   sql:
     init:
       mode: never  # 数据库文件已存在，不需要自动初始化
@@ -37,7 +38,8 @@ spring:
 
 # 服务器配置
 server:
-  port: ${SERVER_PORT:8888}  # 后端 API 固定端口
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:6866}  # 页面与 API 共用单一端口
 
 app:
   auto-open-browser: ${APP_AUTO_OPEN_BROWSER:false}
@@ -63,6 +65,16 @@ app:
     command: ${APP_OPENCLAW_COMMAND:}
     profile: ${APP_OPENCLAW_PROFILE:openclaw}
     detail-limit: ${APP_OPENCLAW_DETAIL_LIMIT:5}
+  resume-parser:
+    python: ${APP_RESUME_PARSER_PYTHON:}
+    script: ${APP_RESUME_PARSER_SCRIPT:./resume-parser/parse_document.py}
+    model-dir: ${APP_RESUME_PARSER_MODEL_DIR:./.resume-models}
+    timeout-seconds: ${APP_RESUME_PARSER_TIMEOUT_SECONDS:120}
+    max-pages: ${APP_RESUME_PARSER_MAX_PAGES:10}
+    max-output-chars: ${APP_RESUME_PARSER_MAX_OUTPUT_CHARS:200000}
+  hr-assistant:
+    max-conversations-per-scan: ${APP_HR_MAX_CONVERSATIONS_PER_SCAN:100}
+    key-path: ${APP_HR_KEY_PATH:}
 
 # 日志配置
 logging:

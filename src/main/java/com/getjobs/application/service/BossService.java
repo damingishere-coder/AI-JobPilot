@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
@@ -49,6 +50,19 @@ public class BossService {
     public static final int DEFAULT_SEARCH_JOB_LIMIT = 20;
     public static final int MIN_SEARCH_JOB_LIMIT = 1;
     public static final int MAX_SEARCH_JOB_LIMIT = 200;
+    public static final String SCAN_RESULT_CURRENT = "CURRENT_SCAN";
+    public static final String SCAN_RESULT_HISTORICAL = "HISTORICAL_REUSED";
+    private static final Set<String> HISTORICAL_REUSE_STATUSES = Set.of(
+            DeliveryStatus.AI_ANALYZING,
+            DeliveryStatus.WAITING_CONFIRM,
+            DeliveryStatus.DELIVERED,
+            DeliveryStatus.SKIPPED,
+            DeliveryStatus.AI_NOT_MATCH,
+            DeliveryStatus.AI_ANALYSIS_FAILED,
+            DeliveryStatus.DELIVERY_FAILED,
+            DeliveryStatus.DELIVERY_REQUESTED,
+            DeliveryStatus.DELIVERY_UNKNOWN
+    );
 
     private final BossOptionMapper bossOptionMapper;
     private final BossIndustryMapper bossIndustryMapper;
@@ -68,30 +82,24 @@ public class BossService {
      * 根据类型获取选项列表
      */
     public List<BossOptionEntity> getOptionsByType(String type) {
-        // 确保数据库存在『不限』选项（code=0），并置顶显示
-        // city 与 industry 都需要此默认项
-        QueryWrapper<BossOptionEntity> checkWrapper = new QueryWrapper<>();
-        checkWrapper.eq("type", type);
-        checkWrapper.eq("code", com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
-        Long count = bossOptionMapper.selectCount(checkWrapper);
-        if (count == null || count == 0) {
-            BossOptionEntity unlimited = new BossOptionEntity();
-            unlimited.setType(type);
-            unlimited.setName("不限");
-            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
-            // 置顶显示
-            unlimited.setSortOrder(0);
-            unlimited.setCreatedAt(java.time.LocalDateTime.now());
-            unlimited.setUpdatedAt(java.time.LocalDateTime.now());
-            bossOptionMapper.insert(unlimited);
-        }
-
         // 排序：所有 Boss 筛选项都按 sort_order 优先，其次 id，保证薪资/经验等固定顺序显示
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         // SQLite 下可用：ORDER BY sort_order IS NULL, sort_order ASC, id ASC
         wrapper.last("ORDER BY sort_order IS NULL, sort_order ASC, id ASC");
-        return bossOptionMapper.selectList(wrapper);
+        List<BossOptionEntity> stored = bossOptionMapper.selectList(wrapper);
+        List<BossOptionEntity> result = stored == null ? new ArrayList<>() : new ArrayList<>(stored);
+        boolean hasUnlimited = result.stream().anyMatch(option ->
+                com.getjobs.worker.utils.Constant.UNLIMITED_CODE.equals(option.getCode()));
+        if (!hasUnlimited) {
+            BossOptionEntity unlimited = new BossOptionEntity();
+            unlimited.setType(type);
+            unlimited.setName("不限");
+            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
+            unlimited.setSortOrder(0);
+            result.add(0, unlimited);
+        }
+        return result;
     }
 
     /**
@@ -105,6 +113,14 @@ public class BossService {
      * 根据类型和代码获取选项
      */
     public BossOptionEntity getOptionByTypeAndCode(String type, String code) {
+        if (com.getjobs.worker.utils.Constant.UNLIMITED_CODE.equals(code)) {
+            BossOptionEntity unlimited = new BossOptionEntity();
+            unlimited.setType(type);
+            unlimited.setName("不限");
+            unlimited.setCode(com.getjobs.worker.utils.Constant.UNLIMITED_CODE);
+            unlimited.setSortOrder(0);
+            return unlimited;
+        }
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         wrapper.eq("code", code);
@@ -116,6 +132,9 @@ public class BossService {
      * 如果找不到，返回默认值 "0"
      */
     public String getCodeByTypeAndName(String type, String name) {
+        if ("不限".equals(name)) {
+            return com.getjobs.worker.utils.Constant.UNLIMITED_CODE;
+        }
         QueryWrapper<BossOptionEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("type", type);
         wrapper.eq("name", name);
@@ -223,6 +242,10 @@ public class BossService {
      * - 若表为空：插入新记录
      */
     public BossConfigEntity saveOrUpdateFirstSelective(BossConfigEntity partial) {
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            partial.setNativeGreetingDisabledConfirmed(
+                    partial.getNativeGreetingDisabledConfirmed() == 1 ? 1 : 0);
+        }
         BossConfigEntity existing = getFirstConfig();
         LocalDateTime now = LocalDateTime.now();
 
@@ -239,6 +262,9 @@ public class BossService {
         existing.setProfileId(profileService.getCurrentProfileId());
         // 选择性合并：仅当请求体字段非空时才覆盖
         if (partial.getSayHi() != null) existing.setSayHi(partial.getSayHi());
+        if (partial.getNativeGreetingDisabledConfirmed() != null) {
+            existing.setNativeGreetingDisabledConfirmed(partial.getNativeGreetingDisabledConfirmed());
+        }
         if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
@@ -269,6 +295,11 @@ public class BossService {
         existing.setUpdatedAt(now);
         bossConfigMapper.updateById(existing);
         return existing;
+    }
+
+    public boolean isNativeGreetingDisabledConfirmed() {
+        BossConfigEntity config = getFirstConfig();
+        return config != null && Integer.valueOf(1).equals(config.getNativeGreetingDisabledConfirmed());
     }
 
     /**
@@ -406,6 +437,9 @@ public class BossService {
     public List<String> toCodes(String type, List<String> items) {
         if (items == null || items.isEmpty()) return java.util.Collections.emptyList();
         return items.stream().map(it -> {
+            if ("不限".equals(it)) {
+                return com.getjobs.worker.utils.Constant.UNLIMITED_CODE;
+            }
             // 若是有效code，保留
             BossOptionEntity byCode = getOptionByTypeAndCode(type, it);
             if (byCode != null && byCode.getCode() != null) {
@@ -528,119 +562,6 @@ public class BossService {
     // ==================== boss_data（岗位数据）相关方法 ====================
 
     /**
-     * 确保 boss_data 表的列顺序以 encrypt_id、encrypt_user_id 开头。
-     * 若不满足，则进行一次在线迁移：创建新表、复制数据、替换旧表。
-     * 该迁移会重建 boss_data，比普通补列风险更高，暂时保留在业务刷新入口中按需执行。
-     */
-    public void ensureBossDataColumnOrder() {
-        java.sql.Connection conn = null;
-        try {
-            conn = dataSource.getConnection();
-            try (java.sql.Statement stmt = conn.createStatement()) {
-                java.util.List<String> cols = new java.util.ArrayList<>();
-                try (java.sql.ResultSet rs = stmt.executeQuery("PRAGMA table_info('boss_data')")) {
-                    while (rs.next()) {
-                        cols.add(rs.getString("name"));
-                    }
-                }
-                if (cols.isEmpty()) return; // 表不存在或无列
-                boolean needMigrate = true;
-                if (cols.size() >= 3) {
-                    String c0 = cols.get(0) == null ? "" : cols.get(0).toLowerCase();
-                    String c1 = cols.get(1) == null ? "" : cols.get(1).toLowerCase();
-                    String c2 = cols.get(2) == null ? "" : cols.get(2).toLowerCase();
-                    String c3 = cols.size() > 3 && cols.get(3) != null ? cols.get(3).toLowerCase() : "";
-                    // 允许第一列是 id 或 encrypt_id；档案模式下 profile_id 可以紧跟 id。
-                    if ("id".equals(c0) && "encrypt_id".equals(c1) && "encrypt_user_id".equals(c2)) {
-                        needMigrate = false;
-                    } else if ("id".equals(c0) && "profile_id".equals(c1) && "encrypt_id".equals(c2) && "encrypt_user_id".equals(c3)) {
-                        needMigrate = false;
-                    } else if ("encrypt_id".equals(c0) && "encrypt_user_id".equals(c1)) {
-                        needMigrate = false;
-                    }
-                }
-                if (!needMigrate) return;
-
-                stmt.execute("BEGIN TRANSACTION");
-                // 新表：将 encrypt_id、encrypt_user_id 移到最前（紧随 id）
-                String createSql = "CREATE TABLE boss_data_new (" +
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                        "profile_id INTEGER, " +
-                        "encrypt_id TEXT, " +
-                        "encrypt_user_id TEXT, " +
-                        "company_name TEXT, " +
-                        "job_name TEXT, " +
-                        "salary TEXT, " +
-                        "salary_min_k REAL, " +
-                        "salary_max_k REAL, " +
-                        "salary_median_k REAL, " +
-                        "salary_months INTEGER, " +
-                        "location TEXT, " +
-                        "experience TEXT, " +
-                        "degree TEXT, " +
-                        "hr_name TEXT, " +
-                        "hr_position TEXT, " +
-                        "hr_active_status TEXT, " +
-                        "delivery_status TEXT, " +
-                        "failure_type TEXT, " +
-                        "failure_reason TEXT, " +
-                        "job_description TEXT, " +
-                        "job_url TEXT, " +
-                        "recruitment_status TEXT, " +
-                        "company_address TEXT, " +
-                        "industry TEXT, " +
-                        "introduce TEXT, " +
-                        "financing_stage TEXT, " +
-                        "company_scale TEXT, " +
-                        "source_keyword TEXT, " +
-                        "scan_run_id TEXT, " +
-                        "ai_score INTEGER, " +
-                        "ai_decision TEXT, " +
-                        "ai_reason TEXT, " +
-                        "priority_company INTEGER DEFAULT 0, " +
-                        "created_at TEXT, " +
-                        "updated_at TEXT" +
-                        ")";
-                stmt.execute(createSql);
-
-                String copySql = "INSERT INTO boss_data_new (" +
-                        "id, profile_id, encrypt_id, encrypt_user_id, company_name, job_name, salary, salary_min_k, salary_max_k, salary_median_k, salary_months, location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, failure_type, failure_reason, job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, source_keyword, scan_run_id, ai_score, ai_decision, ai_reason, priority_company, created_at, updated_at" +
-                        ") SELECT " +
-                        "id, " + (cols.contains("profile_id") ? "profile_id" : "NULL") + ", encrypt_id, encrypt_user_id, company_name, job_name, salary, " +
-                        (cols.contains("salary_min_k") ? "salary_min_k" : "NULL") + ", " +
-                        (cols.contains("salary_max_k") ? "salary_max_k" : "NULL") + ", " +
-                        (cols.contains("salary_median_k") ? "salary_median_k" : "NULL") + ", " +
-                        (cols.contains("salary_months") ? "salary_months" : "NULL") + ", " +
-                        "location, experience, degree, " +
-                        "hr_name, hr_position, hr_active_status, delivery_status, " +
-                        (cols.contains("failure_type") ? "failure_type" : "NULL") + ", " +
-                        (cols.contains("failure_reason") ? "failure_reason" : "NULL") + ", job_description, job_url, recruitment_status, " +
-                        "company_address, industry, introduce, financing_stage, company_scale, " +
-                        (cols.contains("source_keyword") ? "source_keyword" : "NULL") + ", " +
-                        (cols.contains("scan_run_id") ? "scan_run_id" : "NULL") + ", " +
-                        (cols.contains("ai_score") ? "ai_score" : "NULL") + ", " +
-                        (cols.contains("ai_decision") ? "ai_decision" : "NULL") + ", " +
-                        (cols.contains("ai_reason") ? "ai_reason" : "NULL") + ", " +
-                        (cols.contains("priority_company") ? "priority_company" : "0") + ", created_at, updated_at " +
-                        "FROM boss_data";
-                stmt.execute(copySql);
-
-                stmt.execute("DROP TABLE boss_data");
-                stmt.execute("ALTER TABLE boss_data_new RENAME TO boss_data");
-                stmt.execute("COMMIT");
-                log.info("已调整 boss_data 表列顺序：将 encrypt_id、encrypt_user_id 前置");
-            }
-        } catch (Exception e) {
-            log.warn("调整 boss_data 列顺序失败：{}", e.getMessage());
-            try { if (conn != null) conn.createStatement().execute("ROLLBACK"); } catch (Exception ignore) {}
-        } finally {
-            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
-        }
-    }
-
-    /**
      * 判断岗位是否已存在（相同 encrypt_id AND encrypt_user_id）
      */
     public boolean existsBossJob(String encryptId, String encryptUserId) {
@@ -689,26 +610,36 @@ public class BossService {
     }
 
     public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity, String scanRunId) {
+        return upsertChromeBossJob(entity, scanRunId, profileService.getCurrentProfileId());
+    }
+
+    public synchronized BossJobDataEntity upsertChromeBossJob(BossJobDataEntity entity,
+                                                               String scanRunId,
+                                                               Long profileId) {
         if (entity == null) return null;
-        Long profileId = profileService.getCurrentProfileId();
+        if (profileId == null || profileId <= 0) {
+            throw new IllegalArgumentException("Boss 岗位入库缺少有效档案 ID");
+        }
         entity.setProfileId(profileId);
         if (scanRunId != null && !scanRunId.isBlank()) {
             entity.setScanRunId(scanRunId.trim());
+            entity.setScanResultSource(SCAN_RESULT_CURRENT);
         }
-        String encryptId = entity.getEncryptId();
+        String encryptId = entity.getEncryptId() == null ? null : entity.getEncryptId().trim();
+        entity.setEncryptId(encryptId);
         String encryptUserId = entity.getEncryptUserId();
         BossJobDataEntity existing = null;
         if (encryptId != null && !encryptId.isBlank()) {
-            existing = getBossJobByKey(encryptId, encryptUserId, null);
-            if (existing == null) {
-                QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
-                wrapper.eq("profile_id", profileId)
-                        .eq("encrypt_id", encryptId);
-                wrapper.last("LIMIT 1");
-                existing = bossJobDataMapper.selectOne(wrapper);
-            }
+            QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
+            wrapper.eq("profile_id", profileId)
+                    .apply("TRIM(encrypt_id) = {0}", encryptId);
+            wrapper.last("LIMIT 1");
+            existing = bossJobDataMapper.selectOne(wrapper);
         }
-        if (existing == null && entity.getCompanyName() != null && entity.getJobName() != null) {
+        if ((encryptId == null || encryptId.isBlank())
+                && existing == null
+                && entity.getCompanyName() != null
+                && entity.getJobName() != null) {
             QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
             wrapper.eq("profile_id", profileId)
                     .eq("company_name", entity.getCompanyName())
@@ -780,6 +711,7 @@ public class BossService {
         merged.setCompanyScale(firstNonBlank(incoming.getCompanyScale(), existing.getCompanyScale()));
         merged.setSourceKeyword(firstNonBlank(incoming.getSourceKeyword(), existing.getSourceKeyword()));
         merged.setScanRunId(firstNonBlank(incoming.getScanRunId(), existing.getScanRunId()));
+        merged.setScanResultSource(firstNonBlank(incoming.getScanResultSource(), existing.getScanResultSource(), SCAN_RESULT_CURRENT));
         merged.setAiScore(existing.getAiScore());
         merged.setAiDecision(existing.getAiDecision());
         merged.setAiReason(existing.getAiReason());
@@ -842,6 +774,10 @@ public class BossService {
      */
     public void updateDeliveryStatus(String encryptId, String encryptUserId, String status) {
         if (encryptId == null || status == null) return;
+        if (DeliveryStatus.isDelivered(status) || DeliveryStatus.isDeliveryFailed(status)) {
+            log.warn("旧 Boss Worker 无 requestKey，拒绝写入投递终态: encryptId={}, status={}", encryptId, status);
+            return;
+        }
         Long profileId = profileService.getCurrentProfileIdOrNull();
         if (profileId == null) return;
         BossJobDataEntity update = new BossJobDataEntity();
@@ -857,6 +793,12 @@ public class BossService {
         com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> uw =
                 new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
         uw.eq("profile_id", profileId).eq("encrypt_id", encryptId);
+        uw.notIn("delivery_status", List.of(
+                DeliveryStatus.DELIVERY_REQUESTED,
+                DeliveryStatus.DELIVERY_UNKNOWN,
+                DeliveryStatus.DELIVERED,
+                DeliveryStatus.DELIVERY_FAILED
+        ));
         if (encryptUserId != null) {
             uw.eq("encrypt_user_id", encryptUserId);
         }
@@ -875,6 +817,28 @@ public class BossService {
         QueryWrapper<BossJobDataEntity> wrapper = new QueryWrapper<>();
         wrapper.eq("id", id).eq("profile_id", profileId).last("LIMIT 1");
         return bossJobDataMapper.selectOne(wrapper);
+    }
+
+    /**
+     * 将已有完整分析关联到本次扫描。只更新扫描归属，不触碰岗位详情、分析结果或时间字段。
+     */
+    public BossJobDataEntity reuseHistoricalBossJob(Long id, Long profileId, String scanRunId) {
+        if (id == null || profileId == null || scanRunId == null || scanRunId.isBlank()) return null;
+        com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<BossJobDataEntity> wrapper =
+                new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<>();
+        wrapper.eq("id", id)
+                .eq("profile_id", profileId)
+                .in("delivery_status", HISTORICAL_REUSE_STATUSES)
+                .isNotNull("job_name")
+                .apply("TRIM(job_name) <> ''")
+                .isNotNull("company_name")
+                .apply("TRIM(company_name) <> ''")
+                .isNotNull("job_url")
+                .apply("TRIM(job_url) <> ''")
+                .set("scan_run_id", scanRunId.trim())
+                .set("scan_result_source", SCAN_RESULT_HISTORICAL);
+        if (bossJobDataMapper.update(null, wrapper) != 1) return null;
+        return getBossJobById(id, profileId);
     }
 
     public BossJobDataEntity findExistingChromeBossJob(String encryptId, String companyName, String jobName) {
@@ -939,7 +903,8 @@ public class BossService {
             if (!isBlank(lookup.encryptId())) {
                 existing = byEncryptId.get(lookup.encryptId());
             }
-            if (existing == null && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
+            if (existing == null && isBlank(lookup.encryptId())
+                    && !isBlank(lookup.companyName()) && !isBlank(lookup.jobName())) {
                 existing = byCompanyAndTitle.get(companyTitleKey(lookup.companyName(), lookup.jobName()));
             }
             if (existing != null) {
@@ -1027,6 +992,10 @@ public class BossService {
         }
         BossJobDataEntity current = getBossJobById(id);
         if (current == null) return null;
+        if (DeliveryStatus.isDeliveryLocked(current.getDeliveryStatus())
+                && !Objects.equals(current.getDeliveryStatus(), status)) {
+            return current;
+        }
         BossJobDataEntity update = new BossJobDataEntity();
         update.setId(id);
         update.setDeliveryStatus(status);
@@ -1733,8 +1702,8 @@ public class BossService {
         }
 
         int total = filtered.size();
-        int from = Math.max(0, (page - 1) * size);
-        int to = Math.min(total, from + size);
+        int from = PageWindow.start(page, size, total);
+        int to = PageWindow.end(from, size, total);
         List<BossJobDataEntity> pageItems = from >= to ? Collections.emptyList() : filtered.subList(from, to);
 
         PagedResult result = new PagedResult();
@@ -1750,18 +1719,13 @@ public class BossService {
     }
 
     /**
-     * 刷新数据：执行列顺序检查，并执行 VACUUM 以优化数据库；返回当前总数
+     * 刷新数据视图并返回当前档案总数。该入口不再执行任何数据库维护或 DDL。
      */
     public Map<String, Object> reloadBossData() {
         Map<String, Object> resp = new HashMap<>();
         Connection conn = null;
         try {
-            ensureBossDataColumnOrder();
             conn = dataSource.getConnection();
-            try (Statement st = conn.createStatement()) {
-                try { st.execute("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (Exception ignore) {}
-                try { st.execute("VACUUM"); } catch (Exception ignore) {}
-            }
             Long profileId = profileService.getCurrentProfileIdOrNull();
             long total = profileId == null ? 0 : scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE profile_id=" + profileId);
             resp.put("success", true);
@@ -1790,12 +1754,25 @@ public class BossService {
             conn.setAutoCommit(false);
 
             int analysisDeleted;
+            int tasksDeleted;
+            int draftsDeleted;
             int jobsDeleted;
             try (Statement st = conn.createStatement()) {
                 Long profileId = profileService.getCurrentProfileId();
+                tasksDeleted = st.executeUpdate("DELETE FROM job_analysis_task WHERE lower(platform)='boss' " +
+                        "AND profile_id=" + profileId + " AND status<>'LEASED'");
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM job_analysis_task " +
+                        "WHERE lower(platform)='boss' AND profile_id=" + profileId + " AND status='LEASED'")) {
+                    if (rs.next() && rs.getLong(1) > 0) {
+                        conn.rollback();
+                        resp.put("success", false);
+                        resp.put("message", "仍有 Boss AI 分析正在执行，已阻止清空；请等待完成或进入 UNKNOWN 后再试");
+                        return resp;
+                    }
+                }
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss' AND profile_id=" + profileId);
+                draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='boss' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM boss_data WHERE profile_id=" + profileId);
-                try { st.executeUpdate("DELETE FROM sqlite_sequence WHERE name='boss_data'"); } catch (Exception ignore) {}
             }
 
             conn.commit();
@@ -1803,6 +1780,8 @@ public class BossService {
             resp.put("message", "Boss投递分析数据已清空");
             resp.put("jobsDeleted", jobsDeleted);
             resp.put("analysisDeleted", analysisDeleted);
+            resp.put("tasksDeleted", tasksDeleted);
+            resp.put("draftsDeleted", draftsDeleted);
             resp.put("total", 0);
         } catch (Exception e) {
             try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}

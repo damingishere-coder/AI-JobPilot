@@ -1,0 +1,18 @@
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin('java') {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByName('jacoco').toolVersion = '0.8.13'
+
+        project.tasks.named('test') {
+            finalizedBy(project.tasks.named('jacocoTestReport'))
+        }
+        project.tasks.named('jacocoTestReport') {
+            dependsOn(project.tasks.named('test'))
+            reports {
+                xml.required = true
+                html.required = true
+                csv.required = false
+            }
+        }
+    }
+}

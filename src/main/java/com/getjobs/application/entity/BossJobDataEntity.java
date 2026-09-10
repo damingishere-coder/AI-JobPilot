@@ -104,6 +104,9 @@ public class BossJobDataEntity {
     @TableField("scan_run_id")
     private String scanRunId;
 
+    @TableField("scan_result_source")
+    private String scanResultSource;
+
     @TableField("ai_score")
     private Integer aiScore;
 
@@ -115,6 +118,21 @@ public class BossJobDataEntity {
 
     @TableField("priority_company")
     private Integer priorityCompany;
+
+    @TableField(exist = false)
+    private String aiGreeting;
+
+    @TableField(exist = false)
+    private String greetingDraft;
+
+    @TableField(exist = false)
+    private String greetingSource;
+
+    @TableField(exist = false)
+    private LocalDateTime greetingUpdatedAt;
+
+    @TableField(exist = false)
+    private String finalGreeting;
 
     @TableField("created_at")
     private LocalDateTime createdAt;

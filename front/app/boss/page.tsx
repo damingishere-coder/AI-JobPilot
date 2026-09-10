@@ -1,9 +1,11 @@
 'use client'
 
+import ScanResult, { readScanResult } from '@/app/zhilian/ScanResult'
+import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents, type ChromeBridgeResponse } from '@/lib/chromeBridge'
-import { API_BASE } from '@/lib/api'
+import { API_BASE, type ApiEnvelope, readApiResponse } from '@/lib/api'
 import { createPortal } from 'react-dom'
 import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLinkExternal } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
@@ -14,7 +16,11 @@ import { Select } from '@/components/ui/select'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
+import { hasBossScanResult, readBossScanRunId } from '@/app/boss/scan-result'
+import { MAX_JOB_KEYWORDS, parseJobKeywords, serializeJobKeywords } from '@/lib/job-keywords'
+import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
 
 interface BossConfig {
   id?: number
@@ -36,6 +42,20 @@ interface BossConfig {
   filterDeadHr?: number
   autoDeliver?: number
   deadStatus?: string
+}
+
+type BossConfigEnvelope = ApiEnvelope<never> & {
+  config?: BossConfig
+  options?: BossOptions
+  blacklist?: BlacklistItem[]
+  currentProfile?: CurrentProfile | null
+  hasProfile?: boolean
+}
+
+type JobKeywordRecommendations = {
+  keywords?: string[]
+  maxSelected?: number
+  recommendedSelectionCount?: number
 }
 
 interface BossOption {
@@ -104,6 +124,7 @@ interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
   skippedCount?: number
   saved?: number
   listCollected?: number
+  restored?: number
   missingFieldCounts?: Record<string, number>
   failures?: Array<{
     index?: number
@@ -115,6 +136,7 @@ interface BossCurrentPageCollectResponse extends BossDiagnosticsResponse {
   backend?: {
     saved?: number
     listCollected?: number
+    restored?: number
     collectionWarnings?: Array<Record<string, unknown>>
   }
 }
@@ -130,6 +152,7 @@ interface BossApiPocResponse extends BossDiagnosticsResponse {
   collectorSource?: string
   saved?: number
   listCollected?: number
+  restored?: number
 }
 
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
@@ -179,8 +202,8 @@ export default function BossPage() {
     filterDeadHr: 0,
     autoDeliver: 0,
   })
-  // 关键词显示用（无括号无引号，逗号分隔）
-  const [keywordsDisplay, setKeywordsDisplay] = useState<string>('')
+  const [keywordsDisplay, setKeywordsDisplay] = useState<string[]>([])
+  const [recommendedKeywords, setRecommendedKeywords] = useState<string[]>([])
   // 多选选中的代码集合（按括号列表保存）
   const [selectedIndustry, setSelectedIndustry] = useState<string[]>([])
   const [selectedExperience, setSelectedExperience] = useState<string[]>([])
@@ -221,6 +244,7 @@ export default function BossPage() {
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
+  const [scanResult, setScanResult] = useScanResult('boss', currentProfile?.id)
   const [hasProfile, setHasProfile] = useState(false)
   const [activeStep, setActiveStep] = useState<BossStep>('config')
   const [hasScanResult, setHasScanResult] = useState(false)
@@ -259,11 +283,17 @@ export default function BossPage() {
   }, [])
 
   const syncBossScanStatus = useCallback(async (silent = false) => {
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) return
     try {
       const status = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_STATUS',
         platform: 'boss',
+        profileId,
       }, 2000)
+      if (!scanEventMatchesProfile(status, profileId, true)) return
+      const result = readScanResult(status)
+      if (result) setScanResult(result)
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
       const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
       if (paused) {
@@ -304,7 +334,7 @@ export default function BossPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id, setScanResult])
 
   const focusLogSection = useCallback(() => {
     setActiveStep('scan')
@@ -315,8 +345,8 @@ export default function BossPage() {
     window.setTimeout(() => setLogSpotlight(false), 2200)
   }, [])
 
-  const guideToConfirmStep = useCallback(() => {
-    setAnalysisFocusRunId('')
+  const guideToConfirmStep = useCallback((payload: Record<string, unknown>) => {
+    setAnalysisFocusRunId(readBossScanRunId(payload))
     setHasScanResult(true)
     setAnalysisRefreshSignal((value) => value + 1)
   }, [])
@@ -430,6 +460,9 @@ export default function BossPage() {
             try {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+              if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              const result = readScanResult(data)
+              if (result) setScanResult(result)
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
@@ -442,7 +475,7 @@ export default function BossPage() {
                 if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
               }
               if (shouldRefreshAnalysisFromProgress(data)) {
-                guideToConfirmStep()
+                guideToConfirmStep(data)
               }
               if (data.type === 'error') {
                 setIsDelivering(false)
@@ -460,12 +493,15 @@ export default function BossPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep, setScanResult])
 
   useEffect(() => {
     return subscribeChromeBridgeEvents((event) => {
       const payload = event.payload
       if (!payload || payload.platform !== 'boss') return
+      if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      const result = readScanResult(payload)
+      if (result) setScanResult(result)
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -474,7 +510,7 @@ export default function BossPage() {
       })
 
       if (shouldRefreshAnalysisFromProgress(payload)) {
-        guideToConfirmStep()
+        guideToConfirmStep(payload)
       }
       if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
         setIsDelivering(false)
@@ -489,7 +525,7 @@ export default function BossPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep, setScanResult])
 
   const checkChromeBridge = async () => {
     try {
@@ -512,8 +548,17 @@ export default function BossPage() {
   const fetchAllData = async () => {
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE}/api/boss/config`)
-      const data = await response.json()
+      const [response, recommendationResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/boss/config`),
+        fetch(`${API_BASE}/api/ai/job-keywords`).catch(() => null),
+      ])
+      const data = await readApiResponse<never>(response, 'Boss配置加载失败') as BossConfigEnvelope
+      if (recommendationResponse?.ok) {
+        const recommendationResult = await readApiResponse<JobKeywordRecommendations>(recommendationResponse, '岗位关键词推荐加载失败')
+        setRecommendedKeywords(parseJobKeywords(recommendationResult.data?.keywords))
+      } else {
+        setRecommendedKeywords([])
+      }
 
       console.log('Fetched data:', data)
       console.log('Blacklist:', data.blacklist)
@@ -543,31 +588,7 @@ export default function BossPage() {
           searchJobLimit,
           autoDeliver: 0,
         })
-        // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
-        const toDisplayKeywords = (raw?: string): string => {
-          if (!raw) return ''
-          const s = raw.trim()
-          // 尝试作为 JSON 数组解析
-          if (s.startsWith('[') && s.endsWith(']')) {
-            try {
-              const arr = JSON.parse(s)
-              if (Array.isArray(arr)) {
-                return arr.map((v) => String(v).trim()).filter((v) => v.length > 0).join(', ')
-              }
-            } catch (_) {
-              // 非严格 JSON，如 [a,b]，走拆括号与逗号分隔
-              const inner = s.slice(1, -1)
-              return inner
-                .split(',')
-                .map((v) => v.trim().replace(/^"|"$/g, ''))
-                .filter((v) => v.length > 0)
-                .join(', ')
-            }
-          }
-          // 普通文本：直接返回，去掉多余空格
-          return s
-        }
-        setKeywordsDisplay(toDisplayKeywords(data.config.keywords))
+        setKeywordsDisplay(parseJobKeywords(data.config.keywords))
         // 解析括号列表为数组
         setSelectedIndustry(parseListString(data.config.industry))
         setSelectedExperience(parseListString(data.config.experience))
@@ -736,6 +757,17 @@ export default function BossPage() {
       setShowSaveDialog(true)
       return
     }
+    if (!keywordsDisplay.length || keywordsDisplay.length > MAX_JOB_KEYWORDS) {
+      setSaveDialogKind('save')
+      setSaveResult({
+        success: false,
+        message: !keywordsDisplay.length
+          ? '请至少选择一个搜索关键词。'
+          : `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再保存。`,
+      })
+      setShowSaveDialog(true)
+      return
+    }
     try {
       const searchJobLimit = commitSearchJobLimit(overrides?.searchJobLimit)
       // 组装要保存的负载：多选使用括号列表
@@ -743,8 +775,7 @@ export default function BossPage() {
         ...config,
         // 覆盖字段（用于失焦时使用当前控件值，避免异步状态滞后）
         ...(overrides || {}),
-        // 关键词：前端发送逗号分隔的纯文本，后端统一组装为 JSON 列表
-        keywords: keywordsDisplay,
+        keywords: serializeJobKeywords(keywordsDisplay),
         searchJobLimit,
         industry: toBracketList(selectedIndustry),
         experience: toBracketList(selectedExperience),
@@ -764,7 +795,8 @@ export default function BossPage() {
       })
 
       if (response.ok) {
-        const savedConfig = await response.json().catch(() => null)
+        const saveResult = await readApiResponse<BossConfig>(response, 'Boss配置保存失败')
+        const savedConfig = saveResult.data
         if (savedConfig?.searchJobLimit != null) {
           const savedLimit = syncSearchJobLimitControls(savedConfig.searchJobLimit)
           setConfig((prev) => ({ ...prev, searchJobLimit: savedLimit }))
@@ -847,11 +879,24 @@ export default function BossPage() {
     }
   }
 
-  const handleStartDelivery = async () => {
+  const handleStartDelivery = async (resumeIncomplete = false) => {
     try {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
         alert('请先在简历配置页新建档案。')
+        return
+      }
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) {
+        appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
+        return
+      }
+      if (!keywordsDisplay.length || keywordsDisplay.length > MAX_JOB_KEYWORDS) {
+        const message = !keywordsDisplay.length
+          ? '请至少选择一个搜索关键词。'
+          : `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再开始扫描。`
+        appendProgressLog({ type: 'error', message })
+        alert(message)
         return
       }
       focusLogSection()
@@ -865,13 +910,15 @@ export default function BossPage() {
       setIsDelivering(true)
       setIsStopping(false)
       setIsScanPaused(false)
-      const runId = `boss-${Date.now()}`
+      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
+        resumeIncomplete,
         platform: 'boss',
+        profileId,
         runId,
         config: {
           ...config,
@@ -956,6 +1003,11 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存岗位。' })
       return
     }
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) {
+      appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新页面后重试。' })
+      return
+    }
 
     focusLogSection()
     setIsCollectingCurrentPage(true)
@@ -967,7 +1019,8 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_COLLECT_CURRENT_PAGE',
         platform: 'boss',
-        keyword: keywordsDisplay,
+        profileId,
+        keyword: keywordsDisplay.join(', '),
         runId: `boss-list-${Date.now()}`,
       }, 70000) as BossCurrentPageCollectResponse
 
@@ -1000,7 +1053,7 @@ export default function BossPage() {
           message: '当前页面未识别到岗位详情链接，可能是未进入搜索结果页、未登录、安全验证、页面结构变化或选择器失效。',
         })
       }
-      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+      if (data.success && typeof data.runId === 'string' && hasBossScanResult(data)) {
         setAnalysisFocusRunId(data.runId)
         setHasScanResult(true)
         setAnalysisRefreshSignal((value) => value + 1)
@@ -1024,13 +1077,13 @@ export default function BossPage() {
       appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案，后端需要用当前档案保存 POC 岗位。' })
       return
     }
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) {
+      appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新页面后重试。' })
+      return
+    }
 
-    const keywords = Array.from(new Set(
-      keywordsDisplay
-        .split(/[,，;；\n\r]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ))
+    const keywords = parseJobKeywords(keywordsDisplay)
     if (keywords.length !== 1) {
       appendProgressLog({ type: 'error', message: 'Boss API POC 仅支持一个关键词，请把关键词配置改为恰好一个后再测试。' })
       return
@@ -1052,6 +1105,7 @@ export default function BossPage() {
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_API_POC_COLLECT',
         platform: 'boss',
+        profileId,
         keyword: keywords[0],
         cityCode,
         page: 1,
@@ -1076,10 +1130,10 @@ export default function BossPage() {
       })
       appendProgressLog({
         type: data.success ? 'info' : 'warning',
-        message: `Boss API POC 诊断：diagnosticType=${data.diagnosticType || '未知'}；apiCode=${data.apiCode ?? '无'}；httpStatus=${Number(data.httpStatus || 0)}；candidateCount=${Number(data.candidateCount || 0)}；missingSalaryCount=${Number(data.missingSalaryCount || 0)}；fallbackUsed=${Boolean(data.fallbackUsed)}；collectorSource=${data.collectorSource || 'none'}；saved=${Number(data.saved || 0)}；listCollected=${Number(data.listCollected || 0)}。`,
+        message: `Boss API POC 诊断：diagnosticType=${data.diagnosticType || '未知'}；apiCode=${data.apiCode ?? '无'}；httpStatus=${Number(data.httpStatus || 0)}；candidateCount=${Number(data.candidateCount || 0)}；missingSalaryCount=${Number(data.missingSalaryCount || 0)}；fallbackUsed=${Boolean(data.fallbackUsed)}；collectorSource=${data.collectorSource || 'none'}；saved=${Number(data.saved || 0)}；listCollected=${Number(data.listCollected || 0)}；restored=${Number(data.restored || 0)}。`,
       })
 
-      if (data.success && typeof data.runId === 'string' && Number(data.saved || data.listCollected || 0) > 0) {
+      if (data.success && typeof data.runId === 'string' && hasBossScanResult(data)) {
         setAnalysisFocusRunId(data.runId)
         setHasScanResult(true)
         setAnalysisRefreshSignal((value) => value + 1)
@@ -1098,13 +1152,15 @@ export default function BossPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) throw new Error('当前档案 ID 无效')
       await fetch(`${API_BASE}/api/boss/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, profileId }),
       }).catch(() => null)
 
-      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId }, 1500)
+      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId, profileId }, 1500)
 
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })
@@ -1233,14 +1289,14 @@ export default function BossPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
+              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
               <BiLogOut className="mr-1" /> 退出登录
             </Button>
-            <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
+            <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -1301,15 +1357,13 @@ export default function BossPage() {
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
-                  <Label htmlFor="keywords">搜索关键词</Label>
-                  <Input
-                    id="keywords"
+                  <Label>搜索关键词</Label>
+                  <KeywordTagInput
                     value={keywordsDisplay}
-                    onChange={(e) => setKeywordsDisplay(e.target.value)}
-                    placeholder="例如：Java开发工程师"
+                    onChange={setKeywordsDisplay}
+                    recommendations={recommendedKeywords}
                     disabled={!hasProfile}
                   />
-                  <p className="text-xs text-muted-foreground">职位搜索的关键词</p>
                 </div>
 
                 <div className="space-y-2">
@@ -1653,6 +1707,7 @@ export default function BossPage() {
 
       {activeStep === 'scan' ? (
         <div ref={logSectionRef} className="scroll-mt-6 space-y-6">
+          <ScanResult result={scanResult} busy={isDelivering} onResume={() => { void handleStartDelivery(true) }} />
           <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}

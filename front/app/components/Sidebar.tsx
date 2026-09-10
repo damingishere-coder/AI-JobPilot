@@ -96,9 +96,9 @@ export default function Sidebar() {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 3000)
       try {
-        let res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal })
+        let res = await fetch(`${API_BASE}/api/ready`, { signal: controller.signal })
         if (res.status === 404) {
-          res = await fetch(`${API_BASE}/actuator/health`, { signal: controller.signal })
+          res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal })
         }
         if (!res.ok) throw new Error(`status ${res.status}`)
         const data = await res.json()
@@ -256,7 +256,7 @@ export default function Sidebar() {
         {/* 版本信息 */}
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-900 text-sm font-semibold text-white shadow-sm">牛</div>
-          <p className="text-xs text-slate-500 dark:text-waterloo">v1.3.0</p>
+          <p className="text-xs text-slate-500 dark:text-waterloo">v1.5.0</p>
           <BiChevronDown className="ml-auto text-slate-400" />
         </div>
       </motion.div>

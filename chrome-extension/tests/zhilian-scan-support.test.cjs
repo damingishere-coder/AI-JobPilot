@@ -17,8 +17,26 @@ test("replaces a stale Zhilian support module after extension reload", () => {
   const support = loadSupport(staleSupport);
 
   assert.notEqual(support, staleSupport);
-  assert.equal(support.version, "2026-07-29-zhilian-security-resume-fix");
+  assert.equal(support.version, "2026-09-10-continuous-scan");
   assert.equal(typeof support.isZhilianUrl, "function");
+});
+
+test("uses history-aware deep collection safety bounds for Zhilian", () => {
+  const support = loadSupport();
+  assert.equal(support.DEEP_COLLECTION_MAX_PAGES, Number.MAX_SAFE_INTEGER);
+  assert.equal(support.DEEP_COLLECTION_MAX_DURATION_MS, 900000);
+  assert.equal(support.DEEP_COLLECTION_MAX_STAGNANT_PAGES, 4);
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 20 }), "target_reached");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 3 }), "");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, stagnantPages: 5 }), "stagnation_safety_cap");
+  assert.equal(support.deepCollectionStopReason({ target: 20, fresh: 8, platformExhausted: true }), "platform_exhausted");
+});
+
+test("routes Zhilian history dedupe before adding page candidates", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", "zhilian-content.js"), "utf8");
+  assert.match(source, /requestZhilianLocalApi\("chrome-jobs-dedupe"/);
+  assert.match(source, /historyDuplicateCount/);
+  assert.match(source, /stagnantPages/);
 });
 
 test("does not treat normal Zhilian job descriptions as security verification", () => {
@@ -156,7 +174,7 @@ test("builds a Zhilian search URL with official city and salary params", () => {
 
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "10001,15000" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java&sl=10001%2C15000"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java&sl=10001%2C15000"
   );
 });
 
@@ -165,15 +183,15 @@ test("omits sl when salary is unlimited", () => {
 
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "0" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "\u4e0d\u9650" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
   assert.equal(
     support.buildSearchUrl("Java", { cityCode: "765", salary: "0000,9999999" }),
-    "https://www.zhaopin.com/sou/jl765/?kw=Java"
+    "https://www.zhaopin.com/jobs?jl=765&kw=Java"
   );
 });
 
@@ -186,6 +204,61 @@ test("normalizes legacy custom salary and pagination", () => {
   );
   assert.equal(
     JSON.stringify(support.normalizedSearchParamsForCursor({ cityCode: "0", salary: "12000,30000" })),
-    JSON.stringify({ cityCode: "489", salary: "0000,9999999" })
+    JSON.stringify({ cityCode: "489", salary: "0000,9999999", filters: {} })
   );
+});
+
+
+test("page readiness distinguishes login, security and loading from a usable page", () => {
+  const support = loadSupport();
+  assert.equal(support.pageStatus({}).chromePageReady, true);
+  for (const evidence of [{ hasLoginPrompt: true }, { hasSecurityPrompt: true }, { loading: true }]) {
+    assert.equal(support.pageStatus(evidence).chromePageReady, false);
+  }
+  assert.equal(support.pageStatus({ hasSecurityPrompt: true, hasLoginPrompt: true }).pageState, "SECURITY_REQUIRED");
+});
+
+test("accepts redirected jobs searches only with matching keyword, city, salary and page", () => {
+  const support = loadSupport();
+  const config = { cityCode: "489" };
+  for (const url of ["https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营", "https://www.zhaopin.com/jobs/?jl=489&kw=AI产品运营", "https://www.zhaopin.com/sou/jl489/?kw=AI产品运营"]) {
+    assert.equal(support.matchesSearchUrl(url, "AI产品运营", config), true);
+  }
+  for (const url of ["https://www.zhaopin.com/jobs?jl=765&kw=AI产品运营", "https://www.zhaopin.com/jobs?jl=489&kw=Java", "https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营&sl=10001,15000", "https://www.zhaopin.com/jobs/?pageMode=recommend", "https://evilzhaopin.com/jobs?jl=489&kw=AI产品运营"]) {
+    assert.equal(support.matchesSearchUrl(url, "AI产品运营", config), false);
+  }
+  assert.equal(support.matchesSearchUrl("https://www.zhaopin.com/sou/jl489/?kw=Java&p=2", "Java", config, 2), true);
+  assert.equal(support.matchesSearchUrl("https://www.zhaopin.com/sou/jl489/?kw=Java&p=2", "Java", config, 1), false);
+});
+
+test("normalizes official HTTP detail links without relaxing the origin or protocol boundary", () => {
+  const support = loadSupport();
+  assert.equal(support.normalizeJobUrl("http://www.zhaopin.com/jobdetail/CC100J200.htm"), "https://www.zhaopin.com/jobdetail/CC100J200.htm");
+  for (const value of ["http://evilzhaopin.com/jobdetail/CC100J200.htm", "https://www.zhaopin.com.evil.test/jobdetail/CC100J200.htm", "javascript:alert(1)", "http://www.zhaopin.com/companydetail/CC100.htm", "https://user:password@www.zhaopin.com/jobdetail/CC100.htm"]) {
+    assert.equal(support.normalizeJobUrl(value), "");
+  }
+});
+
+test('clears prior keyword outcomes and counters when profile, run or idle state changes', () => {
+  const support = loadSupport();
+  const previous = {profileId: 4, runId: 'run-old', stage: 'complete', outcome: 'partial', totalSaved: 3,
+    keywordResults: [{keyword: '旧关键词'}]};
+  for (const update of [{profileId: 5, runId: '', stage: 'idle'}, {profileId: 4, runId: 'run-new', stage: 'searching', isRunning: true}]) {
+    const next = support.mergeScanStatus(previous, update);
+    assert.equal(next.keywordResults?.length || 0, 0);
+    assert.notEqual(next.outcome, 'partial');
+    assert.equal(next.totalSaved, undefined);
+  }
+  assert.equal(support.mergeScanStatus(previous, {stage: 'idle'}).keywordResults.length, 0);
+  assert.deepEqual(support.mergeScanStatus(previous, {stage: 'complete', isRunning: false}).keywordResults, previous.keywordResults);
+});
+
+test('preserves active collection budget across reloads but excludes an explicit human pause', () => {
+  const support = loadSupport();
+  const task = {collectionStartedAt: 1000, modernKeyword: '开发', keywordResults: [{keyword: '前项', outcome: 'partial'}]};
+  assert.equal(support.prepareTaskForResume(task, 120000).collectionStartedAt, 1000);
+  const resumed = support.prepareTaskForResume({...task, pausedAt: 10000}, 120000);
+  assert.equal(resumed.collectionStartedAt, 111000);
+  assert.equal(resumed.pausedAt, undefined);
+  assert.deepEqual(resumed.keywordResults, task.keywordResults);
 });

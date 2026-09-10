@@ -4,18 +4,13 @@ import com.getjobs.application.entity.BossConfigEntity;
 import com.getjobs.application.entity.BossOptionEntity;
 import com.getjobs.application.service.ProfileService;
 import com.getjobs.application.service.BossService;
+import com.getjobs.application.service.JobKeywordCodec;
 import com.getjobs.application.entity.BlacklistEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.stream.Collectors;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api/boss/config")
@@ -34,7 +29,7 @@ public class BossConfigController {
      */
     @GetMapping
     public Map<String, Object> getAllBossConfig() {
-        Map<String, Object> result = new HashMap<>();
+        Map<String, Object> result = new LinkedHashMap<>();
 
         // 获取配置
         BossConfigEntity config = bossService.getFirstConfig();
@@ -44,6 +39,9 @@ public class BossConfigController {
         if (config.getAutoDeliver() == null) {
             config.setAutoDeliver(0);
         }
+        if (config.getNativeGreetingDisabledConfirmed() == null) {
+            config.setNativeGreetingDisabledConfirmed(0);
+        }
         if (config.getSearchJobLimit() == null) {
             config.setSearchJobLimit(BossService.DEFAULT_SEARCH_JOB_LIMIT);
         } else {
@@ -51,7 +49,7 @@ public class BossConfigController {
         }
 
         // 获取所有选项并按类型分组
-        Map<String, List<BossOptionEntity>> options = new HashMap<>();
+        Map<String, List<BossOptionEntity>> options = new LinkedHashMap<>();
         options.put("city", bossService.getOptionsByType("city"));
         options.put("industry", bossService.getOptionsByType("industry"));
         options.put("experience", bossService.getOptionsByType("experience"));
@@ -64,6 +62,8 @@ public class BossConfigController {
         // 获取黑名单列表
         List<BlacklistEntity> blacklist = bossService.getAllBlacklist();
 
+        result.put("success", true);
+        result.put("message", "Boss配置加载成功");
         result.put("config", config);
         result.put("options", options);
         result.put("blacklist", blacklist);
@@ -77,9 +77,11 @@ public class BossConfigController {
      * 更新Boss配置
      */
   @PutMapping
-  public BossConfigEntity updateConfig(@RequestBody BossConfigEntity config) {
+  public Map<String, Object> updateConfig(@RequestBody BossConfigEntity config) {
         // 关键词标准化：将来自前端的逗号分隔或括号列表统一转换为 JSON 字符串列表
-        config.setKeywords(normalizeKeywords(config.getKeywords()));
+        if (config.getKeywords() != null) {
+            config.setKeywords(JobKeywordCodec.validateAndSerialize(config.getKeywords()));
+        }
         if (config.getAutoDeliver() == null) {
             config.setAutoDeliver(0);
         }
@@ -130,50 +132,13 @@ public class BossConfigController {
 
         // 档案模式下保存始终落到当前激活档案，避免前端携带旧ID时串档案。
         config.setId(null);
-        return bossService.saveOrUpdateFirstSelective(config);
+        BossConfigEntity saved = bossService.saveOrUpdateFirstSelective(config);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("data", saved);
+        result.put("message", "Boss配置保存成功");
+        return result;
   }
-
-    /**
-     * 将关键词字符串标准化为 JSON 字符串列表。
-     * 支持输入形式：
-     * 1) 逗号分隔："大模型, Python, Golang"
-     * 2) 中文逗号："大模型，Python，Golang"
-     * 3) 括号列表："[大模型,Python]" 或 "[\"大模型\",\"Python\"]"
-     * 4) JSON 数组："["大模型","Python"]"
-     */
-    private String normalizeKeywords(String raw) {
-        if (raw == null) return null;
-        String s = raw.trim();
-        if (s.isEmpty()) return "[]";
-
-        ObjectMapper mapper = new ObjectMapper();
-        // 优先尝试 JSON 解析
-        if (s.startsWith("[") && s.endsWith("]")) {
-            try {
-                JsonNode node = mapper.readTree(s);
-                if (node.isArray()) {
-                    java.util.List<String> list = new ArrayList<>();
-                    node.forEach(it -> list.add(it.asText().trim()));
-                    return mapper.writeValueAsString(list);
-                }
-            } catch (Exception ignore) {
-                // 非严格 JSON，继续走分隔解析
-            }
-            // 去除括号后按逗号拆分
-            s = s.substring(1, s.length() - 1);
-        }
-
-        java.util.List<String> items = Arrays.stream(s.split("[,，]"))
-                .map(String::trim)
-                .filter(v -> !v.isEmpty())
-                .map(v -> v.replaceAll("^\"|\"$", ""))
-                .collect(Collectors.toList());
-        try {
-            return mapper.writeValueAsString(items);
-        } catch (Exception e) {
-            return "[]";
-        }
-    }
 
     /**
      * 获取指定类型的选项列表

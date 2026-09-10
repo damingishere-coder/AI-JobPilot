@@ -27,7 +27,7 @@ const nextDev = spawn(process.execPath, [nextCli, 'dev', '-p', port.toString(), 
   env: {
     ...process.env,
     API_BASE_URL: config.api?.baseUrl ?? '',
-    API_PROXY_TARGET: config.api?.proxyTarget || 'http://localhost:8888',
+    API_PROXY_TARGET: config.api?.proxyTarget || 'http://127.0.0.1:8888',
     NEXT_DEV_PROXY: 'true',
   }
 });

@@ -28,7 +28,7 @@ class AiServiceConfigTest {
 
     @BeforeEach
     void setUp() {
-        service = new AiService(null, aiMapper, profileService);
+        service = new AiService(null, aiMapper, profileService, null);
         when(profileService.getCurrentProfileId()).thenReturn(PROFILE_ID);
     }
 

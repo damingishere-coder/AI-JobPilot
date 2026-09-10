@@ -65,7 +65,8 @@
   function isBossSearchPage(url) {
     try {
       const parsed = new URL(url);
-      return parsed.hostname.includes("zhipin.com")
+      return parsed.protocol === "https:"
+        && /(^|\.)zhipin\.com$/i.test(parsed.hostname)
         && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
     } catch {
       return false;

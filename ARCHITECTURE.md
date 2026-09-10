@@ -120,7 +120,7 @@ Worker 位于 `src/main/java/com/getjobs/worker`。它保留了 Boss、猎聘、
 
 ## AI 分析
 
-AI 配置由前端页面保存到本地数据库。核心字段包括 `BASE_URL`、`API_KEY`、`MODEL`。
+AI 配置由前端页面保存到本地数据库。默认 `AI_PROVIDER=codex`，复用当前 Windows 用户的 Codex/ChatGPT 登录态；`CODEX_PATH`、`CODEX_MODEL` 和超时控制本地任务。旧 `BASE_URL`、`API_KEY`、`MODEL` 继续保留，只有手动切换为远程 API 时才使用。
 
 AI 分析流程：
 

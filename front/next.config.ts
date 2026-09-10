@@ -5,6 +5,12 @@ const serverConfig = require('./server.config.js');
 const enableDevProxy = process.env.NEXT_DEV_PROXY === 'true';
 
 const nextConfig: NextConfig = {
+  // 本地文档识别最长允许 120 秒；开发代理需留出响应序列化余量，
+  // 否则 Next.js 默认 30 秒会在 Docling 完成前返回 socket hang up。
+  experimental: {
+    proxyTimeout: 135_000,
+  },
+
   // 将API配置暴露给客户端
   env: {
     API_BASE_URL: serverConfig.api.baseUrl,

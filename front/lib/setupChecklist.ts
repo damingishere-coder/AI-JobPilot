@@ -1,3 +1,4 @@
+import { getZhilianPageStatus } from "@/lib/zhilian-page-status"
 import { API_BASE } from "@/lib/api"
 import { getChromeBridgeStatus, sendChromeBridgeMessage } from "@/lib/chromeBridge"
 
@@ -29,6 +30,7 @@ export type SetupChecklistResult = {
 
 export type ValidateSetupOptions = {
   requirePlatformLogin?: boolean
+  openPlatformPageIfMissing?: boolean
 }
 
 type AiConfigResponse = {
@@ -94,10 +96,10 @@ async function fetchJson<T>(url: string, timeoutMs = 4000): Promise<T> {
 
 async function checkBackend(): Promise<SetupCheckItem> {
   try {
-    const data = await fetchJson<{ status?: string; state?: string; service?: string }>(`${API_BASE}/api/health`, 3000)
+    const data = await fetchJson<{ status?: string; state?: string; service?: string }>(`${API_BASE}/api/ready`, 3000)
     const status = String(data.status || data.state || "").toUpperCase()
     const done = status === "HEALTHY" || status === "UP"
-    return item("backend", "后端连接", done, done ? "本地后端服务运行正常" : "后端健康检查返回异常", "环境配置", "/env-config", !done)
+    return item("backend", "后端连接", done, done ? "本地后端已就绪，可以接收任务" : "后端尚未就绪，请检查数据库与任务队列", "环境配置", "/env-config", !done)
   } catch {
     return item("backend", "后端连接", false, `未检测到 ${API_BASE} 后端服务`, "环境配置", "/env-config", true)
   }
@@ -143,7 +145,7 @@ async function checkResume(): Promise<SetupCheckItem> {
   }
 }
 
-async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem> {
+async function checkLogin(platform: "boss" | "zhilian", openIfMissing = false): Promise<SetupCheckItem> {
   const title = platform === "boss" ? "Boss登录状态" : "智联登录状态"
   const href = platform === "boss" ? "/boss" : "/zhilian"
 
@@ -169,22 +171,9 @@ async function checkLogin(platform: "boss" | "zhilian"): Promise<SetupCheckItem>
     }
   }
 
-  try {
-    const data = await fetchJson<LoginStatusResponse>(`${API_BASE}/api/${platform}/login-status`, 5000)
-    const done = !!data.isLoggedIn
-    return item(
-      "zhilianLogin",
-      title,
-      !!data.success && done,
-      done
-        ? "登录态可用，可以扫描"
-        : data.failureReason || data.message || "请先完成平台登录",
-      "去登录",
-      href
-    )
-  } catch {
-    return item("zhilianLogin", title, false, "登录状态接口暂不可用", "去登录", href, true)
-  }
+  const status = await getZhilianPageStatus({ openIfMissing })
+  return item("zhilianLogin", title, status.ready, status.message, "检查智联页面", href, !status.connected)
+
 }
 
 export async function loadSetupChecklist(): Promise<SetupChecklistResult> {
@@ -209,7 +198,7 @@ export async function validateSetupForPlatform(platform: "boss" | "zhilian", opt
     checkResume(),
   ]
   if (requirePlatformLogin) {
-    checkers.push(checkLogin(platform))
+    checkers.push(checkLogin(platform, options.openPlatformPageIfMissing === true))
   }
   const items = await Promise.all(checkers)
   const requiredKeys: SetupCheckKey[] = ["backend", "chromeBridge", "aiConfig", "resume"]
@@ -222,5 +211,5 @@ export async function validateSetupForPlatform(platform: "boss" | "zhilian", opt
 
 export function formatSetupMissingMessage(platformLabel: string, missing: SetupCheckItem[]) {
   if (!missing.length) return ""
-  return `${platformLabel}开始扫描前请先完成：${missing.map((entry) => entry.title).join("、")}。`
+  return `${platformLabel}开始扫描前请先完成：${missing.map((entry) => `${entry.title}：${entry.detail}`).join("；")}。`
 }

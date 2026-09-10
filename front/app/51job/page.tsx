@@ -277,15 +277,15 @@ export default function Job51Page() {
           // 城市允许手动输入，若下拉匹配不到则直接保存输入值
           const match = (options.jobArea || []).find((o) => o.code === t || o.name === t)
           const name = match?.name || t
-          return `["${name.replace(/"/g, '\\"')}"]`
+          return JSON.stringify([name])
         }
         if (type === 'salary') {
           // 薪资仅允许下拉单选，必须映射为中文名
           const match = (options.salary || []).find((o) => o.code === t || o.name === t)
           const name = match?.name || ''
-          return name ? `["${name.replace(/"/g, '\\"')}"]` : '[]'
+          return name ? JSON.stringify([name]) : '[]'
         }
-        return `["${t.replace(/"/g, '\\"')}"]`
+        return JSON.stringify([t])
       }
       const payload = {
         ...config,
@@ -338,11 +338,11 @@ export default function Job51Page() {
               </Button>
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="app-button-danger px-4">
-                <BiStop className="mr-1" /> 停止投递
+                <BiStop className="mr-1" /> 停止采集
               </Button>
             ) : (
               <Button onClick={handleStartDelivery} size="sm" className="app-button-success px-4">
-                <BiPlay className="mr-1" /> 开始投递
+                <BiPlay className="mr-1" /> 开始只读采集
               </Button>
             )}
             <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
@@ -373,7 +373,7 @@ export default function Job51Page() {
             <CardContent>
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground">请在浏览器标签页中登录 51job 平台，登录成功后系统会自动检测登录状态。</p>
-                <p className="text-sm text-muted-foreground">登录成功后，点击“开始投递”按钮启动自动投递任务。</p>
+                <p className="text-sm text-muted-foreground">登录成功后，点击“开始只读采集”获取岗位；该按钮不会执行真实投递。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>

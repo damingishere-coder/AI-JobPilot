@@ -71,7 +71,69 @@ export type BossJob = {
   priorityCompany?: number
   sourceKeyword?: string
   scanRunId?: string
+  scanResultSource?: "CURRENT_SCAN" | "HISTORICAL_REUSED"
   createdAt?: string
+  aiGreeting?: string
+  greetingDraft?: string
+  greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
+  greetingUpdatedAt?: string | null
+  finalGreeting?: string
+}
+
+export type AiReasonDimension = {
+  key: string
+  label: string
+  weight: number
+  status: "MATCH" | "PARTIAL" | "UNKNOWN" | "CONFLICT" | string
+  awarded: number
+  jobEvidence: string[]
+  resumeEvidence: string[]
+  note: string
+}
+
+export type AiReasonHardConflict = {
+  requirement: string
+  jobEvidence: string[]
+  resumeEvidence: string[]
+}
+
+export type ParsedAiReason = {
+  schemaVersion: number
+  summary: string
+  matches: string[]
+  gaps: string[]
+  unknowns: string[]
+  dimensions: AiReasonDimension[]
+  hardConflicts: AiReasonHardConflict[]
+  threshold?: number
+  errorCode?: string
+  malformed: boolean
+}
+
+export type JobAnalysisTask = {
+  id: number
+  profileId: number
+  platform: string
+  jobKey: string
+  jobRowId: number
+  scanRunId?: string
+  status: "PENDING" | "LEASED" | "SUCCEEDED" | "FAILED" | "UNKNOWN"
+  attemptCount: number
+  leaseExpiresAt?: string | null
+  lastError?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
+}
+
+export type JobAnalysisTasksResponse = {
+  success: boolean
+  data?: JobAnalysisTask[]
+  queueSize?: number
+  pendingCount?: number
+  processingCount?: number
+  message?: string
 }
 
 export type PagedResult = {
@@ -93,7 +155,7 @@ export type FilterState = {
   filterHeadhunter: boolean
 }
 
-export const DELIVERY_STATUS_OPTIONS = ["待确认", "LIST_COLLECTED", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
+export const DELIVERY_STATUS_OPTIONS = ["待确认", "投递确认中", "投递结果待确认", "LIST_COLLECTED", "AI分析中", "已投递", "未投递", "AI不匹配", "AI分析失败", "采集信息不足", "已过滤", "已跳过", "投递失败"]
 export const EXPERIENCE_OPTIONS = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"]
 export const DEGREE_OPTIONS = ["不限", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]
 
@@ -110,8 +172,6 @@ export const EMPTY_FILTERS: FilterState = {
 }
 
 export const DEFAULT_PENDING_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["待确认"] }
-export const LIST_COLLECTED_FILTERS: FilterState = { ...EMPTY_FILTERS, statuses: ["LIST_COLLECTED"] }
-
 export const FAILURE_TYPE_LABELS: Record<string, string> = {
   LOGIN_EXPIRED: "登录失效",
   PLATFORM_VERIFICATION: "平台验证",

@@ -184,5 +184,5 @@ test("skips Boss navigation and non-Boss detail links", () => {
   assert.equal(result.candidateCount, 4);
   assert.equal(result.jobs.length, 2);
   assert.equal(result.jobs.some((job) => job.title === "职位搜索"), false);
-  assert.equal(result.jobs.some((job) => job.url.includes("example.com")), false);
+  assert.equal(result.jobs.some((job) => new URL(job.url).hostname === "example.com"), false);
 });

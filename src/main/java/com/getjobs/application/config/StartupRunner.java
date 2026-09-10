@@ -23,7 +23,7 @@ import java.util.stream.Stream;
 @Component
 public class StartupRunner implements ApplicationRunner {
 
-    @Value("${server.port:8888}")
+    @Value("${server.port:6866}")
     private int backendPort;
 
     @Value("${app.auto-open-browser:false}")

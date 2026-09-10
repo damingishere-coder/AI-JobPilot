@@ -84,14 +84,14 @@ Boss 直聘和智联招聘支持 Chrome Bridge，复用你已登录的 Chrome �
 
 ## 平台支持
 
-| 平台 | 岗位采集 | AI 分析 | 人工确认 | 当前定位 |
-| --- | :---: | :---: | :---: | --- |
-| Boss 直聘 | ✅ | ✅ | ✅ | Chrome Bridge 主要流程；含受限 API POC 与页面降级采集 |
-| 智联招聘 | ✅ | ✅ | ✅ | Chrome Bridge 主要流程 |
-| 猎聘 | 🟡 | ✅ | ✅ | 本地基础流程，仍在持续适配 |
-| 前程无忧 51job | 🟡 | ✅ | ✅ | 本地基础流程，仍在持续适配 |
+| 平台 | 质量等级 | 岗位采集 | AI 分析 / 待确认 | 正式执行模式 |
+| --- | --- | --- | :---: | --- |
+| Boss 直聘 | 一级日常链 | Chrome Bridge；含受限 API POC 与页面降级采集 | ✅ | Chrome Bridge |
+| 智联招聘 | 一级日常链 | Chrome Bridge | ✅ | Chrome Bridge |
+| 猎聘 | 二级兼容链 | 旧 Playwright，默认只读采集 | ✅ | 旧 Playwright；真实投递必须显式二次确认 |
+| 前程无忧 51job | 二级兼容链 | 旧 Playwright，默认只读采集 | ✅ | 旧 Playwright；真实投递必须显式二次确认 |
 
-`✅` 表示当前主流程支持，`🟡` 表示已有基础能力但稳定性和覆盖范围仍需继续验证。
+`✅` 表示代码与自动化契约已经接通，不代表当前账号和当天页面已经完成真实 smoke。四个平台的当前声明可通过只读接口 `GET /api/platforms/capabilities` 查看；招聘网站改版后仍应先小范围验证到“待确认”。
 
 ## 下载与版本
 
@@ -139,11 +139,12 @@ start_windows.bat
 启动成功后打开：
 
 ```text
-前端：http://localhost:6866
-后端健康检查：http://localhost:8888/api/health
+页面与 API：http://localhost:6866
+存活检查：http://localhost:6866/api/health
+就绪检查：http://localhost:6866/api/ready
 ```
 
-当首页检查项正常、健康检查返回 `UP` 时，说明基础服务已经启动成功。
+`/api/health` 返回 `UP` 只表示进程存活；首页检查项正常且 `/api/ready` 返回就绪，才表示数据库、Schema 和任务队列可用于业务操作。
 
 完整的新手安装与排错步骤见 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)。
 
@@ -175,6 +176,18 @@ Boss 直聘和智联招聘推荐使用 Chrome Bridge：
 6. 在 Chrome 中登录招聘平台，再从工作台开始扫描。
 
 扩展只负责辅助本地流程，不会绕过登录验证、验证码或平台投递限制。
+
+## AI 沟通助手
+
+Boss 和智联的待确认岗位现在会显示最终沟通话术及其来源，并支持编辑、复制和恢复 AI 原稿。话术优先级固定为：
+
+```text
+人工编辑稿 → AI greeting → 当前档案默认话术 → 空白警告
+```
+
+人工稿与 AI 原稿分开保存，重新分析岗位不会覆盖人工编辑。保存接口使用只在本机内存中存在的操作令牌和 `expectedUpdatedAt` 并发校验；单个、批量确认和显式重试还会再次校验页面预览快照，话术变化时会停止并要求重新确认。
+
+该能力不会增加独立的自动发消息入口。Boss 的确认任务会把核对后的话术交给现有 Chrome Bridge；智联当前把话术随任务保存并提供复制，但现有扩展不会自动发送聊天消息。
 
 ## 手动开发启动
 
@@ -252,9 +265,9 @@ db/getjobs.db
 
 ## 项目状态
 
-当前版本为 `1.3.0`，重点是巩固 Boss / 智联 Chrome Bridge 采集、AI 分析、人工确认、失败诊断和本地可维护性。
+最新正式版本为 `1.3.0`。`codex/stable-v1-completion` 已作为待验收基线整理为面向 `main` 的 PR；当前功能分支已完成四平台能力注册表、统一 AI 分析契约和 Boss / 智联 AI 沟通助手的代码与自动化验证。
 
-仓库现已具备后端与前端 CI、Chrome 扩展校验、Docker 配置校验、CodeQL 安全扫描、Dependabot 依赖维护和 Release 产物校验。后续计划包括统一平台适配层、离线 Demo、完整 Windows 发行包，以及在明确合规和人工确认边界后评估 AI 代聊、提醒和面试信息汇总能力。详见 [ROADMAP.md](ROADMAP.md)。
+真实平台 smoke 仍未执行：Boss / 智联、猎聘 / 51job 都需要在操作当时由用户明确确认，并且第一轮只运行到待确认队列。验收前不会合并 `main`，也不会关闭被替代分支。详见 [ROADMAP.md](ROADMAP.md)。
 
 ## 参与贡献
 

@@ -90,7 +90,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          # The locked jsdom/undici test dependencies require Node >= 22.19.
+          node-version: "24"
           cache: pnpm
           cache-dependency-path: front/pnpm-lock.yaml
 
@@ -101,6 +102,14 @@ jobs:
       - name: Run frontend lint
         working-directory: front
         run: pnpm lint
+
+      - name: Run frontend typecheck
+        working-directory: front
+        run: pnpm typecheck
+
+      - name: Test frontend and Zhilian DOM contracts
+        working-directory: front
+        run: pnpm test
 
       - name: Build frontend
         working-directory: front
@@ -121,6 +130,9 @@ jobs:
 
       - name: Validate manifest and referenced files
         run: node scripts/validate-chrome-extension.mjs
+
+      - name: Run Chrome extension contract tests
+        run: node --test chrome-extension/tests/*.test.cjs
 
   docker-config:
     name: Docker Configuration

@@ -20,7 +20,7 @@ class StartupRunnerDegradedModeTest {
         ReflectionTestUtils.setField(runner, "playwrightManager", playwrightManager);
         ReflectionTestUtils.setField(runner, "autoOpenBrowser", false);
         ReflectionTestUtils.setField(runner, "initializeBrowserOnStartup", true);
-        ReflectionTestUtils.setField(runner, "backendPort", 8888);
+        ReflectionTestUtils.setField(runner, "backendPort", 6866);
 
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
     }
@@ -33,7 +33,7 @@ class StartupRunnerDegradedModeTest {
         ReflectionTestUtils.setField(runner, "playwrightManager", playwrightManager);
         ReflectionTestUtils.setField(runner, "autoOpenBrowser", false);
         ReflectionTestUtils.setField(runner, "initializeBrowserOnStartup", false);
-        ReflectionTestUtils.setField(runner, "backendPort", 8888);
+        ReflectionTestUtils.setField(runner, "backendPort", 6866);
 
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
         verifyNoInteractions(playwrightManager);

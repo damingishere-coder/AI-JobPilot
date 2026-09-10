@@ -54,6 +54,8 @@ cookie.json
 !.env.example
 .env.local
 front/.env.local
+secrets/
+**/hr-chat.key
 chromedriver
 *.jpg
 chrome-profile/
@@ -61,6 +63,9 @@ chrome-profile/
 
 # Database files
 db/
+!src/main/java/db/
+!src/main/java/db/migration/
+!src/main/java/db/migration/*.java
 !src/main/resources/db/
 !src/main/resources/db/migration/
 !src/main/resources/db/migration/*.sql
@@ -85,11 +90,15 @@ front/coverage/
 # Gradle cache
 .gradle/
 
+# SonarQube local scanner working directory
+.scannerwork/
+
 # Python / local tools
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.resume-models/
 
 # Logs, temporary outputs, and user uploads
 *.log

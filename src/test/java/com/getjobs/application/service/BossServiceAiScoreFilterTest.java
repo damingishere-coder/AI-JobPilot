@@ -80,4 +80,39 @@ class BossServiceAiScoreFilterTest {
         assertThat(wrapper.getSqlSegment()).contains("id").contains("profile_id");
         assertThat(wrapper.getParamNameValuePairs().values()).contains(99L, 1L);
     }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void currentRunListIncludesHistoricalReuseSource() {
+        BossJobDataEntity historical = new BossJobDataEntity();
+        historical.setId(375L);
+        historical.setScanRunId("boss-current");
+        historical.setScanResultSource(BossService.SCAN_RESULT_HISTORICAL);
+        when(bossJobDataMapper.selectList(any())).thenReturn(List.of(historical));
+
+        BossService.PagedResult result = bossService.listBossJobs(
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1,
+                20,
+                false,
+                " boss-current ",
+                null
+        );
+
+        ArgumentCaptor<QueryWrapper> captor = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(bossJobDataMapper).selectList(captor.capture());
+        assertThat(captor.getValue().getSqlSegment()).contains("scan_run_id");
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("boss-current");
+        assertThat(result.items).singleElement().satisfies(item -> {
+            assertThat(item.getId()).isEqualTo(375L);
+            assertThat(item.getScanResultSource()).isEqualTo(BossService.SCAN_RESULT_HISTORICAL);
+        });
+        assertThat(result.total).isEqualTo(1);
+    }
 }

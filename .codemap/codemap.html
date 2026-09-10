@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<!--
+  Functional Architecture Map (interactive). GENERATED from modules.json by the codemap skill.
+  Do not hand-edit — edit modules.json and re-run render.py.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Functional Architecture Map</title>
+<style>
+  :root{
+    --bg:#131517; --bg2:#0e1012; --panel:#1b1e21; --panel2:#202428;
+    --ink:#e8e6e3; --muted:#9aa1a8; --faint:#6b7280;
+    --border:#2a2e33; --border2:#363b41;
+    --accent:#f59e0b; --accent-dim:#b4730e; --accent-soft:rgba(245,158,11,.14);
+    --in:#7c8794; --out:#f59e0b;
+    --c-low:#525a62; --c-med:#7e8893; --c-high:#c9cdd2; --c-core:#f59e0b;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);
+    color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; overflow:hidden;}
+  .app{display:grid; grid-template-columns:1fr 348px; grid-template-rows:auto 1fr; height:100vh}
+  header{grid-column:1/3; display:flex; align-items:center; gap:16px; padding:12px 20px;
+    border-bottom:1px solid var(--border); background:var(--bg);}
+  header .mark{width:22px;height:22px;border-radius:6px;flex:0 0 auto;background:var(--accent);}
+  header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.1px;white-space:nowrap}
+  header h1 span{color:var(--muted);font-weight:400}
+  header .sub{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  header .spacer{flex:1}
+  .search{display:flex;align-items:center;gap:8px;background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 11px;width:230px;}
+  .search:focus-within{border-color:var(--border2)}
+  .search input{background:none;border:none;outline:none;color:var(--ink);font-family:var(--sans);font-size:12.5px;width:100%;}
+  .search svg{flex:0 0 auto;opacity:.6}
+  .btn{font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 12px;cursor:pointer;transition:.12s;}
+  .btn:hover{color:var(--ink);border-color:var(--border2);background:var(--panel2)}
+  .btn.active{color:#0e0f11;background:var(--accent);border-color:var(--accent)}
+  .filt{font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 8px;cursor:pointer;max-width:150px}
+  .filt:hover{color:var(--ink);border-color:var(--border2);background:var(--panel2)}
+  .filt.on{color:#1a1a1a;background:var(--accent);border-color:var(--accent)}
+  .fcount{font-family:var(--mono);font-size:10.5px;color:var(--accent);white-space:nowrap;min-width:52px}
+  .board-wrap{position:relative;overflow:auto;background:var(--bg2)}
+  .board{position:relative;min-width:min-content;padding:26px 30px 60px}
+  svg.edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
+  .band{position:relative;z-index:2;margin-bottom:13px}
+  .band-head{display:flex;align-items:baseline;gap:10px;margin:0 2px 9px;position:sticky;left:0;}
+  .band-head .t{font-size:11px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--ink)}
+  .band-head .d{font-size:11px;color:var(--faint)}
+  .band-head .num{font-size:9.5px;color:var(--faint);border:1px solid var(--border);border-radius:20px;padding:1px 7px;font-family:var(--mono)}
+  .band-head .gloc{color:var(--muted);border-color:transparent;padding-left:0}
+  .band-body{display:flex;flex-wrap:wrap;gap:7px}
+  .wire{position:relative;z-index:2;display:flex;align-items:center;gap:14px;margin:6px 2px 16px;color:var(--accent);}
+  .wire .line{flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--accent-dim),transparent)}
+  .wire .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:1px;color:var(--accent);white-space:nowrap}
+  .node{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:9px;
+    padding:8px 30px 8px 12px;cursor:pointer;min-width:104px;
+    transition:transform .12s, border-color .12s, background .12s, box-shadow .12s, opacity .15s;user-select:none;}
+  .node::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--c-low);}
+  .node.c-med::before{background:var(--c-med)} .node.c-high::before{background:var(--c-high)}
+  .node.c-core::before{background:var(--c-core);box-shadow:0 0 8px var(--accent-soft)}
+  .node .lab{font-size:12px;font-weight:560;line-height:1.25;letter-spacing:.1px}
+  .node .meta{font-size:9.5px;color:var(--faint);font-family:var(--mono);margin-top:2px}
+  .node:hover{border-color:var(--border2);background:var(--panel2);transform:translateY(-1px)}
+  .node .chip{position:absolute;top:6px;right:7px;font-family:var(--mono);font-size:9px;font-weight:700;
+    line-height:1;padding:2px 4px;border-radius:4px;color:#0c0d0e;background:var(--h,#6b7280);opacity:0;transition:opacity .15s;}
+  .board.show-health .node::before{background:var(--h)!important;box-shadow:none}
+  .board.show-health .node .chip{opacity:1}
+  .board.show-health.has-sel .node:not(.lit) .chip{opacity:.25}
+  .board.has-sel .node{opacity:.26;filter:saturate(.7)}
+  .board.has-sel .node.lit{opacity:1;filter:none}
+  .node.sel{border-color:var(--accent);background:#241d12;box-shadow:0 0 0 1px var(--accent), 0 6px 22px rgba(245,158,11,.18);transform:translateY(-1px);}
+  .node.dep{border-color:var(--accent-dim)} .node.dependent{border-color:var(--in)}
+  aside{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:20px 20px 40px;}
+  .empty-hint{color:var(--faint);font-size:12.5px;line-height:1.7} .empty-hint b{color:var(--muted);font-weight:600}
+  .legend{margin-top:22px} .legend h4,aside h4{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:0 0 10px}
+  .legend .row{display:flex;align-items:center;gap:9px;margin-bottom:7px;font-size:12px;color:var(--muted)}
+  .swatch{width:16px;height:9px;border-radius:3px;flex:0 0 auto}
+  .ln{width:26px;height:0;border-top-width:2px;border-top-style:solid;flex:0 0 auto}
+  .detail .kicker{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.5px;text-transform:uppercase}
+  .detail h2{font-size:18px;margin:5px 0 3px;font-weight:650;line-height:1.2}
+  .detail .path{font-family:var(--mono);font-size:11px;color:var(--faint);word-break:break-all;margin-bottom:13px}
+  .pill-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:15px}
+  .pill{font-size:10.5px;border:1px solid var(--border2);border-radius:20px;padding:3px 9px;color:var(--muted);font-family:var(--mono)}
+  .pill.cpl{border-color:var(--accent-dim);color:var(--accent)}
+  .detail p.desc{font-size:13px;line-height:1.6;color:var(--ink);margin:0 0 16px}
+  .reltitle{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:16px 0 8px;display:flex;align-items:center;gap:7px}
+  .reltitle .dotc{width:7px;height:7px;border-radius:50%}
+  .rel{display:flex;flex-direction:column;gap:4px}
+  .rel button{text-align:left;font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:7px;padding:6px 9px;cursor:pointer;transition:.13s;
+    display:flex;justify-content:space-between;align-items:center;gap:8px;}
+  .rel button:hover{color:var(--ink);border-color:var(--accent-dim);background:var(--panel2)}
+  .rel button .bnd{font-size:9px;font-family:var(--mono);color:var(--faint)}
+  .rel .none{font-size:11.5px;color:var(--faint);font-style:italic;padding:2px}
+  .clearbtn{margin-top:18px;width:100%}
+  .scorebox{display:flex;align-items:center;gap:12px;margin:2px 0 13px}
+  .scorebox .big{font-size:34px;font-weight:740;line-height:1;font-family:var(--mono)}
+  .scorebox .gr{font-size:13px;font-weight:700;border:1.5px solid;border-radius:7px;padding:3px 9px}
+  .scorebox .bar{flex:1;height:7px;border-radius:5px;background:#23272c;overflow:hidden}
+  .scorebox .bar i{display:block;height:100%;border-radius:5px}
+  .findings{display:flex;flex-direction:column;gap:7px;margin-top:4px}
+  .finding{border:1px solid var(--border);border-left-width:3px;border-radius:7px;padding:7px 9px;background:#16191c}
+  .finding .top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+  .finding .sev{font-family:var(--mono);font-size:8.5px;font-weight:700;padding:1px 5px;border-radius:4px;letter-spacing:.4px}
+  .finding .loc{font-family:var(--mono);font-size:10px;color:var(--muted);word-break:break-all}
+  .finding .txt{font-size:11.5px;line-height:1.5;color:#cfd3d8}
+  .sev-HIGH{background:#3a1714;color:#f0857a} .finding.sev-HIGH{border-left-color:#e0524b}
+  .sev-MED{background:#3a2c12;color:#e7b35e} .finding.sev-MED{border-left-color:#d9a441}
+  .sev-LOW{background:#23282d;color:#9aa1a8} .finding.sev-LOW{border-left-color:#525a62}
+  .tagchips{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 13px}
+  .tg{font-size:9.5px;font-family:var(--mono);border-radius:5px;padding:2px 7px;background:#23282d;color:#aeb4bb;border:1px solid var(--border)}
+  .tg.bad{background:#2c1a17;color:#e88;border-color:#4a2420} .tg.ok{background:#1d2420;color:#8a9;border-color:#2a352e}
+  .report .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:14px 0 6px}
+  .report .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 6px;text-align:center}
+  .report .stat .n{font-family:var(--mono);font-size:18px;font-weight:740;line-height:1}
+  .report .stat .l{font-size:8.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+  .report h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:20px 0 8px}
+  .report .theme{font-size:12px;line-height:1.6;color:#cfd3d8;margin:0 0 9px;padding-left:11px;border-left:2px solid var(--accent-dim)}
+  .report .theme b{color:#fff;font-weight:600}
+  .grade-A{color:#76b39a;border-color:#3a5249} .grade-B{color:#b9c0c7;border-color:var(--border2)}
+  .grade-C{color:#d9a441;border-color:#5a4720} .grade-D{color:#e08a4a;border-color:#5a3a20} .grade-F{color:#e0524b;border-color:#5a2420}
+  .scrollnote{position:absolute;right:14px;bottom:12px;z-index:5;font-size:10.5px;color:var(--faint);font-family:var(--mono);pointer-events:none;background:#0e1012aa;padding:3px 8px;border-radius:6px;border:1px solid var(--border)}
+  .modal{position:fixed;inset:0;z-index:60;display:none;background:#0a0b0ccc;overflow:auto;padding:46px 20px}
+  .modal.open{display:block}
+  .modal .sheet{position:relative;max-width:740px;margin:0 auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px 26px 30px}
+  .modal .sheet h2{font-size:17px;font-weight:650;margin:0 0 3px;letter-spacing:.1px}
+  .modal .sheet .intro{font-size:12.5px;color:var(--faint);margin:0 0 6px;line-height:1.5}
+  .modal .xbtn{position:absolute;top:16px;right:16px}
+  .std-h4{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:22px 0 4px}
+  .std-row{display:flex;gap:13px;align-items:baseline;padding:8px 0;border-top:1px solid var(--border)}
+  .std-badge{flex:0 0 56px;font-family:var(--mono);font-weight:700;font-size:12px;text-align:center;border-radius:6px;padding:3px 0;color:#0c0d0e}
+  .std-range{flex:0 0 56px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .std-key{flex:0 0 116px}
+  .std-row .sev{font-family:var(--mono);font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;letter-spacing:.4px}
+  .std-row .tg[contenteditable]{outline:none;min-width:40px}
+  .std-desc[contenteditable]{outline:1px dashed var(--border2);outline-offset:2px;border-radius:3px}
+  .xrm{flex:0 0 auto;background:none;border:none;color:var(--faint);cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
+  .xrm:hover{color:#e0524b}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);z-index:80;
+    background:var(--panel2);border:1px solid var(--border2);color:var(--ink);font-size:12.5px;
+    padding:9px 14px;border-radius:8px;opacity:0;pointer-events:none;transition:.18s;box-shadow:0 6px 20px #0007}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .std-desc{flex:1;font-size:12.5px;color:#cfd3d8;line-height:1.5}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:#2c3137;border-radius:6px;border:3px solid var(--bg2)}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="mark"></div>
+    <div>
+      <h1 id="projTitle">Functional Architecture Map</h1>
+      <div class="sub" id="subLine"></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" placeholder="Find a module…" autocomplete="off"/>
+    </div>
+    <select class="filt" id="gradeFilter" title="Show only modules at/below this grade">
+      <option value="">All grades</option>
+      <option value="90">≤ B  (score &lt;90)</option>
+      <option value="75">≤ C  (&lt;75)</option>
+      <option value="60">≤ D  (&lt;60)</option>
+      <option value="40">F&nbsp;&nbsp;(&lt;40)</option>
+    </select>
+    <select class="filt" id="tagFilter" title="Show only modules with this issue"><option value="">Any issue</option></select>
+    <span class="fcount" id="fcount"></span>
+    <button class="btn" id="stdBtn">Standard</button>
+    <button class="btn" id="reportBtn">Audit report</button>
+    <button class="btn" id="healthBtn">Color: coupling</button>
+    <button class="btn" id="spineBtn">Data-flow spine</button>
+  </header>
+  <div class="board-wrap" id="boardWrap">
+    <div class="board" id="board">
+      <svg class="edges" id="edges">
+        <defs>
+          <marker id="ah-out" markerWidth="9" markerHeight="9" refX="7" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="var(--out)"/></marker>
+          <marker id="ah-in" markerWidth="9" markerHeight="9" refX="7" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="var(--in)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <div class="scrollnote">click a module · scroll to pan</div>
+  </div>
+  <aside id="aside"><div id="detail"></div></aside>
+</div>
+<div class="modal" id="stdModal"></div>
+
+<script>
+const DATA = {"meta": {"project": "投递牛马 AI-JobPilot V1", "lang": "zh", "subtitle": "本地单机求职工作流工程体检（2026-08-24）", "generatedAt": "2026-08-24", "htmlPath": ".codemap/codemap.html", "mdPath": ".codemap/codemap.md", "spineDesc": "用户配置/扫描 → 前端 → Chrome Bridge → 平台适配 → 后端入库 → AI 分析 → 待确认 → 投递回写。", "tracked_loc": 52425, "tracked_files": 233}, "bands": [{"id": "ui", "tier": "fe", "t": "前端 · 操作与分析", "d": "Next.js 本地工作台"}, {"id": "bridge", "tier": "bridge", "t": "Chrome Bridge · 采集与投递", "d": "已登录标签页、扩展消息与平台适配"}, {"id": "api", "tier": "be", "t": "后端 · API 与平台编排", "d": "REST、SSE、确认与状态回写"}, {"id": "core", "tier": "be", "t": "核心 · AI、配置与状态", "d": "分析、Provider、档案和任务队列"}, {"id": "persistence", "tier": "data", "t": "持久化 · SQLite 与 Schema", "d": "MyBatis、Flyway 与兼容 DDL"}, {"id": "execution", "tier": "worker", "t": "执行层 · Playwright", "d": "浏览器生命周期和旧平台 Worker"}, {"id": "ops", "tier": "ops", "t": "工程化 · 构建、启动与文档", "d": "Gradle、pnpm、Docker、CI 和运行说明"}], "spine": ["ui_platform_control", "chrome_gateway", "chrome_boss", "backend_boss", "ai_analysis_provider", "data_foundation"], "reportThemes": [["状态机是最高风险共性问题", "扫描、AI 分析和投递横跨前端、扩展、后端与旧 Worker，但成功、部分成功、未知结果、重复回调和重启恢复没有一套持久化且受约束的状态转换；多处 fallback 会把故障转换成零数据、跳过或 success=true。"], ["Chrome 主链与 Playwright 旧链长期并存", "Boss/智联已以 Chrome Bridge 为主，猎聘/51job 仍依赖 Playwright，旧 Boss/智联 Worker 和多套静态交付路径仍保留；兼容性让 V1 能跑，也让维护者难以判断真正执行路径。"], ["数据层缺少可靠约束与单一迁移真相", "Flyway、DatabaseSchemaService 与平台 Service 的运行时 DDL 三轨并存，关键 profile/job/config/cookie 关系缺少外键、唯一约束和原子 upsert；不同初始化、并发或中途失败可能得到不同结果。"], ["本地单机信任边界没有被代码强制", "配置和 Cookie 接口可读写明文敏感值，后端默认未绑定 loopback、无认证授权，任意扩展 ID 还能访问部分接口；只在严格本机单用户环境下风险才被运行方式降低。"], ["God Component 与跨平台复制主导维护成本", "BossPage、各分析页、background/content scripts、BossService、ZhilianController 和 PlaywrightManager 同时承担 UI、协议、状态、持久化与错误处理；四平台相似实现复制，修一处很容易让另一平台漂移。"], ["测试覆盖集中在纯函数而非真实失败边界", "现有 Java 与扩展测试能保护参数归一化、路由和少量状态，但真实 Chrome 导航、投递确认、SQLite 迁移/并发、队列重启、Provider 超时与前端核心交互仍主要依赖人工验证；健康接口也无法证明这些依赖可用。"]], "standard": {"rubric": [{"grade": "A", "score": 95, "range": "90–100", "en": "clean, well-scoped, idiomatic", "zh": "干净、职责单一、地道"}, {"grade": "B", "score": 82, "range": "75–89", "en": "minor issues: a documented shim, mild bloat", "zh": "小问题：有文档的兼容、轻微臃肿"}, {"grade": "C", "score": 67, "range": "60–74", "en": "notable hacks / fallbacks / bloat / duplication", "zh": "明显的 hack / 回退 / 臃肿 / 重复"}, {"grade": "D", "score": 50, "range": "40–59", "en": "significant legacy / stubs / duplication, or a protocol violation", "zh": "严重的遗留 / 占位 / 重复，或协议违规"}, {"grade": "F", "score": 25, "range": "0–39", "en": "broken, fake output, or unfinished-but-wired", "zh": "损坏、伪造输出，或未完成却已接线"}], "severities": [{"key": "HIGH", "en": "wrong / dangerous / fake, a protocol or security issue, or a genuine maintenance hazard", "zh": "错误 / 危险 / 伪造、协议或安全问题，或真正的维护地雷"}, {"key": "MED", "en": "a real smell a maintainer should fix", "zh": "维护者该修的真坏味"}, {"key": "LOW", "en": "a documented shim, a cosmetic cast, benign bloat — worth noting, not urgent", "zh": "有文档的兼容、装饰性 cast、良性臃肿 —— 值得记、不紧急"}], "coupling": [{"key": "core", "en": "system spine — central to almost everything", "zh": "系统主线 —— 几乎牵连一切"}, {"key": "high", "en": "many connections", "zh": "连接很多"}, {"key": "med", "en": "moderate", "zh": "中等"}, {"key": "low", "en": "leaf / self-contained", "zh": "叶子 / 自洽"}], "tags": [{"id": "monkeypatch", "label": "monkeypatch", "labelZh": "猴补丁", "bad": true, "en": "runtime mutation of another module / stdlib / vendor; reflection or prototype patching", "zh": "运行时改写别的模块/标准库/依赖；反射或原型补丁"}, {"id": "fallback", "label": "fallback", "labelZh": "回退兜底", "bad": true, "en": "'try the real thing, then fake/degrade'; a||b||c chains that hide which value is real", "zh": "“先试真的再退化/造假”；a||b||c 掩盖哪个是真值"}, {"id": "silent-except", "label": "silent-except", "labelZh": "静默吞错", "bad": true, "en": "swallowed errors: empty catch / except:pass / ignored return codes", "zh": "吞掉错误：空 catch / except:pass / 忽略返回码"}, {"id": "legacy", "label": "legacy", "labelZh": "遗留", "bad": true, "en": "deprecated/back-compat shims, dead-but-shipped code, parallel old+new paths", "zh": "遗留/兼容垫片、已发布的死代码、新旧并存"}, {"id": "dual-format", "label": "dual-format", "labelZh": "双格式", "bad": true, "en": "accepting two shapes for one field (snake||camel), patched through the code", "zh": "同一字段接受两种形态（snake||camel）并散落各处"}, {"id": "stub", "label": "stub", "labelZh": "占位桩", "bad": true, "en": "NotImplemented / TODO / dead buttons / demo scripts presented as real", "zh": "未实现/TODO/死按钮/演示脚本当成品"}, {"id": "fake-output", "label": "fake-output", "labelZh": "伪造输出", "bad": true, "en": "returns random/canned/hardcoded results where real work is implied", "zh": "本应真算的地方返回随机/写死结果"}, {"id": "duplication", "label": "duplication", "labelZh": "重复", "bad": true, "en": "copy-pasted logic, or an existing shared abstraction not reused", "zh": "复制粘贴，或已有共享抽象却不复用"}, {"id": "bloat", "label": "bloat", "labelZh": "臃肿", "bad": true, "en": "oversized file / function; too many responsibilities in one unit", "zh": "超大文件/函数；单元职责过多"}, {"id": "glue", "label": "glue", "labelZh": "胶水", "bad": true, "en": "valueless pass-through: rows of thin forwarders / no-op adapters", "zh": "无价值透传：成片薄包装 / 零转换适配器"}, {"id": "any-escape", "label": "any-escape", "labelZh": "类型逃逸", "bad": true, "en": "bypassing the type system: as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe", "zh": "绕过类型系统：as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe"}, {"id": "over-fit", "label": "over-fit", "labelZh": "过度特化", "bad": true, "en": "hardcoded to one case where a small generalization was expected", "zh": "硬编码单一情况，本应小幅泛化"}, {"id": "god-component", "label": "god-component", "labelZh": "上帝组件", "bad": true, "en": "one component/class/file doing far too much", "zh": "一个组件/类/文件做太多事"}, {"id": "placeholder", "label": "placeholder", "labelZh": "占位", "bad": true, "en": "unfinished UI / data presented as if complete", "zh": "未完成的 UI/数据当作已完成"}, {"id": "clean", "label": "clean", "labelZh": "干净", "bad": false, "en": "no material issues — well-scoped", "zh": "无实质问题 —— 职责单一"}]}, "modules": [{"id": "ui_shell_config", "label": "前端壳与配置中心", "band": "ui", "path": "front/app + front/lib", "desc": "工作台壳、档案切换、环境/AI 配置、API 与 SSE 公共客户端。", "coupling": "high", "deps": ["api_runtime_contracts", "ai_analysis_provider", "data_foundation"], "loc": 3246, "score": 68, "grade": "C", "tags": ["fallback", "any-escape", "bloat", "duplication", "glue"], "findings": [{"sev": "MED", "loc": "front/app/page.tsx:64", "text": "loadPlatformStats 将 API 超时、HTTP 错误和解析失败全部静默转换为 pendingConfirm/delivered/failed 全为 0；首页无法区分真实为零和后端不可用，会产生误导性统计。"}, {"sev": "MED", "loc": "front/lib/setupChecklist.ts:146", "text": "Boss 登录检查异常时直接返回 done=true，并显示将在 Chrome 扫描启动时确认；这是一种隐式成功 fallback，可能让准备检查显示完成但实际未确认登录态。"}, {"sev": "MED", "loc": "front/app/env-config/page.tsx:35", "text": "环境配置页从后端读取原始 API_KEY 到 client state，并在客户端 DOM 中保存且允许切换明文显示；应明确 local-only 信任边界或改为掩码及仅更新方式。"}, {"sev": "MED", "loc": "front/components/ui/select.tsx:31", "text": "共享 Select 通过运行时检查 React children 并使用多处 as any，既绕过类型安全又伪造 onChange 事件；React children 形态变化可能导致选项解析或回调行为异常。"}, {"sev": "MED", "loc": "front/app/page.tsx:52", "text": "超时 fetchJson 在首页自行实现，类似逻辑又出现在 setupChecklist 和 Sidebar；API 错误策略分散在壳层组件中，修复超时或状态映射时容易漂移。"}, {"sev": "LOW", "loc": "front/app/ai-config/page.tsx:111", "text": "AI 配置页约 651 行，同时协调 AI 配置、简历上传解析、优先公司、Boss 配置、Profile 切换、生成配置和整页 UI，已经出现页面级膨胀。"}, {"sev": "LOW", "loc": "front/lib/sse.ts:10", "text": "共享 SSE helper 的 onError 使用显式 any；目前范围有限，但丢失 EventSource 和网络错误的类型约束。"}]}, {"id": "ui_platform_control", "label": "平台扫描控制页", "band": "ui", "path": "front/app/{boss,zhilian,liepin,51job}/page.tsx", "desc": "四个平台的配置、登录、扫描、SSE 进度、诊断和停止入口。", "coupling": "core", "deps": ["chrome_gateway", "api_runtime_contracts", "backend_boss", "backend_zhilian", "backend_legacy_platforms"], "loc": 4179, "score": 58, "grade": "D", "tags": ["god-component", "bloat", "duplication", "dual-format", "legacy", "fallback", "silent-except"], "findings": [{"sev": "HIGH", "loc": "front/app/boss/page.tsx:167", "text": "BossPage 是真正的 God Component：同一组件集中维护约 30 个状态，并同时负责配置/选项、Profile、黑名单、SSE 登录状态、Chrome Bridge 扫描与停止、进度日志、诊断/API POC、Cookie/退出登录、分析刷新和完整页面渲染，主要逻辑覆盖 167-1180、1186-1790、1929-2109；任一平台控制流程改动都可能影响整页状态机。"}, {"sev": "MED", "loc": "front/app/boss/page.tsx:324", "text": "四个平台页重复实现登录 SSE、配置加载、启动/停止、退出登录和错误处理：Boss 324-492、494-512，智联 214-292，猎聘 54-106，51job 43-115；虽共享 createSSEWithBackoff，但事件解析和状态转换仍各自维护，行为修复容易出现平台间漂移。"}, {"sev": "MED", "loc": "front/app/boss/page.tsx:512", "text": "UI 直接承担历史数据兼容和持久化格式解析：Boss 546-568 同时兼容 JSON 数组、非严格括号列表和普通文本，712-726 再序列化；智联 150-175、398-401兼容旧 code/name，猎聘 109-133 和 51job 118-160、272-295各自复制 JSON/逗号/中文名转换。该 dual-format/legacy 逻辑使页面绑定后端旧 Schema。"}, {"sev": "MED", "loc": "front/app/51job/page.tsx:242", "text": "停止投递请求异常时使用空 catch，既不提示用户也不重置 isDelivering，网络失败后页面可能永久显示[正在投递]：237-243。"}, {"sev": "MED", "loc": "front/app/zhilian/page.tsx:698", "text": "配置 PUT 成功后 Cookie 保存失败被空 catch 忽略，随后仍执行 fetchAllData 并显示[保存成功，配置已更新]：692-700，用户无法知道 Cookie 实际未保存。"}]}, {"id": "ui_analysis_delivery", "label": "分析与确认投递界面", "band": "ui", "path": "front/app/*/analysis", "desc": "岗位统计、筛选、列表、批量确认、手动覆盖、结果回写和导出。", "coupling": "core", "deps": ["chrome_gateway", "backend_boss", "backend_zhilian", "backend_legacy_platforms"], "loc": 5111, "score": 55, "grade": "D", "tags": ["god-component", "duplication", "dual-format", "any-escape", "stub", "legacy", "fallback"], "findings": [{"sev": "HIGH", "loc": "front/app/zhilian/analysis/AnalysisContent.tsx:502", "text": "智联分析页约 1273 行，在一个组件内同时承担图表、总览、筛选分页、列表、统计、清空数据、CSV 导出、薪资回算、单条确认和批量 Chrome 投递，是真正的 God Component。"}, {"sev": "MED", "loc": "front/app/liepin/analysis/AnalysisContent.tsx:81", "text": "ChartCanvas 及分析页主流程在猎聘、51job、智联中重复实现，四个平台分别复制图表销毁、异步创建、颜色和列表、统计、导出逻辑，修复容易漂移。"}, {"sev": "MED", "loc": "front/app/liepin/analysis/AnalysisContent.tsx:97", "text": "猎聘和 51job 通过 window.Chart 和 jsDelivr CDN 动态加载 Chart.js 并大量使用 any；智联使用打包 Chart.js，形成两套图表供应链，离线或 CDN 失败时旧平台图表可能为空。"}, {"sev": "MED", "loc": "front/app/zhilian/analysis/AnalysisContent.tsx:529", "text": "activeScanRunId 被硬编码为空字符串，列表和统计虽尝试附加 scanRunId，但条件永远不成立；智联分析无法按扫描运行隔离，可能混合不同扫描批次。"}, {"sev": "MED", "loc": "front/app/zhilian/analysis/AnalysisContent.tsx:814", "text": "批量投递只读取 Bridge 结果 message 并提示任务已结束，不检查 success、不展示每个任务成功、失败或部分成功，也不区分扩展超时后的未知状态。"}, {"sev": "MED", "loc": "front/app/51job/analysis/AnalysisContent.tsx:120", "text": "51job、猎聘、智联分析请求直接 res.json 且只在 catch 中 console.error，不检查 HTTP 状态或设置可见错误状态；失败时可能保留旧列表和旧统计。"}, {"sev": "LOW", "loc": "front/app/51job/analysis/AnalysisContent.tsx:112", "text": "51job 与猎聘仍是旧 Worker 平台能力边界，分析页缺少当前 Chrome 主链具备的确认投递和人工覆盖闭环。"}]}, {"id": "chrome_gateway", "label": "Chrome Bridge 网关", "band": "bridge", "path": "chrome-extension/{manifest,page-bridge,background}", "desc": "本地页面消息白名单、标签页路由、扫描会话、平台脚本和回调转发。", "coupling": "core", "deps": ["chrome_boss", "chrome_zhilian", "backend_boss", "backend_zhilian"], "loc": 1839, "score": 58, "grade": "D", "tags": ["god-component", "bloat", "duplication", "legacy", "dual-format", "fallback", "silent-except"], "findings": [{"sev": "HIGH", "loc": "chrome-extension/background.js:1574-1590", "text": "Boss 域名校验使用 hostname.endsWith(zhipin.com)，未要求根域或点边界；同时投递路径直接使用 task.url 并导航，例如 evilzhipin.com/job_detail/x 可能被当作官方岗位地址，存在钓鱼导航与错误投递风险。"}, {"sev": "MED", "loc": "chrome-extension/background.js:975-1003", "text": "投递结果回传使用硬编码 http://localhost:6866，未设置超时、未检查 response.ok；调用方在 720-747、828-854 等处统一 catch 后忽略回传失败，投递已执行但后端状态可能无法落库。"}, {"sev": "MED", "loc": "chrome-extension/background.js:435-480", "text": "requestLocalApi 对 POST 的 5xx/超时自动重试最多 3 次，但没有幂等键；chrome-jobs 失败响应后可能重复提交岗位并重复触发后端入队，属于有界但真实的重复执行风险。"}, {"sev": "MED", "loc": "chrome-extension/background.js:958-970", "text": "Boss 空响应时只要当前 URL 命中 chat/im/message 就推断投递成功并回传成功状态，没有读取页面明确成功标志，可能产生错误的已投递记录。"}, {"sev": "MED", "loc": "chrome-extension/background.js:1-1694", "text": "单个 background.js 同时承担消息路由、本地 API、页面导航、扫描会话持久化、Boss/智联投递、错误分类和重试，形成明显 God Component/bloat；Boss 与智联投递流程及失败分类大量平行重复。"}, {"sev": "MED", "loc": "chrome-extension/background.js:49-65", "text": "manifest 同时加载多条采集路径，background 仍保留 BOSS_DEBUG_COLLECT/BOSS_API_POC_COLLECT 分支，POC/legacy 接线与主流程并存，职责边界不清。"}, {"sev": "LOW", "loc": "chrome-extension/background.js:1500-1513", "text": "智联消息在 background 中做未版本化与 _V2 双格式转换；这是有界兼容 shim，但增加协议维护成本。"}, {"sev": "LOW", "loc": "chrome-extension/page-bridge.js:32-81", "text": "page bridge 已限制 event.source、origin、source 字段和允许消息类型，manifest 权限范围也主要限定本地工作台及招聘平台；该部分职责清楚。"}]}, {"id": "chrome_boss", "label": "Boss 扩展适配器", "band": "bridge", "path": "chrome-extension/boss-*", "desc": "Boss API/DOM 多级采集、详情恢复、断点续扫、投递和页面诊断。", "coupling": "core", "deps": ["chrome_gateway", "backend_boss"], "loc": 6012, "score": 52, "grade": "D", "tags": ["god-component", "bloat", "duplication", "fallback", "silent-except", "dual-format", "over-fit"], "findings": [{"sev": "HIGH", "loc": "chrome-extension/boss-scan-support.js:94-106", "text": "Boss URL 校验使用 hostname.endsWith(zhipin.com)，同类逻辑也出现在 boss-content、boss-search-collector；evilzhipin.com 等非官方域名会被当作 Boss 页面或岗位，可能进入导航、采集或投递链路。"}, {"sev": "MED", "loc": "chrome-extension/boss-content.js:1-4758", "text": "单个 4758 行 content script 同时承担消息协议、搜索、API、嵌入数据、DOM、点击采集、多级详情解析、任务状态与恢复、批量提交、自动投递、存储和诊断，属于明显 god component。"}, {"sev": "MED", "loc": "chrome-extension/boss-api-collector.js:69-98", "text": "API_EMPTY、API_SCHEMA_CHANGED 或请求失败时依次降级到嵌入数据、DOM 卡片和点击卡片；只要返回非空 jobs 就 success=true，部分字段错误可能进入后端。"}, {"sev": "MED", "loc": "chrome-extension/boss-content.js:4302-4320", "text": "详情 JSON 请求、JSON.parse 和嵌入脚本解析异常被空 catch 后直接转入 DOM 或正文 fallback；坏 JSON、接口 500 与页面结构变化没有独立错误状态。"}, {"sev": "MED", "loc": "chrome-extension/boss-content.js:2623-2649", "text": "自动投递调用 deliverOnCurrentPage 的返回值被忽略，失败后仍进入下一岗位；deliverBatch 即使 failed 大于零仍返回 success:true，仅附带 failedCount。"}, {"sev": "MED", "loc": "chrome-extension/boss-content.js:3084-3091", "text": "storeScanTask 写 sessionStorage 后 fire-and-forget 调用 chrome.storage.local.set，未等待写入完成；页面销毁期间可能丢失最近 checkpoint。"}, {"sev": "MED", "loc": "chrome-extension/tests/boss-api-collector.test.cjs:7-18", "text": "Boss 测试主要使用 VM 和 fake DOM；没有 boss-content、真实 Chrome 消息、导航重试、存储恢复、详情解析或投递集成覆盖，高风险路径主要依赖人工验证。"}, {"sev": "LOW", "loc": "chrome-extension/boss-selectors.js:4-63", "text": "选择器集合存在重复与高度宽泛的 class* fallback；虽有去重和容错，仍增加页面结构变化时的误匹配与维护成本。"}]}, {"id": "chrome_zhilian", "label": "智联扩展适配器", "band": "bridge", "path": "chrome-extension/zhilian-*", "desc": "智联 DOM 采集、任务游标、扫描恢复、投递和失败识别。", "coupling": "high", "deps": ["chrome_gateway", "backend_zhilian"], "loc": 3230, "score": 50, "grade": "D", "tags": ["god-component", "bloat", "fallback", "silent-except", "legacy", "dual-format", "duplication", "over-fit"], "findings": [{"sev": "HIGH", "loc": "chrome-extension/zhilian-content.js:2661-2697", "text": "normalizeZhilianJobUrl 允许任意 host，isZhilianJobDetailUrl 仅用 host.endsWith(zhaopin.com) 且不限制 https；evilzhaopin.com 等 lookalike 域名会通过岗位详情校验并交给后台导航。"}, {"sev": "MED", "loc": "chrome-extension/zhilian-content.js:1514-1555", "text": "点击投递后只在 finalFailure 且未检测到已投递状态时判失败；没有失败提示、也没有成功状态时仍报告成功。deliverBatch 即使 failed 大于零仍返回 success:true。"}, {"sev": "MED", "loc": "chrome-extension/zhilian-content.js:1214-1227", "text": "chrome-jobs 提交响应丢失或超时会保存断点，恢复后再次提交同一 jobs 批次；虽携带 runId，但没有提交幂等键或已提交批次标记。"}, {"sev": "MED", "loc": "chrome-extension/zhilian-content.js:1345-1373", "text": "详情解析失败时降级为列表 description，嵌入状态 JSON.parse 异常静默忽略并继续 DOM fallback；结果未标记 detailSource、解析失败或字段可信度。"}, {"sev": "MED", "loc": "chrome-extension/zhilian-content.js:1-3026", "text": "3026 行单体 content script 同时承担扫描状态机、分页导航、采集、详情解析、checkpoint、恢复、投递确认、本地 API、诊断和协议兼容，属于 god-component。"}, {"sev": "MED", "loc": "chrome-extension/tests/zhilian-scan-support.test.cjs:92-127", "text": "智联测试主要在 VM 中加载 support 模块，content 流程仅用源码正则断言；没有真实 DOM、Chrome 消息、导航重试、存储恢复、投递确认或重复执行集成覆盖。"}, {"sev": "LOW", "loc": "chrome-extension/zhilian-content.js:81-129", "text": "运行时消息会去掉 _V2，同时并存多套投递协议入口；这是有界兼容 shim，但增加 legacy 和 dual-format 维护成本。"}]}, {"id": "api_runtime_contracts", "label": "API 运行时与共享契约", "band": "api", "path": "application/config + shared controllers/dto/platform", "desc": "应用启动、线程池、CORS/静态资源、健康检查、共享请求模型和预留平台接口。", "coupling": "core", "deps": ["data_foundation", "playwright_runtime"], "loc": 1673, "score": 43, "grade": "D", "tags": ["any-escape", "fallback", "silent-except", "stub", "legacy", "bloat", "duplication", "glue", "fake-output"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/ConfigController.java:28-45", "text": "GET /api/config 未见认证或授权检查，直接返回所有配置；同控制器还允许任意 key 批量或单项写入，若配置包含 API_KEY 等 secret 则可被读取或覆盖。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/CookieController.java:30-56", "text": "GET /api/cookie 未见认证或授权检查，直接把 CookieEntity.cookieValue 原样放入 JSON；调用方可取得可复用的平台会话凭据。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/config/CorsConfig.java:33-50", "text": "对 chrome-extension://* 开放凭据、任意 header 和 method，覆盖采集、投递路径；测试确认任意扩展 ID 可通过，恶意本机扩展可代调用接口。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/HealthController.java:29-50", "text": "健康状态只读取 PlaywrightManager；浏览器未启动且无错误时仍返回 UP，不检查数据库、任务队列、AI 或配置依赖。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/PlaywrightController.java:46-63", "text": "test-navigate 直接对共享 Boss Page 执行外网 navigate，未先检查初始化或页面为空，访问者可触发运行时副作用。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/GlobalExceptionHandler.java:17-42", "text": "全局只处理三类异常；多个控制器又各自 catch Exception 并把 e.getMessage() 返回，错误格式、状态码和信息暴露不一致。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/config/StaticResourceConfiguration.java:55-98", "text": "同一路径叠加文件系统、classpath、html、txt 与 index 多级 fallback，IOException 静默吞掉；附加静态端口也可能让路由随部署 cwd 漂移。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/platform/boss/BossPlatformAdapter.java:50-66", "text": "适配器 deliver 只组装 task，随后以 success=true 返回仍需 Chrome Bridge 确认；误接线会产生假成功。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/application/controller/ConfigController.java:159-167", "text": "配置 health 端点固定返回 success=true/status=healthy，未调用 ConfigService 或数据库，属于假健康检查。"}]}, {"id": "backend_boss", "label": "Boss 后端业务", "band": "api", "path": "Boss controllers/services/entities/mappers", "desc": "Boss 配置、岗位入库去重、统计、确认、状态回写和旧 Worker 控制。", "coupling": "core", "deps": ["ai_analysis_provider", "data_foundation", "playwright_runtime"], "loc": 4221, "score": 55, "grade": "D", "tags": ["monkeypatch", "fallback", "silent-except", "legacy", "dual-format", "stub", "duplication", "bloat", "glue", "god-component"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/BossService.java:535", "text": "ensureBossDataColumnOrder 由 BossAnalyticsController reload 请求触发，在线创建 boss_data_new、复制数据、DROP 原表并 RENAME；复制 SQL 对多列直接假设存在，失败只记录 warn，ROLLBACK/close 异常又被吞掉，存在数据损坏或停写风险。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/BossAnalyticsController.java:239", "text": "delivery-result 只检查岗位存在即把状态写为已投递或投递失败；BossService 1020-1043 没有校验当前状态、合法状态转换或幂等条件，重复或延迟回调可覆盖 SKIPPED、AI_NOT_MATCH 等状态。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/BossService.java:48", "text": "1818 行 BossService 同时承担配置、选项、黑名单、Schema 在线迁移、Chrome upsert、投递状态、统计、分页和数据库维护，是真正的高耦合 God Service，修改 blast radius 很大。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/BossService.java:1161", "text": "BossService 保留旧 JDBC/内存统计实现，同时 BossStatsService 提供新的 MyBatis SQL 实现；BossAnalyticsController 当前走新路径，双实现存在指标漂移和维护重复。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/BossService.java:1719", "text": "listBossJobs 先 selectList 全量加载，再在内存做薪资过滤和分页；size 没有上限，confirmBatch 直接请求 5000，数据增长后会放大内存和延迟风险。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/BossService.java:406", "text": "toCodes 对未知选项最终静默映射为 code=0；loadBossConfig 广泛使用该逻辑，拼写错误或过期配置会被当成不限，扩大扫描范围。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/BossService.java:478", "text": "黑名单采用 selectCount 后 insert 的非原子检查，实体未表达唯一约束；删除路径按 type/value 删除，重复记录时可能批量删除。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/BossStatsService.java:91", "text": "统计异常被 catch 后返回初始化的空响应；数据库故障会表现为成功但零数据，掩盖真实错误。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/application/controller/BossController.java:98", "text": "execute/start 接口固定返回 410 backend_scan_disabled，但同一控制器仍保留 Playwright 登录、停止和调试接口；这是 Chrome Bridge 迁移兼容层。"}]}, {"id": "backend_zhilian", "label": "智联后端业务", "band": "api", "path": "Zhilian controller/service/entities/mappers", "desc": "智联配置、Chrome/OpenClaw 接收、岗位状态、确认回写和 Playwright 入口。", "coupling": "core", "deps": ["ai_analysis_provider", "data_foundation", "playwright_runtime"], "loc": 2134, "score": 50, "grade": "D", "tags": ["fallback", "silent-except", "duplication", "bloat", "glue", "god-component", "fake-output", "monkeypatch"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/ZhilianService.java:278", "text": "upsertChromeJob 在 job_id 或标题公司查询时都按 scanRunId 过滤；不同 scanRunId 的同一岗位不会命中旧记录而会再次插入。实体仅有自增主键，未见 job_id/profile_id 唯一约束或原子 upsert，并发批次也可重复插入。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/ZhilianController.java:550", "text": "delivery-result 仅检查岗位存在即写入已投递或投递失败；没有当前状态、合法状态转换或幂等条件，重复或延迟回调可覆盖跳过、AI不匹配等状态。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/ZhilianController.java:250", "text": "调试接口直接将 CookieEntity.cookieValue 放入响应 cookie_value；本控制器未见脱敏或权限校验，若路由可访问会泄漏智联登录凭证。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/ZhilianController.java:426", "text": "采集字段校验不要求 jobId，但 AI 状态更新依赖 jobId；服务方法对空 jobId 静默返回，随后仍继续入队，岗位可能保持未投递状态并被重复分析。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/ZhilianController.java:50", "text": "933 行控制器通过 9 个注入依赖同时承担配置、选项、登录、Cookie、统计、Chrome 入库、AI 队列、投递回调、SSE、Worker 启停和健康检查，职责明显膨胀。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/init/ZhilianOptionInitializer.java:105", "text": "replaceCityAndSalaryOptions 先删除全部 city/salary，再逐条插入，未见事务；任一插入失败会留下部分选项。"}, {"sev": "MED", "loc": "src/test/java/com/getjobs/application/service/ZhilianServiceSearchParamTest.java:13", "text": "现有直接测试只覆盖城市、薪资参数归一化和官方选项解析；未覆盖跨扫描 upsert、并发重复、状态转换、重复回调、队列失败恢复或控制器 API。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/ZhilianService.java:756", "text": "列表和统计均先 selectList 全量加载，再在内存做薪资过滤和分页；size 没有上限，数据增长后会产生内存和响应延迟风险。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/application/controller/ZhilianController.java:720", "text": "health 接口固定返回 success=true/status=healthy，不检查数据库、队列、浏览器或 Worker，依赖故障时会产生误导性健康结果。"}]}, {"id": "backend_legacy_platforms", "label": "猎聘与 51job 后端", "band": "api", "path": "Liepin/Job51 controllers/services/entities/mappers", "desc": "仍以 Playwright 为主的猎聘/51job 配置、运行、统计和数据兼容逻辑。", "coupling": "high", "deps": ["data_foundation", "playwright_runtime", "playwright_platforms"], "loc": 2680, "score": 42, "grade": "D", "tags": ["legacy", "fallback", "silent-except", "glue", "god-component", "bloat", "duplication"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/controller/JobController.java:343-364", "text": "公开 GET 接口直接返回 cookie_value 明文；Controller 直接拼装敏感 Cookie 数据。个人本地 V1 是本机 API 泄露风险，对外 SaaS 则可造成会话接管。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/entity/LiepinConfigEntity.java:10-30", "text": "猎聘与 51job 配置和岗位实体均没有 profile_id；服务按全局最小 id 取第一条配置，数据查询也不按当前 profile 隔离。多档案会共享或覆盖配置、岗位和投递状态。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/LiepinService.java:85-127", "text": "保存与配置更新都是先查后写，没有唯一约束或方法级事务；并发扫描可能重复插入或覆盖状态。批量写失败只记录 warn，部分成功和重试恢复难判断。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/LiepinService.java:42-79", "text": "服务在 PostConstruct 或运行路径重复执行 CREATE、ALTER、DROP 兼容 DDL，异常被忽略或仅 warn 后继续；Flyway 与运行时逻辑双轨。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/LiepinService.java:462-513", "text": "统计和列表先读取整表，再在 Java 内存完成薪资、关键词和分页过滤；数据量增长时资源线性放大且会混入跨档案数据。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/controller/JobController.java:390-425", "text": "Controller 直接协调 PlaywrightManager、任务 Service、SSE；异步任务在后台真正执行前即返回 success=true，后台失败只靠日志或 SSE，没有持久化任务状态或可恢复 run id。"}, {"sev": "MED", "loc": "src/test/java/com/getjobs/application:1", "text": "没有直接测试覆盖第一条配置选择、profile 隔离、并发写、旧库迁移、批量部分失败、投递状态回写或大数据统计，属于完全无测试风险。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/application/service/Job51Service.java:27-808", "text": "两个 legacy Service 各自承担 schema 初始化、配置解析、采集入库、投递状态、统计和分页，存在重复逻辑且修改 blast radius 高。"}]}, {"id": "ai_analysis_provider", "label": "AI 分析与 Provider", "band": "core", "path": "AiService + JobAiAnalysis + Codex/OpenClaw", "desc": "简历与岗位 Prompt、AI 输出修复、Codex/HTTP Provider、内存分析队列和状态写回。", "coupling": "core", "deps": ["data_foundation"], "loc": 3028, "score": 52, "grade": "D", "tags": ["fallback", "silent-except", "fake-output", "duplication", "bloat", "glue", "god-component"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/AiService.java:66", "text": "HTTP 客户端只设置 connectTimeout，HttpRequest 未设置 request/read timeout，client.send 可能在提供商无响应时长期阻塞；图片和 Responses fallback 同样只有连接超时。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/ChromeJobAnalysisQueueService.java:25", "text": "AI 队列、activeKeys、completedKeys 全为进程内状态；关闭时没有持久化队列或重启恢复，进程重启会遗失排队任务并留下 AI_ANALYZING。任务失败也在 finally 写入 completedKeys，30 分钟内无法自然重试。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/JobAiAnalysisService.java:207", "text": "analyzeJob 先标记 AI_ANALYZING，再分别 persistAnalysis 和 updatePlatformCache；持久化异常只告警，两个写操作无原子边界，可能出现分析记录缺失但岗位状态已完成。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/AiService.java:130", "text": "429、5xx 与网络异常没有 Retry-After、退避或有限重试；reasoning 参数错误时会发起第二次提供商请求，存在重复计费。错误日志还直接包含完整 response body。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/JobAiAnalysisService.java:302", "text": "无法修复的错误 JSON 会转换成 score=0、默认 SKIP 的正常结果；空内容、非 JSON 或无法识别的 Markdown 可能被当成跳过岗位，而不是明确失败。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/ChromeJobAnalysisQueueService.java:128", "text": "dedupeKey 包含 runId，completed key 只保留 30 分钟；同一岗位换扫描 runId 就会再次调用模型，失败任务先进入 completedKeys，重复成本与失败重试不一致。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/AiService.java:158", "text": "图片简历固定构造 Chat Completions endpoint，没有按模型选择 Responses API，也没有 reasoning fallback；仅支持 Responses 的视觉模型会失败。"}, {"sev": "MED", "loc": "src/test/java/com/getjobs/application/service/AiServiceProviderTest.java:37", "text": "直接测试主要是 mock provider 路由、阈值和 Markdown 修复；未覆盖真实 HTTP timeout、429/5xx、空或错误 JSON、fallback 二次调用、队列重启或真实 Codex 进程边界。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/application/service/CodexCliService.java:61", "text": "Codex 子进程 stdout/stderr 均丢弃，失败时只能看到退出码；临时文件清理也吞掉异常，诊断和资源残留不可观测。"}]}, {"id": "data_foundation", "label": "数据与配置基础", "band": "persistence", "path": "schema/profile/config/cookie + migrations", "desc": "SQLite Schema、Flyway/兼容 DDL、档案切换删除、全局配置和 Cookie 持久化。", "coupling": "core", "deps": [], "loc": 861, "score": 45, "grade": "D", "tags": ["fallback", "silent-except", "legacy", "duplication", "bloat"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/application/service/DatabaseSchemaService.java:21-39", "text": "启动时执行大量 CREATE、ALTER、回填及 priority_company DROP+重建，但未显式事务或回滚；initializeSchema 捕获所有异常后仅 warn 并让应用继续。中途失败可能留下缺表或半迁移。"}, {"sev": "MED", "loc": "src/main/resources/db/migration/V1__init_schema.sql:1-291", "text": "Flyway DDL 与运行时兼容 DDL 双轨维护；DatabaseSchemaService 未创建 V1 中多张平台和选项表，也未创建 V4 的 job_analysis_task，不同初始化路径可能得到不同 schema。"}, {"sev": "MED", "loc": "src/main/resources/db/migration/V1__init_schema.sql:10-28", "text": "config.config_key 与 cookie.platform 均无 UNIQUE/NOT NULL；服务采用先查询后 insert/update，并发请求可产生重复配置或 Cookie。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/service/ProfileService.java:22-32", "text": "强制删除档案只清理固定 PROFILE_RELATED_TABLES，遗漏含 profile_id 的 job_analysis_task；数据库没有外键或 ON DELETE，删除后会留下孤儿任务记录。"}, {"sev": "MED", "loc": "src/main/resources/db/migration/V1__init_schema.sql:1-7", "text": "profile.is_active 没有 CHECK 或唯一约束；createProfile 与 activateProfile 都是非原子多步操作，并发时可能出现多个 active 档案。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/application/entity/ConfigEntity.java:27-33", "text": "API_KEY、Webhook、Cookie 等敏感值直接明文存入 config/cookie 表，读取接口返回完整实体值；个人本地 V1 是本机泄露风险，对外 SaaS 则为高风险。"}, {"sev": "MED", "loc": "src/test/java/com/getjobs/application/service/DatabaseSchemaServiceAiThresholdTest.java:22-54", "text": "直接测试只覆盖一个已有 ai 表补列场景及 mocked ConfigService；没有 Flyway 全量迁移、双轨 schema 对比、事务回滚、profile 孤儿、并发唯一性或备份恢复测试。"}]}, {"id": "playwright_runtime", "label": "Playwright 运行时", "band": "execution", "path": "worker/manager + worker/utils", "desc": "浏览器与四平台 Page 生命周期、锁、Cookie、导航、诊断和通用 Playwright 工具。", "coupling": "core", "deps": ["data_foundation"], "loc": 3416, "score": 55, "grade": "D", "tags": ["god-component", "bloat", "duplication", "legacy", "silent-except", "fallback"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/manager/PlaywrightManager.java:237-250", "text": "四个平台 setup 通过 CompletableFuture 并发执行，却共享同一个 BrowserContext；各 setup 同时 addCookies、navigate 和设置登录监控，未见统一 context/page 操作锁，存在竞态与跨平台状态污染风险。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/manager/PlaywrightManager.java:478-529", "text": "页面恢复主要在 page 为空或关闭时新建页面；若浏览器崩溃、context 失效或页面被替换，没有完整重放 Cookie、导航、登录检查和初始化流程。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/manager/PlaywrightManager.java:92-121", "text": "PlaywrightManager 约 2376 行，同时承担四个平台浏览器生命周期、Cookie、导航、登录监控、状态通知和调试操作，存在明显 God Component。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/utils/PlaywrightUtil.java:38-98", "text": "PlaywrightUtil 另维护一套静态 Playwright、Browser、Context、Page 生命周期，且 init 无同步或幂等保护；与 Spring PlaywrightManager 并存形成重复运行时。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/utils/PlaywrightUtil.java:103-145", "text": "静态 close 不清空引用，navigate 直接使用静态 Page 且未显式设置导航超时；重复 close、并发 init/close 或页面已关闭时可能操作失效对象。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/utils/PlaywrightUtil.java:343-429", "text": "saveCookies 将完整 Cookie value 以明文 JSON 写入传入路径，未见文件权限、加密或敏感值保护。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/manager/PlaywrightManager.java:421-469", "text": "登录检查、URL、选择器和等待操作大量空 catch 或返回 false/空字符串；导航异常又以当前 URL 命中作为成功 fallback，可能吞掉根因。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/utils/PlaywrightUtil.java:217-298", "text": "通用 click、fill、type、读取函数捕获异常后只记录并返回 void 或空字符串，调用方无法区分成功、超时、页面失效和元素不存在。"}, {"sev": "MED", "loc": "src/test/java/com/getjobs/worker/manager/PlaywrightManagerStatusTest.java:1", "text": "直接测试主要覆盖登录状态、通知和 profile lock；未见真实页面并发、Cookie 重载、导航超时、浏览器异常退出、restart recovery 或资源关闭测试。"}]}, {"id": "playwright_platforms", "label": "旧平台 Playwright Worker", "band": "execution", "path": "worker/{boss,zhilian,liepin,job51,service}", "desc": "四个平台的旧 Playwright 搜索、登录、投递实现和共享运行协调。", "coupling": "high", "deps": ["playwright_runtime", "backend_boss", "backend_zhilian", "backend_legacy_platforms"], "loc": 4456, "score": 43, "grade": "D", "tags": ["fake-output", "silent-except", "fallback", "duplication", "bloat", "legacy", "god-component", "placeholder", "dual-format"], "findings": [{"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/service/JobRunCoordinator.java:17-43", "text": "JobRunCoordinator 只按平台字符串加锁，允许不同平台同时运行；猎聘和 51job 服务未注入 coordinator，仅靠非原子的 isRunning 检查，可能并发操作共享浏览器资源并重复投递。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/boss/Boss.java:825-875", "text": "Boss 点击发送按钮后只要 locator 存在就立即将 sendSuccess 设为 true，没有等待发送结果或服务端确认；缺失标识仍加入 resultList，存在假成功。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/job51/Job51.java:244-299", "text": "51job 在实际批量投递前就把勾选岗位加入 resultList；随后无论成功或失败数量、按钮结果如何，都把当前页全部 jobId 标记 delivered，可能造成批量状态误写。"}, {"sev": "HIGH", "loc": "src/main/java/com/getjobs/worker/liepin/Liepin.java:550-577", "text": "猎聘点击聊一聊后只等待聊天头部并尝试关闭窗口；等待或关闭异常时仍记录结果并 markDelivered，未建立真实发送确认。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/boss/Boss.java:73-1035", "text": "四个旧 Worker 都把导航、DOM 选择器、网络监听、数据库写入、AI 分析、投递和进度状态揉在单个大类中，流程高度重复且没有统一确认协议。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/liepin/Liepin.java:67-98", "text": "响应监听会清空并重建 API 实体，提交时却按 DOM 卡片索引取实体；接口响应与 DOM 顺序不一致时可能绑定错误岗位或 HR。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/zhilian/ZhiLian.java:291-331", "text": "智联使用 existsByJobId 后再 insertJob 的分离式检查，插入异常只告警；已存在岗位仍加入后续 AI 分析，重复扫描可能重复消耗。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/job51/Job51.java:111-180", "text": "网络监听、导航和页面处理大量捕获异常后继续；外层仍可能发送完成进度并返回已有结果，无法区分完整成功、部分成功和页面失效。"}, {"sev": "MED", "loc": "src/main/java/com/getjobs/worker/boss/Boss.java:247-287", "text": "核心流程依赖大量脆弱选择器、固定 sleep、滚动重试和文本匹配；站点 DOM 小幅变化就可能误判，且没有对应浏览器回归测试。"}, {"sev": "LOW", "loc": "src/main/java/com/getjobs/worker/boss/Boss.java:889-923", "text": "详情响应监听定义完整但在该类中未见调用，属于疑似遗留链路；当前实际路径另行处理详情。"}]}, {"id": "delivery_tooling_docs", "label": "构建、交付与文档", "band": "ops", "path": "build/scripts/docker/ci/docs/demo", "desc": "依赖与构建、Windows/Docker 启动、CI 安全检查、示例数据和多代文档。", "coupling": "med", "deps": ["ui_shell_config", "api_runtime_contracts", "playwright_runtime"], "loc": 6339, "score": 61, "grade": "C", "tags": ["fallback", "legacy", "duplication", "stub", "placeholder", "over-fit", "glue"], "findings": [{"sev": "MED", "loc": ".github/workflows/ci.yml:109-123", "text": "Chrome 扩展 CI 只运行 manifest 引用和 JavaScript 语法校验，没有执行扩展功能测试；sonar 配置虽声明扩展测试与 LCOV，测试契约未在 CI 接线。"}, {"sev": "MED", "loc": ".github/workflows/release.yml:7-19", "text": "Release 工作流同时响应 pull_request 和 tag push，但整个 job 统一声明 contents: write；PR 构建执行不可信代码时权限边界过宽。"}, {"sev": "MED", "loc": "sonar-project.properties:6-15", "text": "配置了 JaCoCo、扩展 LCOV 和 TypeScript tsconfig，但现有工作流没有 Sonar 扫描、质量门禁或 coverage 生成，指标尚未成为发布门槛。"}, {"sev": "MED", "loc": "start_docker.ps1:85-103", "text": "Docker 启动器只用 TCP 端口 6866 判断前端就绪，不检查 HTTP 内容或后端 health；depends_on 只保证容器启动，脚本可能在 API 未可用时宣称完成。"}, {"sev": "MED", "loc": "start_windows.ps1:259", "text": "Windows 总启动脚本无条件覆盖 JAVA_TOOL_OPTIONS，run_backend 脚本却会保留并追加参数，两个入口环境契约不一致。"}, {"sev": "LOW", "loc": "front/start-prod.mjs:40-57", "text": "前端生产静态服务器、Next 导出、复制到后端 dist 和后端静态端口多套交付路径并存，修改资源路由时容易漂移。"}, {"sev": "LOW", "loc": "docker-compose.yml:12-16", "text": "默认 Compose 使用开发镜像、Gradle continuous 和 bind mount，前端启动执行 pnpm install，定位是开发容器而非可复现生产运行时。"}, {"sev": "LOW", "loc": "docs/README.md:3-15", "text": "历史文档仍分散在根目录、doc 与 docs，多入口和旧方案并存，文档职责存在重复和漂移风险。"}, {"sev": "LOW", "loc": "demo/README.md:10-14", "text": "Demo 样例明确尚未自动接入应用，后续导入、隔离和重置仍是未来流程；属于 placeholder 数据契约。"}]}]};
+const M = DATA.modules || [];
+const BANDS = DATA.bands || [];
+const SPINE = DATA.spine || [];
+const REPORT_THEMES = DATA.reportThemes || [];
+const META = DATA.meta || {};
+/* HTML-escape every string that comes from modules.json (labels, descriptions,
+   findings, tags, paths, meta, themes, standard) before it enters innerHTML. The only
+   trusted HTML is the template's own i18n strings (tl) and the structural markup. */
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+let BAD_TAGS = new Set(["monkeypatch","fallback","legacy","dual-format","stub","fake-output","bloat","duplication","glue","silent-except","silent-catch","any-escape","over-fit","god-component","placeholder"]);
+
+/* ---------- i18n: display language via meta.lang (module names never translated) ---------- */
+const LANG = META.lang || "en";
+const I18N = {
+ en:{ mapSuffix:"· Functional Architecture Map", sub:"functional modules · call hierarchy · coupling · quality score · LoC",
+   report:"report", searchPh:"Find a module…", allGrades:"All grades", anyIssue:"Any issue", scrollNote:"click a module · scroll to pan",
+   about:"What it does", audit:"Quality audit", clean:"no material issues — clean / well-scoped",
+   dependsOn:"Depends on / calls →", usedBy:"← Used by (dependents)", none:"— none —", clearSel:"Clear selection",
+   couplingLbl:"coupling", deps:"dependencies", dependents:"dependents", locUnit:"LoC", coreModules:"Core modules (the spine)",
+   lgCoupling:"Coupling", lgCore:"core — system spine", lgHigh:"high — many connections", lgMed:"medium", lgLow:"low — leaf / self-contained",
+   lgEdges:"Edges", lgOut:"depends on / calls →", lgIn:"← used by (dependent)",
+   introHint:"<b>Click any module</b> to see what it does, its quality score &amp; findings, what it calls (solid amber, downstream) and what depends on it (dashed gray, upstream).<br><br>Each card shows a <b>health score</b> (0–100). Toggle the color mode, filter by grade/issue, or open the <b>Audit report</b>.",
+   criticalPath:"Critical path", spineTitle:"Data-flow spine", path:"Path", healthReport:"Health report", qa:"Quality audit",
+   worst:"Worst offenders — click to inspect", commonTags:"Most-common smell tags", themes:"Cross-cutting themes", backToMap:"← Back to map", avg:"avg",
+   filter:"Filter", modulesWord:"modules", allWord:"all", noMatches:"no matches", clearFilters:"Clear filters",
+   btnReport:"Audit report", btnSpine:"Data-flow spine", colorCoupling:"Color: coupling", colorHealth:"Color: health",
+   btnStd:"Standard", stdTitle:"Audit standard", stdIntro:"How modules are scored — the same rubric for every module, language, and run. Click Edit to add your own issue tags.",
+   stdRubric:"Score → grade", stdSeverity:"Finding severity", stdTags:"Issue tags", stdCoupling:"Coupling (structural, not quality)", close:"Close",
+   stdEditBtn:"Edit", stdDone:"Done", stdExport:"Export", stdReset:"Reset", stdAddTag:"+ Tag",
+   stdEditHint:"Editing — changes save in this browser. Export → save as <code>.codemap/standard.json</code> to make them permanent and used by audits.",
+   stdNewTagId:"New tag id (e.g. perf-risk, security):", stdExported:"Saved standard.json — put it in .codemap/",
+   copyFix:"Copy fix prompt", copied:"Copied — paste into Claude Code / Codex",
+   trackedLoc:(l,f)=>`${l} tracked LoC · ${f} files` },
+ zh:{ mapSuffix:"· 功能架构图", sub:"功能模块 · 调用层级 · 耦合 · 质量评分 · 代码行数",
+   report:"报告", searchPh:"查找模块…", allGrades:"全部等级", anyIssue:"全部问题", scrollNote:"点击模块 · 滚动平移",
+   about:"模块简介", audit:"质量审计", clean:"无实质问题 —— 干净、职责单一",
+   dependsOn:"依赖 / 调用 →", usedBy:"← 被谁依赖", none:"— 无 —", clearSel:"清除选择",
+   couplingLbl:"耦合", deps:"个依赖", dependents:"个被依赖", locUnit:"行", coreModules:"核心模块（主线）",
+   lgCoupling:"耦合", lgCore:"core — 系统主线枢纽", lgHigh:"high — 连接很多", lgMed:"medium — 中等", lgLow:"low — 叶子 / 自洽",
+   lgEdges:"连线", lgOut:"依赖 / 调用 →", lgIn:"← 被依赖",
+   introHint:"<b>点击任意模块</b>查看它在做什么、质量评分与问题、它调用了谁（实线琥珀＝下游）以及谁依赖它（虚线灰＝上游）。<br><br>每张卡片都有<b>健康分</b>（0–100）。可切换配色模式、按等级或问题筛选，或打开<b>审计报告</b>。",
+   criticalPath:"关键路径", spineTitle:"数据流主线", path:"路径", healthReport:"健康报告", qa:"质量审计",
+   worst:"最差模块 —— 点击查看", commonTags:"最常见问题标签", themes:"跨模块共性问题", backToMap:"← 返回地图", avg:"平均",
+   filter:"筛选", modulesWord:"个模块", allWord:"全部", noMatches:"无匹配", clearFilters:"清除筛选",
+   btnReport:"审计报告", btnSpine:"数据流主线", colorCoupling:"配色：耦合", colorHealth:"配色：健康度",
+   btnStd:"评判标准", stdTitle:"评判标准", stdIntro:"模块如何打分 —— 所有模块、所有语言、每一次运行都用同一套标准。点「编辑」可加入你自己的问题标签。",
+   stdRubric:"分数 → 等级", stdSeverity:"问题严重度", stdTags:"问题标签", stdCoupling:"耦合（结构维度，非质量）", close:"关闭",
+   stdEditBtn:"编辑", stdDone:"完成", stdExport:"导出", stdReset:"重置", stdAddTag:"+ 标签",
+   stdEditHint:"编辑中 —— 改动保存在本浏览器。导出 → 存为 <code>.codemap/standard.json</code> 即永久生效并被审计采用。",
+   stdNewTagId:"新标签 id（如 perf-risk、security）：", stdExported:"已生成 standard.json —— 放到 .codemap/ 下",
+   copyFix:"复制修复指令", copied:"已复制 —— 粘贴到 Claude Code / Codex",
+   trackedLoc:(l,f)=>`${l} 行（已跟踪）· ${f} 个文件` },
+};
+function tl(k){ const d=I18N[LANG]||I18N.en; return d[k]!=null?d[k]:(I18N.en[k]!=null?I18N.en[k]:k); }
+document.documentElement.lang = LANG;
+function stdText(o){ return o ? (LANG==="zh" ? (o.zh||o.en||"") : (o.en||o.zh||"")) : ""; }
+
+/* ---------- the audit standard — editable, configurable, its own page ----------
+   Effective standard = a saved browser draft (user edits), else the injected file
+   (DATA.standard, from .codemap/standard.json or the skill default), else
+   this built-in fallback. Edit it on the Standard page and Export to standard.json
+   to make it permanent and used by audits. Custom tags flow through the whole map. */
+const BUILTIN_STD = {
+  rubric:[
+    {grade:"A",score:95,range:"90–100",en:"clean, well-scoped, idiomatic",zh:"干净、职责单一、地道"},
+    {grade:"B",score:82,range:"75–89",en:"minor issues: a documented shim, mild bloat",zh:"小问题：有文档的兼容、轻微臃肿"},
+    {grade:"C",score:67,range:"60–74",en:"notable hacks / fallbacks / bloat / duplication",zh:"明显的 hack / 回退 / 臃肿 / 重复"},
+    {grade:"D",score:50,range:"40–59",en:"significant legacy / stubs / duplication, or a protocol violation",zh:"严重的遗留 / 占位 / 重复，或协议违规"},
+    {grade:"F",score:25,range:"0–39",en:"broken, fake output, or unfinished-but-wired",zh:"损坏、伪造输出，或未完成却已接线"},
+  ],
+  severities:[
+    {key:"HIGH",en:"wrong / dangerous / fake, a protocol or security issue, or a genuine maintenance hazard",zh:"错误 / 危险 / 伪造、协议或安全问题，或真正的维护地雷"},
+    {key:"MED",en:"a real smell a maintainer should fix",zh:"维护者该修的真坏味"},
+    {key:"LOW",en:"a documented shim, a cosmetic cast, benign bloat — worth noting, not urgent",zh:"有文档的兼容、装饰性 cast、良性臃肿 —— 值得记、不紧急"},
+  ],
+  coupling:[
+    {key:"core",en:"system spine — central to almost everything",zh:"系统主线 —— 几乎牵连一切"},
+    {key:"high",en:"many connections",zh:"连接很多"},
+    {key:"med",en:"moderate",zh:"中等"},
+    {key:"low",en:"leaf / self-contained",zh:"叶子 / 自洽"},
+  ],
+  tags:[
+    {id:"monkeypatch",label:"monkeypatch",labelZh:"猴补丁",bad:true,en:"runtime mutation of another module / stdlib / vendor; reflection or prototype patching",zh:"运行时改写别的模块/标准库/依赖；反射或原型补丁"},
+    {id:"fallback",label:"fallback",labelZh:"回退兜底",bad:true,en:"'try the real thing, then fake/degrade'; a||b||c chains that hide which value is real",zh:"“先试真的再退化/造假”；a||b||c 掩盖哪个是真值"},
+    {id:"silent-except",label:"silent-except",labelZh:"静默吞错",bad:true,en:"swallowed errors: empty catch / except:pass / ignored return codes",zh:"吞掉错误：空 catch / except:pass / 忽略返回码"},
+    {id:"legacy",label:"legacy",labelZh:"遗留",bad:true,en:"deprecated/back-compat shims, dead-but-shipped code, parallel old+new paths",zh:"遗留/兼容垫片、已发布的死代码、新旧并存"},
+    {id:"dual-format",label:"dual-format",labelZh:"双格式",bad:true,en:"accepting two shapes for one field (snake||camel), patched through the code",zh:"同一字段接受两种形态（snake||camel）并散落各处"},
+    {id:"stub",label:"stub",labelZh:"占位桩",bad:true,en:"NotImplemented / TODO / dead buttons / demo scripts presented as real",zh:"未实现/TODO/死按钮/演示脚本当成品"},
+    {id:"fake-output",label:"fake-output",labelZh:"伪造输出",bad:true,en:"returns random/canned/hardcoded results where real work is implied",zh:"本应真算的地方返回随机/写死结果"},
+    {id:"duplication",label:"duplication",labelZh:"重复",bad:true,en:"copy-pasted logic, or an existing shared abstraction not reused",zh:"复制粘贴，或已有共享抽象却不复用"},
+    {id:"bloat",label:"bloat",labelZh:"臃肿",bad:true,en:"oversized file / function; too many responsibilities in one unit",zh:"超大文件/函数；单元职责过多"},
+    {id:"glue",label:"glue",labelZh:"胶水",bad:true,en:"valueless pass-through: rows of thin forwarders / no-op adapters",zh:"无价值透传：成片薄包装 / 零转换适配器"},
+    {id:"any-escape",label:"any-escape",labelZh:"类型逃逸",bad:true,en:"bypassing the type system: as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe",zh:"绕过类型系统：as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe"},
+    {id:"over-fit",label:"over-fit",labelZh:"过度特化",bad:true,en:"hardcoded to one case where a small generalization was expected",zh:"硬编码单一情况，本应小幅泛化"},
+    {id:"god-component",label:"god-component",labelZh:"上帝组件",bad:true,en:"one component/class/file doing far too much",zh:"一个组件/类/文件做太多事"},
+    {id:"placeholder",label:"placeholder",labelZh:"占位",bad:true,en:"unfinished UI / data presented as if complete",zh:"未完成的 UI/数据当作已完成"},
+    {id:"clean",label:"clean",labelZh:"干净",bad:false,en:"no material issues — well-scoped",zh:"无实质问题 —— 职责单一"},
+  ],
+};
+const STD_KEY = "codemap.standard."+(META.project||"default");
+function loadStdDraft(){ try{ const s=localStorage.getItem(STD_KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+let STDDATA = loadStdDraft() || JSON.parse(JSON.stringify(DATA.standard || BUILTIN_STD));
+const TAGMETA = {};
+function rebuildTagMeta(){
+  for(const k in TAGMETA) delete TAGMETA[k];
+  (STDDATA.tags||[]).forEach(t=>TAGMETA[t.id]=t);
+  BAD_TAGS = new Set((STDDATA.tags||[]).filter(t=>t.bad!==false).map(t=>t.id));
+}
+function tagMeta(id){ return TAGMETA[id] || {id,label:id,bad:true}; }
+function tagLabel(t){ const m=tagMeta(t); return LANG==="zh" ? (m.labelZh||m.label||t) : (m.label||t); }
+rebuildTagMeta();
+
+/* problems POP (saturated red→amber), good RECEDES (pale low-sat green).
+   The cue is saturation/lightness, not hue — colorblind-friendlier. */
+function healthColor(s){
+  if(s==null) return "#6b7280";
+  const stops=[[0,[224,78,74]],[42,[226,128,66]],[60,[222,172,52]],
+               [74,[214,180,72]],[82,[168,180,140]],[100,[150,178,150]]];
+  s=Math.max(0,Math.min(100,s));
+  let a=stops[0], b=stops[stops.length-1];
+  for(let i=0;i<stops.length-1;i++){ if(s>=stops[i][0] && s<=stops[i+1][0]){a=stops[i];b=stops[i+1];break;} }
+  const t=(s-a[0])/((b[0]-a[0])||1);
+  const c=a[1].map((v,k)=>Math.round(v+(b[1][k]-v)*t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+const byId = Object.fromEntries(M.map(m=>[m.id,m]));
+const dependentsOf = id => M.filter(m=>(m.deps||[]).includes(id)).map(m=>m.id);
+
+const board=document.getElementById("board");
+const svg=document.getElementById("edges");
+const detail=document.getElementById("detail");
+const cardEl={};
+
+document.getElementById("projTitle").innerHTML = esc(META.project||"Project")+` <span>${tl('mapSuffix')}</span>`;
+document.getElementById("subLine").innerHTML = esc(META.subtitle||tl('sub'))+
+  (META.mdPath?`  ·  <a href="${esc(META.mdPath.split('/').pop())}" style="color:var(--accent);text-decoration:none">${tl('report')} ↗</a>`:"");
+/* localize static header chrome (module names/labels are never translated) */
+document.querySelector(".scrollnote").textContent = tl("scrollNote");
+document.getElementById("search").placeholder = tl("searchPh");
+document.getElementById("reportBtn").textContent = tl("btnReport");
+document.getElementById("spineBtn").textContent = tl("btnSpine");
+document.getElementById("stdBtn").textContent = tl("btnStd");
+document.getElementById("gradeFilter").options[0].textContent = tl("allGrades");
+document.getElementById("tagFilter").options[0].textContent = tl("anyIssue");
+
+BANDS.forEach(b=>{
+  if(b.wire){
+    const w=document.createElement("div"); w.className="wire";
+    w.innerHTML=`<div class="line"></div><div class="lbl">${esc(b.t||"boundary")}</div><div class="line"></div>`;
+    board.appendChild(w); return;
+  }
+  const band=document.createElement("div"); band.className=`band tier-${b.tier||""}`;
+  const items=M.filter(m=>m.band===b.id);
+  const gloc=items.reduce((a,m)=>a+(m.loc||0),0);
+  const head=document.createElement("div"); head.className="band-head";
+  head.innerHTML=`<span class="t">${esc(b.t||b.id)}</span><span class="d">${esc(b.d||"")}</span>`+
+    `<span class="num">${items.length}</span><span class="num gloc">${gloc.toLocaleString()} ${tl('locUnit')}</span>`;
+  band.appendChild(head);
+  const body=document.createElement("div"); body.className="band-body";
+  items.forEach(m=>{
+    const n=document.createElement("div");
+    n.className=`node c-${m.coupling||"low"}`; n.dataset.id=m.id;
+    if(m.score!=null) n.style.setProperty("--h",healthColor(m.score));
+    const chip=m.score!=null?`<span class="chip">${m.score}</span>`:"";
+    const locStr=m.loc!=null?` · ${Number(m.loc).toLocaleString()} ${tl('locUnit')}`:"";
+    n.innerHTML=`${chip}<div class="lab">${esc(m.label)}</div><div class="meta">${esc(m.grade||"–")} · ${(m.deps||[]).length}→ ${dependentsOf(m.id).length}←${locStr}</div>`;
+    n.addEventListener("click",e=>{e.stopPropagation();select(m.id)});
+    body.appendChild(n); cardEl[m.id]=n;
+  });
+  band.appendChild(body); board.appendChild(band);
+});
+
+function center(el){const r=el.getBoundingClientRect(), br=board.getBoundingClientRect();
+  return {x:r.left-br.left+r.width/2, y:r.top-br.top+r.height/2, w:r.width, h:r.height};}
+function clip(c,from){const dx=from.x-c.x, dy=from.y-c.y, hw=c.w/2+2, hh=c.h/2+2;
+  if(dx===0&&dy===0) return c;
+  const s=Math.min(hw/Math.abs(dx||1e-6), hh/Math.abs(dy||1e-6));
+  return {x:c.x+dx*s, y:c.y+dy*s};}
+function edge(aEl,bEl,kind){
+  const ca=center(aEl), cb=center(bEl), a=clip(ca,cb), b=clip(cb,ca);
+  const dy=b.y-a.y, k=Math.min(Math.abs(dy)*0.4+30,150);
+  const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+  p.setAttribute("d",`M${a.x},${a.y} C${a.x},${a.y+(dy>=0?k:-k)} ${b.x},${b.y-(dy>=0?k:-k)} ${b.x},${b.y}`);
+  p.setAttribute("fill","none");
+  p.setAttribute("stroke",kind==="out"?"var(--out)":"var(--in)");
+  p.setAttribute("stroke-width",kind==="out"?"1.9":"1.5");
+  p.setAttribute("stroke-opacity",kind==="out"?"0.95":"0.6");
+  if(kind==="in")p.setAttribute("stroke-dasharray","4 3");
+  p.setAttribute("marker-end",kind==="out"?"url(#ah-out)":"url(#ah-in)");
+  svg.appendChild(p);
+}
+function clearEdges(){[...svg.querySelectorAll("path")].forEach(p=>p.remove());}
+
+let current=null, spineOn=false;
+function resetClasses(){board.classList.remove("has-sel");
+  Object.values(cardEl).forEach(n=>n.classList.remove("sel","dep","dependent","lit"));}
+function select(id){
+  if(current===id){clearSel();return;}
+  current=id; spineOn=false; document.getElementById("spineBtn").classList.remove("active");
+  clearEdges(); resetClasses();
+  const m=byId[id]; const outs=(m.deps||[]); const ins=dependentsOf(id);
+  board.classList.add("has-sel"); cardEl[id].classList.add("sel","lit");
+  outs.forEach(d=>{cardEl[d]&&(cardEl[d].classList.add("dep","lit"),edge(cardEl[id],cardEl[d],"out"));});
+  ins.forEach(d=>{cardEl[d]&&(cardEl[d].classList.add("dependent","lit"),edge(cardEl[d],cardEl[id],"in"));});
+  renderDetail(m,outs,ins);
+  cardEl[id].scrollIntoView({block:"nearest",inline:"nearest",behavior:"smooth"});
+}
+function clearSel(){current=null; clearEdges(); resetClasses(); renderIntro();}
+function showSpine(){
+  current=null; clearEdges(); resetClasses(); board.classList.add("has-sel");
+  spineOn=true; document.getElementById("spineBtn").classList.add("active");
+  SPINE.forEach(id=>cardEl[id]&&cardEl[id].classList.add("lit"));
+  for(let i=0;i<SPINE.length-1;i++){const a=cardEl[SPINE[i]],b=cardEl[SPINE[i+1]];
+    if(a&&b){a.classList.add("sel");b.classList.add("sel");edge(a,b,"out");}}
+  detail.innerHTML=`<div class="detail"><div class="kicker">${tl('criticalPath')}</div><h2>${tl('spineTitle')}</h2>
+    <p class="desc">${esc(META.spineDesc||"The system's critical request path, end to end.")}</p>
+    <div class="reltitle">${tl('path')}</div>
+    <div class="rel">${SPINE.map(id=>byId[id]?`<button data-go="${esc(id)}"><span>${esc(byId[id].label)}</span><span class="bnd">${esc(byId[id].coupling)}</span></button>`:"").join("")}</div>
+    ${legendHTML()}</div>`;
+  bindGo();
+}
+function auditHTML(m){
+  if(m.score==null) return "";
+  const col=healthColor(m.score);
+  const tags=(m.tags||[]).map(t=>`<span class="tg ${t==='clean'?'ok':(BAD_TAGS.has(t)?'bad':'')}">${esc(tagLabel(t))}</span>`).join("");
+  const sevCls=s=>({HIGH:"HIGH",MED:"MED",LOW:"LOW"}[s]||"LOW");
+  const fnd=(m.findings||[]).length
+    ? m.findings.map(f=>`<div class="finding sev-${sevCls(f.sev)}"><div class="top"><span class="sev sev-${sevCls(f.sev)}">${esc(f.sev)}</span><span class="loc">${esc(f.loc||"")}</span></div><div class="txt">${esc(f.text||"")}</div></div>`).join("")
+    : `<div class="none">${tl('clean')}</div>`;
+  return `<div class="reltitle" style="margin-top:6px">${tl('audit')}</div>`+`
+    <div class="scorebox"><span class="big" style="color:${col}">${m.score}</span>
+      <span class="gr grade-${esc(m.grade)}">${esc(m.grade)}</span>
+      <span class="bar"><i style="width:${m.score}%;background:${col}"></i></span></div>
+    <div class="tagchips">${tags}</div><div class="findings">${fnd}</div>`;
+}
+function renderDetail(m,outs,ins){
+  const li=arr=>arr.length?arr.map(id=>byId[id]?`<button data-go="${esc(id)}"><span>${esc(byId[id].label)}</span><span class="bnd">${esc(byId[id].band)}</span></button>`:"").join(""):`<div class="none">${tl('none')}</div>`;
+  detail.innerHTML=`<div class="detail"><div class="kicker">${esc(bandTitle(m.band))}</div>
+    <h2>${esc(m.label)}</h2><div class="path">${esc(m.path||"")}</div>
+    <div class="pill-row"><span class="pill cpl">${tl('couplingLbl')}: ${esc(m.coupling)}</span>
+      ${m.loc!=null?`<span class="pill">${Number(m.loc).toLocaleString()} ${tl('locUnit')}</span>`:""}
+      <span class="pill">${outs.length} ${tl('deps')}</span><span class="pill">${ins.length} ${tl('dependents')}</span></div>
+    ${m.desc?`<div class="reltitle">${tl('about')}</div><p class="desc">${esc(m.desc)}</p>`:""}
+    ${auditHTML(m)}
+    <div class="reltitle"><span class="dotc" style="background:var(--out)"></span>${tl('dependsOn')}</div>
+    <div class="rel">${li(outs)}</div>
+    <div class="reltitle"><span class="dotc" style="background:var(--in)"></span>${tl('usedBy')}</div>
+    <div class="rel">${li(ins)}</div>
+    ${m.score!=null?`<button class="btn clearbtn" id="copyFixBtn" style="margin-top:14px">${tl('copyFix')} ↗</button>`:""}
+    <button class="btn clearbtn" id="clearBtn" style="margin-top:8px">${tl('clearSel')}</button></div>`;
+  bindGo(); document.getElementById("clearBtn").addEventListener("click",clearSel);
+  const cf=document.getElementById("copyFixBtn");
+  if(cf) cf.onclick=()=>{ copyText("/codemap fix "+m.id); toast(tl('copied')); };
+}
+function bindGo(){detail.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>select(b.dataset.go)));}
+function bandTitle(b){return (BANDS.find(x=>x.id===b)||{}).t||b;}
+function legendHTML(){
+  return `<div class="legend"><h4>${tl('lgCoupling')}</h4>
+    <div class="row"><span class="swatch" style="background:var(--c-core)"></span>${tl('lgCore')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-high)"></span>${tl('lgHigh')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-med)"></span>${tl('lgMed')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-low)"></span>${tl('lgLow')}</div>
+    <h4 style="margin-top:18px">${tl('lgEdges')}</h4>
+    <div class="row"><span class="ln" style="border-color:var(--out)"></span>${tl('lgOut')}</div>
+    <div class="row"><span class="ln" style="border-color:var(--in);border-top-style:dashed"></span>${tl('lgIn')}</div></div>`;
+}
+function renderIntro(){
+  const cores=M.filter(m=>m.coupling==="core");
+  detail.innerHTML=`<div class="detail"><div class="empty-hint">${tl('introHint')}</div>
+    ${cores.length?`<div class="reltitle" style="margin-top:22px">${tl('coreModules')}</div>
+    <div class="rel">${cores.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd">${esc(m.band)}</span></button>`).join("")}</div>`:""}
+    ${legendHTML()}</div>`;
+  bindGo();
+}
+function renderReport(){
+  current=null; spineOn=false; clearEdges(); resetClasses();
+  document.getElementById("spineBtn").classList.remove("active");
+  const scored=M.filter(m=>m.score!=null);
+  if(!scored.length){renderIntro();return;}
+  const avg=Math.round(scored.reduce((a,m)=>a+m.score,0)/scored.length);
+  const gc={A:0,B:0,C:0,D:0,F:0}; scored.forEach(m=>gc[m.grade]!=null&&gc[m.grade]++);
+  const worst=[...scored].sort((a,b)=>a.score-b.score).slice(0,10);
+  const tagCount={}; scored.forEach(m=>(m.tags||[]).forEach(t=>{if(BAD_TAGS.has(t))tagCount[t]=(tagCount[t]||0)+1;}));
+  const topTags=Object.entries(tagCount).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const locLine=META.locLine||(META.tracked_loc?tl('trackedLoc')(Number(META.tracked_loc).toLocaleString(),META.tracked_files||"?"):"");
+  detail.innerHTML=`<div class="report">
+    <div class="kicker" style="font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.5px">${tl('qa')} · ${scored.length} ${tl('modulesWord')}</div>
+    <h2 style="font-size:18px;margin:5px 0 2px;font-weight:650">${tl('healthReport')}</h2>
+    <div class="path" style="color:var(--faint);font-size:11px;margin-bottom:4px">${["monkeypatch","fallback","legacy","stub","bloat","duplication","dual-format"].map(tagLabel).join(" · ")}</div>
+    ${locLine?`<div class="path" style="color:var(--muted);font-size:11px;margin-bottom:2px">${esc(locLine)}</div>`:""}
+    <div class="stat-grid">
+      <div class="stat"><div class="n" style="color:${healthColor(avg)}">${avg}</div><div class="l">${tl('avg')}</div></div>
+      <div class="stat"><div class="n grade-A">${gc.A}</div><div class="l">A</div></div>
+      <div class="stat"><div class="n grade-B">${gc.B}</div><div class="l">B</div></div>
+      <div class="stat"><div class="n grade-C">${gc.C}</div><div class="l">C</div></div>
+      <div class="stat"><div class="n grade-D" style="color:#e0524b">${gc.D+gc.F}</div><div class="l">D/F</div></div>
+    </div>
+    <h3>${tl('worst')}</h3>
+    <div class="rel">${worst.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd" style="color:${healthColor(m.score)}">${m.score} · ${esc(m.grade)}</span></button>`).join("")}</div>
+    ${topTags.length?`<h3>${tl('commonTags')}</h3><div class="tagchips">${topTags.map(([t,n])=>`<span class="tg bad">${esc(tagLabel(t))} ·${n}</span>`).join("")}</div>`:""}
+    ${REPORT_THEMES.length?`<h3>${tl('themes')}</h3>${REPORT_THEMES.map(([h,b])=>`<p class="theme"><b>${esc(h)}.</b> ${esc(b)}</p>`).join("")}`:""}
+    <button class="btn clearbtn" id="toMapBtn">${tl('backToMap')}</button></div>`;
+  bindGo(); document.getElementById("toMapBtn").addEventListener("click",clearSel);
+}
+function toast(msg){
+  let t=document.getElementById("toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; t.className="toast"; document.body.appendChild(t); }
+  t.textContent=msg; t.classList.add("show");
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2400);
+}
+function copyText(s){
+  if(navigator.clipboard) { navigator.clipboard.writeText(s).catch(()=>{}); return; }
+  const ta=document.createElement("textarea"); ta.value=s; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); }catch(e){} ta.remove();
+}
+let STD_EDIT=false;
+function openStandard(){ STD_EDIT=false; renderStd(); document.getElementById("stdModal").classList.add("open"); }
+function closeStandard(){ document.getElementById("stdModal").classList.remove("open"); }
+function saveStdDraft(){ try{ localStorage.setItem(STD_KEY, JSON.stringify(STDDATA)); }catch(e){} rebuildTagMeta(); }
+function langKey(){ return LANG==="zh" ? "zh" : "en"; }
+function renderStd(){
+  const ed=STD_EDIT, ce=ed?' contenteditable="true" spellcheck="false"':'';
+  const rubric=STDDATA.rubric.map((x,i)=>`<div class="std-row"><span class="std-badge" style="background:${healthColor(x.score)}">${esc(x.grade)}</span><span class="std-range">${esc(x.range)}</span><span class="std-desc"${ce} data-k="rubric" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  const sev=STDDATA.severities.map((x,i)=>`<div class="std-row"><span class="std-key"><span class="sev sev-${esc(x.key)}">${esc(x.key)}</span></span><span class="std-desc"${ce} data-k="sev" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  const tags=STDDATA.tags.map((x,i)=>`<div class="std-row"><span class="std-key"><span class="tg ${x.bad===false?'ok':'bad'}"${ce} data-k="taglabel" data-i="${i}">${esc(LANG==="zh"?(x.labelZh||x.label):x.label)}</span></span><span class="std-desc"${ce} data-k="tag" data-i="${i}">${esc(stdText(x))}</span>${ed?`<button class="xrm" data-rm="${i}" title="remove">✕</button>`:''}</div>`).join("");
+  const coup=STDDATA.coupling.map((x,i)=>`<div class="std-row"><span class="std-key" style="font-family:var(--mono);font-size:11.5px;color:var(--ink)">${esc(x.key)}</span><span class="std-desc"${ce} data-k="coup" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  document.getElementById("stdModal").innerHTML=`<div class="sheet">
+    <div class="xbtn" style="display:flex;gap:6px">
+      <button class="btn ${ed?'active':''}" id="stdEdit">${ed?tl('stdDone'):tl('stdEditBtn')}</button>
+      ${ed?`<button class="btn" id="stdExport">${tl('stdExport')}</button><button class="btn" id="stdReset">${tl('stdReset')}</button>`:''}
+      <button class="btn" id="stdClose">${tl('close')}</button>
+    </div>
+    <h2>${tl('stdTitle')}</h2><div class="intro">${ed?tl('stdEditHint'):tl('stdIntro')}</div>
+    <div class="std-h4">${tl('stdRubric')}</div>${rubric}
+    <div class="std-h4">${tl('stdSeverity')}</div>${sev}
+    <div class="std-h4">${tl('stdTags')}${ed?` <button class="btn" id="stdAddTag" style="margin-left:8px;padding:2px 8px">${tl('stdAddTag')}</button>`:''}</div>${tags}
+    <div class="std-h4">${tl('stdCoupling')}</div>${coup}</div>`;
+  document.getElementById("stdClose").onclick=closeStandard;
+  document.getElementById("stdEdit").onclick=()=>{STD_EDIT=!STD_EDIT; renderStd();};
+  if(ed){
+    document.getElementById("stdExport").onclick=()=>{
+      const blob=new Blob([JSON.stringify(STDDATA,null,1)],{type:"application/json"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="standard.json"; a.click();
+      toast(tl('stdExported'));
+    };
+    document.getElementById("stdReset").onclick=()=>{
+      try{localStorage.removeItem(STD_KEY);}catch(e){}
+      STDDATA=JSON.parse(JSON.stringify(DATA.standard||BUILTIN_STD)); rebuildTagMeta(); renderStd();
+    };
+    document.getElementById("stdAddTag").onclick=()=>{
+      const id=(prompt(tl('stdNewTagId'))||"").trim().toLowerCase().replace(/\s+/g,"-");
+      if(!id || STDDATA.tags.some(t=>t.id===id)) return;
+      STDDATA.tags.push({id,label:id,labelZh:id,bad:true,en:"",zh:""}); saveStdDraft(); renderStd();
+    };
+    document.querySelectorAll("#stdModal [data-rm]").forEach(b=>b.onclick=()=>{STDDATA.tags.splice(+b.dataset.rm,1); saveStdDraft(); renderStd();});
+    document.querySelectorAll("#stdModal [data-k]").forEach(el=>el.addEventListener("input",()=>{
+      const i=+el.dataset.i, v=el.textContent, lk=langKey();
+      const k=el.dataset.k;
+      if(k==="rubric") STDDATA.rubric[i][lk]=v;
+      else if(k==="sev") STDDATA.severities[i][lk]=v;
+      else if(k==="coup") STDDATA.coupling[i][lk]=v;
+      else if(k==="tag") STDDATA.tags[i][lk]=v;
+      else if(k==="taglabel") STDDATA.tags[i][LANG==="zh"?"labelZh":"label"]=v;
+      saveStdDraft();
+    }));
+  }
+}
+function toggleHealth(){
+  const on=!board.classList.contains("show-health");
+  board.classList.toggle("show-health",on);
+  const b=document.getElementById("healthBtn");
+  b.classList.toggle("active",on); b.textContent=on?tl('colorHealth'):tl('colorCoupling');
+}
+/* ---------- filtering: search + grade threshold + issue tag (combined, AND) ---------- */
+let filterGrade=null, filterTag=null, searchQuery="";
+function filtersActive(){return filterGrade!=null||filterTag!=null||searchQuery!=="";}
+function matchesFilter(m){
+  if(filterGrade!=null && !(m.score!=null && m.score<filterGrade)) return false;
+  if(filterTag && !(m.tags||[]).includes(filterTag)) return false;
+  if(searchQuery){const q=searchQuery;
+    if(!(m.label.toLowerCase().includes(q)||m.id.toLowerCase().includes(q)||(m.desc||"").toLowerCase().includes(q))) return false;}
+  return true;
+}
+function runFilter(){
+  if(!filtersActive()){document.getElementById("fcount").textContent="";clearSel();return;}
+  current=null; spineOn=false; document.getElementById("spineBtn").classList.remove("active");
+  clearEdges(); resetClasses(); board.classList.add("has-sel");
+  document.getElementById("gradeFilter").classList.toggle("on",filterGrade!=null);
+  document.getElementById("tagFilter").classList.toggle("on",!!filterTag);
+  let n=0;
+  M.forEach(m=>{ if(matchesFilter(m)){cardEl[m.id].classList.add("lit");n++;} });
+  document.getElementById("fcount").textContent=n+" / "+M.length;
+  const matches=M.filter(matchesFilter).sort((a,b)=>(a.score??999)-(b.score??999));
+  const gl={90:"≤ B",75:"≤ C",60:"≤ D",40:"F"}[filterGrade];
+  const crit=[gl||"",filterTag?("#"+esc(tagLabel(filterTag))):"",searchQuery?('"'+esc(searchQuery)+'"'):""].filter(Boolean).join("  ·  ");
+  detail.innerHTML=`<div class="detail"><div class="kicker">${tl('filter')}</div>
+    <h2>${n} ${tl('modulesWord')}</h2><div class="path">${crit||tl('allWord')}</div>
+    <div class="rel">${matches.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd" style="color:${healthColor(m.score)}">${m.score!=null?m.score+" · "+esc(m.grade):""}</span></button>`).join("")||`<div class="none">${tl('noMatches')}</div>`}</div>
+    <button class="btn clearbtn" id="clearFilterBtn">${tl('clearFilters')}</button></div>`;
+  bindGo(); document.getElementById("clearFilterBtn").addEventListener("click",resetFilters);
+}
+function resetFilters(){
+  filterGrade=null; filterTag=null; searchQuery="";
+  document.getElementById("gradeFilter").value=""; document.getElementById("gradeFilter").classList.remove("on");
+  document.getElementById("tagFilter").value=""; document.getElementById("tagFilter").classList.remove("on");
+  document.getElementById("search").value=""; document.getElementById("fcount").textContent="";
+  clearSel();
+}
+/* populate the issue-tag dropdown from the negative tags present, by frequency */
+(function(){
+  const cnt={}; M.forEach(m=>(m.tags||[]).forEach(t=>{if(BAD_TAGS.has(t))cnt[t]=(cnt[t]||0)+1;}));
+  const sel=document.getElementById("tagFilter");
+  Object.entries(cnt).sort((a,b)=>b[1]-a[1]).forEach(([t,c])=>{
+    const o=document.createElement("option"); o.value=t; o.textContent=`${tagLabel(t)} (${c})`; sel.appendChild(o);});
+})();
+document.getElementById("search").addEventListener("input",e=>{searchQuery=e.target.value.trim().toLowerCase();runFilter();});
+document.getElementById("search").addEventListener("keydown",e=>{
+  if(e.key==="Enter"){const lit=board.querySelector(".node.lit");if(lit)select(lit.dataset.id);}});
+document.getElementById("gradeFilter").addEventListener("change",e=>{filterGrade=e.target.value?Number(e.target.value):null;runFilter();});
+document.getElementById("tagFilter").addEventListener("change",e=>{filterTag=e.target.value||null;runFilter();});
+document.getElementById("healthBtn").addEventListener("click",toggleHealth);
+document.getElementById("reportBtn").addEventListener("click",renderReport);
+document.getElementById("spineBtn").addEventListener("click",()=>{spineOn?clearSel():showSpine();});
+document.getElementById("stdBtn").addEventListener("click",openStandard);
+document.getElementById("stdModal").addEventListener("click",e=>{ if(e.target.id==="stdModal") closeStandard(); });
+window.addEventListener("keydown",e=>{ if(e.key==="Escape") closeStandard(); });
+board.addEventListener("click",()=>{filtersActive()?runFilter():clearSel();});
+let rt; window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>{const c=current;if(c){current=null;select(c);}else if(spineOn)showSpine();},120);});
+board.classList.add("show-health");
+document.getElementById("healthBtn").classList.add("active");
+document.getElementById("healthBtn").textContent=tl("colorHealth");
+renderIntro();
+</script>
+</body>
+</html>

@@ -2,12 +2,22 @@ package com.getjobs.application.init;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.entity.ZhilianOptionEntity;
+import com.getjobs.application.mapper.ZhilianOptionMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ZhilianOptionInitializerTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -78,5 +88,24 @@ class ZhilianOptionInitializerTest {
                         tuple("salary", "10K-15K", "10001,15000"),
                         tuple("salary", "50K\u4ee5\u4e0a", "50001,9999999")
                 );
+    }
+
+    @Test
+    void failedOptionReplacementRollsBackInsteadOfLeavingPartialRows() {
+        ZhilianOptionMapper mapper = mock(ZhilianOptionMapper.class);
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
+        when(mapper.insert(any(ZhilianOptionEntity.class))).thenThrow(new IllegalStateException("insert failed"));
+        ZhilianOptionInitializer initializer = new ZhilianOptionInitializer(mapper, transactionManager);
+
+        assertThatThrownBy(() -> initializer.replaceCityAndSalaryOptionsAtomically(
+                ZhilianOptionInitializer.fallbackOptions()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("刷新智联城市/薪资筛选项失败，已回滚")
+                .hasRootCauseMessage("insert failed");
+
+        verify(transactionManager).rollback(transactionStatus);
+        verify(transactionManager, never()).commit(transactionStatus);
     }
 }

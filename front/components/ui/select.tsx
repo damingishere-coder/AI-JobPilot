@@ -21,7 +21,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
     const wrapperRef = React.useRef<HTMLDivElement>(null)
     const buttonRef = React.useRef<HTMLButtonElement>(null)
     const dropdownRef = React.useRef<HTMLDivElement>(null)
-    const [dropdownPosition, setDropdownPosition] = React.useState({ top: 0, left: 0, width: 0 })
+    const [dropdownPosition, setDropdownPosition] = React.useState({ top: 0, left: 0, width: 0, maxHeight: 224 })
 
     // 确保组件已挂载（解决 SSR 问题）
     React.useEffect(() => {
@@ -42,25 +42,43 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
     const updatePosition = React.useCallback(() => {
       if (buttonRef.current) {
         const rect = buttonRef.current.getBoundingClientRect()
+        const margin = 8
+        const viewport = window.visualViewport
+        const viewportTop = viewport?.offsetTop ?? 0
+        const viewportLeft = viewport?.offsetLeft ?? 0
+        const viewportHeight = viewport?.height ?? window.innerHeight
+        const viewportWidth = viewport?.width ?? window.innerWidth
+        const below = Math.max(0, viewportTop + viewportHeight - rect.bottom - margin * 2)
+        const above = Math.max(0, rect.top - viewportTop - margin * 2)
+        const preferredHeight = Math.min(224, dropdownRef.current?.scrollHeight || 224)
+        const openAbove = below < preferredHeight && above > below
+        const maxHeight = Math.min(224, openAbove ? above : below)
+        const height = Math.min(preferredHeight, maxHeight)
+        const width = Math.min(rect.width, Math.max(0, viewportWidth - margin * 2))
         setDropdownPosition({
-          top: rect.bottom + 8,
-          left: rect.left,
-          width: rect.width,
+          top: Math.max(viewportTop + margin, Math.min(openAbove ? rect.top - margin - height : rect.bottom + margin, viewportTop + viewportHeight - margin - height)),
+          left: Math.max(viewportLeft + margin, Math.min(rect.left, viewportLeft + viewportWidth - width - margin)),
+          width,
+          maxHeight,
         })
       }
     }, [])
 
     // 打开时计算位置
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
       if (open) {
         updatePosition()
         // 监听滚动和窗口大小变化，更新位置
         const handleUpdate = () => updatePosition()
         window.addEventListener('scroll', handleUpdate, true)
         window.addEventListener('resize', handleUpdate)
+        window.visualViewport?.addEventListener('resize', handleUpdate)
+        window.visualViewport?.addEventListener('scroll', handleUpdate)
         return () => {
           window.removeEventListener('scroll', handleUpdate, true)
           window.removeEventListener('resize', handleUpdate)
+          window.visualViewport?.removeEventListener('resize', handleUpdate)
+          window.visualViewport?.removeEventListener('scroll', handleUpdate)
         }
       }
     }, [open, updatePosition])
@@ -85,11 +103,8 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
       }
 
       if (open) {
-        // 使用 setTimeout 确保 DOM 已更新
-        setTimeout(() => {
-          document.addEventListener('mousedown', handleClickOutside)
-          document.addEventListener('keydown', handleEscape)
-        }, 0)
+        document.addEventListener('mousedown', handleClickOutside)
+        document.addEventListener('keydown', handleEscape)
       }
 
       return () => {
@@ -106,6 +121,8 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
             id={id as string}
             type="button"
             disabled={disabled}
+            aria-haspopup="listbox"
+            aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
             className={cn(
               "flex h-10 w-full rounded-lg border border-slate-200 bg-white/90 px-4 py-2 pr-8 text-sm text-slate-800 shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:border-blue-200 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-slate-100",
@@ -126,14 +143,17 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                 top: `${dropdownPosition.top}px`,
                 left: `${dropdownPosition.left}px`,
                 width: `${dropdownPosition.width}px`,
+                maxHeight: `${dropdownPosition.maxHeight}px`,
               }}
             >
-              <ul className="py-1">
+              <ul className="py-1" role="listbox">
                 {options.map((o) => {
                   const active = String(value ?? '') === String(o.value)
                   return (
                     <li
                       key={String(o.value)}
+                      role="option"
+                      aria-selected={active}
                       className={cn(
                         "group flex cursor-pointer items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 transition-all last:border-b-0 dark:border-white/10",
                         active ? "bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-200" : "hover:bg-slate-50 dark:hover:bg-white/5"

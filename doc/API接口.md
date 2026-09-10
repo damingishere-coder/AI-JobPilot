@@ -18,10 +18,11 @@ http://localhost:8888
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/config` | 获取全部全局配置 |
-| `GET` | `/api/config/{key}` | 获取指定配置 |
-| `POST` | `/api/config` | 新增配置 |
-| `PUT` | `/api/config/{key}` | 更新指定配置 |
+| `GET` | `/api/config` | 获取 UI 白名单内的全局配置；敏感值只返回是否已配置 |
+| `GET` | `/api/config/{key}` | 获取指定白名单配置；`API_KEY`、`HOOK_URL` 不返回原值 |
+| `POST` | `/api/config` | 批量新增或更新白名单配置；敏感值为空时保留原值 |
+| `PUT` | `/api/config/{key}` | 更新指定白名单配置 |
+| `DELETE` | `/api/config/{key}` | 显式清除 `API_KEY` 或 `HOOK_URL` 的数据库值 |
 | `GET` | `/api/config/health` | 配置模块健康检查 |
 
 ## AI 配置
@@ -54,8 +55,10 @@ Boss 投递分析页“岗位数据”区域使用 `GET/POST /api/ai/thresholds`
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/cookie` | 获取 Cookie |
+| `GET` | `/api/cookie` | 获取 Cookie 是否已配置及非敏感元数据，不返回 Cookie 原文 |
 | `POST` | `/api/cookie/save` | 保存 Cookie |
+
+> Cookie 原文只供内部浏览器会话恢复使用。各平台兼容查询接口同样只返回 `configured` 状态和非敏感元数据。
 
 ## Profile 档案
 

@@ -1,11 +1,11 @@
 "use client"
 
-import { BiBlock, BiBriefcase, BiCheckCircle, BiChevronDown, BiChevronUp, BiFilterAlt, BiLinkExternal, BiX } from "react-icons/bi"
+import { BiBlock, BiBriefcase, BiCheckCircle, BiChevronDown, BiChevronUp, BiFilterAlt, BiLinkExternal, BiMessageDetail, BiX } from "react-icons/bi"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import type { BossJob } from "../types"
-import { riskTextOf } from "../utils"
+import { formatAiReasonDetail, parseAiReason, riskTextOf } from "../utils"
 
 function PendingJobCard({
   job,
@@ -14,6 +14,7 @@ function PendingJobCard({
   riskText,
   onOpenText,
   onConfirm,
+  onEditGreeting,
   onSkip,
   onBlacklist,
 }: {
@@ -23,11 +24,13 @@ function PendingJobCard({
   riskText: string
   onOpenText: (title: string, content?: string) => void
   onConfirm: () => void
+  onEditGreeting: () => void
   onSkip: () => void
   onBlacklist: () => void
 }) {
   const jobTitle = job.jobName || "未命名岗位"
   const company = job.companyName || "未知公司"
+  const aiReason = parseAiReason(job.aiReason)
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/50 dark:border-cyan-900/60 dark:bg-cyan-950/10">
@@ -70,20 +73,37 @@ function PendingJobCard({
           <button
             type="button"
             className="rounded-lg border border-white/60 bg-white/70 p-3 text-left text-sm dark:border-white/10 dark:bg-neutral-900/50"
-            onClick={() => onOpenText("AI理由", job.aiReason)}
+            onClick={() => onOpenText("AI分析详情", formatAiReasonDetail(job.aiReason))}
           >
-            <div className="mb-1 text-xs font-semibold text-muted-foreground">AI理由</div>
-            <div className="line-clamp-3 leading-6">{job.aiReason || "暂无AI理由"}</div>
+            <div className="mb-1 text-xs font-semibold text-muted-foreground">结论与匹配证据</div>
+            <div className="line-clamp-2 leading-6">{aiReason.summary}</div>
+            {aiReason.matches.length > 0 ? (
+              <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                {aiReason.matches.slice(0, 2).join("；")}
+              </div>
+            ) : null}
           </button>
           <button
             type="button"
             className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-left text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100"
             onClick={() => onOpenText("风险点", riskText)}
           >
-            <div className="mb-1 text-xs font-semibold">风险点</div>
+            <div className="mb-1 text-xs font-semibold">明确差距与待核实</div>
             <div className="line-clamp-3 leading-6">{riskText}</div>
           </button>
         </div>
+
+        <button
+          type="button"
+          className="w-full rounded-lg border border-cyan-200 bg-white/80 p-3 text-left text-sm dark:border-cyan-900/60 dark:bg-neutral-900/50"
+          onClick={onEditGreeting}
+        >
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+            <span>最终沟通话术</span>
+            <span>{job.greetingSource === "USER_EDITED" ? "人工编辑稿" : job.greetingSource === "AI_GREETING" ? "岗位 JD 定制" : job.greetingSource === "PROFILE_DEFAULT" ? "AI 失败兜底（档案默认）" : "空白警告"}</span>
+          </div>
+          <div className="line-clamp-2 leading-6">{job.finalGreeting || "暂无可用话术，请先编辑后再确认"}</div>
+        </button>
 
         <div className="flex flex-wrap gap-2">
           {job.jobUrl ? (
@@ -99,6 +119,9 @@ function PendingJobCard({
           )}
           <Button size="sm" variant="success" disabled={acting} onClick={onConfirm}>
             <BiCheckCircle className="mr-1" /> {acting ? "处理中..." : "确认投递"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={acting} onClick={onEditGreeting}>
+            <BiMessageDetail className="mr-1" /> 编辑沟通语
           </Button>
           <Button size="sm" variant="outline" disabled={acting} onClick={onSkip}>
             <BiX className="mr-1" /> 跳过
@@ -127,6 +150,7 @@ export function BossPendingCards({
   onConfirmAiRecommendedBatch,
   onOpenText,
   onConfirmJob,
+  onEditGreeting,
   onSkipJob,
   onBlacklistCompany,
 }: {
@@ -144,6 +168,7 @@ export function BossPendingCards({
   onConfirmAiRecommendedBatch: () => void
   onOpenText: (title: string, content?: string) => void
   onConfirmJob: (job: BossJob) => void
+  onEditGreeting: (job: BossJob) => void
   onSkipJob: (job: BossJob) => void
   onBlacklistCompany: (job: BossJob) => void
 }) {
@@ -190,6 +215,7 @@ export function BossPendingCards({
               riskText={riskTextOf(job)}
               onOpenText={onOpenText}
               onConfirm={() => onConfirmJob(job)}
+              onEditGreeting={() => onEditGreeting(job)}
               onSkip={() => onSkipJob(job)}
               onBlacklist={() => onBlacklistCompany(job)}
             />

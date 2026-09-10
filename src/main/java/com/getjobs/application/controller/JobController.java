@@ -2,9 +2,12 @@ package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.Job51ConfigEntity;
 import com.getjobs.application.entity.Job51OptionEntity;
+import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.service.CookieService;
+import com.getjobs.application.service.DeliveryAttemptService;
 import com.getjobs.application.service.Job51Service;
 import com.getjobs.worker.manager.PlaywrightManager;
 // Boss 控制器已独立，移除 Boss 依赖
@@ -27,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -48,6 +52,7 @@ public class JobController {
     private final Job51JobService job51JobService;
     private final PlaywrightManager playwrightManager;
     private final CookieService cookieService;
+    private final DeliveryAttemptService deliveryAttemptService;
 
     @Autowired
     @Qualifier("jobTaskExecutor")
@@ -346,19 +351,7 @@ public class JobController {
         Map<String, Object> response = new HashMap<>();
         try {
             CookieEntity cookie = cookieService.getCookieByPlatform("51job");
-            Map<String, Object> data = new HashMap<>();
-            if (cookie != null) {
-                data.put("id", cookie.getId());
-                data.put("platform", cookie.getPlatform());
-                data.put("cookie_value", cookie.getCookieValue());
-                data.put("remark", cookie.getRemark());
-                data.put("created_at", cookie.getCreatedAt());
-                data.put("updated_at", cookie.getUpdatedAt());
-            } else {
-                data.put("platform", "51job");
-                data.put("cookie_value", null);
-                data.put("message", "未找到51job Cookie记录");
-            }
+            Map<String, Object> data = CookieResponseView.from(cookie, "51job", "未找到51job Cookie记录");
             response.put("success", true);
             response.put("data", data);
             return ResponseEntity.ok(response);
@@ -387,9 +380,18 @@ public class JobController {
 
     /** 启动51job自动投递任务 */
     @PostMapping("/51job/start")
-    public ResponseEntity<Map<String, Object>> start51jobJob() {
+    public ResponseEntity<Map<String, Object>> start51jobJob(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "X-Real-Delivery-Confirmation", required = false) String deliveryConfirmation) {
         Map<String, Object> response = new HashMap<>();
         try {
+            boolean deliveryMode = request != null && "delivery".equalsIgnoreCase(Objects.toString(request.get("mode"), ""));
+            if (deliveryMode && !"CONFIRM_REAL_DELIVERY".equals(deliveryConfirmation)) {
+                response.put("success", false);
+                response.put("message", "真实投递模式需要操作当时再次确认；未提供有效确认头");
+                response.put("status", "confirmation_required");
+                return ResponseEntity.badRequest().body(response);
+            }
             if (!playwrightManager.isLoggedIn("51job")) {
                 response.put("success", false);
                 response.put("message", "请先登录51job");
@@ -404,18 +406,21 @@ public class JobController {
             }
             CompletableFuture.runAsync(() -> {
                 try {
-                    job51JobService.executeDelivery(pm -> {
+                    java.util.function.Consumer<JobProgressMessage> progress = pm -> {
                         sendJob51Progress(pm);
-                        log.info("[{}] {}", pm.getPlatform(), pm.getMessage());
-                    });
+                        log.info("51job 进度事件已发送");
+                    };
+                    if (deliveryMode) job51JobService.executeDelivery(progress);
+                    else job51JobService.executeCollection(progress);
                 } catch (Exception e) {
                     log.error("51job异步任务执行失败", e);
                     sendJob51Progress(JobProgressMessage.error("51job", "51job任务执行失败，请查看后端日志"));
                 }
             }, jobTaskExecutor);
             response.put("success", true);
-            response.put("message", "51job任务启动成功");
+            response.put("message", deliveryMode ? "51job投递任务启动成功" : "51job只读采集任务启动成功，不会执行真实投递");
             response.put("status", "started");
+            response.put("mode", deliveryMode ? "delivery" : "collection");
             log.info("通过API启动51job任务成功");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -528,6 +533,32 @@ public class JobController {
     /** 刷新 job51_data，返回总数 */
     @GetMapping("/51job/reload")
     public Map<String, Object> reload() { return job51Service.reloadJob51Data(); }
+
+    @PostMapping("/51job/jobs/{jobId}/delivery-reconcile")
+    public Map<String, Object> reconcileDelivery(@PathVariable("jobId") Long jobId,
+                                                 @RequestBody DeliveryResultRequest request) {
+        DeliveryAttemptService.State target = request == null
+                ? null
+                : DeliveryAttemptService.State.parse(request.getOutcome());
+        DeliveryAttemptService.ResolutionResult result = deliveryAttemptService.reconcileLatestLegacy(
+                "51job", jobId, target, request == null ? null : request.getMessage());
+        return Map.of(
+                "success", result.accepted(),
+                "idempotent", result.idempotent(),
+                "message", result.message(),
+                "state", result.state() == null ? "" : result.state().name()
+        );
+    }
+
+    @PostMapping("/51job/jobs/{jobId}/delivery-retry")
+    public Map<String, Object> prepareDeliveryRetry(@PathVariable("jobId") Long jobId) {
+        DeliveryAttemptService.RequestResult result = deliveryAttemptService.prepareLegacyRetry("51job", jobId);
+        return Map.of(
+                "success", result.accepted(),
+                "prepared", result.accepted(),
+                "message", result.message()
+        );
+    }
 
     // ==================== 辅助方法 ====================
 

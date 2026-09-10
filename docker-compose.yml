@@ -18,6 +18,7 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-8888}:8888"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: ${SERVER_PORT:-8888}
       APP_AUTO_OPEN_BROWSER: ${APP_AUTO_OPEN_BROWSER:-false}
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:sqlite:/workspace/db/getjobs.db}

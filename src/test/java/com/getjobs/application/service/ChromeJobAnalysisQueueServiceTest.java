@@ -1,0 +1,430 @@
+package com.getjobs.application.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.spy;
+
+class ChromeJobAnalysisQueueServiceTest {
+    @TempDir
+    Path tempDir;
+
+    private JdbcTemplate jdbcTemplate;
+    private JobAnalysisTaskStore store;
+    private JobAiAnalysisService analysisService;
+    private ChromeJobAnalysisQueueService queue;
+
+    @BeforeEach
+    void setUp() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:sqlite:" + tempDir.resolve("queue.db").toAbsolutePath());
+        Flyway.configure()
+                .dataSource(dataSource)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+        jdbcTemplate = new JdbcTemplate(dataSource);
+        store = new JobAnalysisTaskStore(
+                jdbcTemplate,
+                new DataSourceTransactionManager(dataSource),
+                new ObjectMapper()
+        );
+        store.validateSchema();
+        analysisService = mock(JobAiAnalysisService.class);
+        lenient().when(analysisService.analyzeJobs(any())).thenAnswer(invocation -> {
+            List<JobAiAnalysisService.BatchAnalysisJob> jobs = invocation.getArgument(0);
+            Map<Long, JobAiAnalysisService.AnalysisResult> results = new LinkedHashMap<>();
+            jobs.forEach(job -> results.put(job.taskId(), successResult()));
+            return results;
+        });
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (queue != null) queue.shutdown();
+    }
+
+    @Test
+    void duplicateEnqueueInvokesProviderOnlyOnce() {
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        ChromeJobAnalysisQueueService.AnalysisJob job = job(request("boss", "job-duplicate", "run-a"));
+
+        ChromeJobAnalysisQueueService.EnqueueResult first = queue.enqueue(job);
+        ChromeJobAnalysisQueueService.EnqueueResult duplicate = queue.enqueue(
+                job(request("boss", "job-duplicate", "run-b")));
+
+        assertThat(first.isQueued()).isTrue();
+        assertThat(duplicate.isQueued()).isFalse();
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+        awaitStatus(firstTaskId(), "SUCCEEDED");
+    }
+
+    @Test
+    void startupDispatchesPersistedPendingTask() {
+        long taskId = store.submit(request("boss", "job-restart", "run-before-restart")).task().id();
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        queue.initialize();
+
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+        awaitStatus(taskId, "SUCCEEDED");
+        assertThat(store.findById(taskId).attemptCount()).isEqualTo(1);
+    }
+
+    @Test
+    void compatibleLookupFailureStillProcessesAlreadyClaimedSeed() {
+        long taskId = store.submit(request("boss", "job-seed-only", "run-before-restart")).task().id();
+        JobAnalysisTaskStore flakyStore = spy(store);
+        doThrow(new IllegalStateException("batch lookup failed"))
+                .when(flakyStore).listCompatibleDuePending(anyLong(), anyString(), anyInt());
+        queue = new ChromeJobAnalysisQueueService(analysisService, flakyStore);
+
+        queue.initialize();
+
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+        awaitStatus(taskId, "SUCCEEDED");
+        assertThat(store.findById(taskId).attemptCount()).isEqualTo(1);
+    }
+
+    @Test
+    void expiredLeaseWithPersistedPlatformResultIsReconciledWithoutProviderCall() {
+        long taskId = leaseExpiredTask("boss", "job-reconciled");
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(new JobAiAnalysisService.PlatformAnalysisState(true, false, DeliveryStatus.WAITING_CONFIRM));
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        queue.reconcileExpiredLeases();
+
+        assertThat(store.findById(taskId).status()).isEqualTo("SUCCEEDED");
+        verify(analysisService, never()).analyzeJobs(any());
+        verify(analysisService, never()).markAnalysisInterrupted(any(), any());
+    }
+
+    @Test
+    void expiredUnresolvedLeaseBecomesUnknownAndDoesNotRetryProvider() {
+        long taskId = leaseExpiredTask("zhilian", "job-unknown");
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(true);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        queue.reconcileExpiredLeases();
+
+        assertThat(store.findById(taskId).status()).isEqualTo("UNKNOWN");
+        verify(analysisService, never()).analyzeJobs(any());
+        verify(analysisService).markAnalysisInterrupted(any(), any());
+    }
+
+    @Test
+    void startupRegistersLegacyAnalyzingRowAsUnknownWithoutProviderCall() {
+        jdbcTemplate.update("INSERT INTO profile(id, name, is_active) VALUES (1, 'profile', 1)");
+        jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, company_name, job_name, " +
+                        "delivery_status, job_description, scan_run_id) VALUES " +
+                        "(30, 1, 'legacy-analyzing', '测试公司', 'Java 工程师', ?, '岗位描述', 'legacy-run')",
+                DeliveryStatus.AI_ANALYZING);
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(true);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        queue.initialize();
+        queue.recoverOrphanedAnalyzingTasks();
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM job_analysis_task WHERE platform='boss' AND job_row_id=30",
+                String.class)).isEqualTo("UNKNOWN");
+        verify(analysisService, never()).analyzeJobs(any());
+        verify(analysisService, times(1)).markAnalysisInterrupted(any(), any());
+    }
+
+    @Test
+    void unexpectedExecutionFailureWritesExplicitTaskAndPlatformFailure() {
+        doThrow(new IllegalStateException("executor failed"))
+                .when(analysisService).analyzeJobs(any());
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(true);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        ChromeJobAnalysisQueueService.EnqueueResult submitted = queue.enqueue(
+                job(request("boss", "job-exception", "run-a")));
+
+        awaitStatus(submittedTaskId("job-exception"), "FAILED");
+        verify(analysisService).markAnalysisInterrupted(any(), any());
+    }
+
+    @Test
+    void completionWriteExceptionReconcilesPersistedPlatformSuccess() {
+        JobAnalysisTaskStore flakyStore = spy(store);
+        doThrow(new IllegalStateException("first completion write failed"))
+                .doCallRealMethod()
+                .when(flakyStore)
+                .complete(anyLong(), anyString(), anyBoolean(), anyString());
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(new JobAiAnalysisService.PlatformAnalysisState(
+                        true, false, DeliveryStatus.WAITING_CONFIRM));
+        queue = new ChromeJobAnalysisQueueService(analysisService, flakyStore);
+
+        queue.enqueue(job(request("boss", "job-completion-recovery", "run-a")));
+
+        awaitStatus(submittedTaskId("job-completion-recovery"), "SUCCEEDED");
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+    }
+
+    @Test
+    void providerUnknownOutcomeStopsWithoutAutomaticDuplicateCall() {
+        JobAiAnalysisService.AnalysisResult unknown = JobAiAnalysisService.AnalysisResult.failed(
+                DeliveryStatus.AI_ANALYSIS_FAILED,
+                "provider timeout"
+        );
+        unknown.setErrorCode("AI_PROVIDER_TIMEOUT");
+        unknown.setProviderOutcomeUnknown(true);
+        doAnswer(invocation -> {
+            List<JobAiAnalysisService.BatchAnalysisJob> jobs = invocation.getArgument(0);
+            return Map.of(jobs.get(0).taskId(), unknown);
+        }).when(analysisService).analyzeJobs(any());
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        ChromeJobAnalysisQueueService.EnqueueResult submitted = queue.enqueue(
+                job(request("boss", "job-provider-unknown", "run-a")));
+
+        long taskId = submittedTaskId("job-provider-unknown");
+        awaitStatus(taskId, "UNKNOWN");
+        assertThat(store.findById(taskId).lastError()).contains("provider timeout");
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+        queue.initialize();
+        verify(analysisService, times(1)).analyzeJobs(any());
+    }
+
+    @Test
+    void confirmedUnknownRetryResetsAnalyzingStatusBeforeCallingProviderAgain() {
+        long taskId = store.submit(request("boss", "job-confirmed-retry", "run-a")).task().id();
+        assertThat(store.claim(taskId, "lease-unknown", Duration.ofMinutes(1))).isNotNull();
+        assertThat(store.completeUnknown(taskId, "lease-unknown", "provider result unknown")).isTrue();
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(true);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        JobAnalysisTaskStore.RetryResult retried = queue.retry(taskId, 1L, true);
+
+        assertThat(retried.accepted()).isTrue();
+        verify(analysisService).markAnalysisInterrupted(any(), any());
+        verify(analysisService, timeout(3000).times(1)).analyzeJobs(any());
+        awaitStatus(taskId, "SUCCEEDED");
+    }
+
+    @Test
+    void confirmedUnknownRetryFailsClosedWhenAnalyzingStatusCannotBeReset() {
+        long taskId = store.submit(request("boss", "job-reset-rejected", "run-a")).task().id();
+        assertThat(store.claim(taskId, "lease-unknown", Duration.ofMinutes(1))).isNotNull();
+        assertThat(store.completeUnknown(taskId, "lease-unknown", "provider result unknown")).isTrue();
+        when(analysisService.inspectPlatformAnalysis(any()))
+                .thenReturn(JobAiAnalysisService.PlatformAnalysisState.incomplete(DeliveryStatus.AI_ANALYZING));
+        when(analysisService.markAnalysisInterrupted(any(), any())).thenReturn(false);
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+
+        JobAnalysisTaskStore.RetryResult retried = queue.retry(taskId, 1L, true);
+
+        assertThat(retried.accepted()).isFalse();
+        assertThat(retried.message()).contains("未重新调用 AI Provider");
+        assertThat(store.findById(taskId).status()).isEqualTo("UNKNOWN");
+        verify(analysisService, never()).analyzeJobs(any());
+    }
+
+    @Test
+    void tenCompatibleTasksRunAsTwoBatchesWithAtMostTwoConcurrentCalls() throws Exception {
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger maxActive = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            List<JobAiAnalysisService.BatchAnalysisJob> jobs = invocation.getArgument(0);
+            assertThat(jobs).hasSize(5);
+            int current = active.incrementAndGet();
+            maxActive.accumulateAndGet(current, Math::max);
+            entered.countDown();
+            try {
+                assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                active.decrementAndGet();
+            }
+            Map<Long, JobAiAnalysisService.AnalysisResult> results = new LinkedHashMap<>();
+            jobs.forEach(job -> results.put(job.taskId(), successResult()));
+            return results;
+        }).when(analysisService).analyzeJobs(any());
+        // This test asserts dispatch of two full batches. Persist all ten tasks
+        // before starting workers; streaming enqueue may legitimately claim 3+2+5.
+        for (int index = 0; index < 10; index++) {
+            assertThat(store.submit(request("boss", "job-batch-" + index, "run-batch")).created())
+                    .isTrue();
+        }
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        queue.initialize();
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(maxActive.get()).isLessThanOrEqualTo(2);
+        } finally {
+            release.countDown();
+        }
+        for (int index = 0; index < 10; index++) {
+            awaitStatus(submittedTaskId("job-batch-" + index), "SUCCEEDED");
+        }
+        verify(analysisService, times(2)).analyzeJobs(any());
+    }
+
+    @Test
+    void batchNeverMixesProfilesOrPlatforms() {
+        for (int index = 0; index < 4; index++) {
+            store.submit(request(1L, "boss", "boss-p1-" + index, "run-a"));
+        }
+        for (int index = 0; index < 3; index++) {
+            store.submit(request(1L, "zhilian", "zhilian-p1-" + index, "run-a"));
+        }
+        for (int index = 0; index < 2; index++) {
+            store.submit(request(2L, "boss", "boss-p2-" + index, "run-a"));
+        }
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        queue.initialize();
+
+        for (int index = 0; index < 4; index++) awaitStatus(submittedTaskId("boss-p1-" + index), "SUCCEEDED");
+        for (int index = 0; index < 3; index++) awaitStatus(submittedTaskId("zhilian-p1-" + index), "SUCCEEDED");
+        for (int index = 0; index < 2; index++) awaitStatus(submittedTaskId("boss-p2-" + index), "SUCCEEDED");
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<JobAiAnalysisService.BatchAnalysisJob>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(analysisService, times(3)).analyzeJobs(captor.capture());
+        assertThat(captor.getAllValues()).allSatisfy(batch -> {
+            assertThat(batch).extracting(job -> job.request().getProfileId()).containsOnly(batch.get(0).request().getProfileId());
+            assertThat(batch).extracting(job -> job.request().getPlatform()).containsOnly(batch.get(0).request().getPlatform());
+        });
+    }
+
+    private long leaseExpiredTask(String platform, String jobKey) {
+        long taskId = store.submit(request(platform, jobKey, "run-a")).task().id();
+        assertThat(store.claim(taskId, "expired-lease", Duration.ofMinutes(1))).isNotNull();
+        jdbcTemplate.update(
+                "UPDATE job_analysis_task SET lease_expires_at='2000-01-01 00:00:00' WHERE id=?",
+                taskId
+        );
+        return taskId;
+    }
+
+    private long firstTaskId() {
+        return jdbcTemplate.queryForObject(
+                "SELECT id FROM job_analysis_task WHERE task_key IS NOT NULL ORDER BY id LIMIT 1",
+                Long.class
+        );
+    }
+
+    private long submittedTaskId(String jobKey) {
+        return jdbcTemplate.queryForObject(
+                "SELECT id FROM job_analysis_task WHERE job_key=? ORDER BY id DESC LIMIT 1",
+                Long.class,
+                jobKey
+        );
+    }
+
+    private void awaitStatus(long taskId, String expected) {
+        long deadline = System.currentTimeMillis() + 3000;
+        while (System.currentTimeMillis() < deadline) {
+            if (expected.equals(store.findById(taskId).status())) return;
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("等待任务状态时被中断", e);
+            }
+        }
+        assertThat(store.findById(taskId).status()).isEqualTo(expected);
+    }
+
+    private ChromeJobAnalysisQueueService.AnalysisJob job(JobAiAnalysisService.JobAnalysisRequest request) {
+        ChromeJobAnalysisQueueService.AnalysisJob job = new ChromeJobAnalysisQueueService.AnalysisJob();
+        job.setRunId(request.getScanRunId());
+        job.setCurrentStatus(DeliveryStatus.NOT_DELIVERED);
+        job.setCurrent(1);
+        job.setTotal(1);
+        job.setRequest(request);
+        return job;
+    }
+
+    private JobAiAnalysisService.JobAnalysisRequest request(String platform, String jobKey, String runId) {
+        return request(1L, platform, jobKey, runId);
+    }
+
+    private JobAiAnalysisService.JobAnalysisRequest request(long profileId,
+                                                            String platform,
+                                                            String jobKey,
+                                                            String runId) {
+        JobAiAnalysisService.JobAnalysisRequest request = new JobAiAnalysisService.JobAnalysisRequest();
+        request.setProfileId(profileId);
+        request.setPlatform(platform);
+        request.setJobKey(jobKey);
+        jdbcTemplate.update("INSERT OR IGNORE INTO profile(id, name, is_active) VALUES (?, ?, 0)",
+                profileId, "queue-profile-" + profileId);
+        if ("boss".equals(platform)) {
+            jdbcTemplate.update("INSERT OR IGNORE INTO boss_data(profile_id, encrypt_id, company_name, job_name, delivery_status) " +
+                            "VALUES (?, ?, '测试公司', 'Java 工程师', ?)",
+                    profileId, jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM boss_data WHERE profile_id=? AND encrypt_id=?", Long.class, profileId, jobKey));
+        } else {
+            jdbcTemplate.update("INSERT OR IGNORE INTO zhilian_data(profile_id, job_id, company_name, job_title, delivery_status) " +
+                            "VALUES (?, ?, '测试公司', 'Java 工程师', ?)",
+                    profileId, jobKey, DeliveryStatus.NOT_DELIVERED);
+            request.setJobRowId(jdbcTemplate.queryForObject(
+                    "SELECT id FROM zhilian_data WHERE profile_id=? AND job_id=?", Long.class, profileId, jobKey));
+        }
+        request.setKeyword("Java");
+        request.setCompanyName("测试公司");
+        request.setJobName("Java 工程师");
+        request.setSalary("20-30K");
+        request.setLocation("深圳");
+        request.setExperience("3-5年");
+        request.setDegree("本科");
+        request.setCompanyInfo("互联网");
+        request.setJobDescription("负责 Spring Boot 服务开发");
+        request.setScanRunId(runId);
+        return request;
+    }
+
+    private JobAiAnalysisService.AnalysisResult successResult() {
+        JobAiAnalysisService.AnalysisResult result = new JobAiAnalysisService.AnalysisResult();
+        result.setScore(90);
+        result.setDecision("APPLY");
+        result.setSummary("匹配");
+        return result;
+    }
+}

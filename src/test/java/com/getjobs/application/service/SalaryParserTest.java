@@ -6,6 +6,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SalaryParserTest {
     @Test
+    void rejectsOversizedSalaryBeforePatternMatching() {
+        assertThat(SalaryParser.parse("0".repeat(100_000) + "!薪")).isNull();
+    }
+
+    @Test
     void parsesMonthlyKRange() {
         SalaryParser.ParsedSalary salary = SalaryParser.parse("20-35K");
 

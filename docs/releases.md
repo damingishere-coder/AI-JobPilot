@@ -106,7 +106,7 @@ v1.4.0-beta.1
 - [ ] `main` 分支 CI 全部通过
 - [ ] CodeQL 没有未处理的高危告警
 - [ ] `CHANGELOG.md` 已更新
-- [ ] `package.json`、Gradle 和 Chrome 扩展版本号一致
+- [ ] `package.json` 与 Gradle 的应用版本一致，并记录配套 Chrome Bridge 版本（扩展独立递增，不为对齐应用而降级）
 - [ ] 示例截图和文档没有 Cookie、API Key、简历或个人账号信息
 - [ ] `.env`、数据库、日志和 Chrome 用户目录未进入提交
 - [ ] 已知限制已写入 Release Notes

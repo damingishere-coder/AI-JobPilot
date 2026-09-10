@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { API_BASE } from "@/lib/api"
 import type { BossJob, FilterState, PagedResult } from "../types"
@@ -22,6 +22,7 @@ export function useBossJobs({
   const [inputSize, setInputSize] = useState<number | string>(20)
   const [loadingList, setLoadingList] = useState(false)
   const [reloading, setReloading] = useState(false)
+  const listRequestSequence = useRef(0)
 
   const activeScanRunId = useMemo(
     () => requestedScanRunId.trim(),
@@ -37,6 +38,7 @@ export function useBossJobs({
   }, [size])
 
   const loadList = useCallback(async (toPage = page, toSize = size) => {
+    const requestSequence = ++listRequestSequence.current
     const params = buildFilterParams(filters, activeScanRunId)
     params.set("page", String(toPage))
     params.set("size", String(toSize))
@@ -45,6 +47,7 @@ export function useBossJobs({
       setLoadingList(true)
       const res = await fetch(`${API_BASE}/api/boss/list?${params.toString()}`)
       const data: PagedResult = await res.json()
+      if (requestSequence !== listRequestSequence.current) return
       const filteredItems = (data.items || []).filter((item) => {
         if (!filters.filterHeadhunter) return true
         const hrPosition = (item.hrPosition || "").toLowerCase()
@@ -55,9 +58,9 @@ export function useBossJobs({
       setPage(data.page || toPage)
       setSize(data.size || toSize)
     } catch (error) {
-      console.error("fetch list failed", error)
+      if (requestSequence === listRequestSequence.current) console.error("fetch list failed", error)
     } finally {
-      setLoadingList(false)
+      if (requestSequence === listRequestSequence.current) setLoadingList(false)
     }
   }, [activeScanRunId, buildFilterParams, filters, page, size])
 

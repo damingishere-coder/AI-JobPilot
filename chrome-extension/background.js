@@ -1,16 +1,21 @@
+importScripts("boss-delivery-support.js");
 const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
     home: "https://www.zhipin.com/",
     contentScript: "boss-content.js",
     contentScripts: [
+      "continuous-scan-support.js",
       "boss-selectors.js",
       "boss-debug.js",
       "boss-scan-support.js",
       "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
-      "boss-content.js"
+      "boss-content.js",
+      "boss-hr-support.js",
+      "boss-hr-bridge.js",
+      "boss-hr-assistant.js"
     ]
   },
   zhilian: {
@@ -18,7 +23,9 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
+      "continuous-scan-support.js", "zhilian-filters.js",
       "zhilian-scan-support.js",
+      "zhilian-modern-collector.js",
       "zhilian-content.js"
     ]
   }
@@ -26,35 +33,50 @@ const PLATFORM_CONFIG = {
 
 const pageTabs = new Map();
 let scanSessionsWriteQueue = Promise.resolve();
+let hrOutboxWriteQueue = Promise.resolve();
+let hrWatchWriteQueue = Promise.resolve();
+let hrStopInProgress = false;
 const SCAN_SESSIONS_STORAGE_KEY = "__GET_JOBS_PLATFORM_SCAN_SESSIONS__";
 const SCAN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-08-01-consolidated-scan-fix";
+const BACKGROUND_VERSION = "2026-09-10-continuous-scan";
+let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-08-01-consolidated-boss-api";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-07-29-zhilian-security-resume-fix";
-const LOCAL_API_BASE_URLS = ["http://localhost:6866", "http://127.0.0.1:6866", "http://localhost:8888", "http://127.0.0.1:8888"];
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-10-continuous-scan";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-10-continuous-scan";
+const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
+const BOSS_HR_ALARM_NAME = "getjobs-boss-hr-watch";
+const BOSS_HR_WATCH_STORAGE_KEY = "__GET_JOBS_BOSS_HR_WATCH__";
+const BOSS_HR_OUTBOX_STORAGE_KEY = "__GET_JOBS_BOSS_HR_OUTBOX__";
+const BOSS_HR_SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+let bossHrScanPromise = null;
+let bossHrCommandPromise = null;
+let localActionToken = "";
+let localActionBaseUrl = "";
 const ALLOWED_PAGE_ORIGINS = new Set([
   "http://localhost:6866",
   "http://127.0.0.1:6866"
 ]);
 const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "GET_JOBS_EXTENSION_PING",
+  "BOSS_HR_OPEN_CHAT",
   "BOSS_PAGE_STATUS",
+  "ZHILIAN_PAGE_STATUS",
   "BOSS_DEBUG_COLLECT",
   "BOSS_COLLECT_CURRENT_PAGE",
   "BOSS_API_POC_COLLECT",
   "BOSS_SCAN_STATUS",
   "BOSS_SCAN_START",
   "BOSS_SCAN_STOP",
+  "BOSS_DELIVERY_PREFLIGHT",
   "BOSS_DELIVER_ONE",
   "BOSS_DELIVER_BATCH",
   "ZHILIAN_SCAN_STATUS",
@@ -64,7 +86,31 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "ZHILIAN_DELIVER_BATCH"
 ]);
 
+// Extension updates can replace the assistant on an existing chat page without
+// reloading BOSS or reopening conversations. Starting a watch remains explicit.
+chrome.runtime.onInstalled?.addListener?.(() => {
+  (async () => {
+    if ((await readBossHrWatch())?.watching) await stopBossHrWatch("USER_STOPPED", "扩展更新，等待重新开始值守");
+    for (const tab of await chrome.tabs.query({ url: "https://www.zhipin.com/web/geek/chat*" })) {
+      if (!isBossChatUrl(tab.url || "")) continue;
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", files: ["boss-hr-identity.js"] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"] });
+    }
+  })().catch(error => console.warn("HR panel update failed:", error.message));
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_HR_CONTENT" && message.type === "BOSS_HR_CAPTURE_RESULT") {
+    submitBossHrCapture(message, sender).then(sendResponse).catch(error => sendResponse({ success: false, errorCode: "HR_CAPTURE_SUBMIT_FAILED", message: error.message || String(error) }));
+    return true;
+  }
+  if (message?.source === "GET_JOBS_BOSS_HR_CONTENT" && message.type === "BOSS_HR_OUTBOX_PUT") {
+    handleBossHrOutboxPut(message, sender).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, errorCode: "HR_OUTBOX_WRITE_FAILED", message: error.message || String(error) });
+    });
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_API_PAGE_REQUEST") {
     if (!isBossSender(sender)) {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起搜索 API 请求" });
@@ -103,7 +149,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, message: "拒绝非 Boss 页面发起的本地接口请求" });
       return;
     }
-    handleBossLocalApiRequest(message).then(sendResponse).catch((error) => {
+    handleBossLocalApiRequest(message, sender).then(sendResponse).catch((error) => {
       sendResponse({ success: false, message: error.message || String(error) });
     });
     return true;
@@ -166,6 +212,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pageTabs.delete(tabId);
   clearScanSession("boss", tabId).catch(() => {});
   clearScanSession("zhilian", tabId).catch(() => {});
+  stopBossHrWatchIfOwned(tabId, "BOSS_CHAT_TAB_CLOSED", "值守标签页已关闭").catch(() => {});
+});
+
+chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
+  const url = changeInfo?.url || tab?.url || "";
+  if (url && !isBossChatUrl(url)) {
+    stopBossHrWatchIfOwned(tabId, "BOSS_CHAT_TAB_NAVIGATED", "值守标签页已离开 BOSS 聊天页").catch(() => {});
+  }
+});
+
+chrome.alarms?.onAlarm?.addListener?.((alarm) => {
+  if (alarm?.name === BOSS_HR_ALARM_NAME) runBossHrTick().catch(() => {});
 });
 
 async function forwardPlatformEvent(message, sender) {
@@ -176,6 +234,13 @@ async function forwardPlatformEvent(message, sender) {
     ...message.payload,
     platform: message.payload?.platform || platform
   };
+  if (payload.operation === "scan") {
+    const profileId = normalizeProfileId(payload.profileId);
+    if (!profileId) return;
+    const session = await readScanSession(platform);
+    if (session && normalizeProfileId(session.profileId) !== profileId) return;
+    payload.profileId = profileId;
+  }
   await updateScanSessionFromEvent(platform, sender.tab?.id, payload);
   await broadcastPlatformEvent(payload, message.pageTabId);
 }
@@ -334,6 +399,7 @@ function isZhilianSender(sender) {
 }
 
 async function handleBossContentNavigation(message, sender) {
+  if(isBossChatUrl(sender?.tab?.url||sender?.url||"")) return {success:false,errorCode:"HR_CHAT_PROTECTED",message:"聊天标签禁止岗位导航"};
   const tabId = sender.tab?.id;
   const targetUrl = normalizeBossUrl(message?.url);
   if (!tabId) return { success: false, message: "缺少Boss标签页ID" };
@@ -364,25 +430,444 @@ async function handleZhilianContentNavigation(message, sender) {
   return { success: true, url: targetUrl, navigationType };
 }
 
-async function handleBossLocalApiRequest(message) {
+async function handleBossLocalApiRequest(message, sender) {
   const endpoint = resolveBossLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
+
+  const operation = String(message.operation || "");
+  const requestContext = {
+    operation,
+    timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
+    pageTabId: sender?.tab?.id || message.pageTabId,
+    platform: "boss",
+    requireActionToken: endpoint.requireActionToken === true
+  };
+  if (operation === "hr-dedicated-open") {
+    const tab=await chrome.tabs.create({url:"https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1",active:true});
+    return {success:true,data:{success:true,data:{tabId:tab.id}}};
+  }
+  if (operation === "hr-start") {
+    return await startBossHrWatch(sender, requestContext, message.body?.expectedProfileId, message.body?.intervalMinutes ?? 1);
+  }
+  if (operation === "hr-stop") {
+    return await stopBossHrWatch("USER_STOPPED", "用户主动停止", requestContext);
+  }
+  if (operation === "hr-command-poll") {
+    return await pollBossHrSendCommand(sender, requestContext);
+  }
+  if (operation === "hr-scan-all") {
+    const state = await readBossHrWatch();
+    if (!state?.watching || state.tabId !== sender?.tab?.id || state.profileId !== message.body?.expectedProfileId) {
+      return { success: false, errorCode: "STALE_STATE", message: "请在当前档案绑定的聊天页开始值守" };
+    }
+    if (bossHrScanPromise || bossHrCommandPromise) return { success: false, errorCode: "HR_WATCH_ACTIVE", message: "上一轮采集或发送仍在执行" };
+    setTimeout(() => runBossHrScan("manual-all").catch(() => {}), 0);
+    return { success: true, data: { success: true, data: { scheduled: true } } };
+  }
 
   const result = await requestLocalApi(endpoint.path, {
-    operation: String(message.operation || ""),
+    ...requestContext,
     method: endpoint.method,
-    body: message.body,
-    timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
-    pageTabId: message.pageTabId,
-    platform: "boss"
+    body: message.body
   });
+  if(operation==="hr-watch-guard" && result.success && result.data?.data) {
+    const state=await readBossHrWatch();
+    result.data.data.watchActive=Boolean(state?.watching && state.tabId===sender?.tab?.id && !hrStopInProgress);
+  }
+  if (operation === "hr-status" && result.success && result.data?.data) {
+    const active = await readBossHrWatch();
+    if (active?.watching && active.watchSessionId === result.data.data.watchSessionId) {
+      result.data.data.scannedCount = active.scannedCount || 0;
+      result.data.data.scanRunning = Boolean(active.scanRunning || result.data.data.scanRunning);
+    }
+    const legacy = Object.values(await readBossHrOutbox()).filter(item => !normalizeProfileId(item.profileId)).length;
+    result.data.data.legacyOutboxCount = legacy;
+    if (legacy) result.data.data.lastError = [result.data.data.lastError, `有 ${legacy} 条旧版待处理记录缺少档案归属，已保留，请人工处理`].filter(Boolean).join("；");
+  }
+  if (operation === "hr-send" && result.success) {
+    await pollBossHrSendCommand(sender, requestContext);
+  }
   console.log("[GetJobs BG] Boss API result:", endpoint.path, "success:", result.success, "status:", result.httpStatus, "error:", result.message || "");
   return result;
+}
+
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-07-hr-autopilot";
+
+async function startBossHrWatch(sender, requestContext, expectedProfileId, intervalMinutes = 1) {
+  if (![1, 30].includes(intervalMinutes)) return { success: false, errorCode: "INVALID_INTERVAL", message: "值守间隔仅支持 1 分钟或 30 分钟" };
+  if (!normalizeProfileId(expectedProfileId)) return { success: false, errorCode: "PROFILE_REQUIRED", message: "请刷新页面并确认当前人物档案后再开始值守" };
+  if (hrStopInProgress || bossHrScanPromise || bossHrCommandPromise) return { success: false, errorCode: "HR_WATCH_ACTIVE", message: "上一轮采集或发送尚未结束，请稍后再开始值守" };
+  const tabId = sender?.tab?.id;
+  const url = sender?.tab?.url || sender?.url || "";
+  if (!Number.isInteger(tabId) || !isBossChatUrl(url)) {
+    return { success: false, errorCode: "BOSS_CHAT_TAB_REQUIRED", message: "请在当前 BOSS 求职者聊天页点击开始值守" };
+  }
+  await ensureContentScript(tabId, "boss-content.js");
+  const ready = await chrome.tabs.sendMessage(tabId, {
+    source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_CONTENT_VERSION_V2"
+  }).catch(() => null);
+  if (ready?.version !== REQUIRED_BOSS_HR_CONTENT_VERSION) {
+    return { success: false, errorCode: "BOSS_HR_CONTENT_OUTDATED", message: "HR 内容脚本未就绪，请重新加载扩展并刷新 BOSS 页面" };
+  }
+  const browserSessionId = createBossHrId("browser");
+  const result = await requestLocalApi("/api/hr-assistant/watch/start", {
+    ...requestContext,
+    operation: "hr-start",
+    method: "POST",
+    body: { tabId, url, contentVersion: ready.version, browserSessionId, expectedProfileId, intervalMinutes },
+    requireActionToken: true
+  });
+  const watchStatus = result?.data?.data;
+  if (!result.success || !watchStatus?.watchSessionId) return result;
+
+  const policyResponse=await requestLocalApi("/api/hr-assistant/autopilot",{...requestContext,method:"GET"});
+  if(!policyResponse?.success || typeof policyResponse?.data?.data?.enabled!=="boolean") {
+    await requestLocalApi("/api/hr-assistant/watch/stop",{...requestContext,method:"POST",requireActionToken:true,
+      body:{watchSessionId:watchStatus.watchSessionId,reason:"托管策略无法核验，未启动扫描"}});
+    return {success:false,errorCode:"HR_POLICY_UNAVAILABLE",message:"托管策略无法核验，请重试启动"};
+  }
+  const managed=policyResponse.data.data.enabled===true;
+  if(managed) intervalMinutes=1;
+  await writeBossHrWatch({
+    managed, baselineComplete:false, lastReconcileAt:0, summaries:{},
+    watching: true,
+    tabId,
+    url,
+    contentVersion: ready.version,
+    browserSessionId,
+    watchSessionId: watchStatus.watchSessionId,
+    profileId: watchStatus.profileId,
+    intervalMinutes,
+    scanRunning: false,
+    lastScanAt: null,
+    nextScanAt: Date.now(),
+    updatedAt: Date.now()
+  });
+  await chrome.alarms?.create?.(BOSS_HR_ALARM_NAME, { periodInMinutes: intervalMinutes });
+  setTimeout(() => runBossHrTick().catch(() => {}), 0);
+  return result;
+}
+
+async function stopBossHrWatch(reasonCode, reason, requestContext = {}) {
+  hrStopInProgress = true;
+  try { return await stopBossHrWatchLocked(reasonCode, reason, requestContext); }
+  finally { hrStopInProgress = false; }
+}
+
+async function stopBossHrWatchLocked(reasonCode, reason, requestContext = {}) {
+  const state = await readBossHrWatch();
+  await chrome.alarms?.clear?.(BOSS_HR_ALARM_NAME);
+  if (state) await writeBossHrWatch({ ...state, watching: false });
+  if (reasonCode === "USER_STOPPED") {
+    await Promise.allSettled([bossHrScanPromise, bossHrCommandPromise].filter(Boolean));
+  }
+  const result = await requestLocalApi("/api/hr-assistant/watch/stop", {
+      ...requestContext,
+      operation: "hr-stop",
+      method: "POST",
+      body: { watchSessionId: state?.watchSessionId || "", reason: `${reasonCode}: ${reason}` },
+      requireActionToken: true
+    });
+  if (result.success) await bossHrWatchStorage().remove(BOSS_HR_WATCH_STORAGE_KEY).catch(() => {});
+  return result;
+}
+
+async function pauseBossHrWatch(errorCode, message) {
+  const state = await readBossHrWatch();
+  if (!state?.watching) return;
+  await stopBossHrWatch(errorCode, message, { platform: "boss", pageTabId: state.tabId }).catch(() => {});
+}
+
+async function stopBossHrWatchIfOwned(tabId, errorCode, message) {
+  const state = await readBossHrWatch();
+  if (state?.watching && state.tabId === tabId) await pauseBossHrWatch(errorCode, message);
+}
+
+async function handleBossHrOutboxPut(message, sender) {
+  const write = hrOutboxWriteQueue.then(() => putBossHrOutbox(message, sender));
+  hrOutboxWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+async function putBossHrOutbox(message, sender) {
+  const state = await readBossHrWatch();
+  const tabId = sender?.tab?.id;
+  if (!state?.watching || state.tabId !== tabId || !isBossChatUrl(sender?.tab?.url || sender?.url || "")) {
+    return { success: false, errorCode: "BOSS_HR_TAB_NOT_BOUND", message: "当前标签页不是已绑定的 BOSS 值守标签" };
+  }
+  if (!normalizeProfileId(state.profileId) || state.watchSessionId !== message.watchSessionId) {
+    return { success: false, errorCode: "STALE_STATE", message: "采集所属人物档案或值守会话已变化" };
+  }
+  const capture = message?.capture;
+  if (!capture?.captureId || !capture?.uid) {
+    return { success: false, errorCode: "HR_OUTBOX_INVALID", message: "Outbox 会话身份不完整" };
+  }
+  const outbox = await readBossHrOutbox();
+  const key = `${state.profileId}:${capture.captureId}`;
+  if (!outbox[key] && Object.values(outbox).filter(item => item.profileId === state.profileId).length >= 100) {
+    return { success: false, errorCode: "HR_OUTBOX_FULL", message: "当前档案待处理记录已满，请先处理积压记录" };
+  }
+  outbox[key] = {
+    profileId: state.profileId, watchSessionId: state.watchSessionId,
+    captureId: String(capture.captureId), uid: String(capture.uid),
+    unreadCount: Number(capture.unreadCount || 1),
+    addedAt: Number(outbox[key]?.addedAt || Date.now())
+  };
+  await writeBossHrOutbox(outbox);
+  return { success: true, outboxCount: Object.values(outbox).filter(item => item.profileId === state.profileId).length };
+}
+
+let bossHrTickPromise=null;
+async function runBossHrTick() {
+  if(bossHrTickPromise) return bossHrTickPromise;
+  bossHrTickPromise=(async()=> {
+    let state=await readBossHrWatch(); if(!state?.watching) return;
+    const policy=await requestLocalApi("/api/hr-assistant/autopilot",{method:"GET",platform:"boss",pageTabId:state.tabId});
+    if(!policy.success || policy.data?.data?.paused) return;
+    await runBossHrScan("alarm");
+    state=await readBossHrWatch();
+    if(state?.watching) await pollBossHrSendCommand({tab:{id:state.tabId}},{platform:"boss",pageTabId:state.tabId});
+  })().finally(()=>{bossHrTickPromise=null;});
+  return bossHrTickPromise;
+}
+
+async function runBossHrScan(trigger = "alarm") {
+  if (bossHrCommandPromise) return { success: true, skipped: true, reason: "SEND_COMMAND_RUNNING" };
+  if (bossHrScanPromise) return { success: true, skipped: true, reason: "SCAN_ALREADY_RUNNING" };
+  bossHrScanPromise = runBossHrScanLocked(trigger).finally(() => { bossHrScanPromise = null; });
+  return await bossHrScanPromise;
+}
+
+async function runBossHrScanLocked(trigger) {
+  const state = await readBossHrWatch();
+  if (!state?.watching) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+  if (trigger === "alarm" && Number(state.nextScanAt || 0) > Date.now()) return { success: true, skipped: true, reason: "NOT_DUE" };
+  const scanAll = trigger === "manual-all" || (state.managed
+    ? !state.baselineComplete || Date.now()-Number(state.lastReconcileAt||0)>=1800000
+    : state.intervalMinutes === 30);
+  const timeoutMs = scanAll ? 25 * 60 * 1000 : BOSS_HR_SCAN_TIMEOUT_MS;
+  const tab = await chrome.tabs.get(state.tabId).catch(() => null);
+  if (!tab || !isBossChatUrl(tab.url || "")) {
+    await pauseBossHrWatch("BOSS_CHAT_TAB_UNAVAILABLE", "绑定的 BOSS 聊天标签页不存在或已跳转");
+    return { success: false, errorCode: "BOSS_CHAT_TAB_UNAVAILABLE" };
+  }
+  const scanId = createBossHrId("scan");
+  const deadlineAt = Date.now() + timeoutMs;
+  const outbox = Object.values(await readBossHrOutbox()).filter(item => item.profileId === state.profileId);
+  if (!await updateBossHrWatchIfActive(state, { scanRunning: true, scanId, scannedCount: 0, updatedAt: Date.now() })) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+  try {
+    const heartbeat = await postBossHrHeartbeat(state, tab.url, true, outbox.length, "");
+    if (!heartbeat.success) throw Object.assign(new Error(heartbeat.message || "值守会话已失效"), { errorCode: heartbeat.errorType });
+    const scanResult = await withBossHrTimeout(chrome.tabs.sendMessage(state.tabId, {
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SCAN_V2", scanId, trigger, scanAll, streamResults: true, deadlineAt, outbox, watchSessionId: state.watchSessionId, managed:state.managed, baseline:!state.baselineComplete, summaries:state.summaries||{}
+    }), timeoutMs);
+    if (!scanResult?.success) {
+      throw Object.assign(new Error(scanResult?.message || "BOSS HR 扫描失败"), {
+        errorCode: scanResult?.errorCode || "BOSS_HR_SCAN_FAILED"
+      });
+    }
+    const current = await readBossHrWatch();
+    if (!current?.watching || current.watchSessionId !== state.watchSessionId) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+    const submitted = await requestLocalApi("/api/hr-assistant/watch/scan-results", {
+      operation: "hr-scan-results", method: "POST", requireActionToken: true,
+      platform: "boss", pageTabId: state.tabId, timeoutMs: 120000,
+      body: {
+        watchSessionId: state.watchSessionId, tabId: state.tabId, scanId,
+        totalUnread: scanResult.streamed ? 0 : Number(scanResult.totalUnread || 0), captures: scanResult.captures || []
+      }
+    });
+    if (!submitted.success) throw Object.assign(new Error(submitted.message || "扫描结果提交失败"), { errorCode: submitted.errorType });
+    const acknowledged = submitted.data?.data?.acknowledgedCaptureIds || [];
+    await acknowledgeBossHrOutbox(acknowledged, state.profileId);
+    const finishedAt = Date.now();
+    const remaining = Object.values(await readBossHrOutbox()).filter(item => item.profileId === state.profileId).length;
+    const latest = await readBossHrWatch();
+    if (!latest?.watching || latest.watchSessionId !== state.watchSessionId) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+    if (!await updateBossHrWatchIfActive(state, { scanRunning: false, lastScanAt: finishedAt,
+      baselineComplete:true, summaries:scanResult.summaries||state.summaries||{},
+      lastReconcileAt:scanAll?finishedAt:state.lastReconcileAt,
+      nextScanAt: finishedAt + (state.intervalMinutes || 1) * 60000, updatedAt: finishedAt })) return { success: true, skipped: true, reason: "WATCH_STOPPED" };
+    await chrome.alarms?.create?.(BOSS_HR_ALARM_NAME, { delayInMinutes: state.intervalMinutes || 1, periodInMinutes: state.intervalMinutes || 1 });
+    await postBossHrHeartbeat(state, tab.url, false, remaining, "").catch(() => {});
+    return { success: true, scanId, received: scanResult.captures?.length || 0, acknowledged: acknowledged.length };
+  } catch (error) {
+    if(/暂停|USER_PAUSED/.test(String(error?.message||""))) {
+      await updateBossHrWatchIfActive(state,{scanRunning:false});
+      await postBossHrHeartbeat(state,tab.url,false,outbox.length,"").catch(()=>{});
+      return {success:true,skipped:true,reason:"AUTOPILOT_PAUSED"};
+    }
+    const code = error?.errorCode || (error?.name === "AbortError" ? "BOSS_HR_SCAN_TIMEOUT" : "BOSS_HR_SCAN_FAILED");
+    await pauseBossHrWatch(code, friendlyLocalApiError(error));
+    return { success: false, errorCode: code, message: friendlyLocalApiError(error) };
+  }
+}
+
+async function submitBossHrCapture(message, sender) {
+  const state = await readBossHrWatch();
+  if (!state?.watching || !state.scanRunning || state.tabId !== sender?.tab?.id || !isBossChatUrl(sender?.tab?.url || "")
+      || state.watchSessionId !== message.watchSessionId || state.scanId !== message.scanId) {
+    return { success: false, errorCode: "STALE_STATE", message: "已停止值守或采集会话已变化" };
+  }
+  const pending = Object.values(await readBossHrOutbox()).find(item => item.profileId === state.profileId
+    && item.captureId === message.capture?.captureId && item.uid === message.capture?.session?.uid);
+  if (!pending) return { success: false, errorCode: "HR_OUTBOX_INVALID", message: "消息不属于已保存的当前档案采集任务" };
+  if (Array.isArray(message.capture.messages) && message.capture.messages.length === 0) {
+    if(state.managed) return {success:false,errorCode:"HR_MESSAGES_UNREADABLE",message:"聊天内容未读取，保留待处理记录，不能视为没有消息"};
+    await acknowledgeBossHrOutbox([message.capture.captureId], state.profileId);
+    await updateBossHrWatchIfActive(state, { scannedCount: Number(state.scannedCount || 0) + 1 });
+    return { success: true, skipped: true, reason: "NO_RENDERED_MESSAGES" };
+  }
+  const result = await requestLocalApi("/api/hr-assistant/watch/scan-results", {
+    operation: "hr-scan-results", method: "POST", requireActionToken: true,
+    platform: "boss", pageTabId: state.tabId, timeoutMs: 360000,
+    body: { watchSessionId: state.watchSessionId, tabId: state.tabId, scanId: message.scanId, totalUnread: 0, captures: [message.capture] }
+  });
+  if (!result.success) return result;
+  const acknowledged = result.data?.data?.acknowledgedCaptureIds || [];
+  if (!acknowledged.includes(message.capture.captureId)) return { success: false, errorCode: "HR_ACK_MISSING", message: "后端未确认保存，已保留待处理记录" };
+  await acknowledgeBossHrOutbox(acknowledged, state.profileId);
+  await updateBossHrWatchIfActive(state, { scannedCount: Number(state.scannedCount || 0) + 1 });
+  return { success: true };
+}
+
+async function postBossHrHeartbeat(state, url, scanRunning, outboxCount, fault) {
+  return await requestLocalApi("/api/hr-assistant/watch/heartbeat", {
+    operation: "hr-heartbeat", method: "POST", requireActionToken: true,
+    platform: "boss", pageTabId: state.tabId,
+    body: {
+      watchSessionId: state.watchSessionId, tabId: state.tabId, url,
+      contentVersion: state.contentVersion, scanRunning, outboxCount, fault
+    }
+  });
+}
+
+async function pollBossHrSendCommand(sender, requestContext = {}) {
+  if (bossHrScanPromise) return bossHrNoopResult("SCAN_RUNNING");
+  if (bossHrCommandPromise) return await bossHrCommandPromise;
+  bossHrCommandPromise = pollBossHrSendCommandLocked(sender, requestContext)
+    .finally(() => { bossHrCommandPromise = null; });
+  return await bossHrCommandPromise;
+}
+
+function bossHrNoopResult(reason) {
+  return {
+    success: true,
+    httpStatus: 200,
+    data: { success: true, errorCode: "", message: reason, requestId: createBossHrId("extension"), data: null }
+  };
+}
+
+async function pollBossHrSendCommandLocked(sender, requestContext) {
+  const state = await readBossHrWatch();
+  const senderTabId = sender?.tab?.id;
+  if (!state?.watching || state.tabId !== senderTabId) {
+    return { success: false, errorCode: "BOSS_HR_TAB_NOT_BOUND", message: "只能由当前绑定的 BOSS 标签页领取发送命令" };
+  }
+  const claimed = await requestLocalApi("/api/hr-assistant/send-commands/claim", {
+    ...requestContext, operation: "hr-command-claim", method: "POST", requireActionToken: true,
+    body: { watchSessionId: state.watchSessionId, tabId: state.tabId }
+  });
+  const command = claimed?.data?.data;
+  if (!claimed.success || !command) return claimed;
+
+  let execution;
+  try {
+    execution = await chrome.tabs.sendMessage(state.tabId, {
+      source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_SEND_V2", command: { ...command, deadlineAt: Math.min(Date.now() + 45000, Number(command.leaseDeadlineEpochMs) - 5000) }
+    });
+  } catch (error) {
+    execution = { success: true, outcome: "RESULT_UNKNOWN", evidence: `内容脚本发送结果无法确认：${friendlyLocalApiError(error)}` };
+  }
+  const allowed = new Set(["SENT", "STALE", "RESULT_UNKNOWN", "FAILED_SAFE"]);
+  const outcome = allowed.has(execution?.outcome) ? execution.outcome : "RESULT_UNKNOWN";
+  return await requestLocalApi(`/api/hr-assistant/send-commands/${encodeURIComponent(command.commandId)}/result`, {
+    operation: "hr-command-result", method: "POST", requireActionToken: true,
+    platform: "boss", pageTabId: state.tabId,
+    body: {
+      watchSessionId: state.watchSessionId, tabId: state.tabId, leaseToken: command.leaseToken,
+      outcome, evidence: String(execution?.evidence || "").slice(0, 500),
+      observedLatestInbound: execution?.observedLatestInbound || null
+    }
+  });
+}
+
+async function readBossHrWatch() {
+  const result = await bossHrWatchStorage().get(BOSS_HR_WATCH_STORAGE_KEY).catch(() => ({}));
+  return result?.[BOSS_HR_WATCH_STORAGE_KEY] || null;
+}
+
+async function writeBossHrWatch(state) {
+  const write = hrWatchWriteQueue.then(() => bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: state }));
+  hrWatchWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+async function updateBossHrWatchIfActive(expected, changes) {
+  const write = hrWatchWriteQueue.then(async () => {
+    const current = await readBossHrWatch();
+    if (!current?.watching || current.watchSessionId !== expected.watchSessionId) return false;
+    await bossHrWatchStorage().set({ [BOSS_HR_WATCH_STORAGE_KEY]: { ...current, ...changes } });
+    return true;
+  });
+  hrWatchWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+function bossHrWatchStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
+async function readBossHrOutbox() {
+  const result = await chrome.storage.local.get(BOSS_HR_OUTBOX_STORAGE_KEY).catch(() => ({}));
+  const outbox = result?.[BOSS_HR_OUTBOX_STORAGE_KEY];
+  return outbox && typeof outbox === "object" ? { ...outbox } : {};
+}
+
+async function writeBossHrOutbox(outbox) {
+  await chrome.storage.local.set({ [BOSS_HR_OUTBOX_STORAGE_KEY]: outbox });
+}
+
+async function acknowledgeBossHrOutbox(captureIds, profileId) {
+  const write = hrOutboxWriteQueue.then(async () => {
+    const outbox = await readBossHrOutbox();
+    for (const captureId of captureIds || []) delete outbox[`${profileId}:${captureId}`];
+    await writeBossHrOutbox(outbox);
+  });
+  hrOutboxWriteQueue = write.catch(() => {});
+  return await write;
+}
+
+function createBossHrId(prefix) {
+  const uuid = globalThis.crypto.randomUUID();
+  return `${prefix}-${uuid}`;
+}
+
+function withBossHrTimeout(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error("BOSS HR 单轮扫描超过 5 分钟");
+      error.name = "AbortError";
+      reject(error);
+    }, timeoutMs);
+    Promise.resolve(promise).then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    }, (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 async function handleZhilianLocalApiRequest(message) {
   const endpoint = resolveZhilianLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
+    return profileRequiredResponse();
+  }
 
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
@@ -398,9 +883,28 @@ async function handleZhilianLocalApiRequest(message) {
 
 function resolveBossLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "hr-dedicated-open") return {success:true,method:"GET",path:"/api/hr-assistant/status"};
+  if (operation === "hr-autopilot" || operation === "hr-watch-guard") return {success:true,method:"GET",path:"/api/hr-assistant/autopilot"};
+  if (operation === "hr-pause" || operation === "hr-resume") return {success:true,method:"POST",path:"/api/hr-assistant/autopilot/"+(operation==="hr-pause"?"pause":"resume"),requireActionToken:true};
+  if (operation === "hr-context") return {success:true,method:"GET",path:`/api/hr-assistant/proposals/${Number(message?.params?.id)}/context`};
+  if (operation === "hr-status") return { success: true, method: "GET", path: "/api/hr-assistant/status" };
+  if (operation === "hr-settings") return { success: true, method: "GET", path: "/api/hr-assistant/settings" };
+  if (operation === "hr-settings-save") return { success: true, method: "PUT", path: "/api/hr-assistant/settings", requireActionToken: true };
+  if (operation === "hr-proposals") return { success: true, method: "GET", path: "/api/hr-assistant/proposals" + (message?.params?.includeClosed === true ? "?includeClosed=true" : "") };
+  if (operation === "hr-start") return { success: true, method: "POST", path: "/api/hr-assistant/watch/start", requireActionToken: true };
+  if (operation === "hr-scan-all") return { success: true, method: "POST", path: "/api/hr-assistant/watch/scan-results", requireActionToken: true };
+  if (operation === "hr-stop") return { success: true, method: "POST", path: "/api/hr-assistant/watch/stop", requireActionToken: true };
+  if (operation === "hr-command-poll") return { success: true, method: "POST", path: "/api/hr-assistant/send-commands/claim", requireActionToken: true };
+  if (["hr-revise", "hr-send", "hr-skip"].includes(operation)) {
+    const id = String(message?.params?.id || "").trim();
+    if (!/^[1-9]\d*$/.test(id)) return { success: false, message: "HR 回复任务缺少有效 ID" };
+    const action = operation.replace("hr-", "");
+    return { success: true, method: "POST", path: `/api/hr-assistant/proposals/${id}/${action}`, requireActionToken: true };
+  }
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs/dedupe" };
   }
+  if (operation === "chrome-resume") return { success: true, method: "POST", path: "/api/boss/chrome/resume" };
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs" };
   }
@@ -419,6 +923,15 @@ function resolveBossLocalApiEndpoint(message) {
 
 function resolveZhilianLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if(operation === "filter-options") {
+    const city=String(message?.params?.cityCode || "489");
+    if(!/^\d+$/.test(city)) return {success:false,message:"智联城市代码无效"};
+    return {success:true,method:"GET",path:`/api/zhilian/config/options/filters?cityCode=${city}`};
+  }
+  if (operation === "chrome-jobs-dedupe") {
+    return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs/dedupe" };
+  }
+  if (operation === "chrome-resume") return { success: true, method: "POST", path: "/api/zhilian/chrome/resume" };
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs" };
   }
@@ -438,15 +951,50 @@ async function requestLocalApi(path, options = {}) {
   const timeoutMs = options.timeoutMs || BOSS_LOCAL_API_TIMEOUT_MS;
   const requestOptions = {
     method,
-    headers: { "Content-Type": "application/json" },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: method === "GET" || options.body === undefined ? undefined : JSON.stringify(options.body)
   };
+  if (options.requireActionToken) {
+    requestOptions.headers["X-Local-Action-Token"] = await getLocalActionToken();
+  }
+  const baseUrls = options.requireActionToken
+    ? [localActionBaseUrl || LOCAL_API_BASE_URLS[0]]
+    : LOCAL_API_BASE_URLS;
+  const maxAttempts = String(options.operation || "").startsWith("hr-")
+    ? 1
+    : BOSS_LOCAL_API_MAX_ATTEMPTS;
 
-  for (let attempt = 1; attempt <= BOSS_LOCAL_API_MAX_ATTEMPTS; attempt++) {
-    for (const baseUrl of LOCAL_API_BASE_URLS) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (const baseUrl of baseUrls) {
       try {
         const response = await fetchWithTimeout(`${baseUrl}${path}`, requestOptions, timeoutMs);
-        const data = await parseLocalApiResponse(response);
+        if (response.status === 404 && path.startsWith("/api/hr-assistant/")) {
+          return { success: false, httpStatus: 404, errorType: "HR_BACKEND_UNAVAILABLE",
+            message: "当前后端缺少 BOSS 值守功能（HTTP 404），请切换到包含值守功能的服务版本", attempt, baseUrl };
+        }
+        let data;
+        try { data = await parseLocalApiResponse(response); }
+        catch (error) {
+          return { success: false, httpStatus: response.status, errorType: "LOCAL_API_CONTRACT_MISMATCH",
+            message: `本地接口响应格式不兼容（HTTP ${response.status}）：${error.message}`, attempt, baseUrl };
+        }
+        if (response.status === 401 && options.requireActionToken) {
+          localActionToken = null;
+          localActionBaseUrl = "";
+        }
+        if (data.success === false) {
+          return {
+            success: false,
+            httpStatus: response.status,
+            data,
+            message: data.message || "本地接口拒绝了本次请求",
+            errorType: data.errorCode || "BUSINESS_REJECTED",
+            attempt,
+            baseUrl
+          };
+        }
+        const expectedState = options.expectedState || String(options.body?.outcome || "").toUpperCase();
+        assertExpectedLocalApiPayload(data, options.operation, expectedState);
         if (response.ok) {
           return { success: true, httpStatus: response.status, data, attempt, baseUrl };
         }
@@ -467,17 +1015,40 @@ async function requestLocalApi(path, options = {}) {
       }
     }
 
-    if (attempt < BOSS_LOCAL_API_MAX_ATTEMPTS) {
-      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, BOSS_LOCAL_API_MAX_ATTEMPTS, lastError);
+    if (attempt < maxAttempts) {
+      await postLocalApiRetryProgress(options.platform || "boss", options.pageTabId, options.operation, attempt + 1, maxAttempts, lastError);
       await sleep(350 * attempt);
     }
   }
 
   return {
     success: false,
-    message: `本地服务请求失败，已自动重试 ${BOSS_LOCAL_API_MAX_ATTEMPTS} 次：${friendlyLocalApiError(lastError)}`,
+    message: options.operation === "hr-send"
+      ? `本地服务请求失败，发送结果未知且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : maxAttempts === 1
+        ? `本地服务请求失败且不会自动重试：${friendlyLocalApiError(lastError)}`
+      : `本地服务请求失败，已自动重试 ${maxAttempts} 次：${friendlyLocalApiError(lastError)}`,
     errorType: classifyLocalApiError(0, lastError?.message || String(lastError || ""))
   };
+}
+
+async function getLocalActionToken() {
+  if (localActionToken) return localActionToken;
+  let lastError = null;
+  for (const baseUrl of LOCAL_API_BASE_URLS) {
+    try {
+      const response = await fetchWithTimeout(`${baseUrl}/api/local-auth/action-token`, { method: "GET" }, 5000);
+      const data = await parseLocalApiResponse(response);
+      const token = String(data?.data?.token || "").trim();
+      if (!response.ok || !token) throw new Error("本地操作令牌响应无效");
+      localActionToken = token;
+      localActionBaseUrl = baseUrl;
+      return token;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`无法获取本地操作令牌：${friendlyLocalApiError(lastError)}`);
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -491,12 +1062,39 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function parseLocalApiResponse(response) {
+  const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
   const text = await response.text();
-  if (!text) return {};
+  if (contentType && !contentType.includes("application/json")) {
+    throw new Error(`本地接口契约不匹配：Content-Type=${contentType || "missing"}`);
+  }
+  if (!text) throw new Error("本地接口契约不匹配：JSON 响应为空");
+  let data;
   try {
-    return JSON.parse(text);
+    data = JSON.parse(text);
   } catch {
-    return { message: text };
+    throw new Error("本地接口契约不匹配：响应不是合法 JSON");
+  }
+  if (!data || Array.isArray(data) || typeof data !== "object" || typeof data.success !== "boolean") {
+    throw new Error("本地接口契约不匹配：缺少 success 业务字段");
+  }
+  return data;
+}
+
+function assertExpectedLocalApiPayload(data, operation, expectedState) {
+  const name = String(operation || "");
+  if (name === "chrome-jobs" && !["received", "saved", "queued"].every((field) => Number.isFinite(Number(data[field])))) {
+    throw new Error("本地接口契约不匹配：岗位批次响应缺少 received/saved/queued");
+  }
+  if (name === "chrome-jobs-dedupe" && !Array.isArray(data.items)) {
+    throw new Error("本地接口契约不匹配：岗位查重响应缺少 items");
+  }
+  if (name === "ai-keywords" && !Array.isArray(data.keywords)) {
+    throw new Error("本地接口契约不匹配：AI 关键词响应缺少 keywords");
+  }
+  if (name === "delivery-result"
+      && (data.accepted !== true || !["CONFIRMED", "FAILED", "UNKNOWN"].includes(expectedState)
+        || data.state !== expectedState)) {
+    throw new Error("本地接口契约不匹配：投递回写必须 accepted=true 且 state 与请求一致");
   }
 }
 
@@ -540,6 +1138,18 @@ async function postLocalApiRetryProgress(platform, pageTabId, operation, nextAtt
   });
 }
 
+async function openBossHrChat() {
+  const state = await readBossHrWatch();
+  const bound = state?.tabId ? await chrome.tabs.get(state.tabId).catch(() => null) : null;
+  const tabs = await chrome.tabs.query({ url: ["https://*.zhipin.com/web/geek/chat*", "https://zhipin.com/web/geek/chat*"] });
+  const tab = bound && isBossChatUrl(bound.url || "") ? bound
+    : tabs.filter(item => isBossChatUrl(item.url || "")).sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+  const opened = tab ? await chrome.tabs.update(tab.id, { active: true })
+    : await chrome.tabs.create({ url: "https://www.zhipin.com/web/geek/chat", active: true });
+  if (opened.windowId != null) await chrome.windows.update(opened.windowId, { focused: true });
+  return { success: true, tabId: opened.id, message: "已打开 BOSS 聊天页，请确认人物档案和 BOSS 账号后点击开始值守" };
+}
+
 async function handlePageMessage(message, sender) {
   const pageTabId = sender.tab?.id;
   if (pageTabId) pageTabs.set(pageTabId, Date.now());
@@ -548,14 +1158,24 @@ async function handlePageMessage(message, sender) {
     return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION };
   }
 
+  if (message.type === "BOSS_HR_OPEN_CHAT") return await openBossHrChat();
+
   const platform = message.platform || inferPlatform(message.type);
   if (!platform || !PLATFORM_CONFIG[platform]) {
     return { success: false, message: "未知平台" };
   }
 
+  if (isProfileScopedScanMessage(message.type)) {
+    const profileId = normalizeProfileId(message.profileId);
+    if (!profileId) return profileRequiredResponse();
+    message = { ...message, profileId };
+  }
+
   if (platform === "zhilian" && message.type === "ZHILIAN_SCAN_START" && !normalizeZhilianKeywordList(readZhilianKeywordInput(message)).length) {
     return { success: false, message: "请至少填写一个搜索关键词" };
   }
+
+  if (message.type === "ZHILIAN_PAGE_STATUS") return await queryZhilianPageStatus(message, pageTabId);
 
   const config = PLATFORM_CONFIG[platform];
   const tab = await resolvePlatformTab(platform, message);
@@ -581,6 +1201,10 @@ async function handlePageMessage(message, sender) {
     return await sendPassiveStop(tab.id, platform, message, pageTabId);
   }
 
+  if (message.type === "BOSS_DELIVERY_PREFLIGHT") {
+    return { ...await prepareBossDelivery(tab.id), version: BACKGROUND_VERSION };
+  }
+
   if (isDeliverMessage(platform, message.type)) {
     return platform === "boss"
       ? await handleBossDeliver(tab, config, message, pageTabId)
@@ -597,7 +1221,7 @@ async function handlePageMessage(message, sender) {
   try {
     let scanSession = null;
     if (isScanStartMessage(message.type)) {
-      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken);
+      scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken, message.profileId);
     }
     const response = await chrome.tabs.sendMessage(tab.id, {
       ...toPlatformContentMessage(message, platform),
@@ -692,8 +1316,36 @@ function isScanStartMessage(type) {
   return type === "BOSS_SCAN_START" || type === "ZHILIAN_SCAN_START";
 }
 
+function isProfileScopedScanMessage(type) {
+  return type === "BOSS_SCAN_START"
+    || type === "BOSS_SCAN_STATUS"
+    || type === "BOSS_SCAN_STOP"
+    || type === "ZHILIAN_SCAN_START"
+    || type === "ZHILIAN_SCAN_STATUS"
+    || type === "ZHILIAN_SCAN_STOP";
+}
+
+function isProfileScopedLocalApiOperation(operation) {
+  return operation === "chrome-jobs" || operation === "chrome-jobs-dedupe" || operation === "chrome-resume";
+}
+
+function profileRequiredResponse() {
+  return {
+    success: false,
+    httpStatus: 400,
+    errorCode: "PROFILE_REQUIRED",
+    errorType: "PROFILE_REQUIRED",
+    message: "缺少有效档案ID，请刷新本地页面后重新开始扫描"
+  };
+}
+
+function normalizeProfileId(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function isBossDeliverMessage(type) {
-  return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH";
+  return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH" || type === "BOSS_DELIVERY_PREFLIGHT";
 }
 
 function isZhilianDeliverMessage(type) {
@@ -721,9 +1373,15 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   if (message.type === "BOSS_DELIVER_ONE") {
     const result = await deliverBossTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(message.task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(message.task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyDeliveryFailure(errorMessage).failureType
       };
@@ -738,35 +1396,97 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
 
   let success = 0;
   let failed = 0;
+  let unknown = 0;
+  const results = [];
+  let halted = false;
+  let haltedJobId = null;
+  let unprocessedCount = 0;
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverBossTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postBossDeliveryResult(task, false, classifyDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyDeliveryFailure(errorMessage).failureType
       };
     });
-    if (result?.success) success += 1;
+    const outcome = deliveryOutcomeOf(result);
+    if (outcome === "CONFIRMED") success += 1;
+    else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, actionStarted: result?.actionStarted, message: result?.message || "" });
+    if (outcome === "UNKNOWN" || result?.haltBatch) {
+      halted = true;
+      haltedJobId = task?.id || null;
+      const remaining = tasks.slice(index + 1);
+      unprocessedCount = remaining.length;
+      for (const skippedTask of remaining) {
+        const skippedMessage = `前一岗位 ${task?.id || "-"} 无法安全继续（${result?.message || "发送结果待确认"}），批量任务已暂停，本岗位未触达`;
+        let persisted = false;
+        await postBossDeliveryResult(
+          skippedTask,
+          false,
+          { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+          "BATCH_HALTED_BEFORE_ACTION",
+          "NOT_SENT",
+          "BATCH_HALTED_BEFORE_ACTION"
+        ).then(() => { persisted = true; }).catch(() => {});
+        results.push({
+          id: skippedTask?.id,
+          requestKey: skippedTask?.requestKey,
+          outcome: "FAILED",
+          evidence: "BATCH_HALTED_BEFORE_ACTION",
+          greetingOutcome: "NOT_SENT",
+          greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+          persisted,
+          skipped: true,
+          message: skippedMessage
+        });
+      }
+      break;
+    }
   }
 
+  const summary = halted
+    ? `Boss批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+    : `Boss批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
   return {
-    success: true,
-    message: `Boss批量投递完成：成功${success}，失败${failed}`,
+    success: !halted && failed === 0 && unknown === 0,
+    partial: success > 0 && (failed > 0 || unknown > 0),
+    message: summary,
     successCount: success,
-    failedCount: failed
+    unknownCount: unknown,
+    failedCount: failed,
+    halted,
+    haltedJobId,
+    unprocessedCount,
+    results
   };
+}
+
+async function prepareBossDelivery(tabId, targetUrl) {
+  return GetJobsBossDeliverySupport.prepare({ chrome, tabId, targetUrl, sleep,
+    navigate: (id, url) => navigatePlatformTab(id, url, PLATFORM_CONFIG.boss, DELIVERY_NAVIGATION_TIMEOUT_MS, { bossJobUrl: url }),
+    ensure: id => ensureContentScript(id, PLATFORM_CONFIG.boss.contentScript) });
 }
 
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
+    let persisted = false;
     if (task?.id) {
-      await postBossDeliveryResult(task, false, classifyDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
+      await postBossDeliveryResult(task, false, classifyDeliveryFailure("投递任务缺少岗位链接或ID"), "PRE_ACTION_ERROR")
+        .then(() => { persisted = true; })
+        .catch(() => {});
     }
-    return { success: false, message: "投递任务缺少岗位链接或ID" };
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: "投递任务缺少岗位链接或ID" };
   }
 
   postPlatformProgress(pageTabId, {
@@ -779,22 +1499,30 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     keywordIndex: index,
     keywordTotal: total
   });
-  const targetUrl = task.url;
-  await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { bossJobUrl: targetUrl });
-  await ensureContentScript(tab.id, config.contentScript);
-  if (!isNoFocusPlatformMessage(message.type)) {
-    const updatedTab = await chrome.tabs.update(tab.id, { active: true });
-    await chrome.windows.update(updatedTab.windowId || tab.windowId, { focused: true }).catch(() => {});
+  const prepared = await prepareBossDelivery(tab.id, task.url);
+  if (!prepared.success) {
+    let persisted = false;
+    await postBossDeliveryResult(task, false, { failureType: prepared.failureType, failureReason: prepared.message },
+      "PRE_ACTION_ERROR", "NOT_SENT", "PRE_ACTION_ERROR").then(() => { persisted = true; }).catch(() => {});
+    return { ...prepared, persisted };
   }
 
   try {
-    return await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
+    return { ...await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total), actionStarted: true };
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
     const failure = classifyDeliveryFailure(errorMessage);
-    await postBossDeliveryResult(task, false, failure).catch(() => {});
+    let persisted = false;
+    await postBossDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+      .then(() => { persisted = true; })
+      .catch(() => {});
     return {
       success: false,
+      outcome: "UNKNOWN",
+      evidence: "NO_CONFIRMATION",
+      greetingOutcome: "UNKNOWN",
+      greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
+      persisted,
       message: failure.failureReason,
       failureType: failure.failureType
     };
@@ -802,36 +1530,35 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
 }
 
 async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, total) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        ...message,
-        type: "BOSS_DELIVER_CURRENT_V2",
-        source: "GET_JOBS_BACKGROUND",
-        task,
-        pageTabId,
-        deliveryIndex: index,
-        deliveryTotal: total
-      });
-      if (response) return response;
-      const fallback = await inferBossDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success) return fallback;
-    } catch (error) {
-      lastError = error;
-      await sleep(500);
-    }
+  const response = await chrome.tabs.sendMessage(tabId, {
+    ...message,
+    type: "BOSS_DELIVER_CURRENT_V2",
+    source: "GET_JOBS_BACKGROUND",
+    task,
+    pageTabId,
+    deliveryIndex: index,
+    deliveryTotal: total
+  });
+  if (response) {
+    const recorded = await recordBossDeliveryResponse(task, response);
+    return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
   }
-  throw lastError || new Error("Boss投递请求发送失败");
+  return await inferBossDeliveryAfterEmptyResponse(tabId, task);
 }
 
 async function handleZhilianDeliver(tab, config, message, pageTabId) {
   if (message.type === "ZHILIAN_DELIVER_ONE") {
     const result = await deliverZhilianTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postZhilianDeliveryResult(message.task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postZhilianDeliveryResult(message.task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
       };
@@ -846,42 +1573,62 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
 
   let success = 0;
   let failed = 0;
+  let unknown = 0;
+  const results = [];
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverZhilianTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
       const errorMessage = error.message || String(error);
-      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure(errorMessage)).catch(() => {});
+      let persisted = false;
+      await postZhilianDeliveryResult(task, null, errorMessage, "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: errorMessage,
         failureType: classifyZhilianDeliveryFailure(errorMessage).failureType
       };
     });
-    if (result?.success) success += 1;
+    const outcome = deliveryOutcomeOf(result);
+    if (outcome === "CONFIRMED") success += 1;
+    else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
   }
 
   return {
-    success: true,
-    message: `智联批量投递完成：成功${success}，失败${failed}`,
+    success: failed === 0 && unknown === 0,
+    partial: success > 0 && (failed > 0 || unknown > 0),
+    message: `智联批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
     successCount: success,
-    failedCount: failed
+    unknownCount: unknown,
+    failedCount: failed,
+    results
   };
 }
 
 async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
+    let persisted = false;
     if (task?.id) {
-      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure("投递任务缺少岗位链接或ID")).catch(() => {});
+      await postZhilianDeliveryResult(task, false, classifyZhilianDeliveryFailure("投递任务缺少岗位链接或ID"), "PRE_ACTION_ERROR")
+        .then(() => { persisted = true; })
+        .catch(() => {});
     }
-    return { success: false, message: "投递任务缺少岗位链接或ID" };
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: "投递任务缺少岗位链接或ID" };
   }
 
   const targetUrl = normalizeZhilianUrl(task.url);
   if (!targetUrl || !isZhilianJobDetailUrl(targetUrl)) {
     const failure = classifyZhilianDeliveryFailure(`拒绝打开非智联岗位详情页：${task.url || ""}`);
-    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
-    return { success: false, message: failure.failureReason, failureType: failure.failureType };
+    let persisted = false;
+    await postZhilianDeliveryResult(task, false, failure, "PRE_ACTION_ERROR")
+      .then(() => { persisted = true; })
+      .catch(() => {});
+    return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", persisted, message: failure.failureReason, failureType: failure.failureType };
   }
 
   postPlatformProgress(pageTabId, {
@@ -906,9 +1653,15 @@ async function deliverZhilianTask(tab, config, task, message, pageTabId, index, 
   } catch (error) {
     const errorMessage = buildContentScriptError("zhilian", error, "投递");
     const failure = classifyZhilianDeliveryFailure(errorMessage);
-    await postZhilianDeliveryResult(task, false, failure).catch(() => {});
+    let persisted = false;
+    await postZhilianDeliveryResult(task, null, failure.failureReason, "NO_CONFIRMATION")
+      .then(() => { persisted = true; })
+      .catch(() => {});
     return {
       success: false,
+      outcome: "UNKNOWN",
+      evidence: "NO_CONFIRMATION",
+      persisted,
       message: failure.failureReason,
       failureType: failure.failureType
     };
@@ -928,9 +1681,12 @@ async function sendZhilianDeliverCurrent(tabId, message, task, pageTabId, index,
         deliveryIndex: index,
         deliveryTotal: total
       });
-      if (response) return response;
+      if (response) {
+        const recorded = await recordZhilianDeliveryResponse(task, response);
+        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
+      }
       const fallback = await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success) return fallback;
+      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
     } catch (error) {
       lastError = error;
       await sleep(500);
@@ -944,8 +1700,15 @@ async function inferZhilianDeliveryAfterEmptyResponse(tabId, task) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.url || tab.pendingUrl || "";
     if (isZhilianUrl(currentUrl)) {
+      let persisted = false;
+      await postZhilianDeliveryResult(task, null, "智联投递未返回明确平台结果", "NO_CONFIRMATION")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
         success: false,
+        outcome: "UNKNOWN",
+        evidence: "NO_CONFIRMATION",
+        persisted,
         message: "智联投递未返回结果，请在详情页确认是否出现投递成功状态。"
       };
     }
@@ -960,10 +1723,18 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.url || tab.pendingUrl || "";
     if (isBossChatUrl(currentUrl)) {
-      await postBossDeliveryResult(task, true, "Boss已进入沟通页").catch(() => {});
+      let persisted = false;
+      await postBossDeliveryResult(task, null, "Boss已进入沟通页，但未收到明确平台成功状态", "CHAT_SURFACE_ONLY")
+        .then(() => { persisted = true; })
+        .catch(() => {});
       return {
-        success: true,
-        message: "Boss已进入沟通页，按成功处理。"
+        success: false,
+        outcome: "UNKNOWN",
+        evidence: "CHAT_SURFACE_ONLY",
+        greetingOutcome: "UNKNOWN",
+        greetingEvidence: "GREETING_CALLBACK_UNAVAILABLE",
+        persisted,
+        message: "Boss已进入沟通页，但未收到明确成功状态，已标记待确认。"
       };
     }
     return { success: false, message: "Boss投递未返回结果，未确认进入沟通页。" };
@@ -972,34 +1743,108 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
   }
 }
 
-async function postBossDeliveryResult(task, success, message) {
+async function postBossDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
   if (!task?.id) return;
-  const failure = success ? null : normalizeFailurePayload(message);
-  await fetch(`http://localhost:6866/api/boss/jobs/${task.id}/delivery-result`, {
+  const failure = success === false ? normalizeFailurePayload(message) : null;
+  const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
+  const result = await requestLocalApi(`/api/boss/jobs/${task.id}/delivery-result`, {
+    operation: "delivery-result",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: {
+      requestKey: task.requestKey,
+      outcome,
+      evidence: evidence || (outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
       success,
-      message: success ? message : failure.failureReason,
+      message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
-      failureReason: failure?.failureReason
-    })
+      failureReason: failure?.failureReason,
+      greetingOutcome: greetingOutcome || (outcome === "CONFIRMED" ? "CONFIRMED" : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN"),
+      greetingEvidence: greetingEvidence || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : "GREETING_UNCONFIRMED")
+    },
+    platform: "boss"
   });
+  if (!result.success) throw new Error(result.message || "Boss投递结果写入失败");
+  return result;
 }
 
-async function postZhilianDeliveryResult(task, success, message) {
+async function recordBossDeliveryResponse(task, response) {
+  let outcome = deliveryOutcomeOf(response);
+  const responseGreetingOutcome = String(response?.greetingOutcome || "").toUpperCase();
+  const responseGreetingEvidence = String(response?.greetingEvidence || "").toUpperCase();
+  const greetingConfirmed = responseGreetingOutcome === "CONFIRMED"
+    && responseGreetingEvidence === "GREETING_RENDERED_EXACT";
+  if (outcome === "CONFIRMED" && !greetingConfirmed) outcome = "UNKNOWN";
+  const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
+  const evidence = response?.evidence
+    || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  const greetingOutcome = greetingConfirmed
+    ? "CONFIRMED"
+    : ["UNKNOWN", "NOT_SENT"].includes(responseGreetingOutcome)
+      ? responseGreetingOutcome
+      : outcome === "FAILED" ? "NOT_SENT" : "UNKNOWN";
+  const greetingEvidence = greetingConfirmed
+    ? "GREETING_RENDERED_EXACT"
+    : responseGreetingEvidence || "GREETING_UNCONFIRMED";
+  await postBossDeliveryResult(
+    task,
+    success,
+    response?.message || "Boss投递结果回写",
+    evidence,
+    greetingOutcome,
+    greetingEvidence
+  );
+  return {
+    outcome,
+    evidence,
+    greetingOutcome,
+    greetingEvidence,
+    persisted: true
+  };
+}
+
+async function postZhilianDeliveryResult(task, success, message, evidence) {
   if (!task?.id) return;
-  const failure = success ? null : normalizeZhilianFailurePayload(message);
-  await fetch(`http://localhost:6866/api/zhilian/jobs/${task.id}/delivery-result`, {
+  const failure = success === false ? normalizeZhilianFailurePayload(message) : null;
+  const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
+  const result = await requestLocalApi(`/api/zhilian/jobs/${task.id}/delivery-result`, {
+    operation: "delivery-result",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: {
+      requestKey: task.requestKey,
+      outcome,
+      evidence: evidence || (outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION"),
       success,
-      message: success ? message : failure.failureReason,
+      message: success === true ? message : failure?.failureReason || String(message || ""),
       failureType: failure?.failureType,
       failureReason: failure?.failureReason
-    })
+    },
+    platform: "zhilian"
   });
+  if (!result.success) throw new Error(result.message || "智联投递结果写入失败");
+  return result;
+}
+
+async function recordZhilianDeliveryResponse(task, response) {
+  const outcome = deliveryOutcomeOf(response);
+  const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
+  const evidence = response?.evidence
+    || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
+  await postZhilianDeliveryResult(task, success, response?.message || "智联投递结果回写", evidence);
+  return { outcome, evidence, persisted: true };
+}
+
+function deliveryOutcomeOf(result) {
+  const outcome = String(result?.outcome || "").toUpperCase();
+  if (outcome === "CONFIRMED") {
+    return isExplicitConfirmationEvidence(result?.evidence) ? "CONFIRMED" : "UNKNOWN";
+  }
+  if (outcome === "FAILED" || outcome === "UNKNOWN") return outcome;
+  return "UNKNOWN";
+}
+
+function isExplicitConfirmationEvidence(evidence) {
+  return ["PLATFORM_STATUS_TEXT", "PLATFORM_SUCCESS_DIALOG", "EXISTING_CONVERSATION", "GREETING_RENDERED_EXACT"]
+    .includes(String(evidence || "").toUpperCase());
 }
 
 function classifyDeliveryFailure(message) {
@@ -1047,6 +1892,55 @@ async function postPlatformProgress(pageTabId, payload) {
     timestamp: Date.now(),
     ...payload
   }, pageTabId);
+}
+
+async function queryZhilianPageStatus(message, pageTabId) {
+  if (message.openIfMissing === true) {
+    if (!zhilianPagePreparation) {
+      zhilianPagePreparation = prepareZhilianPageStatus(message, pageTabId)
+        .finally(() => { zhilianPagePreparation = null; });
+    }
+    return await zhilianPagePreparation;
+  }
+  const tabs = (await chrome.tabs.query({}))
+    .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian))
+    .sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0));
+  if (!tabs.length) return { success: true, chromePageReady: false, pageState: "NO_TAB", message: "请先在 Chrome 中打开智联招聘页面" };
+  // Probe all candidates without focusing, navigating or creating a tab. A stale login tab must not mask a usable page.
+  const statuses = await Promise.all(tabs.map(async tab => {
+    if (tab.status === "loading") return { success: true, chromePageReady: false, pageState: "LOADING", message: "智联页面正在加载，请稍后重新检查" };
+    const status = await queryPassivePlatformStatus(tab.id, "zhilian", message, pageTabId);
+    return { ...status, tabId: tab.id };
+  }));
+  return statuses.find(status => status.success && status.chromePageReady && !status.hasLoginPrompt && !status.hasSecurityPrompt)
+    || statuses.find(status => status.hasSecurityPrompt)
+    || statuses.find(status => status.hasLoginPrompt)
+    || statuses[0];
+}
+
+async function prepareZhilianPageStatus(message, pageTabId) {
+  const passiveMessage = { ...message, openIfMissing: false };
+  try {
+    let tabs = (await chrome.tabs.query({}))
+      .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian));
+    if (!tabs.length) {
+      // Use a fixed official URL; page messages cannot choose an arbitrary destination.
+      tabs = [await chrome.tabs.create({ url: "https://www.zhaopin.com/jobs?jl=489", active: true })];
+    }
+    await Promise.all(tabs.filter(tab => tab.status === "loading").map(tab =>
+      waitForSupportedTab(tab.id, PLATFORM_CONFIG.zhilian).catch(() => null)
+    ));
+    const startedAt = Date.now();
+    let status;
+    do {
+      status = await queryZhilianPageStatus(passiveMessage, pageTabId);
+      if (status.chromePageReady || status.hasLoginPrompt || status.hasSecurityPrompt || status.pageState === "NO_TAB") return status;
+      await sleep(CONTENT_READY_INTERVAL_MS);
+    } while (Date.now() - startedAt < 8000);
+    return { ...status, message: status.message || "智联页面已打开，但尚未就绪，请等待页面加载完成后重试" };
+  } catch (error) {
+    return { success: false, chromePageReady: false, message: `自动打开智联页面失败：${error?.message || String(error)}` };
+  }
 }
 
 async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
@@ -1111,6 +2005,7 @@ async function buildRegisteredNavigationStatus(platform, tabId) {
     temporaryUnavailable: true,
     stage: "navigating",
     runId: session.runId || "",
+    profileId: normalizeProfileId(session.profileId) || null,
     message: `${platform === "boss" ? "Boss" : "智联"}扫描页面正在跳转，任务仍在后台继续。`
   };
 }
@@ -1149,13 +2044,13 @@ async function sendPassiveStop(tabId, platform, message, pageTabId) {
 
 async function resolvePlatformTab(platform, message) {
   if (isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type)) {
-    return await findRegisteredOrRunningScanTab(platform);
+    return await findRegisteredOrRunningScanTab(platform, message.profileId);
   }
   if (isDeliverMessage(platform, message.type)) {
     return await findDeliveryPlatformTab(platform, platformStartUrl(message));
   }
   if (isScanStartMessage(message.type)) {
-    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId);
+    return await findScanPlatformTab(platform, platformStartUrl(message), message.runId, message.profileId);
   }
   if (isNoCreatePlatformMessage(message.type)) {
     return await findPlatformTab(platform);
@@ -1163,25 +2058,32 @@ async function resolvePlatformTab(platform, message) {
   return await findOrCreatePlatformTab(platform, platformStartUrl(message));
 }
 
-async function findScanPlatformTab(platform, startUrl, requestedRunId = "") {
-  const registered = await getRegisteredScanTab(platform, requestedRunId);
+async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, requestedRunId, requestedProfileId);
   if (registered) return registered;
 
-  const running = await findRunningPlatformTab(platform, requestedRunId);
+  const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
   if (running) return running;
 
+  if (platform === "zhilian") {
+    const pageStatus = await queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", platform }, null);
+    if (pageStatus.chromePageReady && pageStatus.tabId) return await chrome.tabs.get(pageStatus.tabId);
+  }
   return await findOrCreatePlatformTab(platform, startUrl);
 }
 
-async function findRegisteredOrRunningScanTab(platform) {
-  const registered = await getRegisteredScanTab(platform);
+async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) {
+  const registered = await getRegisteredScanTab(platform, "", requestedProfileId);
   if (registered) return registered;
-  return await findRunningPlatformTab(platform);
+  return await findRunningPlatformTab(platform, "", requestedProfileId);
 }
 
 async function findDeliveryPlatformTab(platform, startUrl) {
   const scanTab = await findRegisteredOrRunningScanTab(platform);
-  const scanStatus = scanTab?.id ? await probePlatformScanStatus(scanTab.id, platform) : null;
+  const session = await readScanSession(platform);
+  const scanStatus = scanTab?.id
+    ? await probePlatformScanStatus(scanTab.id, platform, session?.profileId)
+    : null;
   const scanIsActive = isActiveScanStatus(scanStatus);
   const excludedTabIds = scanIsActive && scanTab?.id ? [scanTab.id] : [];
 
@@ -1201,7 +2103,7 @@ async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
   const tabs = await chrome.tabs.query({});
   const found = tabs
     .filter((tab) => !excludedTabIds.has(tab.id))
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (found) return found;
   return await chrome.tabs.create({ url: startUrl || config.home, active: options.active !== false });
@@ -1211,34 +2113,40 @@ async function findPlatformTab(platform) {
   const config = PLATFORM_CONFIG[platform];
   const tabs = await chrome.tabs.query({});
   return tabs
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)))
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
-async function findRunningPlatformTab(platform, requestedRunId = "") {
+async function findRunningPlatformTab(platform, requestedRunId = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
-    .filter((tab) => config.hosts.some((host) => (tab.url || tab.pendingUrl || "").includes(host)));
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config));
 
   for (const tab of tabs) {
     if (!tab.id) continue;
-    const status = await probePlatformScanStatus(tab.id, platform);
+    const status = await probePlatformScanStatus(tab.id, platform, profileId);
     if (isActiveScanStatus(status)) {
       if (requestedRunId && !scanRunMatches(status?.runId, requestedRunId)) continue;
-      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken);
+      if (normalizeProfileId(status?.profileId) !== profileId) continue;
+      await registerScanSession(platform, tab.id, status.runId, null, status.scanOwnerToken, profileId);
       return tab;
     }
   }
   return null;
 }
 
-async function probePlatformScanStatus(tabId, platform) {
+async function probePlatformScanStatus(tabId, platform, requestedProfileId) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!profileId) return null;
   if (!await pingContentScript(tabId)) return null;
   try {
     const type = platform === "boss" ? "BOSS_SCAN_STATUS" : "ZHILIAN_SCAN_STATUS_V2";
     return await chrome.tabs.sendMessage(tabId, {
       source: "GET_JOBS_BACKGROUND",
-      type
+      type,
+      profileId
     });
   } catch {
     return null;
@@ -1273,22 +2181,26 @@ async function handleScanOwnerStatus(platform, sender) {
     isOwner: Boolean(session && tabId && session.tabId === tabId),
     ownerToken: session?.ownerToken || "",
     runId: session?.runId || "",
+    profileId: normalizeProfileId(session?.profileId) || null,
     tabId: session?.tabId || null
   };
 }
 
-async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "") {
-  if (!platform || !tabId) return null;
+async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken = "", requestedProfileId = 0) {
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (!platform || !tabId || !profileId) return null;
   return await mutateScanSessions((sessions) => {
     const existing = sessions[platform];
+    const sameProfile = normalizeProfileId(existing?.profileId) === profileId;
     const session = {
       platform,
       tabId,
-      runId: String(runId || existing?.runId || ""),
-      pageTabId: pageTabId || existing?.pageTabId || null,
+      profileId,
+      runId: String(runId || (sameProfile ? existing?.runId : "") || ""),
+      pageTabId: pageTabId || (sameProfile ? existing?.pageTabId : null) || null,
       ownerToken: String(
         ownerToken
-          || (existing?.tabId === tabId ? existing?.ownerToken : "")
+          || (sameProfile && existing?.tabId === tabId ? existing?.ownerToken : "")
           || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
       ),
       updatedAt: Date.now()
@@ -1302,6 +2214,10 @@ async function readScanSession(platform) {
   const sessions = await readScanSessions();
   const session = sessions[platform];
   if (!session) return null;
+  if (!normalizeProfileId(session.profileId)) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (Date.now() - Number(session.updatedAt || 0) > SCAN_SESSION_TTL_MS) {
     await clearScanSession(platform, session.tabId);
     return null;
@@ -1319,9 +2235,14 @@ async function readScanSessions() {
   }
 }
 
-async function getRegisteredScanTab(platform, requestedRunId = "") {
+async function getRegisteredScanTab(platform, requestedRunId = "", requestedProfileId = 0) {
   const session = await readScanSession(platform);
   if (!session?.tabId) return null;
+  const profileId = normalizeProfileId(requestedProfileId);
+  if (profileId && normalizeProfileId(session.profileId) !== profileId) {
+    await cleanupPlatformScanState(platform, session.tabId);
+    return null;
+  }
   if (requestedRunId && !scanRunMatches(session.runId, requestedRunId)) {
     await cleanupPlatformScanState(platform, session.tabId);
     return null;
@@ -1370,13 +2291,15 @@ async function mutateScanSessions(mutator) {
 
 async function updateScanSessionFromEvent(platform, tabId, payload) {
   if (!tabId || payload?.operation !== "scan") return;
+  const profileId = normalizeProfileId(payload.profileId);
+  if (!profileId) return;
+  const session = await readScanSession(platform);
+  if (!session || session.tabId !== tabId || normalizeProfileId(session.profileId) !== profileId) return;
   if (["complete", "stopped", "error"].includes(String(payload.stage || ""))) {
     await clearScanSession(platform, tabId);
     return;
   }
-  const session = await readScanSession(platform);
-  if (!session || session.tabId !== tabId) return;
-  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken);
+  await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken, profileId);
 }
 
 async function broadcastPlatformEvent(payload, preferredPageTabId = null) {
@@ -1420,8 +2343,10 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
   while (Date.now() - startedAt < timeoutMs) {
     const tab = await chrome.tabs.get(tabId);
     const tabUrl = tab.url || tab.pendingUrl || "";
-    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url, options) && tab.status !== "loading") {
-      return tab;
+    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url, options) && tab.status !== "loading" && (!tab.pendingUrl || tab.pendingUrl === tab.url)) {
+      await sleep(100);
+      const stable = await chrome.tabs.get(tabId);
+      if (stable.url === tab.url && stable.status !== "loading" && (!stable.pendingUrl || stable.pendingUrl === stable.url)) return stable;
     }
     await sleep(CONTENT_READY_INTERVAL_MS);
   }
@@ -1437,6 +2362,10 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
 async function ensureContentScript(tabId, file) {
   if (await isContentScriptReady(tabId, file)) return;
 
+  const tab = await chrome.tabs.get(tabId);
+  const config = file === "boss-content.js" ? PLATFORM_CONFIG.boss : PLATFORM_CONFIG.zhilian;
+  if (!isSupportedUrl(tab.url || "", config) || tab.status === "loading"
+      || (tab.pendingUrl && tab.pendingUrl !== tab.url)) throw new Error("招聘页面仍在跳转，脚本尚未注入");
   await chrome.scripting.executeScript({ target: { tabId }, files: contentScriptFiles(file) });
 
   for (let attempt = 0; attempt < CONTENT_READY_RETRIES; attempt++) {
@@ -1513,7 +2442,19 @@ function isZhilianVersionedContentMessage(type) {
 }
 
 function isSupportedUrl(url, config) {
-  return /^https?:\/\//.test(url) && config.hosts.some((host) => url.includes(host));
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "https:"
+      && config.hosts.some((host) => isExactOrSubdomain(parsed.hostname, host));
+  } catch {
+    return false;
+  }
+}
+
+function isExactOrSubdomain(hostname, rootDomain) {
+  const host = String(hostname || "").toLowerCase();
+  const root = String(rootDomain || "").toLowerCase();
+  return Boolean(root && (host === root || host.endsWith(`.${root}`)));
 }
 
 function platformDisplayNameByConfig(config) {
@@ -1550,7 +2491,7 @@ function isBossSearchUrl(url) {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
-      && parsed.hostname.endsWith("zhipin.com")
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
       && (parsed.pathname === "/web/geek/job" || parsed.pathname === "/web/geek/jobs");
   } catch {
     return false;
@@ -1560,11 +2501,8 @@ function isBossSearchUrl(url) {
 function normalizeBossUrl(url) {
   try {
     const parsed = new URL(String(url || ""), "https://www.zhipin.com");
-    if (parsed.hostname.endsWith("zhipin.com") && parsed.protocol === "http:") {
-      parsed.protocol = "https:";
-    }
     parsed.hash = "";
-    if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("zhipin.com")) return "";
+    if (parsed.protocol !== "https:" || !isExactOrSubdomain(parsed.hostname, "zhipin.com")) return "";
     return parsed.href;
   } catch {
     return "";
@@ -1575,7 +2513,7 @@ function isBossJobDetailUrl(url) {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
-      && parsed.hostname.endsWith("zhipin.com")
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
       && parsed.pathname.includes("/job_detail/")
       && Boolean(extractBossJobId(parsed.href));
   } catch {
@@ -1586,7 +2524,7 @@ function isBossJobDetailUrl(url) {
 function isBossUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && parsed.hostname.endsWith("zhipin.com");
+    return parsed.protocol === "https:" && isExactOrSubdomain(parsed.hostname, "zhipin.com");
   } catch {
     return false;
   }
@@ -1606,24 +2544,21 @@ function isZhilianSearchUrl(url) {
     const parsed = new URL(url);
     return parsed.protocol === "https:"
       && isZhilianHost(parsed.hostname)
-      && /^\/sou(?:\/|$)/i.test(parsed.pathname);
+      && /^(?:\/sou(?:\/|$)|\/jobs\/?$)/i.test(parsed.pathname);
   } catch {
     return false;
   }
 }
 
 function isZhilianHost(hostname) {
-  const host = String(hostname || "").toLowerCase();
-  return host === "zhaopin.com" || host.endsWith(".zhaopin.com");
+  return isExactOrSubdomain(hostname, "zhaopin.com");
 }
 
 function normalizeZhilianUrl(url) {
   try {
     const parsed = new URL(String(url || ""));
-    if (isZhilianHost(parsed.hostname) && parsed.protocol === "http:") {
-      parsed.protocol = "https:";
-    }
     parsed.hash = "";
+    if (parsed.protocol !== "https:" || !isZhilianHost(parsed.hostname)) return "";
     return parsed.href;
   } catch {
     return "";
@@ -1651,7 +2586,9 @@ function isZhilianJobDetailUrl(url) {
 function isBossChatUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.hostname.endsWith("zhipin.com") && /chat|im|message/.test(parsed.pathname);
+    return parsed.protocol === "https:"
+      && isExactOrSubdomain(parsed.hostname, "zhipin.com")
+      && parsed.pathname.startsWith("/web/geek/chat");
   } catch {
     return false;
   }

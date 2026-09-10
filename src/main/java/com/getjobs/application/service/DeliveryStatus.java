@@ -13,6 +13,8 @@ public final class DeliveryStatus {
     public static final String SKIPPED = "已跳过";
     public static final String DELIVERED = "已投递";
     public static final String DELIVERY_FAILED = "投递失败";
+    public static final String DELIVERY_REQUESTED = "投递确认中";
+    public static final String DELIVERY_UNKNOWN = "投递结果待确认";
     public static final String FILTERED = "已过滤";
     public static final String UNKNOWN_FAILURE_TYPE = "UNKNOWN_ERROR";
 
@@ -25,7 +27,9 @@ public final class DeliveryStatus {
             AI_ANALYSIS_FAILED,
             COLLECTION_INSUFFICIENT,
             LIST_COLLECTED,
-            DELIVERY_FAILED
+            DELIVERY_FAILED,
+            DELIVERY_REQUESTED,
+            DELIVERY_UNKNOWN
     );
 
     public static final Set<String> FINAL_STATUSES = Set.of(
@@ -35,7 +39,9 @@ public final class DeliveryStatus {
             AI_NOT_MATCH,
             AI_ANALYSIS_FAILED,
             COLLECTION_INSUFFICIENT,
-            DELIVERY_FAILED
+            DELIVERY_FAILED,
+            DELIVERY_REQUESTED,
+            DELIVERY_UNKNOWN
     );
 
     private DeliveryStatus() {
@@ -70,7 +76,15 @@ public final class DeliveryStatus {
     }
 
     public static String protectDelivered(String currentStatus, String nextStatus) {
-        return isDelivered(currentStatus) ? DELIVERED : nextStatus;
+        return isDeliveryLocked(currentStatus) ? trim(currentStatus) : nextStatus;
+    }
+
+    public static boolean isDeliveryLocked(String status) {
+        String value = trim(status);
+        return DELIVERED.equals(value)
+                || DELIVERY_FAILED.equals(value)
+                || DELIVERY_REQUESTED.equals(value)
+                || DELIVERY_UNKNOWN.equals(value);
     }
 
     public static String defaultIfBlank(String status) {

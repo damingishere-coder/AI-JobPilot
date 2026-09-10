@@ -6,8 +6,28 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-10
+
+本次将此前分散在功能分支的已完成工作统一收回 `main`，正式版本标签为 `v1.5.0`。
+
+- BOSS / 智联按去重后新接受的岗位持续补采，保存关键词进度，明确部分完成、队列等待和失败原因。
+- BOSS 投递前验证页面权限、导航和脚本状态，避免尚未开始发送就被记为未知结果。
+- 智联分析列表调整为五列，图表默认折叠，支持“不感兴趣”，并展示本次使用的简历和技能介绍。
+- 加强简历识别、AI 分析持久化与恢复、档案隔离、BOSS HR 草稿审核和通知能力。
+- 新增 Flyway V20 收录回执表；保留已有岗位、投递审计和用户设置。
+- 应用及前端版本为 1.5.0；配套 Chrome Bridge 保持独立递增版本 1.8.0，避免扩展降级。
+- Release 使用与 CI 一致的 Node.js 24，生成 JAR、扩展、静态前端、源码及 SHA256 校验文件。
+
+已知限制：发行包仍需要 Java 21；扩展更新需要在 Chrome 中重新加载。自动化测试不代表招聘官网真实扫描或真实投递验收，发布不触发对外消息或投递。
+
+以下为本次统一纳入正式主线的早期改进：
+
 ### Added
 
+- 本机副作用接口令牌、严格 URL/扩展来源边界和独立 readiness 检查
+- 可审计的投递 attempt、`UNKNOWN` 人工对账与显式重试
+- 持久化 AI 分析任务、租约、重启恢复和 Provider 有界重试
+- Liepin / 51job Profile 隔离的 Flyway V8 迁移与副本演练测试
 - CodeQL Java / Kotlin 与 JavaScript / TypeScript 安全扫描
 - Chrome 扩展 Manifest、引用文件和 JavaScript 语法自动校验
 - Docker Compose 与 Dockerfile 阶段配置检查
@@ -16,19 +36,28 @@
 - Release 产物、版本命名和校验文档
 - Dependabot、CODEOWNERS、开发者启动文档和统一文档中心
 - 完全虚构的 Demo 简历、岗位和分析示例数据
+- 四平台只读能力注册表与统一 AI 分析入口；Boss / 智联为一级链，猎聘 / 51job 为二级兼容链
+- Flyway V9 沟通草稿、猎聘 / 51job AI 字段及投递话术快照迁移
+- Boss / 智联 AI 沟通助手：来源展示、人工编辑、复制、恢复原稿和单个 / 批量确认预览
+- 本机操作令牌、`expectedUpdatedAt` 乐观并发和确认话术快照校验
 
 ### Changed
 
+- Next.js / React 升级到已修复的兼容版本，生产依赖审计无已知漏洞
+- 平台说明区分 Boss / 智联统一 AI 主链与猎聘 / 51job 兼容链
+- 启动文档区分 `/api/health` 存活状态与 `/api/ready` 业务就绪状态
 - CI 从后端与前端双任务扩展为后端、前端、Chrome 扩展和 Docker 配置四类检查
 - Dependabot 默认只自动提交 Minor 与 Patch 更新，避免未经评估的大版本升级
 - 中英文 README 增加 CodeQL、Release、下载说明和文档中心入口
 - 安全文档增加自动化检查和 Release 数据边界
+- 智联跨扫描去重不再受 `scanRunId` 限制，保留已有投递和 AI 状态
+- 猎聘 / 51job 普通启动改为只读采集；真实投递模式需要显式请求与二次确认头
 
 ### 计划中
 
 - 将 Demo 示例数据接入独立、可重置且不触发真实投递的离线 Demo 模式
 - 提供不依赖开发环境的完整 Windows 发行包
-- 统一智联、猎聘和 51job 的平台适配层
+- 补齐猎聘 / 51job 沟通助手前端入口和旧记录的统一 runId
 - 继续拆分其他平台分析页面的 hooks 与 components
 - 补充真实界面截图和操作 GIF
 - 继续将旧兼容 DDL 迁移到 Flyway

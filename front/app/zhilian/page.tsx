@@ -1,20 +1,27 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useScanResult } from '@/lib/use-scan-result'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
+import { sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
 import { API_BASE } from '@/lib/api'
-import { BiLogOut, BiSave, BiBriefcase, BiPlay, BiStop, BiLinkExternal, BiCodeAlt } from 'react-icons/bi'
+import { BiSave, BiBriefcase, BiPlay, BiStop, BiLinkExternal, BiCodeAlt } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import AnalysisContent from '@/app/zhilian/analysis/AnalysisContent'
+import Link from 'next/link'
+import { rememberZhilianRun, lastZhilianRun } from '@/lib/zhilian-scan-context'
+import { getZhilianPageStatus } from '@/lib/zhilian-page-status'
 import PageHeader from '@/app/components/PageHeader'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
+import KeywordTagInput from '@/app/components/KeywordTagInput'
 import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setupChecklist'
+import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
+import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
+import FilterControls from './FilterControls'
+import ScanResult, { readScanResult } from './ScanResult'
+import {resetCityFilters, type ZhilianFilters, type FilterCatalog} from '@/lib/zhilian-filters'
 
 interface ZhilianConfig {
   id?: number
@@ -22,6 +29,7 @@ interface ZhilianConfig {
   cityCode?: string
   salary?: string
   searchJobLimit?: number
+  filters?: ZhilianFilters
 }
 
 interface Option { name: string; code: string }
@@ -49,43 +57,6 @@ const OFFICIAL_ZHILIAN_SALARY_CODES = new Set([
 ])
 const ZHILIAN_KEYWORD_REQUIRED_MESSAGE = '请至少填写一个搜索关键词'
 
-const normalizeKeywordTokens = (value: unknown): string[] => {
-  const keywords: string[] = []
-
-  const append = (rawValue: unknown) => {
-    if (Array.isArray(rawValue)) {
-      rawValue.forEach(append)
-      return
-    }
-
-    const raw = String(rawValue ?? '').trim()
-    if (!raw) return
-    if (raw.startsWith('[') && raw.endsWith(']')) {
-      try {
-        const parsed: unknown = JSON.parse(raw)
-        if (Array.isArray(parsed)) {
-          parsed.forEach(append)
-          return
-        }
-      } catch {
-        append(raw.slice(1, -1))
-        return
-      }
-    }
-
-    raw.split(/[,，;；\n\r]+/).forEach((item) => {
-      const keyword = item.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '').trim()
-      if (!keyword) return
-      if (!keywords.some((existing) => existing.toLocaleLowerCase() === keyword.toLocaleLowerCase())) {
-        keywords.push(keyword)
-      }
-    })
-  }
-
-  append(value)
-  return keywords
-}
-
 const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
@@ -96,26 +67,12 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
     || message.includes('扫描失败')
 }
 
-const shouldRefreshAnalysisFromProgress = (payload: Record<string, unknown>) => {
-  const stage = String(payload.stage || '')
-  const message = String(payload.message || '')
-  return ['submitted', 'complete'].includes(stage)
-    || message.includes('已提交后台AI队列')
-    || message.includes('待确认')
-    || message.includes('跳过：')
-    || message.includes('AI分析失败')
-    || message.includes('恢复已有分析')
-}
-
 export default function ZhilianPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
-  const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [showLogoutResultDialog, setShowLogoutResultDialog] = useState(false)
-  const [logoutResult, setLogoutResult] = useState<{ success: boolean; message: string } | null>(null)
   const [backendAvailable, setBackendAvailable] = useState(true)
   const [progressLogs, setProgressLogs] = useState<ProgressLog[]>([])
   const [chromeBridgeReady, setChromeBridgeReady] = useState(false)
@@ -124,15 +81,71 @@ export default function ZhilianPage() {
   const [openClawReady, setOpenClawReady] = useState(false)
   const [openClawRunning, setOpenClawRunning] = useState(false)
   const [openClawMessage, setOpenClawMessage] = useState('')
-  const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
+  const [latestRunId, setLatestRunId] = useState('')
+  const [loginMessage, setLoginMessage] = useState('正在检查 Chrome 中的智联页面…')
+  const [isStarting, setIsStarting] = useState(false)
+  const startingRef = useRef(false)
+  const checkingRef = useRef(false)
+  const profileRef = useRef<number | null>(null)
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
   const [hasProfile, setHasProfile] = useState(false)
+  const [runProgress, setRunProgress] = useState<Record<string, number>>({})
+  const [submissionProgress, setSubmissionProgress] = useState<Record<string, number>>({})
+  const [scanResult, setScanResult] = useScanResult('zhilian', currentProfile?.id)
+  const scanRunRef = useRef('')
+  const acceptRun = useCallback((runId: unknown) => {
+    if (typeof runId !== 'string' || !runId) return !scanRunRef.current
+    const current = scanRunRef.current
+    if (current && current !== runId) {
+      const incomingTime = Number(runId.match(/^zhilian-(\d+)$/)?.[1] || 0)
+      const currentTime = Number(current.match(/^zhilian-(\d+)$/)?.[1] || 0)
+      if (!incomingTime || !currentTime || incomingTime <= currentTime) return false
+    }
+    scanRunRef.current = runId
+    return true
+  }, [])
+
+  useEffect(() => { scanRunRef.current = '' }, [currentProfile?.id])
+
+  useEffect(() => {
+    setRunProgress({}); setSubmissionProgress({})
+    if (!currentProfile?.id || !latestRunId) return
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/zhilian/scan/progress?profileId=${currentProfile.id}&runId=${encodeURIComponent(latestRunId)}`)
+        if (response.ok) { const data = await response.json(); if (!cancelled) setRunProgress(data) }
+      } catch { /* Keep last confirmed counts while disconnected. */ }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 3000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [currentProfile?.id, latestRunId])
+
+  useEffect(() => {
+    if (currentProfile?.id && latestRunId) rememberZhilianRun(currentProfile.id, latestRunId)
+  }, [currentProfile?.id, latestRunId])
 
   const [config, setConfig] = useState<ZhilianConfig>({ keywords: '', cityCode: DEFAULT_ZHILIAN_CITY_CODE, salary: DEFAULT_ZHILIAN_SALARY_CODE, searchJobLimit: 20 })
+  const [recommendedKeywords, setRecommendedKeywords] = useState<string[]>([])
   const [searchJobLimitInput, setSearchJobLimitInput] = useState('20')
   const [options, setOptions] = useState<ZhilianOptions>({ city: [], salary: [] })
   const [configWarnings, setConfigWarnings] = useState<Record<string, string>>({})
   const [loadingConfig, setLoadingConfig] = useState(true)
+  const [filterCatalog,setFilterCatalog]=useState<FilterCatalog|null>(null)
+  const [filterError,setFilterError]=useState('')
+  useEffect(()=>{
+    let cancelled=false
+    setFilterCatalog(null);setFilterError('')
+    fetch(`${API_BASE}/api/zhilian/config/options/filters?cityCode=${encodeURIComponent(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE)}`)
+      .then(async response=>{if(!response.ok)throw new Error('官方筛选选项加载失败，请检查服务后重试');return response.json()})
+      .then(data=>{
+        if(!data.version || !data.options || String(data.cityCode)!==String(config.cityCode||DEFAULT_ZHILIAN_CITY_CODE))throw new Error('官方筛选选项响应不完整，请检查服务版本')
+        if(!cancelled)setFilterCatalog(data)
+      })
+      .catch(error=>{if(!cancelled)setFilterError(error.message)})
+    return ()=>{cancelled=true}
+  },[config.cityCode])
 
   const normalizeSearchJobLimit = (value?: number | string): number => {
     const parsed = Number(value)
@@ -181,17 +194,27 @@ export default function ZhilianPage() {
   }, [])
 
   const syncZhilianScanStatus = useCallback(async (silent = false, keepStopping = false) => {
+    const profileId = normalizeScanProfileId(currentProfile?.id)
+    if (!profileId) return
     try {
       const status = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_STATUS',
         platform: 'zhilian',
+        profileId,
       }, 2000)
+      if (profileRef.current !== profileId) return
+      if (status.profileId !== undefined && normalizeScanProfileId(status.profileId) !== profileId) return
+      if (!acceptRun(status.runId)) return
+      if (normalizeScanProfileId(status.profileId) === profileId) {
+        const result = readScanResult(status)
+        if (result) { setScanResult(result); setLatestRunId(result.runId) }
+      }
       const running = Boolean(status.isRunning || status.hasStoredTask)
       if (running) {
         setIsDelivering(true)
         setIsStopping(keepStopping)
         const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
-        if (runId) setActiveRunId(runId)
+        if (runId) { setActiveRunId(runId); setLatestRunId(runId) }
         if (!silent) {
           appendProgressLog({
             type: 'info',
@@ -209,67 +232,18 @@ export default function ZhilianPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   useEffect(() => {
-    checkChromeBridge()
-    syncZhilianScanStatus(true)
-
-    if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
-      console.warn('[智联招聘] EventSource 不可用，无法连接SSE')
-      setCheckingLogin(false)
-      return
-    }
-
-    const client = createSSEWithBackoff(`${API_BASE}/api/jobs/login-status/stream`, {
-      onOpen: () => console.log('[智联招聘 SSE] 连接已打开'),
-      onError: (e, attempt, delay) => {
-        console.warn(`[智联招聘 SSE] 连接错误，第${attempt}次重连，延迟 ${delay}ms`, e)
-        setCheckingLogin(false)
-      },
-      listeners: [
-        {
-          name: 'connected',
-          handler: (event) => {
-            try {
-              const data = JSON.parse(event.data)
-              console.log('[智联招聘 SSE] connected事件数据:', data)
-              console.log('[智联招聘 SSE] zhilianLoggedIn状态:', data.zhilianLoggedIn)
-              setIsLoggedIn(data.zhilianLoggedIn || false)
-              setCheckingLogin(false)
-            } catch (error) {
-              console.error('[智联招聘 SSE] 解析连接消息失败:', error)
-            }
-          },
-        },
-        {
-          name: 'login-status',
-          handler: (event) => {
-            try {
-              const data = JSON.parse(event.data)
-              console.log('[智联招聘 SSE] login-status事件数据:', data)
-              if (data.platform === 'zhilian') {
-                console.log('[智联招聘 SSE] 智联登录状态变更:', data.isLoggedIn)
-                setIsLoggedIn(data.isLoggedIn)
-                setCheckingLogin(false)
-              }
-            } catch (error) {
-              console.error('[智联招聘 SSE] 解析登录状态消息失败:', error)
-            }
-          },
-        },
-        { name: 'ping', handler: () => {} },
-      ],
-    })
-
-    return () => client.close()
+    void checkChromeBridge()
+    void syncZhilianScanStatus(true)
   }, [syncZhilianScanStatus])
 
   useEffect(() => {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') {
         fetchAllData()
-        setAnalysisRefreshSignal((value) => value + 1)
+        void checkChromeBridge()
         syncZhilianScanStatus(true)
       }
     }
@@ -295,6 +269,11 @@ export default function ZhilianPage() {
     return subscribeChromeBridgeEvents((event) => {
       const payload = event.payload
       if (!payload || payload.platform !== 'zhilian') return
+      if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      if ((payload.operation === 'scan' || Array.isArray(payload.keywordResults)) && !acceptRun(payload.runId)) return
+      const result = readScanResult(payload)
+      if (result) setScanResult(result)
+      if (typeof payload.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: payload.submissionConfirmed, pending: Number(payload.submissionPending || 0) })
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -302,16 +281,14 @@ export default function ZhilianPage() {
         timestamp: payload.timestamp,
       })
 
-      if (shouldRefreshAnalysisFromProgress(payload)) {
-        setAnalysisRefreshSignal((value) => value + 1)
-      }
+      if (typeof payload.runId === 'string') setLatestRunId(payload.runId)
       if (isTerminalScanPayload(payload)) {
         setIsDelivering(false)
         setIsStopping(false)
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -342,14 +319,17 @@ export default function ZhilianPage() {
             try {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+              if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              if ((data.operation === 'scan' || Array.isArray(data.keywordResults)) && !acceptRun(data.runId)) return
+              const result = readScanResult(data)
+              if (result) setScanResult(result)
+              if (typeof data.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: data.submissionConfirmed, pending: Number(data.submissionPending || 0) })
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
-              if (shouldRefreshAnalysisFromProgress(data)) {
-                setAnalysisRefreshSignal((value) => value + 1)
-              }
+              if (typeof data.runId === 'string') setLatestRunId(data.runId)
               if (isTerminalScanPayload(data)) {
                 setIsDelivering(false)
                 setIsStopping(false)
@@ -365,27 +345,41 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
-    return normalizeKeywordTokens(raw).join(', ')
-  }
-
-  const serializeKeywordsForDb = (display?: unknown): string => {
-    return JSON.stringify(normalizeKeywordTokens(display))
+    return serializeJobKeywords(normalizeKeywordTokens(raw))
   }
 
   const fetchAllData = async () => {
     setLoadingConfig(true)
     try {
-      const res = await fetch(`${API_BASE}/api/zhilian/config`)
+      const [res, recommendationResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/zhilian/config`),
+        fetch(`${API_BASE}/api/ai/job-keywords`).catch(() => null),
+      ])
       const data = await res.json()
+      if (recommendationResponse?.ok) {
+        const recommendationEnvelope = await recommendationResponse.json() as { data?: { keywords?: string[] } }
+        setRecommendedKeywords(normalizeKeywordTokens(recommendationEnvelope.data?.keywords))
+      } else {
+        setRecommendedKeywords([])
+      }
       const nextOptions: ZhilianOptions = {
         city: Array.isArray(data.options?.city) ? data.options.city : [],
         salary: Array.isArray(data.options?.salary) ? data.options.salary : [],
       }
       const nextWarnings: Record<string, string> = { ...(data.warnings || {}) }
+      const nextProfileId = normalizeScanProfileId(data.currentProfile?.id)
+      if (profileRef.current !== nextProfileId) {
+        profileRef.current = nextProfileId
+        setLatestRunId(nextProfileId ? lastZhilianRun(nextProfileId) : '')
+        setActiveRunId(null)
+        setIsDelivering(false)
+        setIsStopping(false)
+        setProgressLogs([])
+      }
       setCurrentProfile(data.currentProfile || null)
       setHasProfile(Boolean(data.hasProfile || data.currentProfile))
       setOptions(nextOptions)
@@ -415,15 +409,15 @@ export default function ZhilianPage() {
   useEffect(() => { fetchAllData() }, [])
 
   const checkChromeBridge = async () => {
+    if (checkingRef.current) return
+    checkingRef.current = true
     try {
-      const status = await getChromeBridgeStatus()
-      const ready = !!status.success
-      setChromeBridgeReady(ready)
-      setIsLoggedIn(ready)
-    } catch {
-      setChromeBridgeReady(false)
-      setIsLoggedIn(false)
+      const status = await getZhilianPageStatus()
+      setChromeBridgeReady(status.connected)
+      setIsLoggedIn(status.ready)
+      setLoginMessage(status.message)
     } finally {
+      checkingRef.current = false
       setCheckingLogin(false)
     }
   }
@@ -466,7 +460,10 @@ export default function ZhilianPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleStartDelivery = async () => {
+  const handleStartDelivery = async (resumeIncomplete = false) => {
+    if (startingRef.current || isDelivering) return
+    startingRef.current = true
+    setIsStarting(true)
     try {
       const keywords = normalizeKeywordTokens(config.keywords)
       if (!keywords.length) {
@@ -474,27 +471,45 @@ export default function ZhilianPage() {
         alert(ZHILIAN_KEYWORD_REQUIRED_MESSAGE)
         return
       }
+      if (keywords.length > MAX_JOB_KEYWORDS) {
+        const message = `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再开始扫描。`
+        appendProgressLog({ type: 'error', message })
+        alert(message)
+        return
+      }
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
         alert('请先在简历配置页新建档案。')
         return
       }
-      const setup = await validateSetupForPlatform('zhilian')
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) {
+        appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
+        return
+      }
+      const setup = await validateSetupForPlatform('zhilian', { openPlatformPageIfMissing: true })
       if (!setup.ready) {
         const message = formatSetupMissingMessage('智联招聘', setup.missing)
         appendProgressLog({ type: 'error', message })
         alert(message)
         return
       }
-      const runId = `zhilian-${Date.now()}`
+      if (profileRef.current !== profileId) return
+      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `zhilian-${Date.now()}`
+      if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       setActiveRunId(runId)
+      scanRunRef.current = runId
+      setLatestRunId(runId)
+      setScanResult(null)
       setIsStopping(false)
       setIsDelivering(true)
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
+        resumeIncomplete,
         platform: 'zhilian',
+        profileId,
         runId,
         config: {
           ...config,
@@ -515,6 +530,9 @@ export default function ZhilianPage() {
       setIsDelivering(false)
       setIsStopping(false)
       setActiveRunId(null)
+    } finally {
+      startingRef.current = false
+      setIsStarting(false)
     }
   }
 
@@ -523,12 +541,14 @@ export default function ZhilianPage() {
     setIsStopping(true)
     try {
       const runId = activeRunId
+      const profileId = normalizeScanProfileId(currentProfile?.id)
+      if (!profileId) throw new Error('当前档案 ID 无效')
       await fetch(`${API_BASE}/api/zhilian/chrome/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, profileId }),
       }).catch(() => null)
-      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId }, 1500)
+      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId, profileId }, 1500)
       if (data.success) {
         appendProgressLog({ type: 'warning', message: data.message || '智联招聘扫描停止请求已处理。' })
         await syncZhilianScanStatus(true, true)
@@ -586,7 +606,7 @@ export default function ZhilianPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           runId: `zhilian-openclaw-${Date.now()}`,
-          keyword: probeData.keyword || config.keywords,
+          keyword: probeData.keyword || normalizeKeywordTokens(config.keywords)[0] || '',
           autoDeliver: false,
           jobs,
         }),
@@ -608,57 +628,19 @@ export default function ZhilianPage() {
   }
 
   const handleOpenPlatform = async () => {
-    try {
-      const data = await sendChromeBridgeMessage({ type: 'GET_JOBS_EXTENSION_PING' }, 1500)
-      if (data.success) {
-        setChromeBridgeReady(true)
-        setIsLoggedIn(true)
-        appendProgressLog({ type: 'success', message: 'Chrome扩展已连接，可以使用当前Chrome登录态扫描智联招聘。' })
-        setSaveResult({
-          success: true,
-          message: 'Chrome扩展已连接，可以开始扫描。',
-        })
-      } else {
-        setChromeBridgeReady(false)
-        setSaveResult({ success: false, message: data.message || 'Chrome扩展未连接，请加载 chrome-extension 目录。' })
-      }
-      setShowSaveDialog(true)
-    } catch {
-      setChromeBridgeReady(false)
-      setSaveResult({ success: false, message: 'Chrome扩展未连接，请加载 chrome-extension 目录。' })
-      setShowSaveDialog(true)
-    }
-  }
-
-  const triggerLogout = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/zhilian/logout`, { method: 'POST' })
-      const data = await response.json()
-      setIsLoggedIn(false)
-      setLogoutResult({ success: data.success, message: data.success ? '已退出登录，Cookie已清空。' : data.message })
-      setShowLogoutResultDialog(true)
-    } catch (error) {
-      setLogoutResult({ success: false, message: '退出登录失败：网络或服务异常。' })
-      setShowLogoutResultDialog(true)
-    }
-  }
-
-  const handleSaveCookie = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/cookie/save?platform=zhilian`, { method: 'POST' })
-      const data = await response.json()
-      setSaveResult({ success: data.success, message: data.success ? '配置保存成功。' : data.message })
-      setShowSaveDialog(true)
-    } catch (error) {
-      setSaveResult({ success: false, message: '配置保存失败：网络或服务异常。' })
-      setShowSaveDialog(true)
-    }
+    setCheckingLogin(true)
+    await checkChromeBridge()
   }
 
   const handleSaveConfig = async () => {
     const keywords = normalizeKeywordTokens(config.keywords)
     if (!keywords.length) {
       setSaveResult({ success: false, message: ZHILIAN_KEYWORD_REQUIRED_MESSAGE })
+      setShowSaveDialog(true)
+      return
+    }
+    if (keywords.length > MAX_JOB_KEYWORDS) {
+      setSaveResult({ success: false, message: `岗位关键词最多选择 ${MAX_JOB_KEYWORDS} 个，请先删减后再保存。` })
       setShowSaveDialog(true)
       return
     }
@@ -685,7 +667,7 @@ export default function ZhilianPage() {
         ...config,
         cityCode,
         salary,
-        keywords: serializeKeywordsForDb(keywords),
+        keywords: serializeJobKeywords(keywords),
         searchJobLimit,
       }
       setConfig((current) => ({ ...current, cityCode, salary, searchJobLimit }))
@@ -695,7 +677,6 @@ export default function ZhilianPage() {
         body: JSON.stringify(payload),
       })
       if (response.ok) {
-        try { await fetch(`${API_BASE}/api/cookie/save?platform=zhilian`, { method: 'POST' }) } catch {}
         await fetchAllData()
         setSaveResult({ success: true, message: '保存成功，配置已更新。' })
       } else {
@@ -720,11 +701,11 @@ export default function ZhilianPage() {
         actions={
           <div className="flex items-center gap-2">
             <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
-              <BiLinkExternal className="mr-1" /> 检查Chrome扩展
+              <BiLinkExternal className="mr-1" /> 检查智联状态
             </Button>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
-                <BiPlay className="mr-1" /> 检查扩展中...
+                <BiPlay className="mr-1" /> 检查页面中...
               </Button>
             ) : !chromeBridgeReady ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
@@ -735,14 +716,12 @@ export default function ZhilianPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> 开始扫描
+	              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
+	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : '开始扫描'}
 	              </Button>
 	            )}
-            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
-              <BiLogOut className="mr-1" /> 退出登录
-            </Button>
-            <Button onClick={handleSaveConfig} size="sm" disabled={!hasProfile} className="app-button-primary px-4">
+            <Button asChild size="sm" variant="outline"><a href="https://www.zhaopin.com/" target="_blank" rel="noreferrer">打开智联 / 管理登录</a></Button>
+            <Button onClick={handleSaveConfig} size="sm" disabled={!hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
@@ -750,6 +729,7 @@ export default function ZhilianPage() {
       />
 
       <CurrentProfileBadge profile={currentProfile} onRefresh={fetchAllData} />
+      {!backendAvailable && <p role="alert" className="text-sm text-red-700">后端连接不可用，请检查服务后刷新页面。</p>}
 
       {!hasProfile ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -757,13 +737,21 @@ export default function ZhilianPage() {
         </div>
       ) : null}
 
-	      <Tabs defaultValue="config" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="config">平台配置</TabsTrigger>
-          <TabsTrigger value="analytics">投递分析</TabsTrigger>
-        </TabsList>
+	      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+        <p role="status" className={isLoggedIn ? 'text-sm text-emerald-700' : 'text-sm text-amber-700'}>{loginMessage}</p>
+        <div className="flex gap-2">
+          <Button asChild variant="outline"><Link href="/zhilian/analysis">智联分析</Link></Button>
+          {latestRunId && currentProfile && <Button asChild><Link href={`/zhilian/analysis?profileId=${currentProfile.id}&scanRunId=${encodeURIComponent(latestRunId)}`}>查看本次扫描结果</Link></Button>}
+        </div>
+      </div>
+      <div className="space-y-6">
+          <ScanResult result={scanResult} busy={isDelivering || isStarting} onResume={() => { void handleStartDelivery(true) }} />
 
-	        <TabsContent value="config" className="space-y-6 mt-6">
+          {latestRunId && <div className="grid gap-3 md:grid-cols-3" aria-live="polite">
+            <Card><CardContent className="pt-5"><p>采集进度</p><p>本批已入库 {runProgress.collected || 0} 个岗位</p></CardContent></Card>
+            <Card><CardContent className="pt-5"><p>入队进度</p><p>已建立任务 {runProgress.enqueued || 0} 个</p>{submissionProgress.confirmed !== undefined && <p className="text-sm">当前关键词确认 {submissionProgress.confirmed} 个，待提交 {submissionProgress.pending} 个</p>}</CardContent></Card>
+            <Card><CardContent className="pt-5"><p>AI 分析进度</p><p>完成 {runProgress.completed || 0} · 执行 {runProgress.running || 0} · 等待 {runProgress.pending || 0}</p><p className="text-sm">失败 {runProgress.failed || 0} · 结果待核对 {runProgress.unknown || 0}</p></CardContent></Card>
+          </div>}
 	          <ProgressLogCard
               logs={progressLogs}
               isRunning={isDelivering}
@@ -832,11 +820,11 @@ export default function ZhilianPage() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>搜索关键词（逗号分隔）</Label>
-                    <Input
-                      placeholder="如：Java, 后端, Spring"
-                      value={config.keywords || ''}
-                      onChange={(e) => setConfig((c) => ({ ...c, keywords: e.target.value }))}
+                    <Label>搜索关键词</Label>
+                    <KeywordTagInput
+                      value={normalizeKeywordTokens(config.keywords)}
+                      onChange={(keywords) => setConfig((current) => ({ ...current, keywords: serializeJobKeywords(keywords) }))}
+                      recommendations={recommendedKeywords}
                       disabled={!hasProfile}
                     />
                     {!normalizeKeywordTokens(config.keywords).length && (
@@ -847,7 +835,7 @@ export default function ZhilianPage() {
                     <Label>城市</Label>
                     <Select
                       value={config.cityCode || DEFAULT_ZHILIAN_CITY_CODE}
-                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value }))}
+                      onChange={(e) => setConfig((c) => ({ ...c, cityCode: e.target.value, filters:resetCityFilters(c.filters) }))}
                       placeholder="请选择城市"
                       disabled={!hasProfile}
                     >
@@ -861,24 +849,18 @@ export default function ZhilianPage() {
                   </div>
                   <div className="space-y-2">
                     <Label>每关键词后台 AI 分析岗位数</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={200}
-                      step={1}
-                      placeholder="20"
+                    <Select
                       value={searchJobLimitInput}
-                      onChange={(e) => {
-                        const rawValue = e.target.value
-                        setSearchJobLimitInput(rawValue)
-                        const parsed = Number(rawValue)
-                        if (Number.isFinite(parsed) && parsed >= 1) {
-                          setConfig((c) => ({ ...c, searchJobLimit: Math.min(Math.floor(parsed), 200) }))
-                        }
-                      }}
-                      onBlur={() => commitSearchJobLimit(searchJobLimitInput)}
+                      onChange={(e) => commitSearchJobLimit(e.target.value)}
                       disabled={!hasProfile}
-                    />
+                    >
+                      {Number(searchJobLimitInput) % 5 !== 0 && (
+                        <option value={searchJobLimitInput}>{searchJobLimitInput}（已保存）</option>
+                      )}
+                      {Array.from({ length: 40 }, (_, index) => (index + 1) * 5).map((limit) => (
+                        <option key={limit} value={String(limit)}>{limit}</option>
+                      ))}
+                    </Select>
                   </div>
                   <div className="space-y-2">
                     <Label>薪资范围</Label>
@@ -896,54 +878,13 @@ export default function ZhilianPage() {
                       <p className="text-xs text-amber-600 dark:text-amber-300">{configWarnings.salary}</p>
                     )}
                   </div>
+                  {filterError && <p role="alert" className="col-span-full text-destructive">{filterError}</p>}
+                  {filterCatalog && <FilterControls key={filterCatalog.cityCode} catalog={filterCatalog} filters={config.filters||{}} disabled={!hasProfile} onChange={filters=>setConfig(c=>({...c,filters}))}/>}
                 </div>
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="analytics" className="space-y-6 mt-6">
-          <AnalysisContent refreshSignal={analysisRefreshSignal} />
-        </TabsContent>
-      </Tabs>
-
-      {/* 退出确认弹框 */}
-      {showLogoutDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <Card className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-[92%] max-w-sm border-0">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <BiLogOut className="text-red-500" /> 确认退出登录
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">退出后将清除Cookie并切换为未登录状态。</p>
-              <div className="flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-lg px-4">取消</Button>
-                <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="app-button-danger px-4">确认退出</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* 退出登录结果弹框 */}
-      {showLogoutResultDialog && logoutResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <Card className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-[92%] max-w-sm border-0">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <BiLogOut className={logoutResult.success ? 'text-green-500' : 'text-red-500'} />
-                {logoutResult.success ? '退出登录成功' : '退出登录失败'}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">{logoutResult.message}</p>
-              <Button onClick={() => setShowLogoutResultDialog(false)} className={`rounded-full px-4 ${logoutResult.success ? 'bg-green-500' : 'bg-red-500'} text-white`}>知道了</Button>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      </div>
 
       {/* 操作结果弹框 */}
       {showSaveDialog && saveResult && (

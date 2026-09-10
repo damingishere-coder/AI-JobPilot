@@ -8,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -24,14 +26,26 @@ public class ProfileService {
             "resume_profile",
             "boss_config",
             "zhilian_config",
+            "liepin_config",
+            "job51_config",
+            "delivery_attempt",
             "boss_data",
             "zhilian_data",
+            "liepin_data",
+            "job51_data",
             "job_ai_analysis",
-            "priority_company"
+            "job_greeting_draft",
+            "job_analysis_task",
+            "priority_company",
+            "hr_reply_proposal",
+            "hr_conversation",
+            "hr_assistant_settings"
     );
 
     private final ProfileMapper profileMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final PlatformTransactionManager transactionManager;
+    private final HrProfileGuard hrProfileGuard;
 
     @Transactional(readOnly = true)
     public List<ProfileEntity> listProfiles() {
@@ -93,18 +107,29 @@ public class ProfileService {
         return entity;
     }
 
-    @Transactional
     public ProfileEntity activateProfile(Long id) {
-        ProfileEntity entity = requireProfile(id);
-        profileMapper.update(null, new UpdateWrapper<ProfileEntity>().set("is_active", 0));
-        entity.setIsActive(1);
-        entity.setUpdatedAt(LocalDateTime.now());
-        profileMapper.updateById(entity);
-        return entity;
+        return hrProfileGuard.locked(() -> new TransactionTemplate(transactionManager).execute(status -> {
+            ProfileEntity entity = requireProfile(id);
+            if (!id.equals(getCurrentProfileIdOrNull())) hrProfileGuard.requireChangeAllowed();
+            profileMapper.update(null, new UpdateWrapper<ProfileEntity>().set("is_active", 0));
+            entity.setIsActive(1);
+            entity.setUpdatedAt(LocalDateTime.now());
+            profileMapper.updateById(entity);
+            return entity;
+        }));
     }
 
-    @Transactional
     public DeleteProfileResult deleteProfile(Long id, boolean force) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        return hrProfileGuard.locked(() -> {
+            if (id != null && id.equals(getCurrentProfileIdOrNull())) hrProfileGuard.requireChangeAllowed();
+            return transaction.execute(status -> deleteProfileInTransaction(id, force, status));
+        });
+    }
+
+    private DeleteProfileResult deleteProfileInTransaction(Long id,
+                                                           boolean force,
+                                                           org.springframework.transaction.TransactionStatus status) {
         ProfileEntity entity = requireProfile(id);
         Long count = profileMapper.selectCount(null);
         if (count == null || count <= 1) {
@@ -131,6 +156,22 @@ public class ProfileService {
 
         boolean wasActive = entity.getIsActive() != null && entity.getIsActive() == 1;
         if (force) {
+            jdbcTemplate.update("DELETE FROM job_analysis_task WHERE profile_id=? AND status<>'LEASED'", id);
+            Long leasedTasks = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND status='LEASED'",
+                    Long.class,
+                    id
+            );
+            if (leasedTasks != null && leasedTasks > 0) {
+                status.setRollbackOnly();
+                return new DeleteProfileResult(
+                        false,
+                        "该档案仍有 AI 分析正在执行，已阻止删除；请等待完成或进入 UNKNOWN 后再试。",
+                        impactCounts,
+                        getCurrentProfile(),
+                        true
+                );
+            }
             deleteProfileRelatedData(id);
         }
         profileMapper.deleteById(id);
