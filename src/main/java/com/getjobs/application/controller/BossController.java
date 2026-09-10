@@ -50,6 +50,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @RequestMapping("/api/boss")
 @RequiredArgsConstructor
 public class BossController {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.FreshScanReceiptService freshScanReceiptService;
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final double MAX_BROWSER_COORDINATE = 10000.0;
     private static final String BOSS_BACKEND_SCAN_DISABLED_MESSAGE =
@@ -106,6 +108,7 @@ public class BossController {
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
         if (profileError != null) return profileError;
+        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("boss", request, this::receiveChromeJobs);
         Long profileId = request.getProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int insertedOrUpdated = 0;
@@ -262,7 +265,7 @@ public class BossController {
                     ChromeJobAnalysisQueueService.EnqueueResult enqueueResult = chromeJobAnalysisQueueService.enqueue(job);
                     if (enqueueResult.isRejected()) {
                         skipped++;
-                        rejected.add(chromeJobRejection(dto, Objects.toString(enqueueResult.getMessage(), "AI 分析任务被拒绝")));
+                        rejected.add(chromeJobRejection(dto, Objects.toString(enqueueResult.getMessage(), "AI 分析任务被拒绝"), enqueueResult.getErrorCode(), enqueueResult.isRetryable()));
                         continue;
                     }
                     if (enqueueResult.isQueued()) {
@@ -278,7 +281,9 @@ public class BossController {
                     }
                 } catch (Exception exception) {
                     skipped++;
-                    rejected.add(chromeJobRejection(dto, Objects.toString(exception.getMessage(), "Boss 岗位入库或持久 AI 入队失败")));
+                    rejected.add(chromeJobRejection(dto, Objects.toString(exception.getMessage(), "Boss 岗位入库或持久 AI 入队失败"),
+                            com.getjobs.application.service.JobAnalysisTaskStore.isTransientSqliteLock(exception) ? "DB_BUSY" : "PERSISTENCE_ERROR",
+                            com.getjobs.application.service.JobAnalysisTaskStore.isTransientSqliteLock(exception)));
                     log.warn("Boss Chrome岗位处理失败，jobId={}", dto == null ? "" : dto.getId(), exception);
                 }
             }
@@ -321,6 +326,15 @@ public class BossController {
         List<ChromeJobDto> jobs = request == null || request.getJobs() == null ? List.of() : request.getJobs();
         List<Map<String, Object>> items = new ArrayList<>();
         int duplicateCount = 0;
+        if (Boolean.TRUE.equals(request.getFreshOnly())) {
+            var freshItems = (request.getJobs() == null ? java.util.List.<ChromeJobDto>of() : request.getJobs()).stream().map(dto -> {
+                String key = com.getjobs.application.service.FreshScanReceiptService.key(dto);
+                boolean duplicate = !key.isBlank() && freshScanReceiptService.exists("boss", request.getProfileId(), key);
+                return Map.<String, Object>of("id", key, "url", Objects.toString(dto.getUrl(), ""), "duplicate", duplicate, "action", duplicate ? "SKIP" : "NEW");
+            }).toList();
+            long duplicates = freshItems.stream().filter(i -> Boolean.TRUE.equals(i.get("duplicate"))).count();
+            return ResponseEntity.ok(Map.of("success", true, "items", freshItems, "duplicateCount", duplicates, "newCount", freshItems.size() - duplicates));
+        }
         Long profileId = request.getProfileId();
         Map<Integer, BossJobDataEntity> existingJobs = bossService.findExistingChromeBossJobs(profileId, jobs, null);
 
@@ -386,6 +400,16 @@ public class BossController {
             return "历史岗位按" + matchedBy + "匹配，但需要补全：" + missing;
         }
         return "历史岗位按" + matchedBy + "匹配，状态为" + firstNonBlank(existingStatus, "完整记录") + "，本次跳过";
+    }
+
+    @PostMapping("/chrome/resume")
+    public ResponseEntity<Map<String, Object>> resumeChromeScan(@RequestBody ChromeJobBatchRequest request) {
+        var error = validateChromeProfile(request == null ? null : request.getProfileId());
+        if (error != null) return error;
+        String runId = normalizeRunId(request.getRunId());
+        if (runId == null) return ResponseEntity.badRequest().body(Map.of("success", false, "message", "恢复采集缺少批次ID"));
+        jobRunCoordinator.clearCancel(runId);
+        return ResponseEntity.ok(Map.of("success", true, "runId", runId, "message", "采集停止标记已解除，等待扩展恢复断点"));
     }
 
     @PostMapping("/chrome/stop")
@@ -859,10 +883,14 @@ public class BossController {
     }
 
     private Map<String, Object> chromeJobRejection(ChromeJobDto dto, String message) {
-        return Map.of(
-                "jobId", Objects.toString(dto == null ? null : dto.getId(), ""),
-                "message", firstNonBlank(message, "Boss 岗位处理失败")
-        );
+        return chromeJobRejection(dto, message, "PERSISTENCE_ERROR", false);
+    }
+
+    private Map<String, Object> chromeJobRejection(ChromeJobDto dto, String message, String errorCode, boolean retryable) {
+        return Map.of("jobId", Objects.toString(dto == null ? null : dto.getId(), ""),
+                "jobKey", com.getjobs.application.service.FreshScanReceiptService.key(dto),
+                "status", "REJECTED", "errorCode", Objects.toString(errorCode, "PERSISTENCE_ERROR"),
+                "retryable", retryable, "message", firstNonBlank(message, "Boss 岗位处理失败"));
     }
 
     private String normalizeRunId(String runId) {

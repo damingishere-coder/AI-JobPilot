@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-06-hr-profile-guard";
+  const EXTENSION_VERSION = "2026-09-10-continuous-scan";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -118,7 +118,7 @@
       return true;
     }
     if (message?.type === "BOSS_SCAN_START") {
-      handleScanStartMessage(message, sendResponse);
+      handleScanStartMessage(message, sendResponse).catch(error => sendResponse({ success: false, message: error.message || String(error) }));
       return true;
     }
     if (message?.type === "BOSS_DELIVER_CURRENT_V2") {
@@ -719,7 +719,8 @@
     }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
-    const incomingTask = normalizeScanTask(message);
+    let incomingTask = normalizeScanTask(message);
+    if (message.resumeIncomplete) incomingTask = window.GetJobsContinuousScan.restore(localStorage, "boss", incomingTask);
     const configChanged = Boolean(
       existingTask?.keywordCursorKey
         && incomingTask.keywordCursorKey
@@ -747,7 +748,10 @@
       canResumeExistingScanTask(resumableTask, incomingTask, status, configChanged)
     );
 
-    if (canResumeExisting) {
+    if (message.resumeIncomplete || canResumeExisting) {
+      await callBossLocalApi("chrome-resume", { profileId, runId: incomingTask.runId }, { pageTabId: message.pageTabId });
+    }
+    if (canResumeExisting && !message.resumeIncomplete) {
       activeScanRunId = normalizeScanRunId(resumableTask.runId);
       stopRequested = false;
       stopRequestedRunId = "";
@@ -968,7 +972,11 @@
       if (index > currentIndex || task.phase === "nextKeyword") {
         await humanPause(1500, 3000);
       }
+      if (task.resumeIndices && !task.resumeIndices.includes(index)) continue;
+      task.currentIndex = index;
       const keyword = keywords[index];
+      task.continuousScan ||= { credited: {}, receipts: {}, keywords: {} };
+      task.continuousScan.keywords[keyword] ||= { attempted: [], observed: [], elapsedMs: 0, historyDuplicates: 0, detailFailures: 0, recoveryAttempts: 0 };
       markKeywordCursorCurrent(task, index, keyword);
       const url = buildSearchUrl(keyword, city, config);
       const navigationKey = buildNavigationKey(keyword, city);
@@ -1015,10 +1023,12 @@
           break;
         }
         const detailResult = await continueBossDetailScan(task, keyword, runId, baseMeta);
+        if (detailResult.refillTask) return runScanInternal(detailResult.refillTask);
         if (detailResult.pendingNavigation || detailResult.blocked) return detailResult;
         if (detailResult.success === false || detailResult.resumable) return detailResult;
         totalSaved = detailResult.totalSaved;
         totalRestored = Number(detailResult.totalRestored ?? task.totalRestored ?? totalRestored ?? 0);
+        if (stopRequested) break;
         if (!stopRequested) advanceKeywordCursor(task, index + 1, keyword);
         task = {
           ...task,
@@ -1110,7 +1120,7 @@
         ...waitState.diagnostics
       });
       const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
-      await scrollForCards(searchJobLimit);
+      // Collect visible IDs before scrolling; virtual lists may recycle their cards.
       if (isStopRequested(runId)) {
         stopRequested = true;
         break;
@@ -1146,6 +1156,7 @@
         });
       }
       if (!candidates.length) {
+        task.continuousScan.keywords[keyword].stopReason = "unrecognized_layout";
         const clickFallbackResult = await collectBossJobsFromClickableCards(keyword, task, baseMeta, searchJobLimit);
         if (clickFallbackResult.jobs.length) {
           candidates = clickFallbackResult.jobs;
@@ -1185,12 +1196,11 @@
           collected: 0,
           ...diagnostics
         });
-        advanceKeywordCursor(task, index + 1, keyword);
-        storeScanTask({ ...task, phase: "nextKeyword", currentIndex: index + 1, totalSaved });
-        continue;
+
       }
 
       const discoveryResult = await collectFreshJobsForKeyword(keyword, task, baseMeta, searchJobLimit, candidates);
+      if (discoveryResult.blocked) return { success: true, blocked: true };
       candidates = discoveryResult.candidates;
       const freshCandidates = discoveryResult.jobs;
       const historicalCandidates = discoveryResult.historicalJobs || [];
@@ -1269,7 +1279,17 @@
         searchUrl: url
       };
       storeScanTask(detailTask);
-      return continueBossDetailScan(detailTask, keyword, runId, baseMeta);
+      const detailResult = await continueBossDetailScan(detailTask, keyword, runId, baseMeta);
+      if (detailResult.refillTask) return runScanInternal(detailResult.refillTask);
+      if (stopRequested) {
+        task = detailTask; totalSaved = Number(detailResult.totalSaved || Object.keys(task.continuousScan?.credited || {}).length);
+        break;
+      }
+      if (!detailResult.pendingNavigation && !detailResult.blocked && detailResult.success) {
+        const next = readStoredScanTask();
+        if (next?.phase === "nextKeyword") return runScanInternal(next);
+      }
+      return detailResult;
     }
 
     if (isStopRequested(runId)) stopRequested = true;
@@ -1277,7 +1297,10 @@
     if (!stopRequested) {
       advanceKeywordCursor(task, userKeywordCount(task), "");
     }
-    clearStoredScanTask();
+    const continuousResults = task.continuousScan ? window.GetJobsContinuousScan.results(task) : [];
+    const continuousOutcome = task.continuousScan ? window.GetJobsContinuousScan.outcome(continuousResults, keywords.length) : "partial";
+    if (task.continuousScan) window.GetJobsContinuousScan.archive(localStorage, "boss", task);
+    clearStoredScanTask(false);
     const stopped = stopRequested;
     if (stopped) clearStopRequested();
     writeScanStatus({
@@ -1286,8 +1309,10 @@
       stage: stopped ? "stopped" : "complete",
       message: stopped
         ? `Boss Chrome扫描已停止：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`
-        : `Boss Chrome扫描完成：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`,
+        : `Boss Chrome扫描${continuousOutcome === "complete" ? "全部达标" : continuousOutcome === "exhausted" ? "搜索已耗尽但不足目标" : "部分完成"}：新增入队 ${totalSaved} 个；AI分析独立继续`,
       runId,
+      outcome: stopped ? "stopped" : continuousOutcome,
+      keywordResults: continuousResults,
       keywordTotal: keywords.length,
       totalSaved,
       totalRestored,
@@ -1295,11 +1320,13 @@
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
-    postProgress(task, stopped ? "warning" : "success", stopped
+    postProgress(task, stopped || continuousOutcome !== "complete" ? "warning" : "success", stopped
       ? `Boss Chrome扫描已停止：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`
-      : `Boss Chrome扫描完成：新入库 ${totalSaved} 个，恢复历史结果 ${totalRestored} 个`, {
+      : `Boss Chrome扫描${continuousOutcome === "complete" ? "全部达标" : continuousOutcome === "exhausted" ? "搜索已耗尽但不足目标" : "部分完成"}：新增入队 ${totalSaved} 个；AI分析独立继续`, {
       operation: "scan",
       stage: stopped ? "stopped" : "complete",
+      outcome: stopped ? "stopped" : continuousOutcome,
+      keywordResults: continuousResults,
       keywordTotal: keywords.length,
       totalSaved,
       totalRestored,
@@ -1556,138 +1583,75 @@
   }
 
   async function collectFreshJobsForKeyword(keyword, message, baseMeta, searchJobLimit, initialCandidates = []) {
-    const target = normalizeSearchJobLimit(searchJobLimit);
-    const bounds = typeof SCAN_SUPPORT.deepCollectionBounds === "function"
-      ? SCAN_SUPPORT.deepCollectionBounds(target)
-      : { target, maxRounds: 30, maxCandidates: 500, maxDurationMs: 180000, maxStagnantRounds: 5 };
-    const maxRounds = bounds.maxRounds;
-    const maxCandidates = bounds.maxCandidates;
-    const startedAt = Date.now();
-    const allCandidates = new Map();
-    const processableJobs = new Map();
-    const duplicateKeys = new Set();
-    const enrichKeys = new Set();
-    const skipKeys = new Set();
-    const historicalJobs = new Map();
-    const conditionFilteredKeys = new Set();
-    let lastUniqueCount = -1;
-    let lastScrollSignature = "";
-    let stagnantRounds = 0;
-    let stoppedByStagnation = false;
-    let roundsRan = 0;
-    let stopReason = "";
-
-    addUniqueJobs(allCandidates, initialCandidates, maxCandidates);
-
-    for (let round = 0; round < maxRounds && processableJobs.size < target && allCandidates.size < maxCandidates && !isStopRequested(); round++) {
-      roundsRan = round + 1;
-      if (round > 0) {
-        await scrollForMoreBossCards(round);
-        const collectResult = collectJobs(keyword, message, baseMeta, {
-          maxNodes: maxCandidates,
-          warnLimit: 0
-        });
-        addUniqueJobs(allCandidates, collectResult.jobs, maxCandidates);
-      }
-
-      const filterResult = filterJobsByScanConfig(Array.from(allCandidates.values()), message?.config || {});
-      filterResult.rejected.forEach((job) => {
-        const key = dedupeJobKey(job);
-        if (key) conditionFilteredKeys.add(key);
-      });
-
-      const pendingDedupe = filterResult.jobs.filter((job) => {
-        const key = dedupeJobKey(job);
-        return key && !processableJobs.has(key) && !skipKeys.has(key);
-      });
-      const dedupeResult = await filterDuplicateJobs(pendingDedupe, message, baseMeta);
-      const itemByKey = new Map((dedupeResult.items || []).map((item) => [dedupeItemKey(item), item]));
-
-      pendingDedupe.forEach((job) => {
-        const key = dedupeJobKey(job);
-        if (!key) return;
-        const item = itemByKey.get(key);
-        const action = String(item?.action || (item?.duplicate ? "SKIP" : "NEW")).toUpperCase();
-        if (item?.duplicate) duplicateKeys.add(key);
-        if (action === "ENRICH") enrichKeys.add(key);
-        if (action === "SKIP") {
-          skipKeys.add(key);
-          historicalJobs.set(key, { ...job, collectionAction: "REUSE_HISTORY" });
-          return;
-        }
-        processableJobs.set(key, { ...job, collectionAction: "ANALYZE" });
-      });
-
-      const currentScrollSignature = bossScrollSignature();
-      const noNewCandidates = allCandidates.size === lastUniqueCount && currentScrollSignature === lastScrollSignature;
-      stagnantRounds = noNewCandidates ? stagnantRounds + 1 : 0;
-      lastUniqueCount = allCandidates.size;
-      lastScrollSignature = currentScrollSignature;
-
-      if (round > 0 || skipKeys.size || conditionFilteredKeys.size) {
-        postProgress(message, "info", `Boss继续采集 ${keyword}：第 ${round + 1}/${maxRounds} 轮，候选 ${allCandidates.size} 个，学历不匹配 ${conditionFilteredKeys.size} 个，历史跳过 ${skipKeys.size} 个，可分析 ${processableJobs.size}/${target} 个。`, {
-          ...baseMeta,
-          stage: "collecting",
-          discoveryRound: round + 1,
-          collected: allCandidates.size,
-          conditionFiltered: conditionFilteredKeys.size,
-          skippedDuplicates: skipKeys.size,
-          fresh: processableJobs.size,
-          searchJobLimit: target
-        });
-      }
-
-      const elapsedMs = Date.now() - startedAt;
-      const stopState = {
-        target,
-        fresh: processableJobs.size,
-        candidates: allCandidates.size,
-        rounds: round + 1,
-        stagnantRounds,
-        elapsedMs,
-        platformExhausted: bossPlatformExhausted(),
-        stopped: isStopRequested()
-      };
-      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
-        ? SCAN_SUPPORT.deepCollectionStopReason(stopState)
-        : (processableJobs.size >= target ? "target_reached" : stagnantRounds >= bounds.maxStagnantRounds ? "stagnation_safety_cap" : "");
-      if (stopReason) {
-        stoppedByStagnation = stopReason === "stagnation_safety_cap";
-        break;
-      }
-    }
-
-    if (!stopReason) {
-      const finalState = {
-        target,
-        fresh: processableJobs.size,
-        candidates: allCandidates.size,
-        rounds: roundsRan,
-        stagnantRounds,
-        elapsedMs: Date.now() - startedAt,
-        platformExhausted: bossPlatformExhausted(),
-        stopped: isStopRequested()
-      };
-      stopReason = typeof SCAN_SUPPORT.deepCollectionStopReason === "function"
-        ? SCAN_SUPPORT.deepCollectionStopReason(finalState)
-        : "round_safety_cap";
-    }
-
-    resetBossScrollPosition();
-    return {
-      candidates: Array.from(allCandidates.values()),
-      jobs: Array.from(processableJobs.values()).slice(0, target),
-      historicalJobs: Array.from(historicalJobs.values()).slice(0, target),
-      candidateCount: allCandidates.size,
-      filteredCount: conditionFilteredKeys.size,
-      duplicateCount: duplicateKeys.size,
-      enrichCount: enrichKeys.size,
-      skipCount: skipKeys.size,
-      rounds: roundsRan,
-      stoppedByStagnation,
-      stopReason: stopReason || "round_safety_cap",
-      elapsedMs: Date.now() - startedAt
+    const support = window.GetJobsContinuousScan;
+    const state = message.continuousScan;
+    const discovery = state.keywords[keyword];
+    const target = Math.max(0, searchJobLimit - support.applyReceipts(state, [], keyword, searchJobLimit).accepted);
+    const selected = new Map((discovery.pending || []).map(job => [support.jobKey(job), job]));
+    const observed = new Set(discovery.observed);
+    const attempted = new Set(discovery.attempted);
+    const candidates = new Map();
+    let tick = Date.now();
+    let reason = target === 0 ? "target_reached" : "";
+    let rounds = 0;
+    const read = () => collectJobs(keyword, message, baseMeta, { maxNodes: Number.MAX_SAFE_INTEGER, warnLimit: 0 }).jobs;
+    const checkpoint = () => {
+      discovery.elapsedMs += Date.now() - tick; tick = Date.now();
+      discovery.observed = [...observed]; discovery.attempted = [...attempted]; discovery.pending = [...selected.values()];
+      storeScanTask({ ...message, phase: "collecting" });
     };
+    while (!reason) {
+      if (isStopRequested()) { reason = "stopped"; break; }
+      if (handleBlockingState(message, buildPageBlockDiagnostics(), baseMeta)) return { blocked: true };
+      if (discovery.elapsedMs + Date.now() - tick >= support.MAX_ACTIVE_MS) { reason = "timeout_safety_cap"; break; }
+      rounds++;
+      const visible = rounds === 1 ? [...initialCandidates, ...read()] : read();
+      const unique = [...new Map(visible.map(job => [support.jobKey(job), job])).entries()].filter(([key]) => key);
+      const pending = [];
+      for (const [key, job] of unique) {
+        observed.add(key); candidates.set(key, job);
+        if (attempted.has(key)) continue;
+        if (state.credited[key]) { attempted.add(key); discovery.sameRunDuplicates = Number(discovery.sameRunDuplicates || 0) + 1; continue; }
+        if (!isJobAllowedByDegree(job, message.config) || !isDetailQueueJob(job)) { attempted.add(key); continue; }
+        pending.push(job);
+      }
+      const dedupe = await filterDuplicateJobs(pending, message, baseMeta);
+      const decisions = new Map((dedupe.items || []).map(item => [String(item.id || support.jobKey(item)), item]));
+      for (const job of pending) {
+        const key = support.jobKey(job), decision = decisions.get(key);
+        if (!decision) throw new Error("Boss查重回执缺少岗位决策，断点已保留");
+        if (decision.duplicate || decision.action !== "NEW") { attempted.add(key); discovery.historyDuplicates++; continue; }
+        if (selected.size < target) { selected.set(key, { ...job, collectionAction: "ANALYZE" }); attempted.add(key); }
+      }
+      checkpoint();
+      if (selected.size >= target) { reason = "target_reached"; break; }
+      if (bossPlatformExhausted()) { reason = "platform_exhausted"; break; }
+      const result = await support.advance({ doc: document, cards: collectJobNodes,
+        readKeys: () => read().map(support.jobKey), seen: observed, sleep,
+        stopped: async () => isStopRequested(), recovery: discovery.recoveryAttempts > 0 });
+      if (result.stopped) { reason = "stopped"; break; }
+      if (!result.grew) {
+        const pager = support.pagination(document);
+        if (pager.next && discovery.pageAdvanceAnchor !== window.location.href + "|" + [...observed].join(",")) {
+          discovery.pageAdvanceAnchor = window.location.href + "|" + [...observed].join(","); checkpoint();
+          pager.next.click(); await sleep(1000); discovery.recoveryAttempts = 0;
+          continue;
+        }
+        if (pager.exhausted) { reason = "platform_exhausted"; break; }
+      }
+      if (result.grew) discovery.recoveryAttempts = 0;
+      else if (++discovery.recoveryAttempts > support.MAX_RECOVERIES) reason = "stagnation_safety_cap";
+      postProgress(message, "info", `Boss继续寻找新岗位：${keyword}，已跳过历史重复 ${discovery.historyDuplicates} 个，底部恢复 ${Math.min(discovery.recoveryAttempts, 3)}/3`, {
+        ...baseMeta, stage: "collecting", historyDuplicates: discovery.historyDuplicates,
+        recoveryAttempts: Math.min(discovery.recoveryAttempts, 3), fresh: support.applyReceipts(state, [], keyword, searchJobLimit).accepted, target: searchJobLimit
+      });
+    }
+    discovery.stopReason = reason;
+    checkpoint();
+    return { candidates: [...candidates.values()], jobs: [...selected.values()], historicalJobs: [],
+      candidateCount: observed.size, filteredCount: 0, duplicateCount: discovery.historyDuplicates,
+      enrichCount: 0, skipCount: discovery.historyDuplicates, rounds, stopReason: reason,
+      stoppedByStagnation: reason === "stagnation_safety_cap", elapsedMs: discovery.elapsedMs };
   }
 
   function addUniqueJobs(target, jobs, maxSize) {
@@ -1761,22 +1725,18 @@
   }
 
   function bossPlatformExhausted() {
-    const bodyText = compact(document.body?.innerText || document.body?.textContent || "");
-    if (!/(没有更多|暂无更多|已经到底|到底了|全部加载完)/.test(bodyText.slice(-3000))) return false;
-    const pageHeight = Number(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0);
-    const windowAtBottom = Number(window.scrollY || 0) + Number(window.innerHeight || 0) >= pageHeight - 40;
-    const containers = bossScrollableContainers();
-    const containersAtBottom = !containers.length || containers.some((target) =>
-      Number(target.scrollTop || 0) + Number(target.clientHeight || 0) >= Number(target.scrollHeight || 0) - 40);
-    return windowAtBottom || containersAtBottom;
+    const container = window.GetJobsContinuousScan.selectScrollContainer(collectJobNodes(), document);
+    if (!container || container.scrollTop + container.clientHeight < container.scrollHeight - 40) return false;
+    return [...container.querySelectorAll(".no-more, .load-more, .loadmore, [class*='no-more'], [class*='finished']")]
+      .some(node => node.getBoundingClientRect().height > 0 && /^(没有更多|暂无更多|已经到底|到底了|全部加载完).{0,15}$/.test(compact(node.textContent)));
   }
 
   function collectionStopReasonLabel(reason) {
     return ({
       target_reached: "已达到目标",
       platform_exhausted: "平台结果已到底",
-      stagnation_safety_cap: "连续5轮没有新增",
-      timeout_safety_cap: "单关键词采集达到180秒",
+      stagnation_safety_cap: "连续3次上滚再下滚仍无新增卡片",
+      timeout_safety_cap: "单关键词主动采集达到15分钟",
       candidate_safety_cap: "候选岗位达到500个安全上限",
       round_safety_cap: "滚动达到30轮安全上限",
       page_safety_cap: "翻页达到安全上限",
@@ -1804,6 +1764,7 @@
       const data = await callBossLocalApi("chrome-jobs-dedupe", {
         profileId: normalizeProfileId(message?.profileId),
         runId: message?.runId,
+        freshOnly: Boolean(message?.continuousScan),
         keyword: baseMeta.keyword,
         jobs: list.map(normalizeJobForDedupe)
       }, {
@@ -1852,7 +1813,7 @@
   function dedupeKey(id, company, title, url) {
     const bossId = compact(id || extractBossId(url));
     if (bossId) return `id:${bossId}`;
-    return `ct:${compact(company).toLowerCase()}::${compact(title).toLowerCase()}`;
+    try { const parsed = new URL(url); return `url:${parsed.origin}${parsed.pathname}`; } catch { return ""; }
   }
 
   function bossCandidateKey(job) {
@@ -1860,9 +1821,6 @@
     if (id) return `id:${id}`;
     const url = compact(job?.url);
     if (url) return `url:${url}`;
-    const title = compact(job?.title);
-    const company = compact(job?.company);
-    if (title || company) return `ct:${company.toLowerCase()}::${title.toLowerCase()}`;
     return "";
   }
 
@@ -2171,7 +2129,16 @@
   async function continueBossDetailScan(message, keyword, runId, baseMeta) {
     const jobs = Array.isArray(message.jobs) ? message.jobs : [];
     const historicalJobs = Array.isArray(message.historicalJobs) ? message.historicalJobs : [];
-    const detailIndex = Number(message.detailIndex || 0);
+    let detailIndex = Number(message.detailIndex || 0);
+    if (message.continuousScan) {
+      window.GetJobsContinuousScan.accountDetailTime(message);
+      const discovery = message.continuousScan.keywords[keyword];
+      if (discovery.elapsedMs >= window.GetJobsContinuousScan.MAX_ACTIVE_MS && detailIndex < jobs.length) {
+        discovery.stopReason = "timeout_safety_cap";
+        for (let index = detailIndex; index < jobs.length; index++) jobs[index] = { ...jobs[index], detailVerified: false, detailNavigationFailed: true };
+        detailIndex = jobs.length; message.detailIndex = detailIndex;
+      }
+    }
     const totalSaved = Number(message.totalSaved || 0);
 
     activeScanRunId = normalizeScanRunId(runId || message.runId || activeScanRunId);
@@ -2190,6 +2157,12 @@
     if (!jobs.length) {
       const submitJobs = historicalJobs.filter(isSubmittableJob).map(normalizeJobForSubmit);
       if (!submitJobs.length) {
+      if (message.continuousScan && message.continuousScan.keywords[keyword].stopReason === "target_reached") {
+        message.continuousScan.keywords[keyword].detailFailures += jobs.length;
+        message.continuousScan.keywords[keyword].pending = [];
+        const refillTask = { ...message, phase: "collecting", jobs: [], historicalJobs: [], detailIndex: 0 };
+        storeScanTask(refillTask); return { success: true, totalSaved, refillTask };
+      }
         advanceKeywordCursor(message, Number(message.currentIndex || 0) + 1, keyword);
         storeScanTask({ ...message, phase: "", historicalJobs: [], currentIndex: Number(message.currentIndex || 0) + 1, totalSaved });
         return { success: true, totalSaved };
@@ -2405,6 +2378,12 @@
       missingHr: detailSummary.missingHr
     });
     if (!submitJobs.length) {
+      if (message.continuousScan && message.continuousScan.keywords[keyword].stopReason === "target_reached") {
+        const discovery = message.continuousScan.keywords[keyword];
+        discovery.detailFailures += jobs.length; discovery.pending = [];
+        const refillTask = { ...message, phase: "collecting", jobs: [], historicalJobs: [], detailIndex: 0 };
+        storeScanTask(refillTask); return { success: true, totalSaved, refillTask };
+      }
       postProgress(message, "warning", "Boss Chrome未找到可提交岗位：岗位名、公司名或详情链接缺失。", {
         ...baseMeta,
         stage: "empty",
@@ -2563,11 +2542,11 @@
       clearStoredScanTask();
       return {
         success: true,
-        totalSaved: totalSaved + numberValue(data.saved),
+        totalSaved: message.continuousScan ? data.totalAccepted : totalSaved + numberValue(data.saved),
         totalRestored: numberValue(message.totalRestored) + numberValue(data.restored)
       };
     }
-    const nextTotalSaved = totalSaved + (data.saved || 0);
+    const nextTotalSaved = message.continuousScan ? data.totalAccepted : totalSaved + (data.saved || 0);
     const nextTotalRestored = numberValue(message.totalRestored) + numberValue(data.restored);
     postProgress(message, "success", `Boss Chrome已提交后台AI队列：采集 ${data.received ?? submitJobs.length} 个，入库 ${data.saved ?? 0} 个，入队 ${data.queued ?? 0} 个，恢复已有分析 ${data.restored ?? 0} 个，跳过 ${data.skipped ?? 0} 个，信息不足 ${data.insufficient ?? 0} 个。`, {
       ...baseMeta,
@@ -2588,6 +2567,22 @@
         stage: "submitted"
       });
     }
+    if (message.continuousScan) {
+      const state = message.continuousScan, discovery = state.keywords[keyword];
+      const target = normalizeSearchJobLimit(message.config?.searchJobLimit);
+      discovery.pending = [];
+      const accepted = window.GetJobsContinuousScan.applyReceipts(state, [], keyword, target).accepted;
+      discovery.detailFailures += Number(data.insufficient || 0);
+      discovery.submissionFailures = Number(discovery.submissionFailures || 0) + Number(data.submissionFailures || 0);
+      const refill = accepted < target && discovery.stopReason === "target_reached";
+      if (accepted >= target) discovery.stopReason = "target_reached";
+      if (refill) {
+        const refillTask = { ...message, phase: "collecting", jobs: [], historicalJobs: [], detailIndex: 0,
+          submitSummary: null, submitBatchIndex: 0, totalSaved: nextTotalSaved, totalRestored: nextTotalRestored };
+        storeScanTask(refillTask);
+        return { success: true, refillTask, totalSaved: nextTotalSaved, totalRestored: nextTotalRestored };
+      }
+    }
     storeScanTask({
       ...message,
       phase: "nextKeyword",
@@ -2605,6 +2600,21 @@
   }
 
   async function submitBossJobsInBatches(jobs, message, baseMeta, options) {
+    if (message.continuousScan) {
+      try {
+        return await window.GetJobsContinuousScan.submit({ jobs, state: message.continuousScan,
+          keyword: options.keyword, target: normalizeSearchJobLimit(message.config?.searchJobLimit),
+          send: batch => callBossLocalApi("chrome-jobs", { profileId: message.profileId, runId: options.runId,
+            keyword: options.keyword, freshOnly: true, jobs: batch, autoDeliver: false }, { pageTabId: message.pageTabId, timeoutMs: 60000 }),
+          checkpoint: async () => {
+            const task = { ...message, phase: "submitting" };
+            storeScanTask(task);
+            if (canUseChromeStorage()) await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: normalizeScanTask(task) });
+          },
+          stopped: async () => isStopRequested(options.runId), sleep,
+          progress: counts => postProgress(message, "info", counts.waitingForCapacity ? "后台队列暂满，保留岗位等待入队" : `新岗位入队 ${counts.accepted}/${message.config.searchJobLimit}；AI分析独立继续`, { ...baseMeta, ...counts, stage: "submitting" }) });
+      } catch (error) { return { success: false, resumable: true, message: error.message }; }
+    }
     const runId = normalizeScanRunId(options?.runId || message?.runId || activeScanRunId);
     const batches = chunkList(jobs, SUBMIT_BATCH_SIZE);
     const previousSummary = message?.submitSummary || {};
@@ -2922,7 +2932,8 @@
         hrName: jsonFields.hrName || domFields.hrName || job.hrName,
         hrTitle: jsonFields.hrTitle || domFields.hrTitle || job.hrTitle || "",
         hrActive: jsonFields.hrActive || domFields.hrActive || job.hrActive || "",
-        description: jsonFields.description || domFields.description || listDescription,
+        detailVerified: compact(jsonFields.description || domFields.description).length >= 30,
+        description: message.continuousScan ? (jsonFields.description || domFields.description || "") : (jsonFields.description || domFields.description || listDescription),
         companyInfo: jsonFields.companyInfo || domFields.companyInfo || job.companyInfo || "",
         companyAddress: jsonFields.companyAddress || domFields.companyAddress || job.companyAddress || "",
         industry: jsonFields.industry || domFields.industry || job.industry || "",
@@ -2942,7 +2953,8 @@
       });
       return {
         ...job,
-        description: listDescription
+        detailVerified: false,
+        description: message.continuousScan ? "" : listDescription
       };
     }
   }
@@ -3435,6 +3447,7 @@
         message: text,
         timestamp: Date.now(),
         runId: message?.runId || activeScanRunId || "",
+        ...(message.continuousScan ? { keywordResults: window.GetJobsContinuousScan.results(message) } : {}),
         ...meta
       }
     });
@@ -3477,6 +3490,7 @@
   }
 
   function storeScanTask(task) {
+    window.GetJobsContinuousScan?.accountDetailTime(task);
     const normalized = {
       ...normalizeScanTask(task),
       updatedAt: Date.now()
@@ -3495,7 +3509,19 @@
     }
   }
 
-  function clearStoredScanTask() {
+  function clearStoredScanTask(preserve = true) {
+    if (preserve && window.GetJobsContinuousScan) {
+      try {
+        const raw = sessionStorage.getItem(SCAN_TASK_KEY);
+        const previous = raw ? JSON.parse(raw) : null;
+        if (previous?.continuousScan) {
+          window.GetJobsContinuousScan.accountDetailTime({ ...previous, pausedAt: Date.now() });
+          window.GetJobsContinuousScan.archive(localStorage, "boss", previous);
+          writeScanStatus({ runId: previous.runId, profileId: previous.profileId,
+            keywordResults: window.GetJobsContinuousScan.results(previous), outcome: stopRequested ? "stopped" : "partial" });
+        }
+      } catch (error) { console.warn("采集断点归档失败，保留原断点", error); return; }
+    }
     sessionStorage.removeItem(SCAN_TASK_KEY);
     clearSharedScanTask();
   }
@@ -4587,7 +4613,9 @@
     }, 350);
   }
 
-  function requestBackgroundNavigation(url) {
+  async function requestBackgroundNavigation(url) {
+    const task = readStoredScanTask();
+    if (task?.continuousScan && canUseChromeStorage()) await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: task });
     if(window.location.pathname.startsWith("/web/geek/chat")) return Promise.resolve({success:false,errorCode:"HR_CHAT_PROTECTED"});
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       return Promise.resolve({ success: false });

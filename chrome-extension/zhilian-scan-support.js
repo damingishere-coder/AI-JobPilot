@@ -1,12 +1,12 @@
 (function (root) {
-  const SUPPORT_VERSION = "2026-09-09-detail-scan";
+  const SUPPORT_VERSION = "2026-09-10-continuous-scan";
   if (root.GetJobsZhilianScanSupport?.version === SUPPORT_VERSION) return;
 
   const DEFAULT_CITY_CODE = "489";
   const DEFAULT_SALARY_CODE = "0000,9999999";
-  const DEEP_COLLECTION_MAX_PAGES = 50;
-  const DEEP_COLLECTION_MAX_DURATION_MS = 180 * 1000;
-  const DEEP_COLLECTION_MAX_STAGNANT_PAGES = 5;
+  const DEEP_COLLECTION_MAX_PAGES = Number.MAX_SAFE_INTEGER;
+  const DEEP_COLLECTION_MAX_DURATION_MS = 15 * 60 * 1000;
+  const DEEP_COLLECTION_MAX_STAGNANT_PAGES = 4;
   const OFFICIAL_SALARY_CODES = new Set([
     DEFAULT_SALARY_CODE,
     "0000,4000",

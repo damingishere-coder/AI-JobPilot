@@ -55,6 +55,7 @@ function loadBackground({
   let runtimeMessageListener = null;
   let alarmListener = null;
   const chrome = {
+    permissions: { contains: async () => true },
     runtime: {
       onMessage: { addListener(listener) { runtimeMessageListener = listener; } },
       lastError: null
@@ -104,6 +105,7 @@ function loadBackground({
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
         }
+        if (message.type === "BOSS_PAGE_STATUS") return statuses[tabId]?.hasLoginPrompt ? statuses[tabId] : { success: true, chromePageReady: true, isLoggedIn: true };
         if (message.type === "ZHILIAN_PAGE_STATUS") return statuses[tabId] || { success: true, chromePageReady: false };
         if (message.type === "BOSS_DELIVER_CURRENT_V2") {
           const response = bossDeliveryResponses.shift();
@@ -174,6 +176,7 @@ function loadBackground({
     setTimeout,
     clearTimeout
   });
+  context.importScripts = (...files) => files.forEach(file => vm.runInContext(fs.readFileSync(path.join(EXTENSION_DIR, file), "utf8"), context));
   const source = fs.readFileSync(path.join(EXTENSION_DIR, "background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
   async function dispatchRuntimeMessage(message, sender) {
@@ -246,6 +249,7 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",
@@ -263,6 +267,7 @@ test("reinjects all Zhilian dependencies when the content script is stale", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",

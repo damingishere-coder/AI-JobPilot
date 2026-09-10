@@ -1,5 +1,5 @@
 (function (root) {
-  const VERSION = "2026-09-09-detail-scan";
+  const VERSION = "2026-09-10-continuous-scan";
   const text = (node) => String(node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
   const field = (node, selector) => text(node?.querySelector(selector));
   const idFromUrl = (url) => String(url || "").match(/\/jobdetail\/([^/?#.]+)\.htm/i)?.[1] || "";
@@ -7,7 +7,10 @@
   function readCard(card) {
     const titleNode = card?.querySelector(".job-card__title-clamp [aria-label]");
     const tags = field(card, ".job-card__skill-tags");
+    const href = card?.querySelector("a[href*='jobdetail']")?.getAttribute("href") || "";
+    const id = card?.getAttribute("data-job-id") || card?.getAttribute("data-position-id") || idFromUrl(href);
     return {
+      id, url: href,
       title: String(titleNode?.getAttribute("aria-label") || field(card, ".job-card__title-clamp")).replace(/\s+/g, " ").trim(),
       company: field(card, ".job-card__company-name"),
       salary: field(card, ".job-card__salary"),

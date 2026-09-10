@@ -1,5 +1,7 @@
 'use client'
 
+import ScanResult, { readScanResult } from '@/app/zhilian/ScanResult'
+import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { getChromeBridgeStatus, sendChromeBridgeMessage, subscribeChromeBridgeEvents, type ChromeBridgeResponse } from '@/lib/chromeBridge'
@@ -242,6 +244,7 @@ export default function BossPage() {
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
+  const [scanResult, setScanResult] = useScanResult('boss', currentProfile?.id)
   const [hasProfile, setHasProfile] = useState(false)
   const [activeStep, setActiveStep] = useState<BossStep>('config')
   const [hasScanResult, setHasScanResult] = useState(false)
@@ -288,6 +291,9 @@ export default function BossPage() {
         platform: 'boss',
         profileId,
       }, 2000)
+      if (!scanEventMatchesProfile(status, profileId, true)) return
+      const result = readScanResult(status)
+      if (result) setScanResult(result)
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
       const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
       if (paused) {
@@ -328,7 +334,7 @@ export default function BossPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog, currentProfile?.id])
+  }, [appendProgressLog, currentProfile?.id, setScanResult])
 
   const focusLogSection = useCallback(() => {
     setActiveStep('scan')
@@ -455,6 +461,8 @@ export default function BossPage() {
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
               if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              const result = readScanResult(data)
+              if (result) setScanResult(result)
               appendProgressLog({
                 type: data.type || 'info',
                 message: data.message || '',
@@ -485,13 +493,15 @@ export default function BossPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep, setScanResult])
 
   useEffect(() => {
     return subscribeChromeBridgeEvents((event) => {
       const payload = event.payload
       if (!payload || payload.platform !== 'boss') return
       if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      const result = readScanResult(payload)
+      if (result) setScanResult(result)
 
       appendProgressLog({
         type: payload.type || 'info',
@@ -515,7 +525,7 @@ export default function BossPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep])
+  }, [appendProgressLog, currentProfile?.id, guideToConfirmStep, setScanResult])
 
   const checkChromeBridge = async () => {
     try {
@@ -869,7 +879,7 @@ export default function BossPage() {
     }
   }
 
-  const handleStartDelivery = async () => {
+  const handleStartDelivery = async (resumeIncomplete = false) => {
     try {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
@@ -900,12 +910,13 @@ export default function BossPage() {
       setIsDelivering(true)
       setIsStopping(false)
       setIsScanPaused(false)
-      const runId = `boss-${Date.now()}`
+      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `boss-${Date.now()}`
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
+        resumeIncomplete,
         platform: 'boss',
         profileId,
         runId,
@@ -1278,7 +1289,7 @@ export default function BossPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-              <Button onClick={handleStartDelivery} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
+              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
@@ -1696,6 +1707,7 @@ export default function BossPage() {
 
       {activeStep === 'scan' ? (
         <div ref={logSectionRef} className="scroll-mt-6 space-y-6">
+          <ScanResult result={scanResult} busy={isDelivering} onResume={() => { void handleStartDelivery(true) }} />
           <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}

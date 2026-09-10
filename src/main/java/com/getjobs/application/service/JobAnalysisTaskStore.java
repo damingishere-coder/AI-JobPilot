@@ -190,7 +190,7 @@ public class JobAnalysisTaskStore {
                 "SUM(CASE WHEN t.status='FAILED' THEN 1 ELSE 0 END) AS failed, " +
                 "SUM(CASE WHEN t.status='UNKNOWN' THEN 1 ELSE 0 END) AS unknown " +
                 "FROM zhilian_data j LEFT JOIN job_analysis_task t ON t.id=(SELECT MAX(a.id) FROM job_analysis_task a " +
-                "WHERE a.profile_id=j.profile_id AND a.platform='zhilian' AND a.job_key=j.job_id) " +
+                "WHERE a.profile_id=j.profile_id AND a.platform='zhilian' AND a.job_key=j.job_id AND a.scan_run_id=j.scan_run_id) " +
                 "WHERE j.profile_id=? AND j.scan_run_id=?", profileId, runId);
     }
 

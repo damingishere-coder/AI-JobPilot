@@ -1,5 +1,6 @@
 'use client'
 
+import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { sendChromeBridgeMessage, subscribeChromeBridgeEvents } from '@/lib/chromeBridge'
@@ -19,7 +20,7 @@ import { formatSetupMissingMessage, validateSetupForPlatform } from '@/lib/setup
 import { MAX_JOB_KEYWORDS, parseJobKeywords as normalizeKeywordTokens, serializeJobKeywords } from '@/lib/job-keywords'
 import { normalizeScanProfileId, scanEventMatchesProfile } from '@/lib/scan-profile'
 import FilterControls from './FilterControls'
-import ScanResult, { readScanResult, type ScanResultData } from './ScanResult'
+import ScanResult, { readScanResult } from './ScanResult'
 import {resetCityFilters, type ZhilianFilters, type FilterCatalog} from '@/lib/zhilian-filters'
 
 interface ZhilianConfig {
@@ -90,7 +91,7 @@ export default function ZhilianPage() {
   const [hasProfile, setHasProfile] = useState(false)
   const [runProgress, setRunProgress] = useState<Record<string, number>>({})
   const [submissionProgress, setSubmissionProgress] = useState<Record<string, number>>({})
-  const [scanResult, setScanResult] = useState<ScanResultData | null>(null)
+  const [scanResult, setScanResult] = useScanResult('zhilian', currentProfile?.id)
   const scanRunRef = useRef('')
   const acceptRun = useCallback((runId: unknown) => {
     if (typeof runId !== 'string' || !runId) return !scanRunRef.current
@@ -104,7 +105,7 @@ export default function ZhilianPage() {
     return true
   }, [])
 
-  useEffect(() => { setScanResult(null); scanRunRef.current = '' }, [currentProfile?.id])
+  useEffect(() => { scanRunRef.current = '' }, [currentProfile?.id])
 
   useEffect(() => {
     setRunProgress({}); setSubmissionProgress({})
@@ -231,7 +232,7 @@ export default function ZhilianPage() {
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog, currentProfile?.id, acceptRun])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   useEffect(() => {
     void checkChromeBridge()
@@ -287,7 +288,7 @@ export default function ZhilianPage() {
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, currentProfile?.id, acceptRun])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -344,7 +345,7 @@ export default function ZhilianPage() {
     })
 
     return () => client.close()
-  }, [appendProgressLog, currentProfile?.id, acceptRun])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
 
   // 统一兼容中英文逗号、JSON数组、换行和多余空白。
   const parseKeywordsFromDb = (raw?: string): string => {
@@ -459,7 +460,7 @@ export default function ZhilianPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleStartDelivery = async () => {
+  const handleStartDelivery = async (resumeIncomplete = false) => {
     if (startingRef.current || isDelivering) return
     startingRef.current = true
     setIsStarting(true)
@@ -494,7 +495,7 @@ export default function ZhilianPage() {
         return
       }
       if (profileRef.current !== profileId) return
-      const runId = `zhilian-${Date.now()}`
+      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `zhilian-${Date.now()}`
       if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       setActiveRunId(runId)
       scanRunRef.current = runId
@@ -506,6 +507,7 @@ export default function ZhilianPage() {
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
+        resumeIncomplete,
         platform: 'zhilian',
         profileId,
         runId,
@@ -714,7 +716,7 @@ export default function ZhilianPage() {
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={handleStartDelivery} size="sm" disabled={isStarting || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
+	              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
 	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : '开始扫描'}
 	              </Button>
 	            )}
@@ -743,7 +745,7 @@ export default function ZhilianPage() {
         </div>
       </div>
       <div className="space-y-6">
-          <ScanResult result={scanResult} />
+          <ScanResult result={scanResult} busy={isDelivering || isStarting} onResume={() => { void handleStartDelivery(true) }} />
 
           {latestRunId && <div className="grid gap-3 md:grid-cols-3" aria-live="polite">
             <Card><CardContent className="pt-5"><p>采集进度</p><p>本批已入库 {runProgress.collected || 0} 个岗位</p></CardContent></Card>

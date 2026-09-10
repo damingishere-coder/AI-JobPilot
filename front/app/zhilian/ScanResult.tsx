@@ -1,6 +1,10 @@
 export type KeywordResult = {
   keywordIndex: number
   keyword: string
+  target?: number
+  recoveryAttempts?: number
+  sameRunDuplicates?: number
+  submissionFailures?: number
   collected: number
   historyDuplicates: number
   detailFailures: number
@@ -14,25 +18,27 @@ export function readScanResult(payload: Record<string, unknown>): ScanResultData
   if (typeof payload.runId !== 'string' || !payload.runId.trim() || !Array.isArray(payload.keywordResults)) return null
   const count = (value: unknown) => Math.max(0, Number(value) || 0)
   return {
-    runId: payload.runId, outcome: String(payload.outcome || 'running'),
+    runId: payload.runId, outcome: payload.outcome === 'complete' && payload.keywordResults.some(item => !item?.stopReason) ? 'partial' : String(payload.outcome || 'running'),
     keywordResults: payload.keywordResults.filter(item => item && typeof item.keyword === 'string').map(item => ({
       keywordIndex: count(item.keywordIndex), keyword: item.keyword, collected: count(item.collected),
+      target: count(item.target), sameRunDuplicates: count(item.sameRunDuplicates), submissionFailures: count(item.submissionFailures), recoveryAttempts: count(item.recoveryAttempts),
       historyDuplicates: count(item.historyDuplicates), detailFailures: count(item.detailFailures),
-      stopReason: String(item.stopReason || ''), outcome: String(item.outcome || 'partial')
+      stopReason: String(item.stopReason || 'reason_unrecorded'), outcome: item.stopReason ? String(item.outcome || 'partial') : 'partial'
     }))
   }
 }
 
-const labels: Record<string, string> = { running: '进行中', complete: '完成', partial: '部分完成', failed: '失败', stopped: '已停止' }
+const labels: Record<string, string> = { running: '进行中', complete: '全部达标', exhausted: '搜索已耗尽但不足目标', partial: '部分完成', failed: '失败', stopped: '已停止' }
 const reasons: Record<string, string> = {
   target_reached: '已达到采集目标', platform_exhausted: '官网结果已到底',
   stagnation_safety_cap: '加载无进展，尚未确认官网结果已到底', timeout_safety_cap: '已达到关键词时间上限',
+  reason_unrecorded: '原因未记录', awaiting_submission: '候选已收集，等待完整详情和入队确认',
   page_safety_cap: '已达到翻页上限', unrecognized_layout: '页面岗位结构未识别'
 }
 
-export default function ScanResult({ result }: { result: ScanResultData | null }) {
+export default function ScanResult({ result, onResume, busy = false }: { result: ScanResultData | null; onResume?: () => void; busy?: boolean }) {
   if (!result || !result.keywordResults.length) return null
-  const unfinished = result.keywordResults.filter(item => item.outcome !== 'complete')
+  const unfinished = result.keywordResults.filter(item => !['complete', 'exhausted'].includes(item.outcome))
   return <section aria-label="关键词采集结果" className="rounded-lg border p-4 space-y-3">
     <p className={result.outcome === 'failed' ? 'text-red-700' : result.outcome === 'partial' ? 'text-amber-700' : ''}>
       采集结果 · {labels[result.outcome] || '进行中'}
@@ -40,11 +46,13 @@ export default function ScanResult({ result }: { result: ScanResultData | null }
     {unfinished.length > 0 && <p className="text-sm text-amber-700">未完成关键词：{unfinished.map(item => item.keyword).join('、')}。已验证的岗位已保留。</p>}
     <ul className="space-y-2 text-sm">
       {result.keywordResults.map(item => <li key={item.keywordIndex}>
-        <span className="font-medium">{item.keyword}</span>：完整详情 {item.collected} 个，历史重复 {item.historyDuplicates} 个，详情失败 {item.detailFailures} 个。
+        <span className="font-medium">{item.keyword}</span>：{item.target ? <>新增入队 {item.collected}/{item.target}</> : <>完整详情 {item.collected} 个</>}，跳过历史重复 {item.historyDuplicates} 个，同轮重复 {item.sameRunDuplicates || 0} 个，详情失败 {item.detailFailures} 个，入队失败 {item.submissionFailures || 0} 个。
         {item.stopReason === 'platform_exhausted' && item.collected === 0 && item.detailFailures === 0
           ? item.historyDuplicates > 0 ? '官网结果全部为历史重复。' : '官网明确没有匹配岗位。'
           : `${reasons[item.stopReason] || '采集未完成'}。`}
       </li>)}
     </ul>
+    <p className="text-sm text-slate-500">采集与 AI 分析分别进行，入队不代表已匹配通过。</p>
+    {onResume && unfinished.length > 0 && <button type="button" disabled={busy} onClick={onResume} className="rounded border px-3 py-2 disabled:opacity-50">继续未完成关键词</button>}
   </section>
 }

@@ -1,9 +1,11 @@
+importScripts("boss-delivery-support.js");
 const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
     home: "https://www.zhipin.com/",
     contentScript: "boss-content.js",
     contentScripts: [
+      "continuous-scan-support.js",
       "boss-selectors.js",
       "boss-debug.js",
       "boss-scan-support.js",
@@ -21,7 +23,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
-      "zhilian-filters.js",
+      "continuous-scan-support.js", "zhilian-filters.js",
       "zhilian-scan-support.js",
       "zhilian-modern-collector.js",
       "zhilian-content.js"
@@ -40,14 +42,14 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-09-detail-scan";
+const BACKGROUND_VERSION = "2026-09-10-continuous-scan";
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-06-hr-profile-guard";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-09-detail-scan";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-10-continuous-scan";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-10-continuous-scan";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -74,6 +76,7 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "BOSS_SCAN_STATUS",
   "BOSS_SCAN_START",
   "BOSS_SCAN_STOP",
+  "BOSS_DELIVERY_PREFLIGHT",
   "BOSS_DELIVER_ONE",
   "BOSS_DELIVER_BATCH",
   "ZHILIAN_SCAN_STATUS",
@@ -901,6 +904,7 @@ function resolveBossLocalApiEndpoint(message) {
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs/dedupe" };
   }
+  if (operation === "chrome-resume") return { success: true, method: "POST", path: "/api/boss/chrome/resume" };
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/boss/chrome/jobs" };
   }
@@ -927,6 +931,7 @@ function resolveZhilianLocalApiEndpoint(message) {
   if (operation === "chrome-jobs-dedupe") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs/dedupe" };
   }
+  if (operation === "chrome-resume") return { success: true, method: "POST", path: "/api/zhilian/chrome/resume" };
   if (operation === "chrome-jobs") {
     return { success: true, method: "POST", path: "/api/zhilian/chrome/jobs" };
   }
@@ -1196,6 +1201,10 @@ async function handlePageMessage(message, sender) {
     return await sendPassiveStop(tab.id, platform, message, pageTabId);
   }
 
+  if (message.type === "BOSS_DELIVERY_PREFLIGHT") {
+    return { ...await prepareBossDelivery(tab.id), version: BACKGROUND_VERSION };
+  }
+
   if (isDeliverMessage(platform, message.type)) {
     return platform === "boss"
       ? await handleBossDeliver(tab, config, message, pageTabId)
@@ -1317,7 +1326,7 @@ function isProfileScopedScanMessage(type) {
 }
 
 function isProfileScopedLocalApiOperation(operation) {
-  return operation === "chrome-jobs" || operation === "chrome-jobs-dedupe";
+  return operation === "chrome-jobs" || operation === "chrome-jobs-dedupe" || operation === "chrome-resume";
 }
 
 function profileRequiredResponse() {
@@ -1336,7 +1345,7 @@ function normalizeProfileId(value) {
 }
 
 function isBossDeliverMessage(type) {
-  return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH";
+  return type === "BOSS_DELIVER_ONE" || type === "BOSS_DELIVER_BATCH" || type === "BOSS_DELIVERY_PREFLIGHT";
 }
 
 function isZhilianDeliverMessage(type) {
@@ -1413,14 +1422,14 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
     if (outcome === "CONFIRMED") success += 1;
     else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
-    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, message: result?.message || "" });
-    if (outcome === "UNKNOWN") {
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, actionStarted: result?.actionStarted, message: result?.message || "" });
+    if (outcome === "UNKNOWN" || result?.haltBatch) {
       halted = true;
       haltedJobId = task?.id || null;
       const remaining = tasks.slice(index + 1);
       unprocessedCount = remaining.length;
       for (const skippedTask of remaining) {
-        const skippedMessage = `前一岗位 ${task?.id || "-"} 的发送结果待确认，批量任务已暂停，本岗位未触达`;
+        const skippedMessage = `前一岗位 ${task?.id || "-"} 无法安全继续（${result?.message || "发送结果待确认"}），批量任务已暂停，本岗位未触达`;
         let persisted = false;
         await postBossDeliveryResult(
           skippedTask,
@@ -1463,6 +1472,12 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
   };
 }
 
+async function prepareBossDelivery(tabId, targetUrl) {
+  return GetJobsBossDeliverySupport.prepare({ chrome, tabId, targetUrl, sleep,
+    navigate: (id, url) => navigatePlatformTab(id, url, PLATFORM_CONFIG.boss, DELIVERY_NAVIGATION_TIMEOUT_MS, { bossJobUrl: url }),
+    ensure: id => ensureContentScript(id, PLATFORM_CONFIG.boss.contentScript) });
+}
+
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
     let persisted = false;
@@ -1484,16 +1499,16 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     keywordIndex: index,
     keywordTotal: total
   });
-  const targetUrl = task.url;
-  await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { bossJobUrl: targetUrl });
-  await ensureContentScript(tab.id, config.contentScript);
-  if (!isNoFocusPlatformMessage(message.type)) {
-    const updatedTab = await chrome.tabs.update(tab.id, { active: true });
-    await chrome.windows.update(updatedTab.windowId || tab.windowId, { focused: true }).catch(() => {});
+  const prepared = await prepareBossDelivery(tab.id, task.url);
+  if (!prepared.success) {
+    let persisted = false;
+    await postBossDeliveryResult(task, false, { failureType: prepared.failureType, failureReason: prepared.message },
+      "PRE_ACTION_ERROR", "NOT_SENT", "PRE_ACTION_ERROR").then(() => { persisted = true; }).catch(() => {});
+    return { ...prepared, persisted };
   }
 
   try {
-    return await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
+    return { ...await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total), actionStarted: true };
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
     const failure = classifyDeliveryFailure(errorMessage);
@@ -2328,8 +2343,10 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
   while (Date.now() - startedAt < timeoutMs) {
     const tab = await chrome.tabs.get(tabId);
     const tabUrl = tab.url || tab.pendingUrl || "";
-    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url, options) && tab.status !== "loading") {
-      return tab;
+    if (isSupportedUrl(tabUrl, config) && isSameNavigationUrl(tabUrl, url, options) && tab.status !== "loading" && (!tab.pendingUrl || tab.pendingUrl === tab.url)) {
+      await sleep(100);
+      const stable = await chrome.tabs.get(tabId);
+      if (stable.url === tab.url && stable.status !== "loading" && (!stable.pendingUrl || stable.pendingUrl === stable.url)) return stable;
     }
     await sleep(CONTENT_READY_INTERVAL_MS);
   }
@@ -2345,6 +2362,10 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
 async function ensureContentScript(tabId, file) {
   if (await isContentScriptReady(tabId, file)) return;
 
+  const tab = await chrome.tabs.get(tabId);
+  const config = file === "boss-content.js" ? PLATFORM_CONFIG.boss : PLATFORM_CONFIG.zhilian;
+  if (!isSupportedUrl(tab.url || "", config) || tab.status === "loading"
+      || (tab.pendingUrl && tab.pendingUrl !== tab.url)) throw new Error("招聘页面仍在跳转，脚本尚未注入");
   await chrome.scripting.executeScript({ target: { tabId }, files: contentScriptFiles(file) });
 
   for (let attempt = 0; attempt < CONTENT_READY_RETRIES; attempt++) {
