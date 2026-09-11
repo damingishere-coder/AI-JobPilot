@@ -42,7 +42,8 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-10-continuous-scan";
+const BACKGROUND_VERSION = "2026-09-11-content-readiness";
+const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
@@ -198,7 +199,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     handlePageMessage(message, sender).then(sendResponse).catch((error) => {
-      sendResponse({ success: false, message: error.message || String(error) });
+      sendResponse({ success: false, errorCode: error.errorCode || "PLATFORM_REQUEST_FAILED", message: error.message || String(error) });
     });
     return true;
   }
@@ -2360,6 +2361,14 @@ async function navigatePlatformTab(tabId, url, config, timeoutMs, options = {}) 
 }
 
 async function ensureContentScript(tabId, file) {
+  const key = `${tabId}:${file}`;
+  if (contentScriptPreparations.has(key)) return await contentScriptPreparations.get(key);
+  const preparation = prepareContentScript(tabId, file).finally(() => contentScriptPreparations.delete(key));
+  contentScriptPreparations.set(key, preparation);
+  return await preparation;
+}
+
+async function prepareContentScript(tabId, file) {
   if (await isContentScriptReady(tabId, file)) return;
 
   const tab = await chrome.tabs.get(tabId);
@@ -2370,10 +2379,29 @@ async function ensureContentScript(tabId, file) {
 
   for (let attempt = 0; attempt < CONTENT_READY_RETRIES; attempt++) {
     if (await isContentScriptReady(tabId, file)) return;
+    const version = await readContentVersion(tabId, file);
+    const expected = file === "boss-content.js" ? REQUIRED_BOSS_CONTENT_VERSION : REQUIRED_ZHILIAN_CONTENT_VERSION;
+    if (version && version !== expected) {
+      throw Object.assign(new Error(
+        `招聘扩展后台与页面脚本版本不一致（后台要求：${expected}，页面：${version}）。` +
+        "请打开 chrome://extensions，找到“投递牛马 Chrome Bridge”点击重新加载，再刷新招聘页面和工作台。仅刷新招聘页面不能更新扩展后台。"
+      ), { errorCode: "EXTENSION_RELOAD_REQUIRED", expectedVersion: expected, contentVersion: version });
+    }
     await sleep(CONTENT_READY_INTERVAL_MS);
   }
 
-  throw new Error("Chrome扩展已加载，但招聘页面脚本未就绪。请刷新招聘页面后重试。");
+  throw Object.assign(new Error("招聘页面脚本注入后仍未响应。请确认页面加载完成；若扩展刚更新，请先在 chrome://extensions 重新加载“投递牛马 Chrome Bridge”，再刷新招聘页面和工作台。"),
+    { errorCode: "CONTENT_SCRIPT_NOT_READY" });
+}
+
+async function readContentVersion(tabId, file) {
+  const type = file === "boss-content.js" ? "GET_BOSS_CONTENT_VERSION" : "GET_ZHILIAN_CONTENT_VERSION";
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { source: "GET_JOBS_BACKGROUND", type });
+    return response?.success === true && typeof response.version === "string" ? response.version : "";
+  } catch {
+    return "";
+  }
 }
 
 function contentScriptFiles(file) {

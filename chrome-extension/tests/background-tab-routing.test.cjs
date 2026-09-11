@@ -35,6 +35,8 @@ function loadBackground({
   contentReady = true,
   bossContentVersion = BOSS_CONTENT_VERSION,
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
+  injectedBossVersion = BOSS_CONTENT_VERSION,
+  injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
   bossHrContentVersion = "2026-09-07-hr-autopilot",
   bossDeliveryResponses = [],
   fetchImpl = async () => {
@@ -141,10 +143,10 @@ function loadBackground({
         }
         currentContentReady = true;
         if (options.files.includes("boss-content.js")) {
-          currentBossContentVersion = BOSS_CONTENT_VERSION;
+          currentBossContentVersion = injectedBossVersion;
         }
         if (options.files.includes("zhilian-content.js")) {
-          currentZhilianContentVersion = ZHILIAN_CONTENT_VERSION;
+          currentZhilianContentVersion = injectedZhilianVersion;
         }
         return [];
       }
@@ -257,6 +259,35 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
     "zhilian-content.js"
   ]);
 });
+
+for (const platform of ["boss", "zhilian"]) {
+  const url = platform === "boss" ? "https://www.zhipin.com/" : "https://www.zhaopin.com/";
+  test(`${platform}: a package/background mismatch requires extension reload, not repeated page refresh`, async () => {
+    const { context, executedScripts, sentMessages } = loadBackground({
+      tabs: [{ id: 1, windowId: 1, url, status: "complete" }], contentReady: false,
+      injectedBossVersion: "new-package-version", injectedZhilianVersion: "new-package-version"
+    });
+    await assert.rejects(context.ensureContentScript(1, `${platform}-content.js`), error => {
+      assert.equal(error.errorCode, "EXTENSION_RELOAD_REQUIRED");
+      assert.match(error.message, /new-package-version/);
+      assert.match(error.message, /chrome:\/\/extensions/);
+      assert.match(error.message, /仅刷新招聘页面不能更新扩展后台/);
+      return true;
+    });
+    assert.equal(executedScripts.length, 1);
+    assert.equal(sentMessages.some(item => /SCAN_START|DELIVER/.test(item.message.type)), false);
+  });
+
+  test(`${platform}: concurrent readiness checks inject once`, async () => {
+    const { context, executedScripts } = loadBackground({
+      tabs: [{ id: 1, windowId: 1, url, status: "complete" }], contentReady: false
+    });
+    await Promise.all([context.ensureContentScript(1, `${platform}-content.js`),
+      context.ensureContentScript(1, `${platform}-content.js`)]);
+    assert.equal(executedScripts.length, 1);
+    assert.equal(await context.isContentScriptReady(1, `${platform}-content.js`), true);
+  });
+}
 
 test("reinjects all Zhilian dependencies when the content script is stale", async () => {
   const { context, executedScripts } = loadBackground({
