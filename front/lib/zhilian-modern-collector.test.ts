@@ -117,6 +117,54 @@ describe('Zhilian modern split list', () => {
     expect(click).toHaveBeenCalledTimes(1)
   })
 
+  it('waits through a slow title render without repeatedly restarting scrolling', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__title-clamp')!.innerHTML = ''
+    card.scrollIntoView = vi.fn()
+    let ticks = 0
+    card.querySelector('.job-card__title-clamp')!.addEventListener('click', () => showDetail(card))
+    const result = await collector.selectAndReadResult(document, card, {
+      shouldStop: async () => false,
+      sleep: async () => { if (++ticks === 15) card.querySelector('.job-card__title-clamp')!.textContent = 'AI产品运营' }
+    })
+    expect(result.job?.id).toBe('CC100J200')
+    expect(card.scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(card.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' })
+  })
+
+  it('reports a background render pause without clicking an empty title', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__title-clamp')!.innerHTML = ''
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    try {
+      const result = await collector.selectAndReadResult(document, card, { shouldStop: async () => false, sleep: async () => {} })
+      expect(result).toMatchObject({ job: null, reason: 'PAGE_HIDDEN', retries: 0 })
+    } finally { visibility.mockRestore() }
+  })
+
+  it('preserves candidates and pauses rather than counting an empty card as a failed JD', async () => {
+    const card = addCard()
+    card.querySelector('.job-card__title-clamp')!.innerHTML = ''
+    const code = readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-content.js'), 'utf8')
+    const source = code.slice(code.indexOf('  async function collectModernZhilianJobs('), code.indexOf('  async function collectJobsAcrossSearchPages('))
+    const saved: Record<string, unknown>[] = [], states: Record<string, unknown>[] = []
+    const retained = { id: 'KEPT', title: '已采集岗位', url: 'https://www.zhaopin.com/jobdetail/KEPT.htm', detailVerified: true }
+    const collect = runInNewContext(`${source}\ncollectModernZhilianJobs`, {
+      window: { GetJobsZhilianModernCollector: collector, GetJobsContinuousScan: continuous, GetJobsZhilianFilters: { verify: async () => {} } },
+      document, Date, Set, WeakMap,
+      normalizeCollectedJobs: (jobs: unknown) => jobs || [], storeScanTask: async (task: Record<string, unknown>) => saved.push(task),
+      handleBlockingState: async () => null, buildPageBlockDiagnostics: () => ({}),
+      waitForJobCards: async () => {}, hasStopRequested: async () => false,
+      collectZhilianInitialStateJobs: () => [], filterZhilianDuplicateJobs: async () => ({ jobs: [], duplicateCount: 0 }),
+      zhilianCollectionStopReason: () => '', isCurrentSearchPage: () => true,
+      sleep: async () => {}, postProgress: () => {}, writeScanStatus: (state: Record<string, unknown>) => states.push(state)
+    })
+    const result = await collect({ modernKeyword: 'AI', collectedJobs: [retained], runId: 'run' }, { runId: 'run' }, 'AI', {}, 2, {}, 0)
+    expect(result.paused).toBe(true)
+    expect(saved.at(-1)).toMatchObject({ phase: 'collecting', collectedJobs: [retained], modernSeenIds: ['KEPT'], modernDetailFailures: 0 })
+    expect(states.at(-1)).toMatchObject({ stage: 'blocked', resumable: true, isRunning: false })
+  })
+
   it('reacquires a uniquely matching replaced node and retries exactly once', async () => {
     const card = addCard()
     const staleClick = vi.fn(() => {
@@ -180,7 +228,7 @@ describe('Zhilian modern split list', () => {
     const sleep = vi.fn(async () => {})
     expect(await collector.selectAndReadResult(document, card, { sleep, shouldStop: async () => false }))
       .toMatchObject({ job: null, reason: 'CARD_NOT_READY', retries: 1 })
-    expect(sleep).toHaveBeenCalledTimes(20)
+    expect(sleep).toHaveBeenCalledTimes(40)
     expect(click).not.toHaveBeenCalled()
   })
 

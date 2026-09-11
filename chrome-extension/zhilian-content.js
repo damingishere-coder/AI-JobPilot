@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-10-continuous-scan";
+  const EXTENSION_VERSION = "2026-09-11-render-recovery";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -909,6 +909,25 @@
         if (block) return { paused: true, jobs, message: block.message };
         const job = result.job;
         if (!job) {
+          // An unrendered list item is not a failed JD. Keep it retryable and
+          // stop this run before a whole appended batch is silently skipped.
+          if (["PAGE_HIDDEN", "CARD_NOT_READY", "CARD_DETACHED"].includes(result.reason)) {
+            if (expectedId) attemptedCards.delete(expectedId);
+            visitedCards.delete(card);
+            await checkpoint();
+            const message = result.reason === "PAGE_HIDDEN"
+              ? "智联标签页在后台且岗位标题尚未渲染，采集已暂停。请切回智联岗位页，待标题显示后继续扫描。"
+              : "智联岗位列表尚未稳定，采集已暂停并保留已采集岗位。请确认岗位标题已显示后继续扫描。";
+            const pausedAt = Date.now();
+            await storeScanTask({ ...baseTask, phase: "collecting", modernKeyword: keyword,
+              collectedJobs: jobs, modernSeenIds: [...seenIds], modernDetailFailures: detailFailures,
+              historyDuplicateCount, pausedAt, lastError: { type: result.reason, message, failedAt: pausedAt } });
+            const state = { isRunning: false, stage: "blocked", paused: true, resumable: true,
+              runId: task.runId, diagnosticType: result.reason, message, updatedAt: pausedAt };
+            writeScanStatus(state);
+            postProgress(task, "warning", message, { ...baseMeta, ...state, operation: "scan", detailFailures });
+            return { paused: true, jobs, message };
+          }
           if (expectedId) seenIds.add(expectedId);
           detailFailures++;
           const jobTitle = result.summary?.title || summary.title || `第 ${cardIndex + 1} 个岗位（标题未就绪）`;
