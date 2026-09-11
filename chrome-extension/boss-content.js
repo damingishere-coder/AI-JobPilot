@@ -1906,6 +1906,9 @@
       "[class*='job-name']",
       "[class*='job-title']",
       "[ka*='job-name']",
+      "[class*='position-name']",
+      "h3",
+      "h2",
       ".job-card-body",
       "[class*='job-card-body']",
       "[class*='job-card-left']",
@@ -1999,7 +2002,7 @@
         const url = new URL(raw, window.location.origin);
         // Validate the actual destination, not a job URL embedded in a query.
         return url.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(url.hostname)
-          && /^\/job_detail\/[^/]+\.html$/.test(url.pathname);
+          && /^\/job_detail\/[^/]+(?:\.html)?$/.test(url.pathname);
       } catch { return false; }
     }) || null;
   }
@@ -4344,12 +4347,13 @@
     if (!node || node === document.body || node === document.documentElement) return false;
     if (node.closest?.("nav, header, footer, [role='navigation']")) return false;
     const link = findJobDetailLink(node, node);
-    const title = textOf(node, [".job-name", ".job-title", "[class*='job-name']", "[class*='job-title']", ".position-name"])
+    const title = textOf(node, [".job-name", ".job-title", "[class*='job-name']", "[class*='job-title']", "[class*='position-name']", "[ka*='job-name']", "h3", "h2"])
       || compact(link?.innerText || link?.textContent || "");
     if (!title || isInvalidBossCandidateTitle(title) || isBossNonJobNavigationTitle(title)) return false;
     if (link) return true;
     // Linkless cards need independent job fields before any click is allowed.
-    return Boolean(textOf(node, [".company-name", "[class*='company-name']", "[class*='brand-name']", "[class*='company-title']"]));
+    return Boolean(textOf(node, [".company-name", "[class*='company-name']", "[class*='brand-name']", "[class*='company-title']", "[ka*='company']"])
+      || attrText(node, ["data-company", "data-company-name", "data-brand-name"]));
   }
 
   function selectorStats() {
@@ -4436,6 +4440,8 @@
       });
     }
     writeScanStatus({
+      outcome: "paused",
+      keywordResults: task?.continuousScan ? window.GetJobsContinuousScan.results(task) : [],
       isRunning: false,
       stopRequested: false,
       stage: "blocked",
@@ -4476,6 +4482,8 @@
     };
     storeScanTask(checkpoint);
     writeScanStatus({
+      outcome: "paused",
+      keywordResults: task?.continuousScan ? window.GetJobsContinuousScan.results(task) : [],
       isRunning: false,
       stopRequested: false,
       stage: "blocked",
@@ -4692,6 +4700,8 @@
       }
     });
     writeScanStatus({
+      outcome: "paused",
+      keywordResults: task?.continuousScan ? window.GetJobsContinuousScan.results(task) : [],
       isRunning: false,
       stopRequested: false,
       stage: "blocked",

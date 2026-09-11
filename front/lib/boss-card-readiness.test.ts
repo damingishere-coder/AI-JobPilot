@@ -73,3 +73,22 @@ it('retains a linkless SPA title click without accepting navigation URLs', () =>
   title.setAttribute('href', '/web/geek/jobs?query=')
   expect(harness().findBossCardClickTarget(document.querySelector('li')!)).toBeNull()
 })
+
+it('accepts legacy title/company fields and suffix-free canonical detail URLs', () => {
+  document.body.innerHTML = '<ul class="job-list-box"><li data-company="甲公司"><h3>运营</h3></li><li><a href="/job_detail/abc">产品经理</a></li></ul>'
+  const h = harness(), cards = h.collectJobNodes()
+  expect(cards).toHaveLength(2)
+  expect(cards.map(card => h.findJobDetailLink(card, card)?.getAttribute('href'))).toContain('/job_detail/abc')
+})
+it.each(['pauseForPageStructureChange', 'stopSearchNavigationFailure', 'handleBlockingState'])('persists keyword results when %s pauses the scan', name => {
+  const written: Record<string, unknown>[] = []
+  const keywordResults = [{ keyword: '运营', collected: 0, stopReason: 'reason_unrecorded' }]
+  const pause = runInNewContext(`${fn(name)}\n${name}`, {
+    window: { location: { href: 'https://www.zhipin.com/web/geek/jobs' }, GetJobsContinuousScan: { results: () => keywordResults } },
+    document, Date, buildBossDiagnostic: () => ({ message: '等待列表', type: 'SELECTOR_MISMATCH' }),
+    scanKeywords: () => ['运营'], storeScanTask: () => {}, writeScanStatus: (value: Record<string, unknown>) => written.push(value), postProgress: () => {},
+    activeScanRunId: 'boss-1', normalizeScanRunId: (value: string) => value
+  })
+  pause({ runId: 'boss-1', continuousScan: {}, expectedKeyword: '运营' }, { hasLoginPrompt: true }, {})
+  expect(written[0]).toMatchObject({ paused: true, outcome: 'paused', keywordResults })
+})
