@@ -9,6 +9,8 @@ export type ChromeBridgeResponse<T = unknown> = {
 
 const SOURCE = 'GET_JOBS_PAGE'
 const TARGET = 'GET_JOBS_EXTENSION'
+export const REQUIRED_BACKGROUND_VERSION = '2026-09-11-content-readiness'
+const SCAN_START_TYPES = new Set(['BOSS_SCAN_START', 'ZHILIAN_SCAN_START'])
 const ALLOWED_BRIDGE_ORIGINS = new Set([
   'http://localhost:6866',
   'http://127.0.0.1:6866',
@@ -34,7 +36,23 @@ type ChromeBridgeMessageEnvelope<T = unknown> = {
   response?: ChromeBridgeResponse<T>
 }
 
-export function sendChromeBridgeMessage<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
+export async function sendChromeBridgeMessage<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
+  if (SCAN_START_TYPES.has(String(payload.type))) {
+    const status = await sendBridgeRequest({ type: 'GET_JOBS_EXTENSION_PING' }, 3000)
+    if (!status.success) return { success: false, message: status.message || 'Chrome扩展未连接，请先检查扩展连接。' }
+    if (status.version !== REQUIRED_BACKGROUND_VERSION) {
+      return {
+        success: false,
+        errorCode: 'EXTENSION_RELOAD_REQUIRED',
+        version: status.version,
+        message: `Chrome中运行的招聘扩展后台需要更新（当前：${status.version || '未知'}，需要：${REQUIRED_BACKGROUND_VERSION}）。请打开 chrome://extensions，找到“投递牛马 Chrome Bridge”点击重新加载，再刷新BOSS/智联页面及工作台。仅刷新招聘页面不能更新扩展后台。`,
+      }
+    }
+  }
+  return sendBridgeRequest<T>(payload, timeout)
+}
+
+function sendBridgeRequest<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
   if (typeof window === 'undefined') {
     return Promise.resolve({ success: false, message: '当前环境不支持Chrome扩展通信。' })
   }
