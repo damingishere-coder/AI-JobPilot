@@ -784,6 +784,8 @@
     activeScanRunId = normalizeScanRunId(task.runId);
     storeScanTask(task);
     writeScanStatus({
+      outcome: "running",
+      keywordResults: task?.continuousScan ? window.GetJobsContinuousScan.results(task) : [],
       isRunning: true,
       stopRequested: false,
       stage: "received",

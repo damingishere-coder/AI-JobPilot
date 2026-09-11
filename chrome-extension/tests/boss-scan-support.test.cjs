@@ -389,3 +389,9 @@ test("keeps the failed Boss submit batch index and prior success summary for res
   assert.equal(checkpoint.lastSubmitError.failedAt, 123456);
   assert.equal(checkpoint.lastSubmitError.message, "database is locked");
 });
+
+test("resuming a paused Boss result restores running outcome", () => {
+  const result = loadSupport().mergeScanStatus({ outcome: "paused", paused: true, keywordResults: [] }, { isRunning: true, stage: "collecting" }, 123);
+  assert.equal(result.outcome, "running");
+  assert.equal(result.paused, false);
+});

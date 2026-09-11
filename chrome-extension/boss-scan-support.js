@@ -79,6 +79,7 @@
     };
     const stage = String(next.stage || "");
     if (next.isRunning === true) {
+      if (next.outcome === "paused") next.outcome = "running";
       next.paused = false;
       next.resumable = true;
       next.diagnosticType = "";
