@@ -1,5 +1,5 @@
 (function (root) {
-  const VERSION = "2026-09-10-continuous-scan";
+  const VERSION = "2026-09-11-render-recovery";
   const text = (node) => String(node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
   const field = (node, selector) => text(node?.querySelector(selector));
   const idFromUrl = (url) => String(url || "").match(/\/jobdetail\/([^/?#.]+)\.htm/i)?.[1] || "";
@@ -23,7 +23,7 @@
   const failure = (reason, summary = {}, extra = {}) => ({ job: null, reason, summary, ...extra });
   const retryable = new Set(["CARD_NOT_READY", "CARD_DETACHED", "DETAIL_TIMEOUT", "DETAIL_NOT_SWITCHED"]);
   const failureLabels = Object.freeze({
-    CARD_NOT_READY: "岗位标题或公司尚未渲染", CARD_DETACHED: "岗位卡片已被页面替换",
+    PAGE_HIDDEN: "智联标签页在后台，标题渲染可能被浏览器暂停", CARD_NOT_READY: "岗位标题或公司尚未渲染", CARD_DETACHED: "岗位卡片已被页面替换",
     AMBIGUOUS_IDENTITY: "同名卡片无法唯一确认身份", DETAIL_TIMEOUT: "详情加载超时",
     DETAIL_NOT_SWITCHED: "详情仍停留在上一岗位", IDENTITY_MISMATCH: "详情身份与目标岗位不符",
     BODY_INCOMPLETE: "岗位正文不足", KEYWORD_TIMEOUT: "关键词采集时间已用尽", STOPPED: "扫描已停止"
@@ -40,18 +40,24 @@
   }
 
   async function prepareCard(document, card, { sleep, shouldStop, deadline = Infinity, summary = readCard(card) }) {
-    for (let poll = 0; poll < 10; poll++) {
+    let scrolledCard = null;
+    for (let poll = 0; poll < 20; poll++) {
       if (await shouldStop()) return failure("STOPPED", summary);
       if (Date.now() >= deadline) return failure("KEYWORD_TIMEOUT", summary);
       card = locateCard(document, card, summary);
       if (!card) return failure("CARD_DETACHED", summary);
-      card.scrollIntoView?.({ block: "center" });
+      if (scrolledCard !== card) {
+        // Do not restart the page's smooth scroll on every render poll.
+        card.scrollIntoView?.({ block: "center", behavior: "instant" });
+        scrolledCard = card;
+      }
       const current = readCard(card);
       if (["title", "company", "salary", "location"].some(key => summary[key] && current[key] && summary[key] !== current[key])) {
         return failure("IDENTITY_MISMATCH", summary);
       }
       summary = { ...summary, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value)) };
       if (current.title && current.company) return { card, summary: current };
+      if (document.visibilityState === "hidden") return failure("PAGE_HIDDEN", summary);
       await sleep(Math.min(500, Math.max(0, deadline - Date.now())));
     }
     return failure("CARD_NOT_READY", summary);
