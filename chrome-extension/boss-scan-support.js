@@ -64,6 +64,10 @@
   function prepareTaskForResume(task) {
     if (!task || typeof task !== "object") return task;
     const resumed = { ...task };
+    if (task.lastError?.type === "NAVIGATION_FAILED") {
+      resumed.navigationAttempts = 0;
+      resumed.navigationStartedAt = 0;
+    }
     delete resumed.blockedAt;
     delete resumed.blockState;
     delete resumed.pausedAt;

@@ -1,5 +1,8 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-11-boss-card-readiness";
+  const EXTENSION_VERSION = "2026-09-11-boss-resume-lifecycle";
+  // Manifest injection and a readiness probe can meet in the same document.
+  // Reuse its runner instead of leaving the first runner alive without a listener.
+  if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -717,6 +720,10 @@
       sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
       return;
     }
+    if (activeScanPromise) {
+      sendResponse({ success: false, errorCode: "SCAN_BUSY", message: "Boss当前扫描仍在执行，请等待完成或先停止当前扫描。", runId: activeScanRunId });
+      return;
+    }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     let incomingTask = normalizeScanTask(message);
@@ -829,9 +836,13 @@
   }
 
   async function resumeStoredScanTaskIfActive(force = false) {
+    if (!isCurrentContentInstance() || activeScanPromise) return;
     if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const storedTask = await readStoredScanTaskFromAnyStorage();
+    if (!isCurrentContentInstance() || activeScanPromise) return;
     if (!storedTask || storedTask.completed || stopRequested) return;
+    // A reload/status probe must not undo an explicit pause or exhausted retry.
+    if (!force && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) return;
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
       ? SCAN_SUPPORT.prepareTaskForResume(storedTask)
       : storedTask;
@@ -875,6 +886,7 @@
   }
 
   function handleScanExecutionFailure(task, error) {
+    if (!isCurrentContentInstance()) return;
     const errorText = safeErrorMessage(error);
     const looksLikeLocalApiFailure = /^(CORS_|LOCAL_)/.test(String(error?.code || ""))
       || /Invalid CORS request|本地服务|本地接口|6866|Failed to fetch|NetworkError|请求超时/i.test(errorText);
@@ -3413,6 +3425,7 @@
   }
 
   async function callBossLocalApi(operation, body, options = {}) {
+    if (!isCurrentContentInstance()) throw Object.assign(new Error("Boss页面脚本已被替换"), { code: "SCAN_SUPERSEDED" });
     const response = await chrome.runtime.sendMessage({
       source: "GET_JOBS_BOSS_CONTENT",
       type: "BOSS_LOCAL_API",
@@ -3451,6 +3464,7 @@
   }
 
   function postProgress(message, type, text, meta = {}) {
+    if (!isCurrentContentInstance()) return;
     chrome.runtime.sendMessage({
       source: "GET_JOBS_PLATFORM",
       pageTabId: message.pageTabId,
@@ -3504,6 +3518,7 @@
   }
 
   function storeScanTask(task) {
+    if (!isCurrentContentInstance()) return;
     window.GetJobsContinuousScan?.accountDetailTime(task);
     const normalized = {
       ...normalizeScanTask(task),
@@ -3524,6 +3539,7 @@
   }
 
   function clearStoredScanTask(preserve = true) {
+    if (!isCurrentContentInstance()) return;
     if (preserve && window.GetJobsContinuousScan) {
       try {
         const raw = sessionStorage.getItem(SCAN_TASK_KEY);
@@ -3862,6 +3878,7 @@
   }
 
   function isStopRequested(runId = "") {
+    if (!isCurrentContentInstance()) return true;
     const targetRunId = normalizeScanRunId(runId || activeScanRunId);
     if (stopRequested && stopRequestedRunId && targetRunId && stopRequestedRunId === targetRunId) return true;
     return stopRequestMatches(readSessionStopRequested(), targetRunId);
@@ -3938,6 +3955,7 @@
   }
 
   function writeScanStatus(nextStatus) {
+    if (!isCurrentContentInstance()) return;
     const previous = readScanStatus();
     const merged = typeof SCAN_SUPPORT.mergeScanStatus === "function"
       ? SCAN_SUPPORT.mergeScanStatus(previous, nextStatus, Date.now())
@@ -4606,13 +4624,16 @@
   }
 
   function openSearchPage(url, task) {
+    if (isStopRequested(task?.runId) || !isSearchNavigationPending(task)) return;
     if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const attempts = Number(task.navigationAttempts || 1);
     scheduleSearchNavigationRetry(url, task, attempts);
     requestBackgroundNavigation(url).then((response) => {
       if (response?.success) return;
+      if (!isSearchNavigationPending(readStoredScanTask())) return;
       navigateSearchPageInCurrentFrame(url, attempts);
     }).catch(() => {
+      if (!isSearchNavigationPending(readStoredScanTask())) return;
       navigateSearchPageInCurrentFrame(url, attempts);
     });
 
@@ -4625,8 +4646,10 @@
   }
 
   async function requestBackgroundNavigation(url) {
+    if (!isCurrentContentInstance() || isStopRequested()) return { success: false, errorCode: "SCAN_STOPPED" };
     const task = readStoredScanTask();
     if (task?.continuousScan && canUseChromeStorage()) await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: task });
+    if (!isCurrentContentInstance() || isStopRequested()) return { success: false, errorCode: "SCAN_STOPPED" };
     if(window.location.pathname.startsWith("/web/geek/chat")) return Promise.resolve({success:false,errorCode:"HR_CHAT_PROTECTED"});
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       return Promise.resolve({ success: false });
@@ -4639,6 +4662,7 @@
   }
 
   function navigateSearchPageInCurrentFrame(url, attempts) {
+    if (isStopRequested()) return;
     if(window.location.pathname.startsWith("/web/geek/chat")) return;
     if (attempts > 1) {
       window.location.replace(url);
@@ -4741,6 +4765,8 @@
   }
 
   function isSearchNavigationPending(task) {
+    if (!isCurrentContentInstance() || isStopRequested(task?.runId)
+        || task?.pausedAt || task?.blockedAt || task?.blockState || task?.lastError) return false;
     if (String(task?.phase || "") !== "searching" || !task?.expectedSearchUrl) return false;
     const startedAt = Number(task.navigationStartedAt || task.updatedAt || 0);
     return Boolean(startedAt && Date.now() - startedAt < SEARCH_NAVIGATION_GRACE_MS);
