@@ -1707,7 +1707,7 @@ export default function BossPage() {
 
       {activeStep === 'scan' ? (
         <div ref={logSectionRef} className="scroll-mt-6 space-y-6">
-          <ScanResult result={scanResult} busy={isDelivering} onResume={() => { void handleStartDelivery(true) }} />
+          <ScanResult result={scanResult && isScanPaused && scanResult.runId === activeRunId ? { ...scanResult, outcome: 'paused' } : scanResult} busy={isDelivering} onResume={() => { void handleStartDelivery(true) }} />
           <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}

@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-10-continuous-scan";
+  const EXTENSION_VERSION = "2026-09-11-boss-card-readiness";
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
@@ -1114,6 +1114,10 @@
         openSearchPage(url, retryTaskState);
         return { success: true, saved: totalSaved, pendingNavigation: true };
       }
+      if (!waitState.ready) {
+        return pauseForPageStructureChange(task, waitState.diagnostics, { ...baseMeta, stage: "loading",
+          reason: "岗位列表尚未加载出可识别的岗位，已保留断点；没有点击页面导航入口。" });
+      }
       postProgress(task, "info", `Boss岗位列表加载检查完成，开始滚动采集。详情链接 ${waitState.diagnostics.detailLinks} 个，搜索结果容器 ${waitState.diagnostics.resultContainers} 个。`, {
         ...baseMeta,
         stage: "collecting",
@@ -1893,6 +1897,7 @@
   }
 
   function findBossCardClickTarget(root) {
+    if (!isLikelyJobCardNode(root)) return null;
     const link = findJobDetailLink(root, root);
     if (link && !isBossUnsafeCardAction(link)) return link;
     const selectors = [
@@ -1904,17 +1909,16 @@
       ".job-card-body",
       "[class*='job-card-body']",
       "[class*='job-card-left']",
-      "[class*='job-info']",
-      "a[href]",
-      "[role='button']",
-      "button"
+      "[class*='job-info']"
     ];
     for (const selector of selectors) {
       const node = Array.from(root?.querySelectorAll?.(selector) || [])
-        .find((item) => item.offsetParent !== null && !isBossUnsafeCardAction(item));
+        .find((item) => item.offsetParent !== null && !isBossUnsafeCardAction(item)
+          && (!item.matches?.("a[href]") || Boolean(findJobDetailLink(item, item))
+            || /^(#|javascript:;|javascript:void\(0\);?)$/.test(item.getAttribute("href") || "")));
       if (node) return node;
     }
-    return isBossUnsafeCardAction(root) ? null : root;
+    return null;
   }
 
   function isBossUnsafeCardAction(node) {
@@ -1987,12 +1991,17 @@
   }
 
   function findJobDetailLink(root, fallbackNode) {
-    const selectors = "a[href*='/job_detail/'], a[href*='job_detail']";
-    if (fallbackNode?.matches?.(selectors)) return fallbackNode;
-    const direct = root?.querySelector?.(selectors);
-    if (direct) return direct;
-    return Array.from(root?.querySelectorAll?.("a[href], [data-url], [data-href]") || [])
-      .find((node) => /job_detail/i.test(attrText(node, ["href", "data-url", "data-href"]) || "")) || null;
+    const candidates = [fallbackNode, ...Array.from(root?.querySelectorAll?.("a[href], [data-url], [data-href]") || [])];
+    return candidates.find(node => {
+      const raw = attrText(node, ["href", "data-url", "data-href"]);
+      if (!raw) return false;
+      try {
+        const url = new URL(raw, window.location.origin);
+        // Validate the actual destination, not a job URL embedded in a query.
+        return url.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(url.hostname)
+          && /^\/job_detail\/[^/]+\.html$/.test(url.pathname);
+      } catch { return false; }
+    }) || null;
   }
 
   function normalizeBossJobUrl(value) {
@@ -4223,7 +4232,7 @@
     let diagnostics = buildListDiagnostics();
     for (let i = 0; i < 30 && !isStopRequested(); i++) {
       diagnostics = buildListDiagnostics();
-      if (collectJobNodes().length > 0 || diagnostics.resultContainers > 0 || diagnostics.hasBlockingState) {
+      if (collectJobNodes().length > 0 || diagnostics.embeddedJobs > 0 || diagnostics.hasBlockingState) {
         return { ready: true, diagnostics };
       }
       await sleep(500);
@@ -4324,31 +4333,23 @@
 
   function jobCardRoot(node) {
     if (!node) return node;
-    const detailSelector = "a[href*='/job_detail/'], a[href*='job_detail']";
-    const detailLink = node.matches?.(detailSelector) ? node : node.querySelector?.(detailSelector);
-    if (detailLink) {
-      return detailLink.closest?.("li.job-card-box, .job-card-wrapper, [class*='job-card-wrapper'], [class*='job-card-box'], .job-list-box > li, .search-job-result > li, [ka^='search_list_']")
-        || detailLink.closest?.("[class*='job-card']")
-        || detailLink.closest?.("li")
-        || node;
-    }
-
-    let current = node;
-    while (current && current !== document.body) {
-      if (current.querySelector?.(detailSelector)) return current;
-      current = current.parentElement;
-    }
-    return node.closest?.("li.job-card-box, .job-card-wrapper, [class*='job-card'], [ka^='search_list_']")
-      || node;
+    const roots = "li.job-card-box, .job-card-wrapper, [class*='job-card-wrapper'], [class*='job-card-box'], .job-list-box > li, .search-job-result > li, [ka^='search_list_'], .job-card";
+    const link = findJobDetailLink(node, node);
+    if (link) return link.closest?.(roots) || link.closest?.("li") || node;
+    // Never climb into a page-wide ancestor just because another job link exists there.
+    return node.closest?.(roots) || node;
   }
 
   function isLikelyJobCardNode(node) {
     if (!node || node === document.body || node === document.documentElement) return false;
-    const text = compact(node.innerText || node.textContent || "");
-    if (!text) return false;
-    if (findJobDetailLink(node, node)) return true;
-    if (attrText(node, ["data-jobid", "data-job-id", "data-jid", "data-encrypt-id"])) return true;
-    return Boolean(text.length >= 8 && /工程师|开发|运营|产品|经理|设计|测试|销售|顾问|算法|前端|后端|全栈|实习|专员/i.test(text));
+    if (node.closest?.("nav, header, footer, [role='navigation']")) return false;
+    const link = findJobDetailLink(node, node);
+    const title = textOf(node, [".job-name", ".job-title", "[class*='job-name']", "[class*='job-title']", ".position-name"])
+      || compact(link?.innerText || link?.textContent || "");
+    if (!title || isInvalidBossCandidateTitle(title) || isBossNonJobNavigationTitle(title)) return false;
+    if (link) return true;
+    // Linkless cards need independent job fields before any click is allowed.
+    return Boolean(textOf(node, [".company-name", "[class*='company-name']", "[class*='brand-name']", "[class*='company-title']"]));
   }
 
   function selectorStats() {

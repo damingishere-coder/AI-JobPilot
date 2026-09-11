@@ -18,7 +18,7 @@ export function readScanResult(payload: Record<string, unknown>): ScanResultData
   if (typeof payload.runId !== 'string' || !payload.runId.trim() || !Array.isArray(payload.keywordResults)) return null
   const count = (value: unknown) => Math.max(0, Number(value) || 0)
   return {
-    runId: payload.runId, outcome: payload.outcome === 'complete' && payload.keywordResults.some(item => !item?.stopReason) ? 'partial' : String(payload.outcome || 'running'),
+    runId: payload.runId, outcome: payload.paused === true || payload.stage === 'blocked' ? 'paused' : payload.outcome === 'complete' && payload.keywordResults.some(item => !item?.stopReason) ? 'partial' : String(payload.outcome || 'running'),
     keywordResults: payload.keywordResults.filter(item => item && typeof item.keyword === 'string').map(item => ({
       keywordIndex: count(item.keywordIndex), keyword: item.keyword, collected: count(item.collected),
       target: count(item.target), sameRunDuplicates: count(item.sameRunDuplicates), submissionFailures: count(item.submissionFailures), recoveryAttempts: count(item.recoveryAttempts),
@@ -28,7 +28,7 @@ export function readScanResult(payload: Record<string, unknown>): ScanResultData
   }
 }
 
-const labels: Record<string, string> = { running: '进行中', complete: '全部达标', exhausted: '搜索已耗尽但不足目标', partial: '部分完成', failed: '失败', stopped: '已停止' }
+const labels: Record<string, string> = { running: '进行中', paused: '已暂停', complete: '全部达标', exhausted: '搜索已耗尽但不足目标', partial: '部分完成', failed: '失败', stopped: '已停止' }
 const reasons: Record<string, string> = {
   target_reached: '已达到采集目标', platform_exhausted: '官网结果已到底',
   stagnation_safety_cap: '加载无进展，尚未确认官网结果已到底', timeout_safety_cap: '已达到关键词时间上限',
