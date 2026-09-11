@@ -720,10 +720,6 @@
       sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
       return;
     }
-    if (activeScanPromise) {
-      sendResponse({ success: false, errorCode: "SCAN_BUSY", message: "Boss当前扫描仍在执行，请等待完成或先停止当前扫描。", runId: activeScanRunId });
-      return;
-    }
     const existingTask = await readStoredScanTaskFromAnyStorage();
     const status = readScanStatus();
     let incomingTask = normalizeScanTask(message);
