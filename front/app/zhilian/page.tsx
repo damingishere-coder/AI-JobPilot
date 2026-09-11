@@ -745,20 +745,25 @@ export default function ZhilianPage() {
         </div>
       </div>
       <div className="space-y-6">
-          <ScanResult result={scanResult} busy={isDelivering || isStarting} onResume={() => { void handleStartDelivery(true) }} />
-
-          {latestRunId && <div className="grid gap-3 md:grid-cols-3" aria-live="polite">
-            <Card><CardContent className="pt-5"><p>采集进度</p><p>本批已入库 {runProgress.collected || 0} 个岗位</p></CardContent></Card>
-            <Card><CardContent className="pt-5"><p>入队进度</p><p>已建立任务 {runProgress.enqueued || 0} 个</p>{submissionProgress.confirmed !== undefined && <p className="text-sm">当前关键词确认 {submissionProgress.confirmed} 个，待提交 {submissionProgress.pending} 个</p>}</CardContent></Card>
-            <Card><CardContent className="pt-5"><p>AI 分析进度</p><p>完成 {runProgress.completed || 0} · 执行 {runProgress.running || 0} · 等待 {runProgress.pending || 0}</p><p className="text-sm">失败 {runProgress.failed || 0} · 结果待核对 {runProgress.unknown || 0}</p></CardContent></Card>
-          </div>}
-	          <ProgressLogCard
-              logs={progressLogs}
-              isRunning={isDelivering}
-              isStopping={isStopping}
-              onStop={handleStopDelivery}
-              onClear={() => setProgressLogs([])}
-            />
+          <ProgressLogCard
+            logs={progressLogs}
+            isRunning={isDelivering}
+            isStopping={isStopping}
+            onStop={handleStopDelivery}
+            onClear={() => setProgressLogs([])}
+            summary={<>
+              {latestRunId && <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground" aria-live="polite">
+                <span>已入库 {runProgress.collected || 0} 个岗位 · 入队 {runProgress.enqueued || 0} 个</span>
+                <span>AI 分析：完成 {runProgress.completed || 0} · 执行 {runProgress.running || 0} · 等待 {runProgress.pending || 0} · 失败 {runProgress.failed || 0} · 待核对 {runProgress.unknown || 0}</span>
+                {submissionProgress.confirmed !== undefined && <span>当前关键词确认 {submissionProgress.confirmed} 个 · 待提交 {submissionProgress.pending} 个</span>}
+              </div>}
+              {scanResult && scanResult.keywordResults.length > 0 && <details className="text-sm">
+                <summary className="cursor-pointer py-2 text-muted-foreground">查看关键词采集明细</summary>
+                <ScanResult result={scanResult} busy={isDelivering || isStarting} />
+              </details>}
+              {scanResult && !isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
+            </>}
+          />
 
 	          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
@@ -913,12 +918,14 @@ function ProgressLogCard({
   isStopping,
   onStop,
   onClear,
+  summary,
 }: {
   logs: ProgressLog[]
   isRunning: boolean
   isStopping: boolean
   onStop: () => void
   onClear: () => void
+  summary: React.ReactNode
 }) {
   const badgeClass = (type: string) => {
     if (type === 'success') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -934,13 +941,13 @@ function ProgressLogCard({
 
   return (
     <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-      <CardHeader className="flex flex-row items-center justify-between gap-4">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4">
         <div>
           <CardTitle className="flex items-center gap-2">
             <BiBriefcase className="text-primary" />
-            运行日志
+            采集日志
           </CardTitle>
-          <p className="text-sm text-muted-foreground">后台自动化浏览器的扫描进度和结果</p>
+          <p className="text-sm text-muted-foreground">扫描进度、采集结果和错误信息集中显示</p>
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
@@ -954,11 +961,12 @@ function ProgressLogCard({
           <Button onClick={onClear} size="sm" variant="ghost" className="rounded-lg px-3">清空</Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        {summary}
         {logs.length === 0 ? (
           <p className="text-sm text-muted-foreground">点击“开始扫描”后，这里会显示搜索、后台AI队列、待确认和错误信息。</p>
         ) : (
-          <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
+          <div className="max-h-[32rem] space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (
               <div key={log.id} className="flex items-start gap-3 rounded-md bg-white/70 px-3 py-2 text-sm shadow-sm dark:bg-neutral-900/70">
                 <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeClass(log.type)}`}>{log.type}</span>
