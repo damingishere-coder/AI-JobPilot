@@ -21,6 +21,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class DeliveryAttemptService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private GreetingPolicy greetingPolicy = new GreetingPolicy("", 0L);
     public static final String PLATFORM_STATUS_TEXT = "PLATFORM_STATUS_TEXT";
     public static final String PLATFORM_SUCCESS_DIALOG = "PLATFORM_SUCCESS_DIALOG";
     public static final String EXISTING_CONVERSATION = "EXISTING_CONVERSATION";
@@ -107,6 +109,9 @@ public class DeliveryAttemptService {
         String normalizedSource = blankToNull(greetingSource);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         return transaction.execute(status -> {
+            Long profileId = jdbcTemplate.queryForObject(
+                    "SELECT profile_id FROM delivery_attempt WHERE request_key=?", Long.class, requestKey.trim());
+            greetingPolicy.validateDraft(normalized, profileId);
             jdbcTemplate.update("UPDATE delivery_attempt SET greeting_snapshot=?, greeting_source=?, updated_at=CURRENT_TIMESTAMP " +
                             "WHERE request_key=? AND TRIM(COALESCE(greeting_snapshot, ''))=''",
                     normalized, normalizedSource, requestKey.trim());
@@ -114,7 +119,11 @@ public class DeliveryAttemptService {
                     "SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
                     (resultSet, rowNum) -> resultSet.getString(1), requestKey.trim());
             if (snapshots.isEmpty()) throw new IllegalStateException("未找到投递 attempt，无法固定沟通话术");
-            return snapshots.getFirst() == null ? "" : snapshots.getFirst();
+            String snapshot = snapshots.getFirst() == null ? "" : snapshots.getFirst();
+            if (!greetingPolicy.isValid(snapshot, profileId)) {
+                throw new IllegalStateException("历史投递快照不符合100字及作品网址规则，请重新核对话术；未重发旧消息");
+            }
+            return snapshot;
         });
     }
 

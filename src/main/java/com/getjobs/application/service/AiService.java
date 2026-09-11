@@ -42,6 +42,8 @@ import java.time.format.DateTimeParseException;
 @RequiredArgsConstructor
 @DependsOn("profileService")
 public class AiService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private GreetingPolicy greetingPolicy = new GreetingPolicy("", 0L);
     private static final int DEFAULT_API_TIMEOUT_SECONDS = 120;
     private static final int MAX_REMOTE_REQUESTS = 2;
     private static final long DEFAULT_RATE_LIMIT_DELAY_MILLIS = 500;
@@ -287,7 +289,8 @@ public class AiService {
                 "字段要求：\n" +
                 "1. introduce：第一人称技能介绍，120到260字，突出技术栈、经验、方向和优势。\n" +
                 "2. prompt：用于生成Boss直聘打招呼语的模板，必须且只能包含5个%s占位符，顺序分别是技能介绍、期望岗位方向、岗位名称、岗位要求、默认打招呼语。模板要说明不匹配时只返回false。\n" +
-                "3. sayHi：默认打招呼语，60字以内，第一人称，礼貌直接，适合发给HR。\n" +
+                "3. sayHi：默认打招呼语，第一人称，礼貌直接，适合发给HR。sayHi和prompt模板都须遵守："
+                        + greetingPolicy.instruction(profileService.getCurrentProfileId()) +
                 "4. recommendedKeywords：1到8个中文岗位名称组成的JSON数组，可直接用于Boss直聘和智联招聘搜索；每项优先2到12个字，覆盖候选人的核心方向并避免同义重复。\n\n" +
                 "简历内容：\n" + limit(resumeText, 6000);
 
@@ -317,7 +320,7 @@ public class AiService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("introduce", introduce);
         result.put("prompt", promptTemplate);
-        result.put("sayHi", sayHi);
+        result.put("sayHi", greetingPolicy.prepare(sayHi, profileService.getCurrentProfileId()));
         result.put("recommendedKeywords", recommendedKeywords);
         return result;
     }

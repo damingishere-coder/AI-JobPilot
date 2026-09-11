@@ -22,6 +22,8 @@ import java.util.Objects;
 @Service
 @RequiredArgsConstructor
 public class GreetingDraftService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private GreetingPolicy greetingPolicy = new GreetingPolicy("", 0L);
     public static final String USER_EDITED = "USER_EDITED";
     public static final String AI_GREETING = "AI_GREETING";
     public static final String PROFILE_DEFAULT = "PROFILE_DEFAULT";
@@ -52,9 +54,7 @@ public class GreetingDraftService {
         if (normalizedContent.isEmpty()) {
             throw new IllegalArgumentException("沟通草稿不能为空；如需恢复 AI 原稿，请使用恢复操作");
         }
-        if (normalizedContent.length() > 1000) {
-            throw new IllegalArgumentException("沟通草稿不能超过 1000 个字符");
-        }
+        greetingPolicy.validateDraft(normalizedContent, identity.profileId());
 
         JobGreetingDraftEntity current = findDraft(identity);
         assertExpectedTimestamp(current, expectedUpdatedAt);
@@ -130,7 +130,7 @@ public class GreetingDraftService {
                 draftContent == null ? "" : draftContent,
                 source,
                 draft == null ? null : draft.getUpdatedAt(),
-                finalGreeting
+                greetingPolicy.prepare(finalGreeting, identity.profileId())
         );
     }
 

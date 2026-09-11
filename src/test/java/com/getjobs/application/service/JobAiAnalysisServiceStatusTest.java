@@ -622,6 +622,24 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void portfolioRuleReachesBothGenerationPromptsAndFinalGreeting() {
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "greetingPolicy",
+                new GreetingPolicy("https://toudiniuma.cn/", PROFILE_ID));
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(
+                missingGreetingBatch(), groundedGreetingResult());
+        JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.getGreeting()).contains("Spring Boot", "后端系统设计", "https://toudiniuma.cn/");
+        assertThat(GreetingPolicy.count(result.getGreeting())).isLessThanOrEqualTo(100);
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
+        assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt)
+                .contains("https://toudiniuma.cn/", "100", "空格"));
+    }
+
+    @Test
     void missingGreetingRetriesOnlyGreetingAndKeepsAnalysisResult() {
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
         when(resumeProfileMapper.selectOne(any())).thenReturn(resume());

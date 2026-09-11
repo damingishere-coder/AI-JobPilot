@@ -40,6 +40,9 @@ import static com.getjobs.worker.boss.Locators.*;
 @Scope("prototype")
 @RequiredArgsConstructor
 public class Boss {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.GreetingPolicy greetingPolicy =
+            new com.getjobs.application.service.GreetingPolicy("", 0L);
 
     @Setter
     private Page page;
@@ -805,6 +808,8 @@ public class Boss {
             }
         }
         String message = isValidString(aiMessage) ? aiMessage : config.getSayHi();
+        AiEntity greetingConfig = aiService.getAiConfig();
+        message = greetingPolicy.prepare(message, greetingConfig == null ? null : greetingConfig.getProfileId());
 
         // 6. 输入打招呼语
         Locator input = inputLocator.first();
@@ -1198,6 +1203,7 @@ public class Boss {
         String requestMessage = (prompt != null)
                 ? String.format(prompt, introduce, keyword, jobName, jd, config.getSayHi())
                 : buildDefaultPrompt(introduce, keyword, jobName, jd);
+        requestMessage += "\n最终话术要求：" + greetingPolicy.instruction(aiConfig == null ? null : aiConfig.getProfileId());
 
         try {
             String result = aiService.sendRequest(requestMessage);
@@ -1212,7 +1218,7 @@ public class Boss {
     }
 
     private String buildDefaultPrompt(String introduce, String keyword, String jobName, String jd) {
-        return "请基于以下信息生成简洁友好的中文打招呼语，不超过60字：\n" +
+        return "请基于以下信息生成简洁友好的中文打招呼语，含网址不超过100个字符：\n" +
                 "个人介绍：" + introduce + "\n" +
                 "关键词：" + keyword + "\n" +
                 "职位名称：" + jobName + "\n" +
