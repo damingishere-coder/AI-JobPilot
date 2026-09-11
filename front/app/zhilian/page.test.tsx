@@ -50,6 +50,50 @@ function stubConfig() {
   } : url.includes('/config/options/filters') ? {success:true,options:{}} : {} })))
 }
 
+it('已暂停且保留断点时显示已暂停，不把断点误认成运行任务', async () => {
+  stubConfig()
+  vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_STATUS'
+    ? { ...partialResult, stage: 'blocked', paused: true, hasStoredTask: true, outcome: 'paused' }
+    : { success: true })
+  render(<Page />)
+  await screen.findByText('已暂停')
+  expect(screen.queryByText('扫描中')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '开始扫描' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '继续未完成关键词' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: '停止扫描' })).not.toBeInTheDocument()
+})
+
+it('明确停止的旧断点不会恢复扫描中；导航恢复状态仍正常显示运行', async () => {
+  stubConfig()
+  vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_STATUS'
+    ? { ...partialResult, stage: 'stopped', hasStoredTask: true }
+    : { success: true })
+  const first = render(<Page />)
+  await screen.findByText('采集结果 · 部分完成')
+  expect(screen.queryByText('扫描中')).not.toBeInTheDocument()
+  first.unmount()
+  vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_STATUS'
+    ? { ...partialResult, stage: 'navigating', isRunning: true, temporaryUnavailable: true, hasStoredTask: true }
+    : { success: true })
+  render(<Page />)
+  await screen.findByText('扫描中')
+  expect(screen.getByRole('button', { name: '停止扫描' })).toBeEnabled()
+})
+
+it('BOSS暂停事件不会停止智联任务', async () => {
+  stubConfig()
+  vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_STATUS'
+    ? { ...partialResult, stage: 'collecting', isRunning: true }
+    : { success: true })
+  let handler: ((event: ChromeBridgeEvent) => void) | undefined
+  vi.mocked(subscribeChromeBridgeEvents).mockImplementation(callback => { handler = callback; return () => {} })
+  render(<Page />)
+  await screen.findByText('扫描中')
+  act(() => handler?.({ payload: { ...partialResult, platform: 'boss', operation: 'scan', stage: 'blocked', paused: true } }))
+  expect(screen.getByText('扫描中')).toBeInTheDocument()
+  expect(screen.queryByText('已暂停')).not.toBeInTheDocument()
+})
+
 it('刷新后从扩展恢复部分完成结果和批次入口', async () => {
   stubConfig()
   vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_STATUS' ? partialResult : { success: true })

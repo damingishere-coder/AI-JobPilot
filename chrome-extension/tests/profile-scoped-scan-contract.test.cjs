@@ -15,8 +15,8 @@ test("extension release and both content scripts use the profile-scoped contract
   const boss = source("boss-content.js");
   const zhilian = source("zhilian-content.js");
 
-  assert.equal(manifest.version, "1.8.3");
-  assert.match(background, /BACKGROUND_VERSION = "2026-09-11-content-readiness"/);
+  assert.equal(manifest.version, "1.8.4");
+  assert.match(background, /BACKGROUND_VERSION = "2026-09-11-independent-scans"/);
   assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-11-boss-card-readiness"/);
   assert.match(boss, /EXTENSION_VERSION = "2026-09-11-boss-card-readiness"/);
   assert.match(zhilian, /EXTENSION_VERSION = "2026-09-11-render-recovery"/);

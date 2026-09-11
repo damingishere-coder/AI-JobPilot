@@ -15,7 +15,7 @@ test("manifest loads the direct HR bridge and one-minute alarm capability", () =
   const bossScripts = manifest.content_scripts.find((entry) => entry.matches.includes("https://www.zhipin.com/*")).js;
   assert.deepEqual(bossScripts.slice(-3), ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"]);
   assert.ok(manifest.permissions.includes("alarms"));
-  assert.equal(manifest.version, "1.8.3");
+  assert.equal(manifest.version, "1.8.4");
 });
 
 test("assistant exposes policy-gated dedicated watch and preserves explicit manual send", () => {
@@ -40,7 +40,8 @@ test("background binds one exact BOSS tab, scans every minute, and persists Outb
   assert.match(bridge, /BOSS_HR_OUTBOX_PUT/);
   assert.match(bridge, /located\.unique\.click\(\)/);
   assert.ok(bridge.indexOf("BOSS_HR_OUTBOX_PUT") < bridge.indexOf("located.unique.click()"));
-  assert.doesNotMatch(background + bridge, /chrome\.windows\.create|about:blank|screenX|screenY|clientX|clientY/);
+  const hrBackground = background.slice(background.indexOf("async function startBossHrWatch("), background.indexOf("async function handleZhilianLocalApiRequest("));
+  assert.doesNotMatch(hrBackground + bridge, /chrome\.windows\.create|about:blank|screenX|screenY|clientX|clientY/);
 });
 
 test("direct send is fail-closed and requires exact outbound reread", () => {

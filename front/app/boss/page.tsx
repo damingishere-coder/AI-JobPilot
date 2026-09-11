@@ -1339,7 +1339,7 @@ export default function BossPage() {
 	                <p className="text-sm text-muted-foreground">当前状态：{chromeBridgeReady ? 'Chrome扩展已连接' : 'Chrome扩展未连接'}。{bossLoginMessage ? ` ${bossLoginMessage}` : ''}</p>
 	                <p className="text-sm text-muted-foreground">“诊断当前 Boss 页面”和“采集当前 Boss 页面”只读取你已经打开的页面，不会自动跳转；当前页采集结果先按 LIST_COLLECTED 入库，不进入 AI 分析。</p>
 	                <p className="text-sm text-muted-foreground">“测试 Boss API POC”只在你主动点击后请求一个关键词、一个城市的第一页，最多 10 条；不会自动翻页、处理验证码、进入 AI 分析或投递。</p>
-	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始完整采集；完整扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。</p>
+	                <p className="text-sm text-muted-foreground">只有点击“开始扫描”才会打开或切换Boss页面并开始完整采集；完整扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。 BOSS 与智联会各用一个独立扫描窗口，可同时运行；请保持扫描窗口展开，不要最小化或关闭。</p>
                 <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
               </div>
             </CardContent>

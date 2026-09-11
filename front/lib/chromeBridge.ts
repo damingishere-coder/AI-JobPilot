@@ -9,7 +9,7 @@ export type ChromeBridgeResponse<T = unknown> = {
 
 const SOURCE = 'GET_JOBS_PAGE'
 const TARGET = 'GET_JOBS_EXTENSION'
-export const REQUIRED_BACKGROUND_VERSION = '2026-09-11-content-readiness'
+export const REQUIRED_BACKGROUND_VERSION = '2026-09-11-independent-scans'
 const SCAN_START_TYPES = new Set(['BOSS_SCAN_START', 'ZHILIAN_SCAN_START'])
 const ALLOWED_BRIDGE_ORIGINS = new Set([
   'http://localhost:6866',
