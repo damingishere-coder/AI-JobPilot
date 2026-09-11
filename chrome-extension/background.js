@@ -32,6 +32,8 @@ const PLATFORM_CONFIG = {
 };
 
 const pageTabs = new Map();
+const scanStartQueues = new Map();
+const SCAN_WINDOW_KEY_PREFIX = "__GET_JOBS_SCAN_WINDOW_";
 let scanSessionsWriteQueue = Promise.resolve();
 let hrOutboxWriteQueue = Promise.resolve();
 let hrWatchWriteQueue = Promise.resolve();
@@ -42,7 +44,7 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-11-content-readiness";
+const BACKGROUND_VERSION = "2026-09-11-independent-scans";
 const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
@@ -1152,6 +1154,20 @@ async function openBossHrChat() {
 }
 
 async function handlePageMessage(message, sender) {
+  if (!isScanStartMessage(message.type)) return handlePageMessageInternal(message, sender);
+  const platform = inferPlatform(message.type);
+  // Serialize duplicate starts for one platform, never the other platform's work.
+  const previous = scanStartQueues.get(platform) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(() => handlePageMessageInternal(message, sender));
+  scanStartQueues.set(platform, operation);
+  try {
+    return await operation;
+  } finally {
+    if (scanStartQueues.get(platform) === operation) scanStartQueues.delete(platform);
+  }
+}
+
+async function handlePageMessageInternal(message, sender) {
   const pageTabId = sender.tab?.id;
   if (pageTabId) pageTabs.set(pageTabId, Date.now());
 
@@ -1179,7 +1195,7 @@ async function handlePageMessage(message, sender) {
   if (message.type === "ZHILIAN_PAGE_STATUS") return await queryZhilianPageStatus(message, pageTabId);
 
   const config = PLATFORM_CONFIG[platform];
-  const tab = await resolvePlatformTab(platform, message);
+  let tab = await resolvePlatformTab(platform, message);
   if (!tab?.id) {
     const noTabIsExpected = isPassiveStatusMessage(message.type) || isPassiveStopMessage(message.type);
     return {
@@ -1212,9 +1228,12 @@ async function handlePageMessage(message, sender) {
       : await handleZhilianDeliver(tab, config, message, pageTabId);
   }
 
+  if (isScanStartMessage(message.type)) {
+    tab = await ensureIndependentScanWindow(platform, tab);
+  }
   await waitForSupportedTab(tab.id, config);
   await ensureContentScript(tab.id, config.contentScript);
-  if (!isNoFocusPlatformMessage(message.type)) {
+  if (!isNoFocusPlatformMessage(message.type) && !isScanStartMessage(message.type)) {
     await chrome.tabs.update(tab.id, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
   }
@@ -1223,6 +1242,10 @@ async function handlePageMessage(message, sender) {
     let scanSession = null;
     if (isScanStartMessage(message.type)) {
       scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken, message.profileId);
+      await postPlatformProgress(pageTabId, {
+        platform, operation: "scan", type: "info", runId: message.runId, profileId: message.profileId,
+        message: `${platform === "boss" ? "BOSS" : "智联"}使用独立扫描窗口，可与另一平台同时运行。请保持扫描窗口展开，勿最小化或关闭。`
+      });
     }
     const response = await chrome.tabs.sendMessage(tab.id, {
       ...toPlatformContentMessage(message, platform),
@@ -1926,7 +1949,7 @@ async function prepareZhilianPageStatus(message, pageTabId) {
       .filter(tab => isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG.zhilian));
     if (!tabs.length) {
       // Use a fixed official URL; page messages cannot choose an arbitrary destination.
-      tabs = [await chrome.tabs.create({ url: "https://www.zhaopin.com/jobs?jl=489", active: true })];
+      tabs = [await findOrCreatePlatformTab("zhilian", "https://www.zhaopin.com/jobs?jl=489", { active: false })];
     }
     await Promise.all(tabs.filter(tab => tab.status === "loading").map(tab =>
       waitForSupportedTab(tab.id, PLATFORM_CONFIG.zhilian).catch(() => null)
@@ -2066,11 +2089,55 @@ async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requ
   const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
   if (running) return running;
 
+  const dedicated = await getIndependentScanTab(platform);
+  if (dedicated) return dedicated;
+
   if (platform === "zhilian") {
     const pageStatus = await queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", platform }, null);
     if (pageStatus.chromePageReady && pageStatus.tabId) return await chrome.tabs.get(pageStatus.tabId);
   }
-  return await findOrCreatePlatformTab(platform, startUrl);
+  return await findOrCreatePlatformTab(platform, startUrl, { active: false });
+}
+
+async function getIndependentScanTab(platform) {
+  const key = `${SCAN_WINDOW_KEY_PREFIX}${platform}__`;
+  const record = (await chrome.storage.local.get(key))[key];
+  if (!record?.tabId) return null;
+  const tab = await chrome.tabs.get(record.tabId).catch(() => null);
+  return tab && tab.windowId === record.windowId && isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG[platform]) ? tab : null;
+}
+
+async function ensureIndependentScanWindow(platform, tab) {
+  const key = `${SCAN_WINDOW_KEY_PREFIX}${platform}__`;
+  try {
+    const record = (await chrome.storage.local.get(key))[key];
+    const source = await chrome.windows.get(tab.windowId, { populate: true });
+    const isolated = record?.tabId === tab.id && record.windowId === tab.windowId
+      && source.tabs?.length === 1 && source.tabs[0].id === tab.id;
+    if (!isolated) {
+      // Move the existing tab: sessionStorage, login and the current scan checkpoint survive.
+      // Place both platform windows side by side when space permits; otherwise offset them.
+      const availableWidth = Math.max(800, Number(source.width) || 1280);
+      const width = availableWidth >= 1600 ? Math.floor(availableWidth / 2) : Math.min(1100, availableWidth - 60);
+      const window = await chrome.windows.create({
+        tabId: tab.id, type: "popup", focused: true,
+        width, height: Math.max(600, (Number(source.height) || 900) - 60),
+        left: (Number(source.left) || 0) + (platform === "zhilian" ? availableWidth - width : 0),
+        top: (Number(source.top) || 0) + 30
+      });
+      if (!window?.id) throw new Error("浏览器未返回扫描窗口");
+      await chrome.storage.local.set({ [key]: { tabId: tab.id, windowId: window.id } });
+    } else if (source.state === "minimized") {
+      // Only an explicit start/resume restores a minimized window; status polling never does.
+      await chrome.windows.update(source.id, { state: "normal" });
+    }
+    await chrome.tabs.update(tab.id, { active: true, autoDiscardable: false });
+    return await chrome.tabs.get(tab.id);
+  } catch (error) {
+    throw Object.assign(new Error(`无法准备${platform === "boss" ? "BOSS" : "智联"}独立扫描窗口，尚未启动本次扫描：${error.message || error}`), {
+      errorCode: "SCAN_WINDOW_UNAVAILABLE"
+    });
+  }
 }
 
 async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) {
@@ -2107,7 +2174,10 @@ async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
     .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (found) return found;
-  return await chrome.tabs.create({ url: startUrl || config.home, active: options.active !== false });
+  // Chrome otherwise inserts into its last focused window, which may belong to the other scan.
+  const workbench = tabs.find(tab => isAllowedPageUrl(tab.url || tab.pendingUrl || ""));
+  return await chrome.tabs.create({ url: startUrl || config.home, active: options.active !== false,
+    ...(workbench?.windowId != null ? { windowId: workbench.windowId } : {}) });
 }
 
 async function findPlatformTab(platform) {

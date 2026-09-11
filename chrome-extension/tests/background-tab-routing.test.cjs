@@ -48,6 +48,8 @@ function loadBackground({
   const executedScripts = [];
   const tabUpdates = [];
   const windowUpdates = [];
+  const windowCreates = [];
+  const windowStates = new Map();
   const alarmCreates = [];
   const alarmClears = [];
   const tabList = tabs.map((tab) => ({ ...tab }));
@@ -86,6 +88,7 @@ function loadBackground({
       async update(tabId, updates) {
         tabUpdates.push({ tabId, updates: { ...updates } });
         const tab = tabList.find((item) => item.id === tabId);
+        if (updates.active) tabList.filter(item => item.windowId === tab.windowId).forEach(item => { item.active = false; });
         Object.assign(tab, updates);
         return { ...tab };
       },
@@ -118,8 +121,22 @@ function loadBackground({
       }
     },
     windows: {
+      async get(windowId) {
+        return { id: windowId, width: 1920, height: 1080, left: 0, top: 0, state: windowStates.get(windowId) || "normal",
+          tabs: tabList.filter(tab => tab.windowId === windowId).map(tab => ({ ...tab })) };
+      },
+      async create(options) {
+        windowCreates.push({ ...options });
+        const id = Math.max(0, ...tabList.map(tab => tab.windowId)) + 1;
+        const tab = tabList.find(tab => tab.id === options.tabId);
+        assert.ok(tab, "must move an existing tab without losing its scan state");
+        tab.windowId = id;
+        tab.active = true;
+        return { id, tabs: [{ ...tab }] };
+      },
       async update(windowId, updates) {
         windowUpdates.push({ windowId, updates: { ...updates } });
+        if (updates.state) windowStates.set(windowId, updates.state);
       }
     },
     alarms: {
@@ -190,7 +207,7 @@ function loadBackground({
   }
   return {
     context, storage, sentMessages, executedScripts, runtimeMessageListener, tabList,
-    tabUpdates, windowUpdates, alarmCreates, alarmClears, dispatchRuntimeMessage
+    tabUpdates, windowUpdates, windowCreates, windowStates, alarmCreates, alarmClears, dispatchRuntimeMessage
   };
 }
 
@@ -448,7 +465,7 @@ test("accepts a valid local JSON envelope when Chrome hides the Content-Type hea
 
 test("binds the initiating Boss chat directly without opening or focusing another window", async () => {
   const requests = [];
-  const { dispatchRuntimeMessage, tabUpdates, windowUpdates, alarmCreates } = loadBackground({
+  const { dispatchRuntimeMessage, tabUpdates, windowUpdates, windowCreates, alarmCreates } = loadBackground({
     tabs: [{ id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", status: "complete" }],
     fetchImpl: async (url) => {
       requests.push(url);
@@ -482,6 +499,7 @@ test("binds the initiating Boss chat directly without opening or focusing anothe
   assert.equal(tabUpdates.length, 0);
   assert.equal(windowUpdates.length, 0);
   assert.deepEqual(alarmCreates, [{ name: "getjobs-boss-hr-watch", options: { periodInMinutes: 1 } }]);
+  assert.equal(windowCreates.length, 0);
 });
 
 test("persists an HR Outbox identity before a content script opens the conversation", async () => {
@@ -608,6 +626,109 @@ test("keeps Boss and Zhilian scan ownership when both start together", async () 
   const sessions = storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__;
   assert.equal(sessions.boss.tabId, 1);
   assert.equal(sessions.zhilian.tabId, 2);
+});
+
+function independentScanFixture() {
+  return loadBackground({ tabs: [
+    { id: 1, windowId: 1, active: false, status: "complete", url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: 2, windowId: 1, active: false, status: "complete", url: "https://www.zhaopin.com/jobs" },
+    { id: 10, windowId: 1, active: true, status: "complete", url: "http://127.0.0.1:6866/zhilian" }
+  ] });
+}
+
+function startScan(context, platform) {
+  return context.handlePageMessage({ type: `${platform.toUpperCase()}_SCAN_START`, platform, profileId: 4,
+    runId: `${platform}-run`, config: { keywords: '["AI产品运营"]' } },
+  { tab: { id: 10, url: "http://127.0.0.1:6866/zhilian" } });
+}
+
+test("simultaneous starts keep both scan tabs active in distinct windows and preserve the workbench", async () => {
+  const { context, tabList, windowCreates, tabUpdates, storage } = independentScanFixture();
+  const results = await Promise.all([startScan(context, "boss"), startScan(context, "zhilian")]);
+  assert.ok(results.every(result => result.success));
+  assert.equal(windowCreates.length, 2);
+  const [boss, zhilian, workbench] = tabList;
+  assert.notEqual(boss.windowId, zhilian.windowId);
+  assert.notEqual(boss.windowId, workbench.windowId);
+  assert.notEqual(zhilian.windowId, workbench.windowId);
+  assert.ok(boss.active && zhilian.active && workbench.active);
+  assert.equal(boss.autoDiscardable, false);
+  assert.equal(zhilian.autoDiscardable, false);
+  assert.ok(tabUpdates.every(update => !update.updates.url), "moving tabs must not reload their checkpoints");
+  assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss.tabId, 1);
+  assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.zhilian.tabId, 2);
+});
+
+test("a stalled Boss start does not block Zhilian preparation or stop", async () => {
+  const { context, storage } = independentScanFixture();
+  const original = context.ensureIndependentScanWindow;
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  context.ensureIndependentScanWindow = async (platform, tab) => {
+    if (platform === "boss") await held;
+    return original(platform, tab);
+  };
+  const boss = startScan(context, "boss");
+  assert.equal((await startScan(context, "zhilian")).success, true);
+  assert.ok(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.zhilian);
+  await context.handlePageMessage({ type: "ZHILIAN_SCAN_STOP", platform: "zhilian", profileId: 4 }, { tab: { id: 10 } });
+  assert.equal(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.zhilian, undefined);
+  release();
+  assert.equal((await boss).success, true);
+  assert.ok(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss);
+});
+
+test("duplicate starts reuse one window; status and stopping Boss do not alter Zhilian", async () => {
+  const { context, windowCreates, windowUpdates, tabUpdates, storage } = independentScanFixture();
+  await Promise.all([startScan(context, "boss"), startScan(context, "boss"), startScan(context, "zhilian")]);
+  assert.equal(windowCreates.length, 2);
+  const retained = JSON.stringify(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.zhilian);
+  const updateCount = tabUpdates.length;
+  await context.handlePageMessage({ type: "BOSS_SCAN_STATUS", platform: "boss", profileId: 4 }, { tab: { id: 10 } });
+  await context.handlePageMessage({ type: "BOSS_SCAN_STOP", platform: "boss", profileId: 4 }, { tab: { id: 10 } });
+  assert.equal(JSON.stringify(storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.zhilian), retained);
+  assert.equal(tabUpdates.length, updateCount);
+  assert.equal(windowUpdates.length, 0);
+});
+
+test("resume restores only its minimized scan window and re-isolates a user-merged tab", async () => {
+  const { context, tabList, windowCreates, windowUpdates, windowStates } = independentScanFixture();
+  await Promise.all([startScan(context, "boss"), startScan(context, "zhilian")]);
+  const bossWindow = tabList[0].windowId;
+  windowStates.set(bossWindow, "minimized");
+  await startScan(context, "boss");
+  assert.deepEqual(windowUpdates, [{ windowId: bossWindow, updates: { state: "normal" } }]);
+  tabList.push({ id: 20, windowId: bossWindow, url: "https://example.com", active: true });
+  await startScan(context, "boss");
+  assert.equal(windowCreates.length, 3);
+  assert.notEqual(tabList[0].windowId, bossWindow);
+  assert.equal(tabList.find(tab => tab.id === 20).windowId, bossWindow);
+});
+
+test("window isolation failure does not send a scan start and the other platform can still start", async () => {
+  const { context, sentMessages } = independentScanFixture();
+  const original = context.chrome.windows.create;
+  context.chrome.windows.create = async options => {
+    if (options.tabId === 1) throw new Error("window creation failed");
+    return original(options);
+  };
+  await assert.rejects(startScan(context, "boss"), error => error.errorCode === "SCAN_WINDOW_UNAVAILABLE");
+  assert.ok(!sentMessages.some(entry => entry.message.type === "BOSS_SCAN_START"));
+  assert.equal((await startScan(context, "zhilian")).success, true);
+});
+
+test("opening a missing second platform uses the workbench window without deactivating the first scan", async () => {
+  const { context, tabList } = independentScanFixture();
+  await startScan(context, "boss");
+  tabList.splice(tabList.findIndex(tab => tab.id === 2), 1);
+  const create = context.chrome.tabs.create;
+  context.chrome.tabs.create = async options => {
+    assert.equal(options.windowId, 1, "must not default to Chrome's last focused scan window");
+    assert.equal(options.active, false);
+    return create(options);
+  };
+  assert.equal((await startScan(context, "zhilian")).success, true);
+  assert.equal(tabList.find(tab => tab.id === 1).active, true);
 });
 
 test("halts a Boss batch after the first unknown result and leaves later jobs untouched", async () => {

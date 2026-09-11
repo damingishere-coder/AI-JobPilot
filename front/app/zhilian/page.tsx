@@ -70,6 +70,7 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
 export default function ZhilianPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
+  const [isScanPaused, setIsScanPaused] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -209,7 +210,11 @@ export default function ZhilianPage() {
         const result = readScanResult(status)
         if (result) { setScanResult(result); setLatestRunId(result.runId) }
       }
-      const running = Boolean(status.isRunning || status.hasStoredTask)
+      if (!status.success) return
+      const paused = status.paused === true || status.stage === 'blocked'
+      setIsScanPaused(paused)
+      const terminal = ['complete', 'stopped', 'error', 'idle'].includes(String(status.stage || ''))
+      const running = !paused && !terminal && (status.isRunning === true || (status.isRunning === undefined && status.hasStoredTask === true))
       if (running) {
         setIsDelivering(true)
         setIsStopping(keepStopping)
@@ -283,6 +288,7 @@ export default function ZhilianPage() {
 
       if (typeof payload.runId === 'string') setLatestRunId(payload.runId)
       if (isTerminalScanPayload(payload)) {
+        setIsScanPaused(payload.paused === true || payload.stage === 'blocked')
         setIsDelivering(false)
         setIsStopping(false)
         setActiveRunId(null)
@@ -331,6 +337,7 @@ export default function ZhilianPage() {
               })
               if (typeof data.runId === 'string') setLatestRunId(data.runId)
               if (isTerminalScanPayload(data)) {
+                setIsScanPaused(data.paused === true || data.stage === 'blocked')
                 setIsDelivering(false)
                 setIsStopping(false)
                 setActiveRunId(null)
@@ -377,6 +384,7 @@ export default function ZhilianPage() {
         setLatestRunId(nextProfileId ? lastZhilianRun(nextProfileId) : '')
         setActiveRunId(null)
         setIsDelivering(false)
+        setIsScanPaused(false)
         setIsStopping(false)
         setProgressLogs([])
       }
@@ -503,6 +511,7 @@ export default function ZhilianPage() {
       setScanResult(null)
       setIsStopping(false)
       setIsDelivering(true)
+      setIsScanPaused(false)
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       const data = await sendChromeBridgeMessage({
@@ -748,6 +757,7 @@ export default function ZhilianPage() {
           <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}
+            isPaused={isScanPaused}
             isStopping={isStopping}
             onStop={handleStopDelivery}
             onClear={() => setProgressLogs([])}
@@ -775,7 +785,7 @@ export default function ZhilianPage() {
             <CardContent>
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground">请先在你自己的 Chrome 里登录智联招聘，并加载本项目 chrome-extension 目录。</p>
-	                <p className="text-sm text-muted-foreground">点击“开始扫描”会让 Chrome 扩展使用当前 Chrome 登录态搜索、持续采集岗位；AI 会在后台分析，结果稍后进入待确认列表。</p>
+	                <p className="text-sm text-muted-foreground">点击“开始扫描”会让 Chrome 扩展使用当前 Chrome 登录态搜索、持续采集岗位；AI 会在后台分析，结果稍后进入待确认列表。 BOSS 与智联会各用一个独立扫描窗口，可同时运行；请保持扫描窗口展开，不要最小化或关闭。</p>
                 <p className="text-sm text-muted-foreground">真实申请只会在投递分析页由你点击确认后触发。</p>
               </div>
             </CardContent>
@@ -915,6 +925,7 @@ export default function ZhilianPage() {
 function ProgressLogCard({
   logs,
   isRunning,
+  isPaused,
   isStopping,
   onStop,
   onClear,
@@ -922,6 +933,7 @@ function ProgressLogCard({
 }: {
   logs: ProgressLog[]
   isRunning: boolean
+  isPaused: boolean
   isStopping: boolean
   onStop: () => void
   onClear: () => void
@@ -951,7 +963,7 @@ function ProgressLogCard({
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-3 py-1 text-xs ${isRunning ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
-            {isStopping ? '停止中' : isRunning ? '扫描中' : '空闲'}
+            {isStopping ? '停止中' : isRunning ? '扫描中' : isPaused ? '已暂停' : '空闲'}
           </span>
           {isRunning && (
             <Button onClick={onStop} size="sm" variant="destructive" disabled={isStopping} className="rounded-lg px-3">
