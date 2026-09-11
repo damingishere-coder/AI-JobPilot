@@ -1707,7 +1707,6 @@ export default function BossPage() {
 
       {activeStep === 'scan' ? (
         <div ref={logSectionRef} className="scroll-mt-6 space-y-6">
-          <ScanResult result={scanResult && isScanPaused && scanResult.runId === activeRunId ? { ...scanResult, outcome: 'paused' } : scanResult} busy={isDelivering} onResume={() => { void handleStartDelivery(true) }} />
           <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}
@@ -1716,6 +1715,18 @@ export default function BossPage() {
             spotlight={logSpotlight}
             onStop={handleStopDelivery}
             onClear={() => setProgressLogs([])}
+            summary={scanResult && scanResult.keywordResults.length > 0 ? <>
+              <p className="text-sm text-muted-foreground" aria-live="polite">
+                新增入队 {scanResult.keywordResults.reduce((sum, item) => sum + item.collected, 0)} 个
+                {' · '}历史重复 {scanResult.keywordResults.reduce((sum, item) => sum + item.historyDuplicates, 0)} 个
+                {' · '}详情失败 {scanResult.keywordResults.reduce((sum, item) => sum + item.detailFailures, 0)} 个
+              </p>
+              <details className="text-sm">
+                <summary className="cursor-pointer py-2 text-muted-foreground">查看关键词采集明细</summary>
+                <ScanResult result={isScanPaused && scanResult.runId === activeRunId ? { ...scanResult, outcome: 'paused' } : scanResult} busy={isDelivering} />
+              </details>
+              {!isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
+            </> : null}
           />
 
           {hasScanResult ? (
@@ -1916,6 +1927,7 @@ function ProgressLogCard({
   spotlight = false,
   onStop,
   onClear,
+  summary,
 }: {
   logs: ProgressLog[]
   isRunning: boolean
@@ -1924,6 +1936,7 @@ function ProgressLogCard({
   spotlight?: boolean
   onStop: () => void
   onClear: () => void
+  summary: React.ReactNode
 }) {
   const badgeClass = (type: string) => {
     if (type === 'success') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -1941,7 +1954,7 @@ function ProgressLogCard({
     <Card className={`animate-in fade-in slide-in-from-bottom-5 duration-700 transition-all ${
       spotlight ? 'border-teal-400 shadow-[0_0_0_4px_rgba(20,184,166,0.18)]' : ''
     }`}>
-      <CardHeader className="flex flex-row items-center justify-between gap-4">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4">
         <div>
           <CardTitle className="flex items-center gap-2">
             <BiBarChart className="text-primary" />
@@ -1961,11 +1974,12 @@ function ProgressLogCard({
           <Button onClick={onClear} size="sm" variant="ghost" className="rounded-lg px-3">清空</Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        {summary}
         {logs.length === 0 ? (
           <p className="text-sm text-muted-foreground">点击“诊断当前 Boss 页面”“采集当前 Boss 页面”“测试 Boss API POC”或“开始扫描”后，这里会显示选择器命中、API诊断、采集结果、后台AI队列和错误信息。</p>
         ) : (
-          <div className="max-h-64 space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
+          <div className="max-h-[32rem] space-y-2 overflow-auto rounded-lg border border-white/20 bg-white/40 p-3 dark:bg-neutral-900/40">
             {logs.map((log) => (
               <div key={log.id} className="flex items-start gap-3 rounded-md bg-white/70 px-3 py-2 text-sm shadow-sm dark:bg-neutral-900/70">
                 <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeClass(log.type)}`}>{log.type}</span>
