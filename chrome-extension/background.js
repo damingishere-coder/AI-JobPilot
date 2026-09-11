@@ -44,14 +44,14 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-11-independent-scans";
+const BACKGROUND_VERSION = "2026-09-11-boss-resume-lifecycle";
 const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-11-boss-card-readiness";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-11-boss-resume-lifecycle";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-11-render-recovery";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
