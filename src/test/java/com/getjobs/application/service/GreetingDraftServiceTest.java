@@ -81,6 +81,19 @@ class GreetingDraftServiceTest {
     }
 
     @Test
+    void portfolioPolicyAdaptsFinalPreviewButPreservesManualOriginal() {
+        String original = "您好，岗位需要数据分析，我有增长分析项目经验，期待交流。";
+        when(draftMapper.selectOne(any())).thenReturn(draft(original, LocalDateTime.now()));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "greetingPolicy",
+                new GreetingPolicy("https://toudiniuma.cn/", 3L));
+        GreetingDraftService.GreetingView view = service.resolveForJob("boss", 9L);
+        assertThat(view.greetingDraft()).isEqualTo(original);
+        assertThat(view.finalGreeting()).startsWith(original).endsWith("https://toudiniuma.cn/");
+        assertThat(GreetingPolicy.count(view.finalGreeting())).isLessThanOrEqualTo(100);
+        verify(draftMapper, never()).update(any(), any());
+    }
+
+    @Test
     void staleExpectedTimestampCannotOverwriteNewerDraft() {
         LocalDateTime updatedAt = LocalDateTime.of(2026, 8, 27, 11, 30);
         when(draftMapper.selectOne(any())).thenReturn(draft("新版人工稿", updatedAt));

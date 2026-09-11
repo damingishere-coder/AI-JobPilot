@@ -120,6 +120,20 @@ class DeliveryAttemptServiceTest {
     }
 
     @Test
+    void oldSnapshotWithoutPortfolioCannotBeReplayedOrOverwritten() {
+        insertBoss(35, DeliveryStatus.WAITING_CONFIRM);
+        var requested = service.requestBoss(35, 1, "boss-35", false);
+        service.snapshotGreeting(requested.requestKey(), "首次确认的话术", "AI_GREETING");
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "greetingPolicy",
+                new GreetingPolicy("https://toudiniuma.cn/", 1L));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.snapshotGreeting(
+                requested.requestKey(), "您好，个人作品集：https://toudiniuma.cn/", "AI_GREETING"))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("历史投递快照");
+        assertThat(jdbcTemplate.queryForObject("SELECT greeting_snapshot FROM delivery_attempt WHERE request_key=?",
+                String.class, requested.requestKey())).isEqualTo("首次确认的话术");
+    }
+
+    @Test
     void greetingSnapshotKeepsFirstConfirmedTextForResumedAttempt() {
         insertBoss(35, DeliveryStatus.WAITING_CONFIRM);
         DeliveryAttemptService.RequestResult requested = service.requestBoss(35, 1, "boss-35", false);

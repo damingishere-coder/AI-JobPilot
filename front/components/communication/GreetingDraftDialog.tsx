@@ -65,7 +65,7 @@ export function GreetingDraftDialog({
       finalGreeting: job.finalGreeting || "",
     }
     setView(nextView)
-    setContent(nextView.greetingDraft || nextView.finalGreeting)
+    setContent(nextView.finalGreeting)
     setError("")
     window.setTimeout(() => textareaRef.current?.focus(), 0)
   }, [job, open])
@@ -84,6 +84,7 @@ export function GreetingDraftDialog({
   const persist = async () => {
     const normalized = content.trim()
     if (!normalized) throw new Error("最终沟通话术为空，请先补充内容")
+    if (Array.from(normalized).length > 100) throw new Error("整条话术含网址、标点和空格不能超过100个字符")
     const response = await localActionFetch(`${API_BASE}/api/platforms/${platform}/jobs/${job.id}/greeting`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -180,7 +181,6 @@ export function GreetingDraftDialog({
             ref={textareaRef}
             id={`${titleId}-content`}
             value={content}
-            maxLength={1000}
             rows={10}
             disabled={busy}
             onChange={(event) => setContent(event.target.value)}
@@ -190,8 +190,9 @@ export function GreetingDraftDialog({
             <span>{platform === "boss"
               ? "优先级：人工编辑稿 → 岗位 JD 定制 → AI 失败兜底（档案默认）"
               : "优先级：人工编辑稿 → AI 原稿 → 档案默认话术"}</span>
-            <span>{content.length}/1000</span>
+            <span>{Array.from(content).length}/100</span>
           </div>
+          <p className="text-xs text-muted-foreground">总字数包含正文、作品推荐、完整网址、标点和空格。</p>
         </div>
 
         {view.aiGreeting && (

@@ -52,6 +52,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @DependsOn("databaseSchemaService")
 public class JobAiAnalysisService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private GreetingPolicy greetingPolicy = new GreetingPolicy("", 0L);
     public static final int MAX_BATCH_SIZE = 5;
     private static final String JOB_ANALYSIS_OUTPUT_SCHEMA = """
             {
@@ -98,7 +100,7 @@ public class JobAiAnalysisService {
                           "additionalProperties": false
                         }
                       },
-                      "greeting": {"type": "string"}
+                      "greeting": {"type": "string", "maxLength": 100}
                     },
                     "required": ["taskId", "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts", "greeting"],
                     "additionalProperties": false
@@ -113,7 +115,7 @@ public class JobAiAnalysisService {
             {
               "type": "object",
               "properties": {
-                "greeting": {"type": "string", "minLength": 20, "maxLength": 120},
+                "greeting": {"type": "string", "minLength": 20, "maxLength": 100},
                 "jobEvidence": {"type": "string", "minLength": 2},
                 "resumeEvidence": {"type": "string", "minLength": 2}
               },
@@ -621,9 +623,8 @@ public class JobAiAnalysisService {
                     : limit(safe(request.getJobDescription()), 5000));
             jobArray.put(job);
         }
-        String greetingInstruction = bossBatch
-                ? "greeting 必须是20到120字的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n\n"
-                : "greeting 生成一条基于真实匹配点、不过度承诺的简短招呼语。\n\n";
+        String greetingInstruction = "greeting 必须是20到100字符的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n"
+                + greetingPolicy.instruction(jobs.getFirst().job().request().getProfileId());
         boolean containsZhilian = jobs.stream().anyMatch(prepared ->
                 "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
         String promptResume = bossBatch || containsZhilian ? safe(resumeText) : limit(resumeText, 6000);
@@ -732,6 +733,7 @@ public class JobAiAnalysisService {
 
     private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText) {
         JobAnalysisRequest request = prepared.job().request();
+        result.setGreeting(greetingPolicy.prepare(result.getGreeting(), request.getProfileId()));
         if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
         String jobDescription = safe(request.getJobDescription()).trim();
         if (jobDescription.length() < 20) {
@@ -746,7 +748,8 @@ public class JobAiAnalysisService {
             return;
         }
         try {
-            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到120字的中文招呼语。\n" +
+            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到100字符的中文招呼语。\n" +
+                    greetingPolicy.instruction(request.getProfileId()) +
                     "必须明确结合一项岗位 JD 要求和一项候选人简历中的真实匹配经历；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
                     "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
                     "公司：" + safe(request.getCompanyName()) + "\n" +
@@ -755,7 +758,7 @@ public class JobAiAnalysisService {
                     "候选人简历：\n" + safe(resumeText);
             String raw = aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA);
             JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
-            String greeting = parsed.optString("greeting", "").trim();
+            String greeting = greetingPolicy.prepare(parsed.optString("greeting", ""), request.getProfileId());
             String jobEvidence = parsed.optString("jobEvidence", "").trim();
             String resumeEvidence = parsed.optString("resumeEvidence", "").trim();
             if (!isUsableBossGreeting(greeting)
@@ -774,8 +777,8 @@ public class JobAiAnalysisService {
     }
 
     private boolean isUsableBossGreeting(String greeting) {
+        if (GreetingPolicy.count(safe(greeting)) < 20 || GreetingPolicy.count(safe(greeting)) > 100) return false;
         String normalized = safe(greeting).replaceAll("\\s+", "").trim();
-        if (normalized.length() < 20 || normalized.length() > 120) return false;
         String withoutPunctuation = normalized.replaceAll("[，。！？、,.!?~～]", "");
         if (Set.of(
                 "您好我对这个岗位很感兴趣希望可以进一步沟通谢谢",
