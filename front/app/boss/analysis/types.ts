@@ -78,6 +78,7 @@ export type BossJob = {
   greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
   greetingUpdatedAt?: string | null
   finalGreeting?: string
+  portfolioSuffix?: string
 }
 
 export type AiReasonDimension = {

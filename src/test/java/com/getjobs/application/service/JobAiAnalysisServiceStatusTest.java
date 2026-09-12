@@ -632,11 +632,11 @@ class JobAiAnalysisServiceStatusTest {
         JobAiAnalysisService.AnalysisResult result = service.analyzeJob(bossRequest());
         assertThat(result.isFailure()).isFalse();
         assertThat(result.getGreeting()).contains("Spring Boot", "后端系统设计", "https://toudiniuma.cn/");
-        assertThat(GreetingPolicy.count(result.getGreeting())).isLessThanOrEqualTo(100);
+        assertThat(GreetingPolicy.count(new GreetingPolicy("https://toudiniuma.cn/", PROFILE_ID).body(result.getGreeting(), PROFILE_ID))).isLessThanOrEqualTo(150);
         ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
         verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
         assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt)
-                .contains("https://toudiniuma.cn/", "100", "空格"));
+                .contains("https://toudiniuma.cn/", "150", "空格"));
     }
 
     @Test

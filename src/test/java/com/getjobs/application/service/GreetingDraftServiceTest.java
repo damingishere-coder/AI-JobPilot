@@ -89,7 +89,7 @@ class GreetingDraftServiceTest {
         GreetingDraftService.GreetingView view = service.resolveForJob("boss", 9L);
         assertThat(view.greetingDraft()).isEqualTo(original);
         assertThat(view.finalGreeting()).startsWith(original).endsWith("https://toudiniuma.cn/");
-        assertThat(GreetingPolicy.count(view.finalGreeting())).isLessThanOrEqualTo(100);
+        assertThat(GreetingPolicy.count(new GreetingPolicy("https://toudiniuma.cn/", 3L).body(view.finalGreeting(), 3L))).isLessThanOrEqualTo(150);
         verify(draftMapper, never()).update(any(), any());
     }
 
