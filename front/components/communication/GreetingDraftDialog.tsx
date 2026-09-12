@@ -13,6 +13,7 @@ export type GreetingView = {
   greetingSource: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
   greetingUpdatedAt?: string | null
   finalGreeting: string
+  portfolioSuffix?: string
 }
 
 export type GreetingJob = GreetingView & {
@@ -26,6 +27,16 @@ const sourceLabels: Record<GreetingView["greetingSource"], string> = {
   AI_GREETING: "AI 原稿",
   PROFILE_DEFAULT: "档案默认话术",
   EMPTY: "空白警告",
+}
+
+function greetingBody(view: GreetingView) {
+  const text = view.finalGreeting.trim()
+  return view.portfolioSuffix && text.endsWith(view.portfolioSuffix)
+    ? text.slice(0, -view.portfolioSuffix.length).trimEnd() : text
+}
+
+function completeGreeting(body: string, suffix?: string) {
+  return body.trim() + (suffix ? `\n${suffix}` : "")
 }
 
 export function GreetingDraftDialog({
@@ -63,9 +74,10 @@ export function GreetingDraftDialog({
       greetingSource: job.greetingSource || "EMPTY",
       greetingUpdatedAt: job.greetingUpdatedAt || null,
       finalGreeting: job.finalGreeting || "",
+      portfolioSuffix: job.portfolioSuffix || "",
     }
     setView(nextView)
-    setContent(nextView.finalGreeting)
+    setContent(greetingBody(nextView))
     setError("")
     window.setTimeout(() => textareaRef.current?.focus(), 0)
   }, [job, open])
@@ -84,16 +96,16 @@ export function GreetingDraftDialog({
   const persist = async () => {
     const normalized = content.trim()
     if (!normalized) throw new Error("最终沟通话术为空，请先补充内容")
-    if (Array.from(normalized).length > 100) throw new Error("整条话术含网址、标点和空格不能超过100个字符")
+    if (Array.from(normalized).length > 150) throw new Error("话术正文含标点和空格不能超过150个字符，末尾作品推荐不计入")
     const response = await localActionFetch(`${API_BASE}/api/platforms/${platform}/jobs/${job.id}/greeting`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: normalized, expectedUpdatedAt: view.greetingUpdatedAt || null }),
+      body: JSON.stringify({ content: completeGreeting(normalized, view.portfolioSuffix), expectedUpdatedAt: view.greetingUpdatedAt || null }),
     })
     const result = await readApiResponse<GreetingView>(response, "沟通草稿保存失败")
     if (!result.data) throw new Error("后端未返回最新沟通草稿")
     setView(result.data)
-    setContent(result.data.finalGreeting)
+    setContent(greetingBody(result.data))
     await onSaved()
     return result.data
   }
@@ -123,7 +135,7 @@ export function GreetingDraftDialog({
       const result = await readApiResponse<GreetingView>(response, "恢复 AI 原稿失败")
       if (!result.data) throw new Error("后端未返回恢复后的沟通话术")
       setView(result.data)
-      setContent(result.data.finalGreeting)
+      setContent(greetingBody(result.data))
       await onSaved()
     } catch (resetError) {
       setError(friendlyApiError(resetError, "恢复 AI 原稿失败"))
@@ -134,7 +146,7 @@ export function GreetingDraftDialog({
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(content)
+      await navigator.clipboard.writeText(completeGreeting(content, view.portfolioSuffix))
       setError("")
     } catch {
       setError("复制失败，请在文本框中手动全选复制")
@@ -147,7 +159,8 @@ export function GreetingDraftDialog({
       setSaving(true)
       setError("")
       let latest = view
-      if (content.trim() !== view.finalGreeting.trim()) latest = await persist()
+      if (Array.from(content.trim()).length > 150) throw new Error("话术正文含标点和空格不能超过150个字符，末尾作品推荐不计入")
+      if (completeGreeting(content, view.portfolioSuffix) !== view.finalGreeting.trim()) latest = await persist()
       if (!latest.finalGreeting.trim()) throw new Error("最终沟通话术为空，已阻止确认")
       await onConfirm({ ...job, ...latest })
     } catch (confirmError) {
@@ -176,7 +189,7 @@ export function GreetingDraftDialog({
         </div>
 
         <div className="mt-5 space-y-2">
-          <Label htmlFor={`${titleId}-content`}>最终将使用的话术</Label>
+          <Label htmlFor={`${titleId}-content`}>话术正文</Label>
           <Textarea
             ref={textareaRef}
             id={`${titleId}-content`}
@@ -190,9 +203,13 @@ export function GreetingDraftDialog({
             <span>{platform === "boss"
               ? "优先级：人工编辑稿 → 岗位 JD 定制 → AI 失败兜底（档案默认）"
               : "优先级：人工编辑稿 → AI 原稿 → 档案默认话术"}</span>
-            <span>{Array.from(content).length}/100</span>
+            <span>{Array.from(content.trim()).length}/150</span>
           </div>
-          <p className="text-xs text-muted-foreground">总字数包含正文、作品推荐、完整网址、标点和空格。</p>
+          <p className="text-xs text-muted-foreground">正文最多150字，包含正文标点和空格。末尾作品推荐语和网址单独附上，不占正文额度。</p>
+          {view.portfolioSuffix && <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="mb-1 font-medium">末尾作品推荐（不计字数，随正文一起发送）</div>
+            <div className="break-all">{view.portfolioSuffix}</div>
+          </div>}
         </div>
 
         {view.aiGreeting && (

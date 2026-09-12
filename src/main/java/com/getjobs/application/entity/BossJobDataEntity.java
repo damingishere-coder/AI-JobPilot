@@ -134,6 +134,9 @@ public class BossJobDataEntity {
     @TableField(exist = false)
     private String finalGreeting;
 
+    @TableField(exist = false)
+    private String portfolioSuffix;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 

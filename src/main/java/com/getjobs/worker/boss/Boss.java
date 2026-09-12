@@ -1218,7 +1218,7 @@ public class Boss {
     }
 
     private String buildDefaultPrompt(String introduce, String keyword, String jobName, String jd) {
-        return "请基于以下信息生成简洁友好的中文打招呼语，含网址不超过100个字符：\n" +
+        return "请基于以下信息生成简洁友好的中文打招呼语，正文不超过150个字符，末尾个人作品集推荐及网址另附且不计正文：\n" +
                 "个人介绍：" + introduce + "\n" +
                 "关键词：" + keyword + "\n" +
                 "职位名称：" + jobName + "\n" +

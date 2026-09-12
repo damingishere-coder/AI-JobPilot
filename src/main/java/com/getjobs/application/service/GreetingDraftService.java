@@ -130,7 +130,8 @@ public class GreetingDraftService {
                 draftContent == null ? "" : draftContent,
                 source,
                 draft == null ? null : draft.getUpdatedAt(),
-                greetingPolicy.prepare(finalGreeting, identity.profileId())
+                greetingPolicy.prepare(finalGreeting, identity.profileId()),
+                greetingPolicy.portfolioSuffix(identity.profileId())
         );
     }
 
@@ -235,8 +236,13 @@ public class GreetingDraftService {
             String greetingDraft,
             String greetingSource,
             LocalDateTime greetingUpdatedAt,
-            String finalGreeting
+            String finalGreeting,
+            String portfolioSuffix
     ) {
+        public GreetingView(String aiGreeting, String greetingDraft, String greetingSource,
+                            LocalDateTime greetingUpdatedAt, String finalGreeting) {
+            this(aiGreeting, greetingDraft, greetingSource, greetingUpdatedAt, finalGreeting, "");
+        }
     }
 
     public static final class StaleDraftException extends RuntimeException {

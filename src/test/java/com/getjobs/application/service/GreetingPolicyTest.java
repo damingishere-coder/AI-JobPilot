@@ -9,23 +9,28 @@ class GreetingPolicyTest {
     private final GreetingPolicy policy = new GreetingPolicy(URL, 4L);
 
     @Test
-    void totalIncludesWebsiteSpacesAndPunctuationWithExactBoundary() {
-        String hundred = "我".repeat(100 - URL.length() - 2) + "， " + URL;
-        assertThat(policy.isValid(hundred, 4L)).isTrue();
-        assertThat(policy.isValid(hundred + "。", 4L)).isFalse();
-        assertThatThrownBy(() -> policy.validateDraft(hundred + "。", 4L))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThat(policy.prepare(hundred, 4L)).isEqualTo(hundred);
+    void bodyLimitExcludesOnlyTheTrailingPortfolioRecommendation() {
+        String suffix = policy.portfolioSuffix(4L);
+        String exact = "我".repeat(150) + "\n" + suffix;
+        assertThat(policy.isValid(exact, 4L)).isTrue();
+        assertThat(policy.prepare(exact, 4L)).isEqualTo(exact);
+        assertThat(policy.isValid("我" + exact, 4L)).isFalse();
+        assertThatThrownBy(() -> policy.validateDraft("我" + exact, 4L)).hasMessageContaining("150");
+        assertThat(policy.isValid(exact + "其他正文", 4L)).isFalse();
+        assertThat(policy.isValid("\n" + suffix, 4L)).isFalse();
+        assertThat(policy.isValid(exact, 5L)).isFalse();
+        assertThat(policy.isValid(exact + URL, 4L)).isFalse();
+        assertThat(policy.prepare("我".repeat(150), 4L)).isEqualTo(exact);
     }
 
     @Test
-    void countsSupplementaryCharactersAsOneWithoutDiscardingSpaces() {
-        String text = "😀".repeat(100 - URL.length() - 2) + "， " + URL;
-        assertThat(GreetingPolicy.count(text)).isEqualTo(100);
-        assertThat(policy.isValid(text, 4L)).isTrue();
-        assertThat(policy.isValid(text + " ", 4L)).isFalse();
+    void countsSupplementaryCharactersAndInternalSpacesInBody() {
+        String body = "😀".repeat(148) + "， ";
+        String text = body + "内容\n" + policy.portfolioSuffix(4L);
+        assertThat(GreetingPolicy.count(body)).isEqualTo(150);
+        assertThat(policy.isValid(text, 4L)).isFalse();
+        assertThat(policy.isValid("😀".repeat(148) + " ，\n" + policy.portfolioSuffix(4L), 4L)).isTrue();
     }
-
     @Test
     void addsWebsiteToHistoricalGreetingWithoutAnotherAiCall() {
         String original = "您好，岗位需要AI应用落地，我有AI工作流开发经验，期待交流。";
@@ -57,7 +62,7 @@ class GreetingPolicyTest {
     void personalWebsiteDoesNotLeakIntoOtherProfiles() {
         assertThat(policy.prepare("您好，期待沟通。", 5L)).isEqualTo("您好，期待沟通。");
         assertThat(policy.instruction(5L)).doesNotContain(URL);
-        assertThat(policy.instruction(4L)).contains(URL, "100", "空格", "岗位JD");
+        assertThat(policy.instruction(4L)).contains(URL, "150", "空格", "岗位JD", "最有分量", "交流入口", "不生成作品推荐语");
         assertThatThrownBy(() -> new GreetingPolicy(URL, 0L)).isInstanceOf(IllegalArgumentException.class);
     }
 }

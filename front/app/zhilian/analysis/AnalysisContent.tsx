@@ -94,6 +94,7 @@ type ZhilianJob = {
   greetingSource?: "USER_EDITED" | "AI_GREETING" | "PROFILE_DEFAULT" | "EMPTY"
   greetingUpdatedAt?: string | null
   finalGreeting?: string
+  portfolioSuffix?: string
 }
 
 type PagedResult = {
@@ -1022,6 +1023,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
     greetingSource: greetingJob.greetingSource || "EMPTY",
     greetingUpdatedAt: greetingJob.greetingUpdatedAt || null,
     finalGreeting: greetingJob.finalGreeting || "",
+    portfolioSuffix: greetingJob.portfolioSuffix || "",
   } : null
 
   return (

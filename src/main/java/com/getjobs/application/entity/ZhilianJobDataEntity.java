@@ -86,6 +86,9 @@ public class ZhilianJobDataEntity {
     @TableField(exist = false)
     private String finalGreeting;
 
+    @TableField(exist = false)
+    private String portfolioSuffix;
+
     @TableField("create_time")
     private LocalDateTime createTime;
 

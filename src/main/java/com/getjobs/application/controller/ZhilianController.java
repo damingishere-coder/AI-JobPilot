@@ -1114,6 +1114,7 @@ public class ZhilianController {
             job.setGreetingSource(greeting.greetingSource());
             job.setGreetingUpdatedAt(greeting.greetingUpdatedAt());
             job.setFinalGreeting(greeting.finalGreeting());
+            job.setPortfolioSuffix(greeting.portfolioSuffix());
         }
     }
 

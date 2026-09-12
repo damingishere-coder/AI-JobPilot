@@ -219,6 +219,7 @@ export default function AnalysisContent({
     greetingSource: greetingJob.greetingSource || "EMPTY",
     greetingUpdatedAt: greetingJob.greetingUpdatedAt || null,
     finalGreeting: greetingJob.finalGreeting || "",
+    portfolioSuffix: greetingJob.portfolioSuffix || "",
   }) : null, [greetingJob])
 
   useEffect(() => {

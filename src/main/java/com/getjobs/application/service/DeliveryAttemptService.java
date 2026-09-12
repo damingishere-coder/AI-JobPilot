@@ -121,7 +121,7 @@ public class DeliveryAttemptService {
             if (snapshots.isEmpty()) throw new IllegalStateException("未找到投递 attempt，无法固定沟通话术");
             String snapshot = snapshots.getFirst() == null ? "" : snapshots.getFirst();
             if (!greetingPolicy.isValid(snapshot, profileId)) {
-                throw new IllegalStateException("历史投递快照不符合100字及作品网址规则，请重新核对话术；未重发旧消息");
+                throw new IllegalStateException("历史投递快照不符合正文150字及作品网址规则，请重新核对话术；未重发旧消息");
             }
             return snapshot;
         });

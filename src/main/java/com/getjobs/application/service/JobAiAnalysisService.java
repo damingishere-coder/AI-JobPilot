@@ -100,7 +100,7 @@ public class JobAiAnalysisService {
                           "additionalProperties": false
                         }
                       },
-                      "greeting": {"type": "string", "maxLength": 100}
+                      "greeting": {"type": "string", "maxLength": 150}
                     },
                     "required": ["taskId", "summary", "matches", "gaps", "unknowns", "dimensions", "hardConflicts", "greeting"],
                     "additionalProperties": false
@@ -115,7 +115,7 @@ public class JobAiAnalysisService {
             {
               "type": "object",
               "properties": {
-                "greeting": {"type": "string", "minLength": 20, "maxLength": 100},
+                "greeting": {"type": "string", "minLength": 20, "maxLength": 150},
                 "jobEvidence": {"type": "string", "minLength": 2},
                 "resumeEvidence": {"type": "string", "minLength": 2}
               },
@@ -623,7 +623,7 @@ public class JobAiAnalysisService {
                     : limit(safe(request.getJobDescription()), 5000));
             jobArray.put(job);
         }
-        String greetingInstruction = "greeting 必须是20到100字符的中文招呼语，明确提到至少一个岗位 JD 要求和一项简历中的真实匹配经历；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n"
+        String greetingInstruction = "greeting 必须是20到150字符的中文招呼语，根据岗位选择一项简历中最有分量的真实匹配亮点，自然开启交流，不必复述 JD；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n"
                 + greetingPolicy.instruction(jobs.getFirst().job().request().getProfileId());
         boolean containsZhilian = jobs.stream().anyMatch(prepared ->
                 "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
@@ -741,16 +741,16 @@ public class JobAiAnalysisService {
             result.setGreeting("");
             return;
         }
-        if (isUsableBossGreeting(result.getGreeting())
+        if (isUsableBossGreeting(greetingPolicy.body(result.getGreeting(), request.getProfileId()))
                 && greetingReferencesVerifiedEvidence(result.getGreeting(), result.getDimensions())) return;
         if (!isLeaseCurrent(prepared.job().leaseIsCurrent())) {
             result.setGreeting("");
             return;
         }
         try {
-            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到100字符的中文招呼语。\n" +
+            String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到150字符的中文招呼语。\n" +
                     greetingPolicy.instruction(request.getProfileId()) +
-                    "必须明确结合一项岗位 JD 要求和一项候选人简历中的真实匹配经历；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
+                    "必须根据岗位选择一项候选人简历中最有分量的真实匹配亮点，灵活安排开头并留一个自然的交流入口；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
                     "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
                     "公司：" + safe(request.getCompanyName()) + "\n" +
                     "岗位：" + safe(request.getJobName()) + "\n" +
@@ -761,7 +761,7 @@ public class JobAiAnalysisService {
             String greeting = greetingPolicy.prepare(parsed.optString("greeting", ""), request.getProfileId());
             String jobEvidence = parsed.optString("jobEvidence", "").trim();
             String resumeEvidence = parsed.optString("resumeEvidence", "").trim();
-            if (!isUsableBossGreeting(greeting)
+            if (!isUsableBossGreeting(greetingPolicy.body(greeting, request.getProfileId()))
                     || !quotesExist(List.of(jobEvidence), jobDescription)
                     || !quotesExist(List.of(resumeEvidence), resumeText)
                     || !sharesMeaningfulGreetingPhrase(greeting, jobEvidence)
@@ -777,7 +777,7 @@ public class JobAiAnalysisService {
     }
 
     private boolean isUsableBossGreeting(String greeting) {
-        if (GreetingPolicy.count(safe(greeting)) < 20 || GreetingPolicy.count(safe(greeting)) > 100) return false;
+        if (GreetingPolicy.count(safe(greeting)) < 20 || GreetingPolicy.count(safe(greeting)) > GreetingPolicy.MAX_CHARACTERS) return false;
         String normalized = safe(greeting).replaceAll("\\s+", "").trim();
         String withoutPunctuation = normalized.replaceAll("[，。！？、,.!?~～]", "");
         if (Set.of(
