@@ -313,7 +313,7 @@ export default function LiepinPage() {
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">请在浏览器标签页中登录 猎聘 平台，登录成功后系统会自动检测登录状态。</p>
               <p className="text-sm text-muted-foreground">登录成功后，点击“开始只读采集”获取岗位；该按钮不会执行真实投递。</p>
-              <p className="text-sm text-muted-foreground">点击“保存配置”按钮可手动保存当前登录相关信息到数据库。</p>
+              <p className="text-sm text-muted-foreground">“保存配置”只保存求职筛选条件。请在浏览器中手动登录，登录会话仅由浏览器保存。</p>
             </div>
           </CardContent>
         </Card>
