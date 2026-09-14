@@ -1330,6 +1330,7 @@ public class BossService {
             }
             wrapper.orderByDesc("created_at");
 
+            wrapper.apply(OpportunityArchive.visible("boss", "boss_data", "encrypt_id"));
             List<BossJobDataEntity> all = bossJobDataMapper.selectList(wrapper);
 
             // 内存进行薪资区间过滤（按中位数K）
@@ -1499,7 +1500,7 @@ public class BossService {
     }
 
     private String bossSqlWhere(Long profileId, String scanRunId) {
-        String where = " WHERE profile_id=" + profileId;
+        String where = " WHERE profile_id=" + profileId + " AND " + OpportunityArchive.visible("boss", "boss_data", "encrypt_id");
         if (scanRunId != null && !scanRunId.isBlank()) {
             where += " AND scan_run_id='" + escapeSql(scanRunId) + "'";
         }
@@ -1685,6 +1686,7 @@ public class BossService {
         wrapper.orderByDesc("created_at");
 
         // 取符合条件的记录（猎头已在查询阶段过滤），随后在内存进行薪资区间过滤与分页
+        wrapper.apply(OpportunityArchive.visible("boss", "boss_data", "encrypt_id"));
         List<BossJobDataEntity> all = bossJobDataMapper.selectList(wrapper);
 
         List<BossJobDataEntity> filtered = new ArrayList<>();
@@ -1727,7 +1729,7 @@ public class BossService {
         try {
             conn = dataSource.getConnection();
             Long profileId = profileService.getCurrentProfileIdOrNull();
-            long total = profileId == null ? 0 : scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE profile_id=" + profileId);
+            long total = profileId == null ? 0 : scalarCount(conn, "SELECT COUNT(*) FROM boss_data WHERE profile_id=" + profileId + " AND " + OpportunityArchive.visible("boss","boss_data","encrypt_id"));
             resp.put("success", true);
             resp.put("message", "刷新完成");
             resp.put("total", total);
@@ -1745,54 +1747,18 @@ public class BossService {
      * 清空 Boss 投递分析数据。用于切换候选人/简历前重置旧岗位和旧 AI 结果。
      */
     public Map<String, Object> clearBossAnalysisData() {
-        Map<String, Object> resp = new HashMap<>();
-        Connection conn = null;
-        boolean originalAutoCommit = true;
-        try {
-            conn = dataSource.getConnection();
-            originalAutoCommit = conn.getAutoCommit();
-            conn.setAutoCommit(false);
-
-            int analysisDeleted;
-            int tasksDeleted;
-            int draftsDeleted;
-            int jobsDeleted;
-            try (Statement st = conn.createStatement()) {
-                Long profileId = profileService.getCurrentProfileId();
-                tasksDeleted = st.executeUpdate("DELETE FROM job_analysis_task WHERE lower(platform)='boss' " +
-                        "AND profile_id=" + profileId + " AND status<>'LEASED'");
-                try (java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM job_analysis_task " +
-                        "WHERE lower(platform)='boss' AND profile_id=" + profileId + " AND status='LEASED'")) {
-                    if (rs.next() && rs.getLong(1) > 0) {
-                        conn.rollback();
-                        resp.put("success", false);
-                        resp.put("message", "仍有 Boss AI 分析正在执行，已阻止清空；请等待完成或进入 UNKNOWN 后再试");
-                        return resp;
-                    }
-                }
-                DeliveryRuntimeService.requireClearAllowed(conn, "boss", profileId);
-                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss' AND profile_id=" + profileId);
-                draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='boss' AND profile_id=" + profileId);
-                jobsDeleted = st.executeUpdate("DELETE FROM boss_data WHERE profile_id=" + profileId);
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                Map<String, Object> result = OpportunityArchive.platform(connection, "boss", profileService.getCurrentProfileId());
+                connection.commit();
+                return result;
+            } catch (Exception error) {
+                connection.rollback();
+                return Map.of("success", false, "message", "归档失败：" + error.getMessage());
             }
-
-            conn.commit();
-            resp.put("success", true);
-            resp.put("message", "Boss投递分析数据已清空");
-            resp.put("jobsDeleted", jobsDeleted);
-            resp.put("analysisDeleted", analysisDeleted);
-            resp.put("tasksDeleted", tasksDeleted);
-            resp.put("draftsDeleted", draftsDeleted);
-            resp.put("total", 0);
-        } catch (Exception e) {
-            try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}
-            log.warn("清空Boss投递分析数据失败: {}", e.getMessage());
-            resp.put("success", false);
-            resp.put("message", "清空失败: " + e.getMessage());
-        } finally {
-            try { if (conn != null) conn.setAutoCommit(originalAutoCommit); } catch (Exception ignore) {}
-            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
+        } catch (Exception error) {
+            return Map.of("success", false, "message", "归档失败：" + error.getMessage());
         }
-        return resp;
     }
 }

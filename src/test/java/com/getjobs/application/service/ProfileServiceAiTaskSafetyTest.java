@@ -94,7 +94,13 @@ class ProfileServiceAiTaskSafetyTest {
 
         ProfileService.DeleteProfileResult result = service.deleteProfile(2L, true);
 
+        assertThat(result.success()).isFalse();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=2", Integer.class)).isEqualTo(1);
+        jdbcTemplate.update("UPDATE delivery_attempt SET state='FAILED' WHERE request_key='delete-attempt'");
+        result = service.deleteProfile(2L, true);
         assertThat(result.success()).isTrue();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity WHERE profile_id=2", Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM liepin_data WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job51_data WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=2", Integer.class)).isZero();
