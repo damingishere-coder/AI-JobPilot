@@ -61,6 +61,8 @@ class CorsConfigTest {
         }
         assertThat(preflight("/api/config", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(403);
         assertThat(preflight("/api/boss/jobs/1/confirm", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(403);
+        assertThat(preflight("/api/delivery-attempts/fixture-key/validate-dispatch", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(200);
+        assertThat(preflight("/api/delivery-attempts/fixture-key/validate-dispatch", "https://www.zhipin.com").getStatus()).isEqualTo(403);
     }
 
     @Test

@@ -2,7 +2,7 @@
 
 ## 当前交付边界
 
-P0.1 固化协议、安全入口与确认快照。**尚未实现持久执行领取、Page State Detector 或统一 Recovery**；这些分别属于 P0.3–P0.5。不能把校验确认记录当成原子执行许可。
+本文记录 P0.1 的协议、安全入口与确认快照。后续 P0.3–P0.5 已补持久执行领取、Page State / Evidence 和受控 Recovery；详见 [升级实施记录](job-agent-upgrade-progress.md)。单独校验确认记录仍不等于原子执行许可，新 Runtime 仍需真实网站门禁。
 
 | 平台 | 推荐采集/分析入口 | 投递 | Legacy |
 | --- | --- | --- | --- |
@@ -23,7 +23,7 @@ Legacy 延迟启动浏览器；保留明确配置的 `app.browser.user-data-dir`
 
 ## Wire contract
 
-- 扩展 manifest：1.8.8；background：`2026-09-14-runtime-contract`。
+- P0.1 发布时扩展为 1.8.8；当前代码版本以 manifest 为准（1.8.12，background `2026-09-14-runtime-adapters`）。实际 Chrome 加载版本需单独核验。
 - 握手附带 `runtimeProtocol=application-runtime/1`。前端在扫描、预检和投递前检查版本；停止命令不受升级检查阻挡。
 - 每次明确派发产生 `runId`、`runtimeSessionId`、`correlationId`；不会持久恢复或自动续投。这些是诊断标识，不构成用户授权。
 - 投递任务复用 `id`（岗位行）、`profileId`、`requestKey`、`url`、`greeting` 和 `reconciliationOnly`。拒绝空批次、跨平台/跨档案、重复请求和重复岗位。

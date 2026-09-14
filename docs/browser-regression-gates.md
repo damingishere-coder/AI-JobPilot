@@ -29,9 +29,9 @@ Linux CI 使用 `installRegressionBrowser -PwithBrowserDeps` 安装 Chromium 系
 - 采集请求即使携带旧 `autoDeliver=true` 也不会生成 Attempt；错误话术快照被拒绝。测试确认页点击后通过真实确认 API 产生一次请求。
 - 真实扩展 Runtime 领取、background 转发 begin、模拟平台副作用、生产 Detector / Evidence、真实结果 Controller、Attempt / Opportunity 事务事件贯通。
 - 跨副作用边界后重复 begin、页面刷新均不能再次操作；迟到 callback 和重复 callback 只落一份确认事实，重采集不重复调用 AI。
-- 已知扩展的 Runtime CORS 与操作令牌同时验证；未知扩展和招聘网页仍被拒绝，扩展不能自行调用用户确认接口。
+- 已知扩展的确认快照校验 / Runtime CORS 与操作令牌同时验证；未知扩展和招聘网页仍被拒绝，扩展不能自行调用用户确认接口。
 
-新测试仅在临时扩展副本中将 6866 替换为测试随机端口，worker fetch 只允许这个精确回环 origin；页面网络默认拒绝，招聘 URL 仅由 Fixture 路由返回。生产权限和端口不变。它发现并修复了 Runtime 路径缺少扩展 CORS 规则造成的真实 403。回归调用 `AiService` / `CodexCliService` 的 Mock，不会调用收费模型。
+新测试仅在临时扩展副本中将 6866 替换为测试随机端口，worker fetch 只允许这个精确回环 origin；页面网络默认拒绝，招聘 URL 仅由 Fixture 路由返回。临时消息钩子调用生产 background 的 `validateConfirmedTask` / `claimRuntimeTask`，不模拟它们的实现；该钩子不进入生产包。生产权限和端口不变。测试发现并修复了确认快照校验和 Runtime 路径缺少扩展 CORS 规则造成的真实 403。回归调用 `AiService` / `CodexCliService` 的 Mock，不会调用收费模型。
 
 边界：确认界面是小型测试页面，平台副作用是合成 DOM 变化；Next.js 实际确认组件仍由现有 DOM/组件测试覆盖。这里不宣称真实网站、完整 Next.js 浏览器交互或真人投递已经通过。已有五项 Chromium/MV3 回归继续保留。
 
