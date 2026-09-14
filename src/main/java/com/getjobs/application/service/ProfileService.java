@@ -22,6 +22,7 @@ import java.util.Map;
 @DependsOn("databaseSchemaService")
 public class ProfileService {
     private static final List<String> PROFILE_RELATED_TABLES = List.of(
+            "strategy_snapshot",
             "interview",
             "opportunity_conversation",
             "opportunity_event",

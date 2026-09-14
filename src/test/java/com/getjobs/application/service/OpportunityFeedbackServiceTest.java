@@ -81,11 +81,19 @@ class OpportunityFeedbackServiceTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE type='HR_INBOUND_OBSERVED'",Integer.class)).isEqualTo(1);
     }
     @Test void absenceRequiresAConfirmedAttemptAndAnExplicitObservationCutoff() {
+        assertThatThrownBy(()->feedback.feedback(first,event("no-interview","NO_INTERVIEW_OBSERVED",null))).hasMessageContaining("截止时间");
         assertThatThrownBy(()->feedback.feedback(first,event("missing","NO_REPLY_OBSERVED",null))).hasMessageContaining("截止时间");
         var request=new OpportunityFeedbackService.Feedback(version(first),"unknown","NO_REPLY_OBSERVED",null,"2026-01-01T00:00:00Z",999L,null,null,null);
         assertThatThrownBy(()->feedback.feedback(first,request)).hasMessageContaining("未确认");
         assertThatThrownBy(()->feedback.feedback(first,new OpportunityFeedbackService.Feedback(version(first),"future","OFFER","2099-01-01T00:00:00Z",null,null,null,null,null))).hasMessageContaining("未来");
         assertThatThrownBy(()->feedback.feedback(first,event("","OFFER",null))).hasMessageContaining("操作标识");
+    }
+    @Test void verifiedAbsenceOfInterviewDoesNotBecomeARejectionOrAnInterviewStage() {
+        jdbc.update("INSERT INTO delivery_attempt(id,request_key,platform,profile_id,job_key,job_row_id,state,requested_at,updated_at) VALUES(91,'checked-interview','boss',1,'a',1,'CONFIRMED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
+        String before=jdbc.queryForObject("SELECT stage FROM opportunity WHERE id=?",String.class,first);
+        feedback.feedback(first,new OpportunityFeedbackService.Feedback(version(first),"no-interview-check","NO_INTERVIEW_OBSERVED",null,"2026-01-01T00:00:00Z",91L,null,null,null));
+        assertThat(jdbc.queryForObject("SELECT stage FROM opportunity WHERE id=?",String.class,first)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE type='OUTCOME_NO_INTERVIEW_OBSERVED'",Integer.class)).isEqualTo(1);
     }
     @Test void acceptedSearchAndTaskShareOneDiscoveryAttributionAndKeepTheFirstKeyword() {
         jdbc.update("INSERT INTO job_analysis_task(profile_id,platform,status,task_key,job_key,job_row_id,scan_run_id,request_json) VALUES(1,'boss','PENDING','fixture-search','a',1,'run-a','{\"keyword\":\"AI应用\"}')");
