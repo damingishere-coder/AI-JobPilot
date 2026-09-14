@@ -41,7 +41,7 @@ const navGroups: NavGroup[] = [
   {
     title: '工作台',
     items: [
-      { href: '/', icon: BiHomeAlt, label: '首页', color: 'text-blue-500' },
+      { href: '/', icon: BiHomeAlt, label: '工作台', color: 'text-blue-500' },
       { href: '/opportunities', icon: BiBriefcase, label: '求职机会', color: 'text-teal-500' },
     ],
   },
@@ -50,14 +50,14 @@ const navGroups: NavGroup[] = [
     items: [{ href: '/ai-config', icon: BiBrain, label: 'AI配置', color: 'text-violet-500' }],
   },
   {
-    title: '投递平台',
+    title: '岗位发现',
     items: [
       { href: '/boss', icon: BiBriefcase, label: 'Boss直聘', color: 'text-blue-500' },
       { href: '/zhilian', icon: BiUserCircle, label: '智联招聘', color: 'text-cyan-500' },
     ],
   },
   {
-    title: '投递记录',
+    title: '投递与对账',
     items: [
       { href: '/boss/analysis', icon: BiBarChart, label: 'Boss分析', color: 'text-teal-500' },
       { href: '/zhilian/analysis', icon: BiBarChart, label: '智联分析', color: 'text-sky-500' },

@@ -187,7 +187,7 @@ export default function DeliveryWorkbenchPage() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">
           <CardHeader>
-            <CardTitle className="text-lg">今日投递概览</CardTitle>
+            <CardTitle className="text-lg">平台岗位库概览（当前存量）</CardTitle>
             <CardDescription>
               {dashboard.lastUpdated ? `最后刷新 ${dashboard.lastUpdated}` : "正在读取投递状态"}
             </CardDescription>
