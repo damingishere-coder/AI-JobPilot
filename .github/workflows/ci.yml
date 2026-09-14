@@ -29,6 +29,9 @@ jobs:
       - name: Install isolated Chromium
         shell: bash
         run: |
+          # Hosted Windows runners intermittently reset downloads from the domestic mirror.
+          # Override only this disposable CI checkout; retain the local wrapper configuration.
+          sed -i 's#mirrors.cloud.tencent.com/gradle/#services.gradle.org/distributions/#' gradle/wrapper/gradle-wrapper.properties
           chmod +x ./gradlew
           ./gradlew installRegressionBrowser -PwithBrowserDeps --no-daemon
       - name: Run offline browser regressions
