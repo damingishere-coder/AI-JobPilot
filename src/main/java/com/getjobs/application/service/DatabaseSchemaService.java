@@ -616,6 +616,8 @@ public class DatabaseSchemaService {
         requiredColumns.put("job51_data", Set.of("job_id", "delivered"));
         if (requireV7TaskSchema) {
             requiredTables.add("delivery_attempt");
+            requiredTables.add("runtime_event");
+            requiredColumns.put("runtime_event", Set.of("attempt_id", "action_seq", "action", "phase", "before_count", "after_count"));
             requiredTables.addAll(List.of(
                     "hr_assistant_settings", "hr_conversation", "hr_message",
                     "hr_reply_proposal", "hr_reply_attempt", "hr_qq_command",
@@ -627,7 +629,7 @@ public class DatabaseSchemaService {
             requiredColumns.put("delivery_attempt", Set.of(
                     "request_key", "platform", "profile_id", "job_key", "job_row_id", "state",
                     "evidence", "message", "greeting_snapshot", "greeting_source", "greeting_outcome",
-                    "greeting_evidence", "requested_at", "resolved_at", "updated_at"));
+                    "greeting_evidence", "requested_at", "resolved_at", "updated_at", "runtime_phase", "run_id", "runtime_session_id", "claim_version"));
             requiredColumns.put("hr_assistant_settings", Set.of(
                     "profile_id", "communication_profile_cipher", "napcat_ws_url", "napcat_token_cipher",
                     "qq_target_cipher", "qq_target_type", "qq_operator_cipher", "qq_enabled", "retention_days"));

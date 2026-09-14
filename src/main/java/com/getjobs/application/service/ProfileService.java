@@ -156,6 +156,10 @@ public class ProfileService {
 
         boolean wasActive = entity.getIsActive() != null && entity.getIsActive() == 1;
         if (force) {
+            Long unresolved = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=? " +
+                    "AND runtime_phase IN ('CLAIMED','EFFECT_POSSIBLE','SETTLED') AND state IN ('REQUESTED','UNKNOWN')", Long.class, id);
+            if (unresolved != null && unresolved > 0) return new DeleteProfileResult(false,
+                    "该档案仍有已领取或结果未知的投递，请先对账后再删除。", impactCounts, getCurrentProfile(), true);
             jdbcTemplate.update("DELETE FROM job_analysis_task WHERE profile_id=? AND status<>'LEASED'", id);
             Long leasedTasks = jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND status='LEASED'",
@@ -194,6 +198,8 @@ public class ProfileService {
         for (String table : PROFILE_RELATED_TABLES) {
             counts.put(table, countByProfileId(table, id));
         }
+        counts.put("runtime_event", jdbcTemplate.queryForObject("SELECT COUNT(*) FROM runtime_event e JOIN delivery_attempt a " +
+                "ON a.id=e.attempt_id WHERE a.profile_id=?", Long.class, id));
         return counts;
     }
 
@@ -207,6 +213,7 @@ public class ProfileService {
     }
 
     private void deleteProfileRelatedData(Long profileId) {
+        jdbcTemplate.update("DELETE FROM runtime_event WHERE attempt_id IN (SELECT id FROM delivery_attempt WHERE profile_id=?)", profileId);
         for (String table : PROFILE_RELATED_TABLES) {
             jdbcTemplate.update("DELETE FROM " + table + " WHERE profile_id = ?", profileId);
         }

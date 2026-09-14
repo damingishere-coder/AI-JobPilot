@@ -318,6 +318,12 @@ public class DeliveryAttemptService {
             if (current != State.REQUESTED && current != State.UNKNOWN) {
                 return ResolutionResult.rejected("当前投递状态不允许该转换");
             }
+            if (target == State.FAILED && !manualReconciliation
+                    && Set.of(PRE_ACTION_ERROR, BATCH_HALTED_BEFORE_ACTION).contains(normalizedEvidence)
+                    && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM runtime_event WHERE attempt_id=? AND phase='EFFECT_POSSIBLE'",
+                        Integer.class, attempt.id()) > 0) {
+                return ResolutionResult.rejected("已签发平台操作许可，不能以未执行证据覆盖；请只读核对");
+            }
 
             int changed = jdbcTemplate.update("UPDATE delivery_attempt SET state=?, evidence=?, message=?, " +
                             "greeting_outcome=?, greeting_evidence=?, " +
@@ -469,7 +475,7 @@ public class DeliveryAttemptService {
         String table = normalized.equals("boss") ? "boss_data" : "zhilian_data";
         String title = normalized.equals("boss") ? "job_name" : "job_title";
         return jdbcTemplate.queryForList("SELECT a.request_key, a.platform, a.profile_id, a.job_row_id, a.state, " +
-                        "a.evidence, a.failure_type, a.message, a.greeting_snapshot, a.greeting_outcome, j.company_name, j." + title + " AS job_name " +
+                        "a.evidence, a.failure_type, a.message, a.greeting_snapshot, a.greeting_outcome, a.runtime_phase, a.run_id, a.recovery_count, j.company_name, j." + title + " AS job_name " +
                         "FROM delivery_attempt a JOIN " + table + " j ON j.id=a.job_row_id AND j.profile_id=a.profile_id " +
                         "WHERE a.platform=? AND a.profile_id=? AND a.requested_at>=? AND a.requested_at<? " +
                         "AND NOT EXISTS (SELECT 1 FROM delivery_attempt newer WHERE newer.platform=a.platform " +
@@ -527,6 +533,13 @@ public class DeliveryAttemptService {
             String greeting = java.util.Objects.toString(saved.get("greeting_snapshot"), "");
             boolean readOnly = old.stateEnum() != State.FAILED;
             String key = requestKey;
+            if (readOnly) {
+                int tracked = jdbcTemplate.update("UPDATE delivery_attempt SET recovery_count=recovery_count+1 " +
+                        "WHERE request_key=? AND runtime_phase<>'LEGACY'", key);
+                if (tracked == 1) jdbcTemplate.update("INSERT INTO runtime_event(attempt_id,action_seq,action,phase) " +
+                        "SELECT a.id,(SELECT COALESCE(MAX(action_seq),0)+1 FROM runtime_event WHERE attempt_id=a.id)," +
+                        "'VERIFY_APPLY','VERIFICATION_REQUESTED' FROM delivery_attempt a WHERE request_key=?", key);
+            }
             if (!readOnly) {
                 if (old.platform().equals("boss")) {
                     List<Integer> confirmations = jdbcTemplate.queryForList(
@@ -630,8 +643,8 @@ public class DeliveryAttemptService {
                                         String jobKey) {
         LocalDateTime now = LocalDateTime.now();
         jdbcTemplate.update("INSERT INTO delivery_attempt " +
-                        "(request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, greeting_outcome, requested_at, updated_at) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(request_key, platform, profile_id, job_key, job_row_id, state, evidence, message, greeting_outcome, requested_at, updated_at, runtime_phase) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NOT_STARTED')",
                 requestKey, platform, profileId, jobKey.trim(), rowId,
                 State.REQUESTED.name(), "USER_CONFIRMED", "已创建投递请求",
                 "boss".equals(platform) ? GreetingOutcome.PENDING.name() : GreetingOutcome.NOT_APPLICABLE.name(),
