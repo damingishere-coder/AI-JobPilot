@@ -71,6 +71,17 @@ for (const [index, resourceGroup] of (manifest.web_accessible_resources ?? []).e
   }
 }
 
+// Include local popup/options scripts and styles in manifest integrity checks.
+for (const reference of [...references]) {
+  if (!reference.value.endsWith(".html")) continue;
+  const absolute = safeExtensionPath(reference.value);
+  if (!absolute || !existsSync(absolute)) continue;
+  const html = readFileSync(absolute, "utf8");
+  for (const match of html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)=["']([^"']+)["']/gi)) {
+    addReference(references, join(dirname(reference.value), match[1]), `${reference.value} asset`);
+  }
+}
+
 for (const reference of references) {
   const absolute = safeExtensionPath(reference.value);
   if (!absolute) continue;

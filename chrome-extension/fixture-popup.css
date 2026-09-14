@@ -1,0 +1,5 @@
+body { width: 430px; margin: 16px; font: 14px/1.5 system-ui, sans-serif; color: #222; background: #fff; }
+h1 { font-size: 18px; } label { display: block; margin: 10px 0 4px; }
+textarea { width: 100%; box-sizing: border-box; font: 12px/1.4 monospace; }
+button, select { padding: 7px; margin: 4px 4px 4px 0; }
+button:disabled { opacity: .5; } #status { min-height: 42px; }

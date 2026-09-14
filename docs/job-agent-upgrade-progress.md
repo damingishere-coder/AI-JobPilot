@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | P0.1 | 入口、会话边界、Runtime 协议 | 已实施，发布/加载扩展验收单独记录；见 application-runtime-v1.md |
 | P0.7 | AI UNKNOWN | 已实施，发布验证单独记录；见 ai-unknown-outcome.md |
-| P0.2 | 脱敏 Fixture / BOSS Parser | 待实施；真实脱敏与合成样本必须区分 |
+| P0.2 | 脱敏 Fixture / BOSS Parser | 已实施；23 份合成结构样本、显式解析入口、主动预览导出；真实结构导出验收单独记录；见 dom-fixture-regression.md |
 | P0.3 | BOSS State / Evidence | 依赖 P0.2 |
 | P0.4 | BOSS Action / 执行领取 / Recovery | 依赖 P0.3；Migration；真实单条人工确认门禁 |
 | P0.5 | 智联 Runtime | 依赖 P0.4；保留独立 DOM；真实单条人工确认门禁 |

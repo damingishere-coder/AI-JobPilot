@@ -10,7 +10,7 @@ const fixtures: Fixture[] = JSON.parse(readFileSync(resolve(fixtureRoot, 'catalo
 function load(fixture: Fixture) {
   const doc = document.implementation.createHTMLDocument('offline fixture')
   doc.body.innerHTML = readFileSync(resolve(fixtureRoot, fixture.file), 'utf8')
-  const scope: Record<string, any> = { location: { href: 'https://www.zhipin.com/job_detail/fixture001.html', origin: 'https://www.zhipin.com' }, getComputedStyle: (node: Element) => window.getComputedStyle(node) } // eslint-disable-line @typescript-eslint/no-explicit-any
+  const scope: Record<string, any> = { location: { href: 'https://www.zhipin.com/job_detail/fixture001.html', origin: 'https://www.zhipin.com' }, getComputedStyle: (node: Element) => window.getComputedStyle(node) }
   const files = fixture.platform === 'boss'
     ? ['boss-selectors.js', 'boss-scan-support.js', 'boss-search-collector.js', 'boss-detail-collector.js']
     : ['zhilian-scan-support.js', 'zhilian-modern-collector.js']
@@ -51,7 +51,7 @@ describe('versioned recruitment fixture baseline', () => {
     const { doc, scope } = load(fixture)
     const before = doc.documentElement.outerHTML
     Object.defineProperty(scope, 'location', { get() { throw new Error('ambient location read') } })
-    expect(scope.GetJobsBossDetailCollector.parseDetail(doc, {}, scope.GetJobsBossSelectors.DETAIL_FIELD_SELECTORS, 'https://www.zhipin.com/job_detail/fixture001.html')).toMatchObject(fixture.expected.detail)
+    expect(scope.GetJobsBossDetailCollector.parseDetail(doc, {}, scope.GetJobsBossSelectors.DETAIL_FIELD_SELECTORS, 'https://www.zhipin.com/job_detail/fixture001.html')).toMatchObject(fixture.expected.detail!)
     expect(doc.documentElement.outerHTML).toBe(before)
     const list = load(fixtures.find(f => f.id === 'boss/search/cards')!)
     const card = list.doc.querySelector('.job-card-box')!
