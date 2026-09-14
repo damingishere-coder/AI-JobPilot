@@ -20,8 +20,15 @@ import java.util.Map;
 @RequestMapping("/api/delivery-attempts")
 @RequiredArgsConstructor
 public class DeliveryAttemptController {
+    @org.springframework.beans.factory.annotation.Value("${application.runtime.boss-enabled:false}")
+    private boolean bossRuntimeEnabled;
     private final DeliveryAttemptService deliveryAttemptService;
     private final LocalActionTokenService localActionTokenService;
+
+    @GetMapping("/runtime-capabilities")
+    public Map<String,Object> runtimeCapabilities() {
+        return Map.of("protocol","application-runtime/1","bossEnabled",bossRuntimeEnabled,"zhilianEnabled",false);
+    }
 
     @GetMapping("/recovery")
     public List<Map<String, Object>> recovery(@RequestParam("platform") String platform, @RequestParam("date") String date) {
@@ -45,6 +52,7 @@ public class DeliveryAttemptController {
         if (!localActionTokenService.isValid(token)) return ResponseEntity.status(401)
                 .body(Map.of("success", false, "message", "本地操作令牌无效，请刷新页面后重试"));
         boolean valid = request != null && request.platform() != null
+                && (!bossRuntimeEnabled || !"boss".equals(request.platform()) || request.reconciliationOnly() || request.runtimeClient())
                 && deliveryAttemptService.validateDispatch(requestKey, request.platform(), request.profileId(),
                 request.id(), request.url(), request.greeting(), request.reconciliationOnly());
         return ResponseEntity.status(valid ? 200 : 409).body(Map.of("success", valid,
@@ -52,7 +60,7 @@ public class DeliveryAttemptController {
     }
 
     public record DispatchRequest(String platform, long profileId, long id, String url,
-                                  String greeting, boolean reconciliationOnly) {}
+                                  String greeting, boolean reconciliationOnly, boolean runtimeClient) {}
 
     @GetMapping
     public List<DeliveryAttemptService.AttemptView> listRecent(

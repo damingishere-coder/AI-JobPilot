@@ -9,7 +9,7 @@ export type ChromeBridgeResponse<T = unknown> = {
 
 const SOURCE = 'GET_JOBS_PAGE'
 const TARGET = 'GET_JOBS_EXTENSION'
-export const REQUIRED_BACKGROUND_VERSION = '2026-09-14-runtime-contract'
+export const REQUIRED_BACKGROUND_VERSION = '2026-09-14-runtime-claims'
 export const REQUIRED_RUNTIME_PROTOCOL = 'application-runtime/1'
 const SCAN_START_TYPES = new Set(['BOSS_SCAN_START', 'ZHILIAN_SCAN_START', 'BOSS_DELIVERY_PREFLIGHT', 'BOSS_DELIVER_ONE', 'BOSS_DELIVER_BATCH', 'ZHILIAN_DELIVER_ONE', 'ZHILIAN_DELIVER_BATCH'])
 const ALLOWED_BRIDGE_ORIGINS = new Set([

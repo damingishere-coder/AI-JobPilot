@@ -8,7 +8,7 @@
 | P0.7 | AI UNKNOWN | 已实施，发布验证单独记录；见 ai-unknown-outcome.md |
 | P0.2 | 脱敏 Fixture / BOSS Parser | 已实施；23 份合成结构样本、显式解析入口、主动预览导出；真实结构导出验收单独记录；见 dom-fixture-regression.md |
 | P0.3 | BOSS State / Evidence | 已实施；只读状态、原话术计数抽取、关键阻碍优先；结构化持久化在 P0.4；见 boss-page-evidence.md |
-| P0.4 | BOSS Action / 执行领取 / Recovery | 依赖 P0.3；Migration；真实单条人工确认门禁 |
+| P0.4 | BOSS Action / 执行领取 / Recovery | 已实现 V21 和默认关闭的单次许可路径；上线前仍需离线浏览器及真实单条人工确认门禁；见 boss-action-recovery.md |
 | P0.5 | 智联 Runtime | 依赖 P0.4；保留独立 DOM；真实单条人工确认门禁 |
 | P0.6 | 离线浏览器回归 / 双平台 Smoke | harness 可提前，验收依赖 P0.4/P0.5 |
 | P1.1 | 不可变简历及分析快照 | 依赖 P0.7；Migration |

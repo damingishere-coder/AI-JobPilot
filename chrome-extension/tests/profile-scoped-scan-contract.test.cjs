@@ -15,10 +15,10 @@ test("extension release and both content scripts use the profile-scoped contract
   const boss = source("boss-content.js");
   const zhilian = source("zhilian-content.js");
 
-  assert.equal(manifest.version, "1.8.10");
-  assert.match(background, /BACKGROUND_VERSION = "2026-09-14-runtime-contract"/);
-  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-evidence"/);
-  assert.match(boss, /EXTENSION_VERSION = "2026-09-14-boss-evidence"/);
+  assert.equal(manifest.version, "1.8.11");
+  assert.match(background, /BACKGROUND_VERSION = "2026-09-14-runtime-claims"/);
+  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-runtime"/);
+  assert.match(boss, /EXTENSION_VERSION = "2026-09-14-boss-runtime"/);
   assert.match(zhilian, /EXTENSION_VERSION = "2026-09-14-delivery-recovery"/);
   assert.match(background, /REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-delivery-recovery"/);
   const frontendBridge = fs.readFileSync(path.resolve(extensionDir, "../front/lib/chromeBridge.ts"), "utf8");
