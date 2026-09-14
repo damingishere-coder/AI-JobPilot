@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { BiBarChart, BiBriefcase, BiTrash } from "react-icons/bi"
 
 import PageHeader from "@/app/components/PageHeader"
+import { DeliveryRecovery } from "@/components/communication/DeliveryRecovery"
 import { Button } from "@/components/ui/button"
 import { GreetingDraftDialog, type GreetingJob } from "@/components/communication/GreetingDraftDialog"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -253,6 +254,7 @@ export default function AnalysisContent({
 
   return (
     <div className="space-y-8">
+      <DeliveryRecovery platform="boss" />
       {showHeader && (
         <PageHeader
           title="Boss 投递分析"

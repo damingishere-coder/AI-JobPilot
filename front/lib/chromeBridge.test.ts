@@ -26,7 +26,7 @@ function bridge(version: string, success = true) {
 }
 
 describe('scan extension compatibility', () => {
-  for (const type of ['BOSS_SCAN_START', 'ZHILIAN_SCAN_START']) {
+  for (const type of ['BOSS_SCAN_START', 'ZHILIAN_SCAN_START', 'BOSS_DELIVER_ONE', 'BOSS_DELIVER_BATCH', 'ZHILIAN_DELIVER_ONE', 'ZHILIAN_DELIVER_BATCH']) {
     it(`${type} blocks old backgrounds before starting a scan`, async () => {
       const requests = bridge('2026-09-09-detail-scan')
       const response = await sendChromeBridgeMessage({ type, profileId: 4 })

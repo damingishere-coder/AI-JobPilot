@@ -33,6 +33,8 @@ const PLATFORM_CONFIG = {
 
 const pageTabs = new Map();
 const scanStartQueues = new Map();
+const activeDeliveries = new Set();
+const deliveryTabs = new Map();
 const SCAN_WINDOW_KEY_PREFIX = "__GET_JOBS_SCAN_WINDOW_";
 let scanSessionsWriteQueue = Promise.resolve();
 let hrOutboxWriteQueue = Promise.resolve();
@@ -44,15 +46,15 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-11-boss-resume-lifecycle";
+const BACKGROUND_VERSION = "2026-09-14-delivery-recovery";
 const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-11-boss-resume-lifecycle";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-11-render-recovery";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-delivery-recovery";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-delivery-recovery";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -1223,9 +1225,13 @@ async function handlePageMessageInternal(message, sender) {
   }
 
   if (isDeliverMessage(platform, message.type)) {
-    return platform === "boss"
-      ? await handleBossDeliver(tab, config, message, pageTabId)
-      : await handleZhilianDeliver(tab, config, message, pageTabId);
+    if (activeDeliveries.has(platform)) return { success: false, haltBatch: true, message: "该平台已有投递任务执行中，请等待完成后再继续" };
+    activeDeliveries.add(platform);
+    try {
+      return platform === "boss"
+        ? await handleBossDeliver(tab, config, message, pageTabId)
+        : await handleZhilianDeliver(tab, config, message, pageTabId);
+    } finally { activeDeliveries.delete(platform); }
   }
 
   if (isScanStartMessage(message.type)) {
@@ -1447,7 +1453,7 @@ async function handleBossDeliver(tab, config, message, pageTabId) {
     else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
     results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, actionStarted: result?.actionStarted, message: result?.message || "" });
-    if (outcome === "UNKNOWN" || result?.haltBatch) {
+    if (outcome === "UNKNOWN" || result?.haltBatch || result?.persisted !== true) {
       halted = true;
       haltedJobId = task?.id || null;
       const remaining = tasks.slice(index + 1);
@@ -1528,11 +1534,12 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     let persisted = false;
     await postBossDeliveryResult(task, false, { failureType: prepared.failureType, failureReason: prepared.message },
       "PRE_ACTION_ERROR", "NOT_SENT", "PRE_ACTION_ERROR").then(() => { persisted = true; }).catch(() => {});
-    return { ...prepared, persisted };
+    return { ...prepared, outcome: task.reconciliationOnly ? "UNKNOWN" : prepared.outcome, persisted };
   }
 
   try {
-    return { ...await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total), actionStarted: true };
+    const result = await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
+    return { ...result, actionStarted: result.actionStarted ?? !task.reconciliationOnly };
   } catch (error) {
     const errorMessage = buildContentScriptError("boss", error, "投递");
     const failure = classifyDeliveryFailure(errorMessage);
@@ -1599,6 +1606,9 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
   let failed = 0;
   let unknown = 0;
   const results = [];
+  let halted = false;
+  let haltedJobId = null;
+  let unprocessedCount = 0;
   for (let index = 0; index < tasks.length; index++) {
     const task = tasks[index];
     const result = await deliverZhilianTask(tab, config, task, message, pageTabId, index + 1, tasks.length).catch(async (error) => {
@@ -1620,19 +1630,56 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
     if (outcome === "CONFIRMED") success += 1;
     else if (outcome === "UNKNOWN") unknown += 1;
     else failed += 1;
-    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", persisted: result?.persisted === true, message: result?.message || "" });
+    results.push({ id: task?.id, requestKey: task?.requestKey, outcome, evidence: result?.evidence || "", greetingOutcome: result?.greetingOutcome || "", greetingEvidence: result?.greetingEvidence || "", persisted: result?.persisted === true, actionStarted: result?.actionStarted, message: result?.message || "" });
+    if (outcome === "UNKNOWN" || result?.haltBatch || result?.persisted !== true) {
+      halted = true;
+      haltedJobId = task?.id || null;
+      const remaining = tasks.slice(index + 1);
+      unprocessedCount = remaining.length;
+      for (const skippedTask of remaining) {
+        const skippedMessage = `前一岗位 ${task?.id || "-"} 无法安全继续（${result?.message || "发送结果待确认"}），批量任务已暂停，本岗位未触达`;
+        let persisted = false;
+        await postZhilianDeliveryResult(
+          skippedTask,
+          false,
+          { failureType: "BATCH_HALTED_BEFORE_ACTION", failureReason: skippedMessage },
+          "BATCH_HALTED_BEFORE_ACTION",
+          "NOT_SENT",
+          "BATCH_HALTED_BEFORE_ACTION"
+        ).then(() => { persisted = true; }).catch(() => {});
+        results.push({
+          id: skippedTask?.id,
+          requestKey: skippedTask?.requestKey,
+          outcome: "FAILED",
+          evidence: "BATCH_HALTED_BEFORE_ACTION",
+          greetingOutcome: "NOT_SENT",
+          greetingEvidence: "BATCH_HALTED_BEFORE_ACTION",
+          persisted,
+          skipped: true,
+          message: skippedMessage
+        });
+      }
+      break;
+    }
   }
 
+  const summary = halted
+    ? `智联批量投递已暂停：已确认${success}，待确认${unknown}，未触达${unprocessedCount}`
+    : `智联批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`;
   return {
-    success: failed === 0 && unknown === 0,
+    success: !halted && failed === 0 && unknown === 0,
     partial: success > 0 && (failed > 0 || unknown > 0),
-    message: `智联批量投递完成：已确认${success}，待确认${unknown}，失败${failed}`,
+    message: summary,
     successCount: success,
     unknownCount: unknown,
     failedCount: failed,
+    halted,
+    haltedJobId,
+    unprocessedCount,
     results
   };
 }
+
 
 async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
   if (!task?.url || !task?.id) {
@@ -1665,11 +1712,14 @@ async function deliverZhilianTask(tab, config, task, message, pageTabId, index, 
     keywordIndex: index,
     keywordTotal: total
   });
-  await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { zhilianJobUrl: targetUrl });
-  await ensureContentScript(tab.id, config.contentScript);
-  if (!isNoFocusPlatformMessage(message.type)) {
-    const updatedTab = await chrome.tabs.update(tab.id, { active: true });
-    await chrome.windows.update(updatedTab.windowId || tab.windowId, { focused: true }).catch(() => {});
+  try {
+    await navigatePlatformTab(tab.id, targetUrl, config, DELIVERY_NAVIGATION_TIMEOUT_MS, { zhilianJobUrl: targetUrl });
+    await ensureContentScript(tab.id, config.contentScript);
+  } catch (error) {
+    const failure = classifyZhilianDeliveryFailure(error.message || String(error));
+    await postZhilianDeliveryResult(task, false, failure, "PRE_ACTION_ERROR");
+    return { success: false, outcome: task.reconciliationOnly ? "UNKNOWN" : "FAILED", evidence: "PRE_ACTION_ERROR", actionStarted: false,
+      haltBatch: true, persisted: true, message: failure.failureReason, failureType: failure.failureType };
   }
 
   try {
@@ -1693,30 +1743,14 @@ async function deliverZhilianTask(tab, config, task, message, pageTabId, index, 
 }
 
 async function sendZhilianDeliverCurrent(tabId, message, task, pageTabId, index, total) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        ...message,
-        type: "ZHILIAN_DELIVER_CURRENT_V2",
-        source: "GET_JOBS_BACKGROUND",
-        task,
-        pageTabId,
-        deliveryIndex: index,
-        deliveryTotal: total
-      });
-      if (response) {
-        const recorded = await recordZhilianDeliveryResponse(task, response);
-        return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
-      }
-      const fallback = await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
-      if (fallback.success || fallback.outcome === "UNKNOWN") return fallback;
-    } catch (error) {
-      lastError = error;
-      await sleep(500);
-    }
-  }
-  throw lastError || new Error("智联投递请求发送失败");
+  const response = await chrome.tabs.sendMessage(tabId, {
+    ...message, type: "ZHILIAN_DELIVER_CURRENT_V2", source: "GET_JOBS_BACKGROUND",
+    task, pageTabId, deliveryIndex: index, deliveryTotal: total
+  });
+  if (!response) return await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
+  const recorded = await recordZhilianDeliveryResponse(task, response);
+  const haltBatch = response.haltBatch || ["LOGIN_EXPIRED", "PLATFORM_VERIFICATION", "DELIVERY_LIMIT"].includes(response.failureType);
+  return { ...response, ...recorded, haltBatch, success: recorded.outcome === "CONFIRMED" };
 }
 
 async function inferZhilianDeliveryAfterEmptyResponse(tabId, task) {
@@ -1769,6 +1803,7 @@ async function inferBossDeliveryAfterEmptyResponse(tabId, task) {
 
 async function postBossDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
   if (!task?.id) return;
+  if (task.reconciliationOnly && success !== true) return { success: true };
   const failure = success === false ? normalizeFailurePayload(message) : null;
   const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
   const result = await requestLocalApi(`/api/boss/jobs/${task.id}/delivery-result`, {
@@ -1793,11 +1828,14 @@ async function postBossDeliveryResult(task, success, message, evidence, greeting
 
 async function recordBossDeliveryResponse(task, response) {
   let outcome = deliveryOutcomeOf(response);
+  if (task.reconciliationOnly && outcome !== "CONFIRMED") outcome = "UNKNOWN";
   const responseGreetingOutcome = String(response?.greetingOutcome || "").toUpperCase();
   const responseGreetingEvidence = String(response?.greetingEvidence || "").toUpperCase();
   const greetingConfirmed = responseGreetingOutcome === "CONFIRMED"
     && responseGreetingEvidence === "GREETING_RENDERED_EXACT";
-  if (outcome === "CONFIRMED" && !greetingConfirmed) outcome = "UNKNOWN";
+  const alreadyContacted = response?.evidence === "EXISTING_CONVERSATION"
+    && responseGreetingOutcome === "NOT_SENT" && responseGreetingEvidence === "ALREADY_CONTACTED";
+  if (outcome === "CONFIRMED" && !greetingConfirmed && !alreadyContacted) outcome = "UNKNOWN";
   const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
   const evidence = response?.evidence
     || (outcome === "CONFIRMED" ? "GREETING_RENDERED_EXACT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
@@ -1828,6 +1866,7 @@ async function recordBossDeliveryResponse(task, response) {
 
 async function postZhilianDeliveryResult(task, success, message, evidence) {
   if (!task?.id) return;
+  if (task.reconciliationOnly && success !== true) return { success: true };
   const failure = success === false ? normalizeZhilianFailurePayload(message) : null;
   const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
   const result = await requestLocalApi(`/api/zhilian/jobs/${task.id}/delivery-result`, {
@@ -1849,7 +1888,8 @@ async function postZhilianDeliveryResult(task, success, message, evidence) {
 }
 
 async function recordZhilianDeliveryResponse(task, response) {
-  const outcome = deliveryOutcomeOf(response);
+  let outcome = deliveryOutcomeOf(response);
+  if (task.reconciliationOnly && outcome !== "CONFIRMED") outcome = "UNKNOWN";
   const success = outcome === "CONFIRMED" ? true : outcome === "FAILED" ? false : null;
   const evidence = response?.evidence
     || (outcome === "CONFIRMED" ? "PLATFORM_STATUS_TEXT" : outcome === "FAILED" ? "PLATFORM_ERROR" : "NO_CONFIRMATION");
@@ -1895,6 +1935,7 @@ function classifyZhilianDeliveryFailure(message) {
   const text = String(message || "");
   let failureType = "UNKNOWN_ERROR";
   if (/(登录|重新登录|未登录|扫码|账号登录)/.test(text)) failureType = "LOGIN_EXPIRED";
+  else if (/(今日投递.*已用完|投递上限)/.test(text)) failureType = "DELIVERY_LIMIT";
   else if (/(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) failureType = "PLATFORM_VERIFICATION";
   else if (/(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|岗位关闭|已下线)/.test(text)) failureType = "JOB_CLOSED";
   else if (/(已投递|已申请|投递成功|申请成功|重复投递)/.test(text)) failureType = "ALREADY_DELIVERED";
@@ -2147,22 +2188,16 @@ async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) 
 }
 
 async function findDeliveryPlatformTab(platform, startUrl) {
-  const scanTab = await findRegisteredOrRunningScanTab(platform);
-  const session = await readScanSession(platform);
-  const scanStatus = scanTab?.id
-    ? await probePlatformScanStatus(scanTab.id, platform, session?.profileId)
-    : null;
-  const scanIsActive = isActiveScanStatus(scanStatus);
-  const excludedTabIds = scanIsActive && scanTab?.id ? [scanTab.id] : [];
-
-  if (!scanIsActive && scanTab?.id) {
-    await clearScanSession(platform, scanTab.id);
-  }
-
-  return await findOrCreatePlatformTab(platform, startUrl, {
-    excludedTabIds,
-    active: true
-  });
+  const cached = deliveryTabs.get(platform);
+  const existing = cached ? await chrome.tabs.get(cached).catch(() => null) : null;
+  if (existing && isSupportedUrl(existing.url || existing.pendingUrl || "", PLATFORM_CONFIG[platform])) return existing;
+  // Own a separate inactive tab. Never navigate a user's current browsing or scan tab.
+  const tabs = await chrome.tabs.query({});
+  const workbench = tabs.find(tab => isAllowedPageUrl(tab.url || ""));
+  const created = await chrome.tabs.create({ url: startUrl || PLATFORM_CONFIG[platform].home, active: false,
+    ...(workbench?.windowId != null ? { windowId: workbench.windowId } : {}) });
+  deliveryTabs.set(platform, created.id);
+  return created;
 }
 
 async function findOrCreatePlatformTab(platform, startUrl, options = {}) {

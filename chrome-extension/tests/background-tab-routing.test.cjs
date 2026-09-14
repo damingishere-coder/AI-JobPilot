@@ -39,6 +39,7 @@ function loadBackground({
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
   bossHrContentVersion = "2026-09-07-hr-autopilot",
   bossDeliveryResponses = [],
+  zhilianDeliveryResponses = [],
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
   }
@@ -114,6 +115,11 @@ function loadBackground({
         if (message.type === "ZHILIAN_PAGE_STATUS") return statuses[tabId] || { success: true, chromePageReady: false };
         if (message.type === "BOSS_DELIVER_CURRENT_V2") {
           const response = bossDeliveryResponses.shift();
+          if (response instanceof Error) throw response;
+          return response || { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION" };
+        }
+        if (message.type === "ZHILIAN_DELIVER_CURRENT_V2") {
+          const response = zhilianDeliveryResponses.shift();
           if (response instanceof Error) throw response;
           return response || { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION" };
         }
@@ -868,7 +874,9 @@ test("uses a separate Boss tab for delivery while scanning", async () => {
 
   const deliveryTab = await context.findDeliveryPlatformTab("boss", "https://www.zhipin.com/job_detail/demo.html");
 
-  assert.equal(deliveryTab.id, 2);
+  assert.equal(deliveryTab.id, 3);
+  assert.equal(deliveryTab.active, false);
+  assert.equal((await context.findDeliveryPlatformTab("boss", "https://www.zhipin.com/job_detail/next.html")).id, 3);
 });
 
 test("status lookup keeps using the registered scan tab after another tab is clicked", async () => {
@@ -1326,4 +1334,42 @@ test("failed policy read after start stops backend watch instead of downgrading 
   assert.equal(response.errorCode,"HR_POLICY_UNAVAILABLE");
   assert.equal(alarmCreates.length,0);
   assert.ok(requests.some(url=>url.endsWith("/api/hr-assistant/watch/stop")));
+});
+
+test("Zhilian stops on login expiry, preserves untouched rows, and never steals focus", async () => {
+  const requests = [];
+  const tasks = [1,2,3].map(id => ({id, requestKey:`z-${id}`,url:`https://www.zhaopin.com/jobdetail/CC123J${id}.htm`}));
+  const { context, sentMessages, tabUpdates, windowUpdates } = loadBackground({
+    tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete',active:false}],
+    zhilianDeliveryResponses:[{success:false,outcome:'FAILED',evidence:'PRE_ACTION_ERROR',failureType:'LOGIN_EXPIRED',message:'请重新登录'}],
+    fetchImpl:async(url,options)=>{const body=JSON.parse(options.body);requests.push(body);return jsonResponse({success:true,accepted:true,state:body.outcome})}
+  });
+  const result = await context.handleZhilianDeliver({id:7,windowId:1}, {hosts:['zhaopin.com'],contentScript:'zhilian-content.js'}, {type:'ZHILIAN_DELIVER_BATCH',tasks},null);
+  assert.equal(result.halted,true);
+  assert.equal(result.unprocessedCount,2);
+  assert.equal(sentMessages.filter(e=>e.message.type==='ZHILIAN_DELIVER_CURRENT_V2').length,1);
+  assert.deepEqual(requests.slice(1).map(r=>r.evidence),['BATCH_HALTED_BEFORE_ACTION','BATCH_HALTED_BEFORE_ACTION']);
+  assert.equal(tabUpdates.some(e=>e.updates.active===true),false);
+  assert.equal(windowUpdates.some(e=>e.updates.focused===true),false);
+});
+
+test("Zhilian does not retry a send after a lost message channel", async () => {
+  const tasks = [1,2].map(id=>({id,requestKey:`z-${id}`,url:`https://www.zhaopin.com/jobdetail/CC123J${id}.htm`}));
+  const {context,sentMessages} = loadBackground({tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'}],
+    zhilianDeliveryResponses:[new Error('message channel closed after click')],
+    fetchImpl:async(url,options)=>jsonResponse({success:true,accepted:true,state:JSON.parse(options.body).outcome})});
+  const result=await context.handleZhilianDeliver({id:7,windowId:1},{hosts:['zhaopin.com'],contentScript:'zhilian-content.js'},{type:'ZHILIAN_DELIVER_BATCH',tasks},null);
+  assert.equal(result.unknownCount,1);assert.equal(result.unprocessedCount,1);
+  assert.equal(sentMessages.filter(e=>e.message.type==='ZHILIAN_DELIVER_CURRENT_V2').length,1);
+});
+
+test("a failed read-only reconciliation cannot turn an uncertain prior send into retryable failure", async () => {
+  const {context}=loadBackground({tabs:[],fetchImpl:async()=>{throw new Error('must not overwrite original attempt')}});
+  const response=await context.recordZhilianDeliveryResponse({id:1,requestKey:'old',reconciliationOnly:true},
+    {outcome:'FAILED',evidence:'PRE_ACTION_ERROR',failureType:'LOGIN_EXPIRED',message:'请重新登录'});
+  assert.equal(response.outcome,'UNKNOWN');
+  assert.equal(response.persisted,true);
+  const boss=await context.recordBossDeliveryResponse({id:1,requestKey:'old',reconciliationOnly:true},
+    {outcome:'FAILED',evidence:'PRE_ACTION_ERROR',greetingOutcome:'NOT_SENT'});
+  assert.equal(boss.outcome,'UNKNOWN');
 });
