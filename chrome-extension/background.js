@@ -13,6 +13,7 @@ const PLATFORM_CONFIG = {
       "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
+        "boss-page-evidence.js",
       "boss-content.js",
       "boss-hr-support.js",
       "boss-hr-bridge.js",
@@ -54,7 +55,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-delivery-recovery";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-evidence";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-delivery-recovery";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;

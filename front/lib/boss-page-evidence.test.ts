@@ -7,6 +7,7 @@ const root = resolve(process.cwd(), '../chrome-extension')
 function harness(html: string, href = 'https://www.zhipin.com/job_detail/fixture001.html') {
   const doc = document.implementation.createHTMLDocument('synthetic')
   doc.body.innerHTML = html
+  Object.defineProperty(doc, 'readyState', { value: 'complete' })
   const scope: Record<string, any> = {}
   for (const f of ['boss-scan-support.js', 'boss-page-evidence.js']) runInNewContext(readFileSync(resolve(root, f), 'utf8'), { window: scope, URL })
   // Layout is supplied only as a prerequisite; real layout belongs to browser regression.

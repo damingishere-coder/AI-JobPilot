@@ -2,6 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { resolve } from 'node:path';
 
 function readFunction(file: string, name: string, next: string) {
   const text = fs.readFileSync(new URL('../../chrome-extension/' + file, import.meta.url), 'utf8');
@@ -27,8 +28,9 @@ test('Zhilian compares each label independently instead of concatenating duplica
 
 test('BOSS counts exact outgoing body despite sent status and line breaks, excluding failed or other text', () => {
   const document = dom('<div class="item-myself"><span class="message-status">已发送</span><div class="text">您好<br>作品集：https://example.com/</div></div>');
-  const code = readFunction('boss-content.js', 'countRenderedGreetingMessages', 'buildDeliverySuccessMessage');
-  const count = vm.runInNewContext(code + '; countRenderedGreetingMessages', { document, normalizeGreetingText: (s: unknown) => String(s || '').trim() });
+  const scope: Record<string, any> = {};
+  vm.runInNewContext(fs.readFileSync(resolve(process.cwd(), '../chrome-extension/boss-page-evidence.js'), 'utf8'), { window: scope });
+  const count = (greeting: string, _input: unknown) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
   assert.equal(count('您好\n作品集：https://example.com/', null), 1);
   assert.equal(count('其他话术', null), 0);
   document.querySelector('.item-myself')!.insertAdjacentHTML('beforeend', '<span class="send-failed">发送失败</span>');
@@ -40,8 +42,9 @@ test('BOSS counts exact outgoing body despite sent status and line breaks, exclu
 test('BOSS detail popup requires the send callback message id and success status', () => {
   // Structure from BOSS public chatDialog renderer, independently observed in live UI.
   const document = dom('<div class="startchat-content"><div class="message"><ul class="message-list"><li class="message-item" id="385898401231112"><span class="status success">已发送</span><p class="text">您好，作品集：https://example.com/</p></li></ul></div></div>');
-  const code = readFunction('boss-content.js', 'countRenderedGreetingMessages', 'buildDeliverySuccessMessage');
-  const count = vm.runInNewContext(code + '; countRenderedGreetingMessages', { document, normalizeGreetingText: (s: unknown) => String(s || '').trim() });
+  const scope: Record<string, any> = {};
+  vm.runInNewContext(fs.readFileSync(resolve(process.cwd(), '../chrome-extension/boss-page-evidence.js'), 'utf8'), { window: scope });
+  const count = (greeting: string, _input: unknown) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
   const greeting = '您好，作品集：https://example.com/';
   assert.equal(count(greeting, null), 1);
   assert.equal(count('不同话术', null), 0);
