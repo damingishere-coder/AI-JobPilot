@@ -8,6 +8,7 @@ export const applicationStatuses: Record<string, string> = {
   NOT_REQUESTED: '尚未请求', REQUESTED: '请求中', CONFIRMED: '已确认', FAILED: '失败', UNKNOWN: '结果未知，需对账',
 }
 const eventLabels: Record<string, string> = {
+  INTERVIEW_CREATED: '记录面试轮次', INTERVIEW_UPDATED: '更新面试安排或准备',
   DISCOVERED: '发现岗位', SEARCH_DISCOVERY: '搜索来源已记录', AI_ANALYZED: 'AI 分析完成',
   APPLICATION_REQUESTED: '用户已确认投递请求', APPLICATION_CONFIRMED: '投递结果已确认', APPLICATION_FAILED: '投递失败', APPLICATION_UNKNOWN: '投递结果未知',
   USER_UPDATED: '用户更新记录', CORRECTION: '更正历史记录', ARCHIVED: '归档机会',
@@ -23,6 +24,7 @@ export type Opportunity = {
 }
 export type OpportunityEvent = {
   id: number; type: string; source: string; occurred_at: string | null; observed_at: string; reason: string;
+  payload?: string;
 }
 export type OpportunityDetail = Opportunity & {
   note: string; nextAction: string; job_snapshot: string; events: OpportunityEvent[];

@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { applicationStatuses, eventLabel, eventSourceLabel, jobDescription, localDateTimeInput, opportunityApi, stages, type OpportunityDetail, type OpportunityEvent } from '@/lib/opportunities'
 import FeedbackSection from './FeedbackSection'
+import OpportunityInterviews from '../interviews/OpportunityInterviews'
+import { interviewEventSummary } from '@/lib/interviews'
 
 export default function OpportunityEditor({ detail, onSaved, onClose }: { detail: OpportunityDetail; onSaved: () => void; onClose: () => void }) {
   const [stage, setStage] = useState(detail.stage)
@@ -62,9 +64,10 @@ export default function OpportunityEditor({ detail, onSaved, onClose }: { detail
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <div className="flex flex-wrap gap-2"><Button disabled={busy} onClick={() => save()}>保存记录</Button><Button variant="outline" disabled={busy} onClick={() => save(!detail.archived)}>{detail.archived ? '恢复到当前列表' : '归档此机会'}</Button>{['boss', 'zhilian'].includes(detail.platform) && <Link className="p-2 text-sm underline" href={`/${detail.platform}/analysis`}>原平台分析与投递对账</Link>}</div>
     <FeedbackSection detail={detail} onSaved={onSaved} />
+    <OpportunityInterviews opportunityId={detail.id} version={detail.version} onSaved={onSaved} />
     {lastObservation > 0 && <div className="space-y-2"><Button variant="outline" disabled={busy} onClick={reviewMessages}>已查看这些 HR 消息提醒</Button><p className="text-xs text-muted-foreground">只清除已加载消息的待核实提醒，不会确认回复、Offer 或其他结果；新消息仍会再次提醒。</p></div>}
     <details><summary className="cursor-pointer">JD 与 AI 分析</summary><p className="my-3 whitespace-pre-wrap text-sm">{jobDescription(detail.job_snapshot)}</p>{detail.analyses.map(a => <p key={a.id} className="mb-2 text-sm">分析 #{a.id} · {a.score} 分 · {a.decision} · 分析简历 {a.resume_version_id ? `v${a.resume_version_id}` : '版本未知'}<br />{a.summary}</p>)}</details>
     <div><h3 className="font-medium">投递记录</h3>{detail.applications.length === 0 && <p className="text-sm text-muted-foreground">尚无投递请求</p>}{detail.applications.map(a => <p key={a.id} className="mt-1 text-sm">#{a.id} · {applicationStatuses[a.state]} · {a.evidence || '无结果证据'}</p>)}</div>
-    <details open><summary className="cursor-pointer font-medium">时间线（已加载 {events.length} 条）</summary><ol className="mt-2 space-y-2">{events.map(e => <li key={e.id} className="border-l-2 pl-3 text-sm"><span>#{e.id} · {eventLabel(e.type)} · {eventSourceLabel(e.source)}</span><br /><span className="text-muted-foreground">{e.occurred_at || `发生时间未知；记录于 ${e.observed_at}`}</span>{e.reason && <p>{e.type === 'CORRECTION' ? '更正原因' : '备注'}：{e.reason}</p>}</li>)}</ol>{hasOlder && <Button variant="outline" disabled={busy} onClick={loadOlder}>加载更早记录</Button>}</details>
+    <details open><summary className="cursor-pointer font-medium">时间线（已加载 {events.length} 条）</summary><ol className="mt-2 space-y-2">{events.map(e => <li key={e.id} className="border-l-2 pl-3 text-sm"><span>#{e.id} · {eventLabel(e.type)} · {eventSourceLabel(e.source)}</span><br /><span className="text-muted-foreground">{e.occurred_at || `发生时间未知；记录于 ${e.observed_at}`}</span>{e.type.startsWith('INTERVIEW_') && <p>{interviewEventSummary(e.payload)}</p>}{e.reason && <p>{e.type === 'CORRECTION' ? '更正原因' : '备注'}：{e.reason}</p>}</li>)}</ol>{hasOlder && <Button variant="outline" disabled={busy} onClick={loadOlder}>加载更早记录</Button>}</details>
   </section>
 }
