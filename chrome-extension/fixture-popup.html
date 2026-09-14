@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>脱敏结构样本</title><link rel="stylesheet" href="fixture-popup.css"></head>
+<body><h1>导出脱敏结构样本</h1>
+<p>仅在点击下方按钮后读取当前招聘页面的白名单结构。正文和身份使用虚构值，不读取登录信息，不扫描、不投递、不上传。</p>
+<label for="page-type">样本类型</label><select id="page-type"><option value="SEARCH">搜索列表</option><option value="JOB_DETAIL">岗位详情</option><option value="BLOCKER">登录 / 验证 / 阻断弹窗</option></select>
+<button id="capture">生成脱敏预览</button><p id="status" role="status">不会自动采集。聊天页面不支持导出。</p>
+<label for="preview">脱敏 JSON 预览（仅文本，不执行 HTML）</label><textarea id="preview" readonly rows="12"></textarea>
+<label><input id="reviewed" type="checkbox" disabled>我已检查预览，确认没有个人信息、聊天或凭据。</label>
+<button id="download" disabled>下载已检查的样本</button><button id="clear">清除预览</button>
+<script src="fixture-export.js"></script><script src="fixture-popup.js"></script></body></html>
