@@ -1,0 +1,405 @@
+[
+  {
+    "id": "boss/search/cards",
+    "platform": "boss",
+    "pageType": "SEARCH",
+    "file": "boss/search/cards.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "chrome-extension/tests/boss-search-collector.test.cjs"
+    },
+    "expected": {
+      "jobs": [
+        {
+          "id": "fixture001",
+          "title": "AI产品运营",
+          "company": "示例科技公司",
+          "salary": "15-25K",
+          "location": "北京",
+          "experience": "3-5年",
+          "degree": "本科",
+          "deliveryStatus": "LIST_COLLECTED"
+        }
+      ],
+      "candidateCount": 3
+    }
+  },
+  {
+    "id": "boss/detail/full",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/detail/full.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "chrome-extension/boss-detail-collector.js"
+    },
+    "expected": {
+      "detail": {
+        "title": "AI产品运营",
+        "company": "示例科技公司",
+        "salary": "15-25K",
+        "location": "北京",
+        "experience": "3-5年",
+        "degree": "本科",
+        "description": "岗位职责：负责产品需求分析、运营推广和数据跟踪。任职要求：熟悉人工智能产品并具备项目交付经验。",
+        "companyInfo": "公司介绍：提供企业软件服务的虚构公司。",
+        "missingFields": []
+      }
+    }
+  },
+  {
+    "id": "boss/search/empty",
+    "platform": "boss",
+    "pageType": "SEARCH",
+    "file": "boss/search/empty.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/boss-card-readiness.test.ts"
+    },
+    "expected": {
+      "jobs": [],
+      "candidateCount": 0
+    }
+  },
+  {
+    "id": "boss/search/replaced-card",
+    "platform": "boss",
+    "pageType": "SEARCH",
+    "file": "boss/search/replaced-card.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/boss-card-readiness.test.ts"
+    },
+    "expected": {
+      "jobs": [
+        {
+          "id": "fixture002",
+          "title": "数据产品经理",
+          "company": "示例数据公司",
+          "salary": "20-30K",
+          "location": "上海"
+        }
+      ],
+      "candidateCount": 1
+    }
+  },
+  {
+    "id": "zhilian/detail/split",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/detail/split.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/zhilian-modern-collector.test.ts"
+    },
+    "expected": {
+      "detail": {
+        "id": "CC100J200",
+        "title": "AI产品运营",
+        "company": "示例招聘公司",
+        "salary": "8000-12000元",
+        "location": "北京",
+        "experience": "3-5年",
+        "degree": "本科",
+        "detailVerified": true,
+        "description": "岗位职责：负责产品需求分析、运营推广和数据跟踪。任职要求：熟悉人工智能产品并具备项目交付经验。"
+      }
+    }
+  },
+  {
+    "id": "zhilian/detail/stale",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/detail/stale.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/zhilian-modern-collector.test.ts"
+    },
+    "expected": {
+      "rejectedExpectedId": "CC100J200"
+    }
+  },
+  {
+    "id": "zhilian/search/empty",
+    "platform": "zhilian",
+    "pageType": "SEARCH",
+    "file": "zhilian/search/empty.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/zhilian-modern-collector.test.ts"
+    },
+    "expected": {
+      "cardCount": 0
+    }
+  },
+  {
+    "id": "boss/states/login-required",
+    "platform": "boss",
+    "pageType": "UNKNOWN",
+    "file": "boss/states/login-required.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "请先登录",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/blocked",
+    "platform": "boss",
+    "pageType": "UNKNOWN",
+    "file": "boss/states/blocked.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "请完成安全验证",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/apply-dialog",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/states/apply-dialog.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "确认投递",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/popup-hidden",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/states/popup-hidden.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "投递成功",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/quota-reminder",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/states/quota-reminder.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "今日还可沟通3次",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/quota-exhausted",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/states/quota-exhausted.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "今日沟通次数已用完",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/abnormal-page",
+    "platform": "boss",
+    "pageType": "UNKNOWN",
+    "file": "boss/states/abnormal-page.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "页面加载失败",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/login-required",
+    "platform": "zhilian",
+    "pageType": "UNKNOWN",
+    "file": "zhilian/states/login-required.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "请先登录",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/blocked",
+    "platform": "zhilian",
+    "pageType": "UNKNOWN",
+    "file": "zhilian/states/blocked.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "请完成安全验证",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/apply-dialog",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/states/apply-dialog.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "确认投递",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/popup-hidden",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/states/popup-hidden.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "投递成功",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/quota-reminder",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/states/quota-reminder.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "今日还可沟通3次",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/quota-exhausted",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/states/quota-exhausted.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "今日沟通次数已用完",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "zhilian/states/abnormal-page",
+    "platform": "zhilian",
+    "pageType": "UNKNOWN",
+    "file": "zhilian/states/abnormal-page.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "页面加载失败",
+      "detectorCoverage": "deferred-to-P0.3-P0.5"
+    }
+  },
+  {
+    "id": "boss/states/sent",
+    "platform": "boss",
+    "pageType": "CHAT",
+    "file": "boss/states/sent.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "已发送",
+      "detectorCoverage": "existing-delivery-confirmation-dom"
+    }
+  },
+  {
+    "id": "zhilian/states/success",
+    "platform": "zhilian",
+    "pageType": "JOB_DETAIL",
+    "file": "zhilian/states/success.html",
+    "provenance": {
+      "kind": "synthetic",
+      "createdAt": "2026-09-14",
+      "capturedAt": null,
+      "reference": "front/lib/delivery-confirmation-dom.test.ts"
+    },
+    "expected": {
+      "marker": "已向对方发送简历和打招呼语",
+      "detectorCoverage": "existing-delivery-confirmation-dom"
+    }
+  }
+]
