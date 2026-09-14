@@ -51,6 +51,16 @@ public class OpportunityService {
         for(var row:rows) row.put("reason",crypto.decrypt((String)row.remove("reason_cipher"),aad(id,profile,"reason")));
         return rows;
     }
+    public Map<String,Object> eventPage(long id,long before,int size) {
+        long profile=profiles.getCurrentProfileId();owned(id,profile);
+        if(before<=0) throw new IllegalArgumentException("历史游标无效");
+        int limit=Math.max(1,Math.min(100,size));
+        var rows=jdbc.queryForList("SELECT id,type,source,occurred_at,observed_at,payload,correction_of,reason_cipher FROM opportunity_event WHERE opportunity_id=? AND profile_id=? AND id<? ORDER BY id DESC LIMIT ?",id,profile,before,limit+1);
+        boolean more=rows.size()>limit;
+        if(more) rows=new ArrayList<>(rows.subList(0,limit));
+        for(var row:rows) row.put("reason",crypto.decrypt((String)row.remove("reason_cipher"),aad(id,profile,"reason")));
+        return Map.of("items",rows,"hasMore",more);
+    }
 
     public Map<String,Object> change(long id,Change request) {
         if(request==null || request.eventKey()==null || !request.eventKey().matches("[A-Za-z0-9:_-]{1,100}")) throw new IllegalArgumentException("缺少有效操作标识");
@@ -111,6 +121,25 @@ public class OpportunityService {
             return Map.of("success",true,"version",version+1);
         });
     }
+
+    public Map<String,Object> reviewObservations(long id,ObservationReview request) {
+        if(request==null || request.throughEventId()<=0) throw new IllegalArgumentException("缺少消息观察记录");
+        long profile=profiles.getCurrentProfileId();
+        return new TransactionTemplate(transactions).execute(status->{
+            jdbc.update("UPDATE opportunity SET version=version WHERE id=-1");
+            var opportunity=owned(id,profile);
+            String key="hr-reviewed:"+id+":"+request.throughEventId();
+            if(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE profile_id=? AND event_key=?",Integer.class,profile,key)>0)
+                return Map.of("success",true,"duplicate",true);
+            if(((Number)opportunity.get("version")).longValue()!=request.version()) throw new IllegalStateException("记录已更新，请刷新后再操作");
+            if(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE id=? AND opportunity_id=? AND type='HR_INBOUND_OBSERVED'",Integer.class,request.throughEventId(),id)!=1)
+                throw new IllegalArgumentException("消息观察不属于当前机会");
+            jdbc.update("INSERT INTO opportunity_event(opportunity_id,profile_id,event_key,type,source,occurred_at,payload) VALUES(?,?,?,'HR_OBSERVATIONS_REVIEWED','USER',CURRENT_TIMESTAMP,json_object('throughEventId',?))",id,profile,key,request.throughEventId());
+            jdbc.update("UPDATE opportunity SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",id);
+            return Map.of("success",true);
+        });
+    }
+    public record ObservationReview(long version,long throughEventId) {}
 
     private Map<String,Object> owned(long id,long profile) {
         var rows=jdbc.queryForList("SELECT * FROM opportunity WHERE id=? AND profile_id=?",id,profile);

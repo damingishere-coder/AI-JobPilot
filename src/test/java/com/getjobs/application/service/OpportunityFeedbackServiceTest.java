@@ -95,4 +95,11 @@ class OpportunityFeedbackServiceTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE type='SEARCH_DISCOVERY'",Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT json_extract(payload,'$.keyword') FROM opportunity_event WHERE type='SEARCH_DISCOVERY'",String.class)).isEqualTo("AI应用");
     }
+    @Test void lateDeliveryCallbackDoesNotInvalidateAnEarlierRealReplyAfterTheRequest() {
+        jdbc.update("INSERT INTO opportunity_event(opportunity_id,profile_id,event_key,type,source,occurred_at,payload) VALUES(?,1,'attempt:90:REQUESTED','APPLICATION_REQUESTED','APPLICATION_SERVICE','2020-01-01 01:00:00','{\"attemptId\":90}')",first);
+        jdbc.update("INSERT INTO delivery_attempt(id,request_key,platform,profile_id,job_key,job_row_id,state,requested_at,updated_at) VALUES(90,'late','boss',1,'a',1,'CONFIRMED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
+        feedback.feedback(first,new OpportunityFeedbackService.Feedback(version(first),"reply-before-callback","RECRUITER_REPLIED","2020-01-01T02:00:00Z",null,90L,null,null,null));
+        assertThat(jdbc.queryForObject("SELECT stage FROM opportunity WHERE id=?",String.class,first)).isEqualTo("RECRUITER_REPLIED");
+        assertThatThrownBy(()->feedback.feedback(first,new OpportunityFeedbackService.Feedback(version(first),"reply-before-request","RECRUITER_REPLIED","2020-01-01T00:00:00Z",null,90L,null,null,null))).hasMessageContaining("早于");
+    }
 }

@@ -85,7 +85,9 @@ public class OpportunityFeedbackService {
                 throw new IllegalArgumentException("核对未回复须选择已确认投递记录");
             if(request.attemptId()!=null) {
                 String observation="NO_REPLY_OBSERVED".equals(request.type())?observed:occurred;
-                if(observation!=null && jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE opportunity_id=? AND type='APPLICATION_CONFIRMED' AND json_extract(payload,'$.attemptId')=? AND occurred_at IS NOT NULL AND julianday(occurred_at)>julianday(?)",Integer.class,id,request.attemptId(),observation)>0)
+                // A successful callback may arrive after the HR response. Use the known
+                // request boundary, never callback arrival time, as the earliest attribution.
+                if(observation!=null && jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE opportunity_id=? AND type='APPLICATION_REQUESTED' AND json_extract(payload,'$.attemptId')=? AND occurred_at IS NOT NULL AND julianday(occurred_at)>julianday(?)",Integer.class,id,request.attemptId(),observation)>0)
                     throw new IllegalArgumentException("该反馈时间早于所选投递，请核对时间或移除投递归因");
             }
             if(request.actualSentResumeVersionId()!=null && (request.attemptId()==null || jdbc.queryForObject("SELECT COUNT(*) FROM resume_version WHERE id=? AND profile_id=?",Integer.class,request.actualSentResumeVersionId(),profile)!=1))
