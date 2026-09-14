@@ -308,6 +308,65 @@ class DeliveryAttemptServiceTest {
                 .isEqualTo(DeliveryStatus.NOT_DELIVERED);
     }
 
+    @Test
+    void recoveryKeepsUnknownReadOnlyAndDoesNotCreateAnotherAttempt() {
+        insertZhilian(81, DeliveryStatus.WAITING_CONFIRM);
+        var request = service.requestZhilian(81, 1, "zhilian-81");
+        service.resolve("zhilian", 1L, 81, request.requestKey(), DeliveryAttemptService.State.UNKNOWN,
+                "NO_CONFIRMATION", "lost callback", null, null);
+        var response = service.prepareRecovery(request.requestKey(), 1);
+        assertThat(response.get("success")).isEqualTo(true);
+        assertThat((java.util.Map<String, Object>) response.get("task")).containsEntry("reconciliationOnly", true);
+        assertThat(service.listRecentForCurrentProfile("zhilian", 100)).hasSize(1);
+        assertThat(service.prepareRecovery(request.requestKey(), 2).get("success")).isEqualTo(false);
+    }
+
+    @Test
+    void recoveryRetriesFailedWithOriginalSnapshotAndRejectsStaleKey() {
+        insertZhilian(82, DeliveryStatus.WAITING_CONFIRM);
+        var request = service.requestZhilian(82, 1, "zhilian-82");
+        String greeting = "您好，我有相关产品运营和流程优化经验，希望进一步了解岗位要求。";
+        service.snapshotGreeting(request.requestKey(), greeting, "USER_EDITED");
+        service.resolve("zhilian", 1L, 82, request.requestKey(), DeliveryAttemptService.State.FAILED,
+                "PRE_ACTION_ERROR", "login expired", "LOGIN_EXPIRED", "login expired");
+        var response = service.prepareRecovery(request.requestKey(), 1);
+        assertThat(response.get("success")).isEqualTo(true);
+        var task = (java.util.Map<String, Object>) response.get("task");
+        assertThat(task).containsEntry("reconciliationOnly", false).containsEntry("greeting", greeting);
+        assertThat(task.get("requestKey")).isNotEqualTo(request.requestKey());
+        assertThat(service.prepareRecovery(request.requestKey(), 1).get("success")).isEqualTo(false);
+        assertThat(service.recoveryList("zhilian", java.time.LocalDate.now().toString())).hasSize(1);
+    }
+
+    @Test
+    void existingConversationConfirmsPlatformButNeverClaimsGreetingSent() {
+        insertBoss(83, DeliveryStatus.WAITING_CONFIRM);
+        var request = service.requestBoss(83, 1, "boss-83", false);
+        var result = service.resolveBoss(1L, 83, request.requestKey(), DeliveryAttemptService.State.CONFIRMED,
+                "EXISTING_CONVERSATION", "历史已沟通，本次未发送", null, null,
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT, "ALREADY_CONTACTED");
+        assertThat(result.accepted()).isTrue();
+        assertThat(service.listRecentForCurrentProfile("boss", 1).getFirst().greetingOutcome()).isEqualTo("NOT_SENT");
+        assertThat(service.prepareRecovery(request.requestKey(), 1).get("success")).isEqualTo(false);
+    }
+
+    @Test
+    void untouchedBossRecoveryPreservesSnapshotAndRequiresNativeGreetingConfirmation() {
+        insertBoss(84, DeliveryStatus.WAITING_CONFIRM);
+        var request = service.requestBoss(84, 1, "boss-84", false);
+        String greeting = "您好，我有相关产品运营和流程优化经验，希望进一步了解岗位要求。";
+        service.snapshotGreeting(request.requestKey(), greeting, "USER_EDITED");
+        service.resolveBoss(1L, 84, request.requestKey(), DeliveryAttemptService.State.FAILED,
+                "BATCH_HALTED_BEFORE_ACTION", "untouched", "BATCH_HALTED_BEFORE_ACTION", "untouched",
+                DeliveryAttemptService.GreetingOutcome.NOT_SENT, "BATCH_HALTED_BEFORE_ACTION");
+        assertThat(service.prepareRecovery(request.requestKey(), 1).get("success")).isEqualTo(false);
+        jdbcTemplate.update("INSERT INTO boss_config(profile_id, native_greeting_disabled_confirmed) VALUES (1, 1)");
+        var recovered = service.prepareRecovery(request.requestKey(), 1);
+        assertThat(recovered.get("success")).isEqualTo(true);
+        assertThat((java.util.Map<String, Object>) recovered.get("task")).containsEntry("greeting", greeting)
+                .containsEntry("reconciliationOnly", false);
+    }
+
     private void insertBoss(long id, String status) {
         jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status, created_at, updated_at) " +
                 "VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", id, "boss-" + id, status);

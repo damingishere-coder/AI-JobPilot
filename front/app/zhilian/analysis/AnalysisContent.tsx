@@ -1,5 +1,7 @@
 "use client"
 
+import { DeliveryRecovery } from "@/components/communication/DeliveryRecovery"
+
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArcElement,
@@ -1028,6 +1030,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
 
   return (
     <div className="min-w-0 space-y-8">
+      <DeliveryRecovery platform="zhilian" />
       {showHeader && (
         <PageHeader
           title="智联 投递分析"

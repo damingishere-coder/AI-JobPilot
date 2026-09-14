@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-11-render-recovery";
+  const EXTENSION_VERSION = "2026-09-14-delivery-recovery";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -1861,6 +1861,10 @@
       return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", message: failure.failureReason, failureType: failure.failureType };
     }
 
+    if (task.reconciliationOnly) {
+      return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", actionStarted: false,
+        message: "只读核对未发现明确已投递状态，未点击投递，请人工核对" };
+    }
     const favoriteButton = findZhilianActionButton(["收藏"], ["已收藏", "取消收藏"]);
     if (favoriteButton) {
       clickElement(favoriteButton);
@@ -1991,6 +1995,7 @@
   }
 
   async function postDeliveryResult(task, success, message, evidence) {
+    if (task.reconciliationOnly && success !== true) return;
     const failure = success === false ? normalizeFailurePayload(message) : null;
     const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await requestZhilianLocalApi("delivery-result", {
@@ -2164,15 +2169,18 @@
     const elements = Array.from(root.querySelectorAll?.("button, a, [role='button']") || [])
       .filter((el) => el.offsetParent !== null);
     const matched = elements.some((el) => {
-      const text = compact([
+      const texts = [
         el.innerText,
         el.textContent,
         el.getAttribute?.("aria-label"),
         el.getAttribute?.("title")
-      ].filter(Boolean).join(" "));
-      return successLabels.some((label) => text === label || (text.includes(label) && text.length <= label.length + 4));
+      ].filter(Boolean).map(compact);
+      return texts.some(text => successLabels.some(label => text === label));
     });
     if (matched) return "已投递";
+    const dialogs = Array.from(root.querySelectorAll?.("[role='dialog'], .el-dialog, [class*='dialog'], [class*='modal']") || []);
+    if (dialogs.some(el => el.offsetParent !== null
+      && /已向对方发送简历和打招呼语/.test(el.innerText || el.textContent || ""))) return "已投递";
     return "";
   }
 
@@ -2188,8 +2196,10 @@
     const text = compact([message, document.body?.innerText || "", window.location.href || ""].filter(Boolean).join(" "));
     const messageText = compact(message || "");
     let failureType = "UNKNOWN_ERROR";
-    if (isStrongLoginPrompt(text, window.location.href) || /(登录|重新登录|未登录|扫码|账号登录)/.test(text)) {
+    if (isStrongLoginPrompt(document.body?.innerText || "", window.location.href) || /(登录失效|重新登录|未登录|账号登录)/.test(messageText)) {
       failureType = "LOGIN_EXPIRED";
+    } else if (/(今日投递.*已用完|投递上限)/.test(messageText)) {
+      failureType = "DELIVERY_LIMIT";
     } else if (isSecurityPrompt(text) || /(账号异常|操作过于频繁|请先完成实名认证)/.test(messageText)) {
       failureType = "PLATFORM_VERIFICATION";
     } else if (/(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|岗位关闭|已下线)/.test(text)) {

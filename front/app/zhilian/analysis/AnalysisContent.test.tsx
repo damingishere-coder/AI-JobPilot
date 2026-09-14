@@ -5,6 +5,8 @@ import { sendChromeBridgeMessage } from '@/lib/chromeBridge'
 vi.mock('@/lib/chromeBridge', () => ({ sendChromeBridgeMessage: vi.fn() }))
 
 vi.mock('./useZhilianAnalysisSync', () => ({ useZhilianAnalysisSync: () => false }))
+// Recovery has its own date-scoped requests and dedicated interaction tests.
+vi.mock('@/components/communication/DeliveryRecovery', () => ({ DeliveryRecovery: () => null }))
 vi.mock('@/components/communication/GreetingDraftDialog', () => ({ GreetingDraftDialog: ({ job, onConfirm }: { job: unknown; onConfirm: (value: { finalGreeting: string }) => Promise<void> }) => job ? <div>投递确认对话框<button onClick={() => void onConfirm({ finalGreeting: '已审核话术' })}>确认执行</button></div> : null }))
 
 const stats = { kpi: { total: 25, delivered: 0, waitingConfirm: 1, pending: 0, filtered: 0, failed: 0 },

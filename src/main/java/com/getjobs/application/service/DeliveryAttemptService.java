@@ -9,7 +9,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -280,9 +283,13 @@ public class DeliveryAttemptService {
         String normalizedGreetingEvidence = normalizeEvidence(greetingEvidence);
         boolean manuallyReconciledGreeting = manualReconciliation
                 && GREETING_MANUAL_RECONCILIATION.equals(normalizedGreetingEvidence);
+        boolean existingConversation = EXISTING_CONVERSATION.equals(normalizedEvidence)
+                && normalizedGreetingOutcome == GreetingOutcome.NOT_SENT
+                && "ALREADY_CONTACTED".equals(normalizedGreetingEvidence);
         if ("boss".equals(normalizedPlatform)
                 && target == State.CONFIRMED
                 && !manuallyReconciledGreeting
+                && !existingConversation
                 && (normalizedGreetingOutcome != GreetingOutcome.CONFIRMED
                 || !GREETING_RENDERED_EXACT.equals(normalizedGreetingEvidence))) {
             return ResolutionResult.rejected("BOSS 沟通话术尚未精确确认，不能确认已投递");
@@ -453,6 +460,72 @@ public class DeliveryAttemptService {
                 ),
                 normalizedPlatform, profileId, safeLimit
         );
+    }
+
+    public List<Map<String, Object>> recoveryList(String platform, String date) {
+        String normalized = normalizePlatform(platform);
+        if (!Set.of("boss", "zhilian").contains(normalized)) throw new IllegalArgumentException("该平台不支持恢复投递");
+        LocalDate day = LocalDate.parse(date);
+        String table = normalized.equals("boss") ? "boss_data" : "zhilian_data";
+        String title = normalized.equals("boss") ? "job_name" : "job_title";
+        return jdbcTemplate.queryForList("SELECT a.request_key, a.platform, a.profile_id, a.job_row_id, a.state, " +
+                        "a.evidence, a.failure_type, a.message, a.greeting_snapshot, a.greeting_outcome, j.company_name, j." + title + " AS job_name " +
+                        "FROM delivery_attempt a JOIN " + table + " j ON j.id=a.job_row_id AND j.profile_id=a.profile_id " +
+                        "WHERE a.platform=? AND a.profile_id=? AND a.requested_at>=? AND a.requested_at<? " +
+                        "AND NOT EXISTS (SELECT 1 FROM delivery_attempt newer WHERE newer.platform=a.platform " +
+                        "AND newer.profile_id=a.profile_id AND newer.job_row_id=a.job_row_id AND newer.id>a.id) " +
+                        "ORDER BY a.job_row_id DESC", normalized, currentProfileId(), day.toString(), day.plusDays(1).toString());
+    }
+
+    /** Resume the saved, user-confirmed snapshot; unknown/in-flight attempts are read-only checks. */
+    public Map<String, Object> prepareRecovery(String requestKey, long expectedProfileId) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        return transaction.execute(status -> {
+            Attempt old = findByRequestKey(requestKey);
+            if (old == null || expectedProfileId != currentProfileId() || !sameProfile(expectedProfileId, old.profileId())
+                    || !Set.of("boss", "zhilian").contains(old.platform())) {
+                return Map.of("success", false, "message", "档案已变化或投递记录不存在，请刷新后重试");
+            }
+            Attempt latest = findLatest(old.platform(), old.profileId(), old.jobRowId());
+            if (latest == null || latest.id() != old.id() || old.stateEnum() == State.CONFIRMED) {
+                return Map.of("success", false, "message", "记录已更新或已完成，请刷新；未创建重复任务");
+            }
+            String table = old.platform().equals("boss") ? "boss_data" : "zhilian_data";
+            String title = old.platform().equals("boss") ? "job_name" : "job_title";
+            String url = old.platform().equals("boss") ? "job_url" : "job_link";
+            Map<String, Object> job = jdbcTemplate.queryForMap("SELECT id, company_name, " + title + " AS job_name, " + url +
+                    " AS url FROM " + table + " WHERE id=? AND profile_id=?", old.jobRowId(), old.profileId());
+            Map<String, Object> saved = jdbcTemplate.queryForMap(
+                    "SELECT greeting_snapshot, greeting_source FROM delivery_attempt WHERE request_key=?", requestKey);
+            String greeting = java.util.Objects.toString(saved.get("greeting_snapshot"), "");
+            boolean readOnly = old.stateEnum() != State.FAILED;
+            String key = requestKey;
+            if (!readOnly) {
+                if (old.platform().equals("boss")) {
+                    List<Integer> confirmations = jdbcTemplate.queryForList(
+                            "SELECT native_greeting_disabled_confirmed FROM boss_config WHERE profile_id=? ORDER BY id LIMIT 1",
+                            Integer.class, old.profileId());
+                    if (confirmations.isEmpty() || !Integer.valueOf(1).equals(confirmations.getFirst())) {
+                        return Map.of("success", false, "message", "请先在 AI 配置页确认已关闭 BOSS 平台自带打招呼语");
+                    }
+                }
+                greetingPolicy.validateDraft(greeting, old.profileId());
+                RequestResult requested = old.platform().equals("boss")
+                        ? BATCH_HALTED_BEFORE_ACTION.equals(old.evidence())
+                            ? requestBoss(old.jobRowId(), old.profileId(), old.jobKey(), false)
+                            : retryBoss(old.jobRowId(), old.profileId(), old.jobKey())
+                        : retryZhilian(old.jobRowId(), old.profileId(), old.jobKey());
+                if (!requested.accepted()) return Map.of("success", false, "message", requested.message());
+                key = requested.requestKey();
+                snapshotGreeting(key, greeting, java.util.Objects.toString(saved.get("greeting_source"), ""));
+            }
+            Map<String, Object> task = new HashMap<>();
+            task.put("id", old.jobRowId()); task.put("requestKey", key); task.put("profileId", old.profileId());
+            task.put("url", job.get("url")); task.put("companyName", job.get("company_name")); task.put("jobName", job.get("job_name"));
+            task.put("greeting", greeting); task.put("greetingSource", saved.get("greeting_source"));
+            task.put("reconciliationOnly", readOnly);
+            return Map.of("success", true, "task", task);
+        });
     }
 
     private RequestResult request(String platform,

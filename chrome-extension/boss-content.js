@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-11-boss-resume-lifecycle";
+  const EXTENSION_VERSION = "2026-09-14-delivery-recovery";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -3054,17 +3054,13 @@
     }
     await sleep(1500);
     if (detectBossDeliveryStatus(document)) {
-      const messageText = "Boss岗位页面已存在沟通或投递状态，本次未补发话术，请人工核对";
-      await postDeliveryResult(task, null, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
-      return {
-        success: false,
-        outcome: "UNKNOWN",
-        evidence: "EXISTING_CONVERSATION",
-        greetingOutcome: "NOT_SENT",
-        greetingEvidence: "ALREADY_CONTACTED",
-        message: messageText
-      };
+      const messageText = "平台已显示历史沟通状态，本次跳过发送话术";
+      await postDeliveryResult(task, true, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
+      return { success: true, outcome: "CONFIRMED", evidence: "EXISTING_CONVERSATION",
+        greetingOutcome: "NOT_SENT", greetingEvidence: "ALREADY_CONTACTED", actionStarted: false, message: messageText };
     }
+    if (task.reconciliationOnly) return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION",
+      greetingOutcome: "UNKNOWN", actionStarted: false, message: "只读核对未发现历史沟通状态，未发送，请人工核对" };
     postProgress(message, "info", `Boss Chrome正在当前详情页投递：${task.companyName || ""} ${task.jobName || ""}`.trim(), {
       operation: "deliver",
       stage: "submitting",
@@ -3195,18 +3191,18 @@
   }
 
   function countRenderedGreetingMessages(greeting, input) {
-    const selectors = [
-      ".message-item",
-      ".chat-message",
-      ".message-content",
-      "[class*='message-item']",
-      "[class*='message-content']",
-      "[class*='chat-record'] [class*='text']"
-    ];
-    const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
-    return nodes.filter((node) => node !== input
-      && !node.contains?.(input)
-      && normalizeGreetingText(node.innerText || node.textContent || "") === greeting).length;
+    // The detail-page chat uses .item-myself .text; its row also includes “已发送”.
+    // Count outgoing message bodies once, excluding status labels and quoted messages.
+    const rows = Array.from(document.querySelectorAll(".item-myself, .message-self, [data-direction='outbound']"));
+    if (rows.length) return rows.filter(row => {
+      if (row.offsetParent === null || row.querySelector(".send-failed, .message-failed, .sending")) return false;
+      const body = row.querySelector(".text-content, .text, .message-content") || row;
+      const copy = body.cloneNode(true);
+      copy.querySelectorAll(".message-status, .item-time, .quote-message, .status").forEach(n => n.remove());
+      copy.querySelectorAll("br").forEach(n => n.replaceWith("\n"));
+      return normalizeGreetingText(copy.textContent || "") === greeting;
+    }).length;
+    return 0;
   }
 
   function buildDeliverySuccessMessage(favoriteButton, greetingResult) {
@@ -3401,6 +3397,7 @@
   }
 
   async function postDeliveryResult(task, success, message, evidence, greetingOutcome, greetingEvidence) {
+    if (task.reconciliationOnly && success !== true) return;
     const failure = success === false ? normalizeFailurePayload(message) : null;
     const outcome = success === true ? "CONFIRMED" : success === false ? "FAILED" : "UNKNOWN";
     await callBossLocalApi("delivery-result", {
