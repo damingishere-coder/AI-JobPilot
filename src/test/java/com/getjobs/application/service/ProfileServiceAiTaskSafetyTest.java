@@ -91,6 +91,8 @@ class ProfileServiceAiTaskSafetyTest {
         when(profileMapper.selectOne(any(QueryWrapper.class))).thenReturn(active);
         ProfileService service = new ProfileService(
                 profileMapper, jdbcTemplate, new DataSourceTransactionManager(dataSource), new HrProfileGuard());
+        jdbcTemplate.update("INSERT INTO hr_conversation(id,profile_id,platform,external_uid_hash) VALUES(77,2,'liepin','fixture-hash')");
+        jdbcTemplate.update("INSERT INTO opportunity_conversation(opportunity_id,conversation_id,profile_id) SELECT id,77,2 FROM opportunity WHERE profile_id=2 AND platform='liepin'");
 
         ProfileService.DeleteProfileResult result = service.deleteProfile(2L, true);
 
@@ -101,6 +103,7 @@ class ProfileServiceAiTaskSafetyTest {
         assertThat(result.success()).isTrue();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE profile_id=2", Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity_conversation WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM liepin_data WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job51_data WHERE profile_id=2", Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=2", Integer.class)).isZero();
