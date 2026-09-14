@@ -99,6 +99,8 @@ export type AiReasonHardConflict = {
 }
 
 export type ParsedAiReason = {
+  greetingGenerationOutcome?: string
+  greetingGenerationErrorCode?: string
   schemaVersion: number
   summary: string
   matches: string[]

@@ -51,6 +51,8 @@ export function riskTextOf(job: BossJob) {
     .filter((item) => item.status === "PARTIAL" || item.status === "CONFLICT")
     .map((item) => `${item.label}：${item.note || (item.status === "CONFLICT" ? "存在冲突" : "部分匹配")}`)
   const risks = Array.from(new Set([
+    ...(reason.greetingGenerationOutcome === "UNKNOWN"
+      ? ["话术补生成结果未知，可能已产生调用；匹配结果已保留，请手工编辑并核对话术，不必重新分析岗位。"] : []),
     ...reason.hardConflicts.map((item) => `硬冲突：${item.requirement}`),
     ...reason.gaps,
     ...dimensionRisks,
@@ -133,6 +135,8 @@ export function parseAiReason(value?: string | null): ParsedAiReason {
     const schemaVersion = numberValue(parsed.schemaVersion) ?? 1
     return {
       schemaVersion,
+      greetingGenerationOutcome: typeof parsed.greetingGenerationOutcome === "string" ? parsed.greetingGenerationOutcome : undefined,
+      greetingGenerationErrorCode: typeof parsed.greetingGenerationErrorCode === "string" ? parsed.greetingGenerationErrorCode : undefined,
       summary: typeof parsed.summary === "string" && parsed.summary.trim()
         ? parsed.summary.trim()
         : "暂无AI结论",
@@ -163,6 +167,11 @@ export function parseAiReason(value?: string | null): ParsedAiReason {
 export function formatAiReasonDetail(value?: string | null) {
   const reason = parseAiReason(value)
   const sections: string[] = [`结论\n${reason.summary}`]
+  if (reason.greetingGenerationOutcome === "UNKNOWN") {
+    sections.push("话术补生成\n结果未知，可能已产生调用。岗位匹配结果已保留，不会自动重新分析；可手工编辑话术并在投递前确认。")
+  } else if (reason.greetingGenerationOutcome === "FAILED") {
+    sections.push("话术补生成\n未获得可用话术。岗位匹配结果已保留，请核对默认话术或手工编辑。")
+  }
   if (reason.matches.length > 0) sections.push(`匹配证据\n${reason.matches.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)
   if (reason.gaps.length > 0) sections.push(`明确差距\n${reason.gaps.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)
   if (reason.unknowns.length > 0) sections.push(`待核实\n${reason.unknowns.map((item, index) => `${index + 1}. ${item}`).join("\n")}`)

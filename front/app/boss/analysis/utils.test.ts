@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest"
 import { formatAiReasonDetail, parseAiReason, riskTextOf } from "./utils"
 
 describe("AI岗位理由兼容解析", () => {
+  it("话术 UNKNOWN 单独显示且不要求重跑已完成匹配", () => {
+    const reason = JSON.stringify({ schemaVersion: 2, summary: "匹配已完成", greetingGenerationOutcome: "UNKNOWN" })
+    expect(formatAiReasonDetail(reason)).toContain("岗位匹配结果已保留")
+    expect(formatAiReasonDetail(reason)).toContain("可能已产生调用")
+    expect(riskTextOf({ id: 1, aiReason: reason })).toContain("手工编辑")
+  })
   it("解析 schemaVersion 2 的证据、待核实和分项得分", () => {
     const reason = JSON.stringify({
       schemaVersion: 2,
