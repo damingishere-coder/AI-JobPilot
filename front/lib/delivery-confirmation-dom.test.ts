@@ -17,8 +17,9 @@ function dom(html: string) {
 }
 
 test('Zhilian compares each label independently instead of concatenating duplicate DOM text', () => {
-  const code = readFunction('zhilian-content.js', 'detectZhilianDeliveryStatus', 'detectZhilianDeliveryFailure');
-  const detect = vm.runInNewContext(code + '; detectZhilianDeliveryStatus', { compact: (s: unknown) => String(s || '').trim() });
+  const scope: Record<string, any> = {};
+  vm.runInNewContext(fs.readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-page-evidence.js'), 'utf8'), { window: scope });
+  const detect = scope.GetJobsZhilianPageEvidence.detectStatus;
   assert.equal(detect(dom('<button>继续沟通</button>')), '已投递');
   assert.equal(detect(dom('<button>投递简历</button>')), '');
   assert.equal(detect(dom('<div class="modal"><h3>已向对方发送简历和打招呼语</h3></div>')), '已投递');

@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-14-delivery-recovery";
+  const EXTENSION_VERSION = "2026-09-14-zhilian-adapter";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -1808,7 +1808,8 @@
     };
 
     executeDeliveryOnce(message.task, () => deliverOnCurrentPage(message.task, message)).then((result) => {
-      respondOnce({ ...result, persisted: true });
+      respondOnce({ ...result, persisted: true,
+        evidenceDetails: window.GetJobsZhilianPageEvidence.evaluateEvidence(document, observeZhilianRuntimePage(), result.actionStarted !== false) });
     }).catch((error) => {
       postProgress(message, "error", error.message || String(error), {
         operation: "deliver",
@@ -1847,7 +1848,7 @@
         stage: "complete",
         saved: 1
       });
-      return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: successMessage };
+      return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", actionStarted: false, message: successMessage };
     }
 
     const pageFailure = detectZhilianDeliveryFailure("");
@@ -1865,6 +1866,12 @@
       return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", actionStarted: false,
         message: "只读核对未发现明确已投递状态，未点击投递，请人工核对" };
     }
+    const runtimeBlocked = await window.BrowserApplicationRuntime.beforeEffect({ task,
+      begin: body => requestZhilianLocalApi("runtime-begin", { body, params: { requestKey: task.requestKey }, pageTabId: message.pageTabId }),
+      observe: observeZhilianRuntimePage,
+      matches: () => isCurrentZhilianJobDetailPage(task.url) || isSameUrl(window.location.href, task.url),
+      active: () => window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ === CONTENT_INSTANCE_ID });
+    if (runtimeBlocked) return runtimeBlocked;
     const favoriteButton = findZhilianActionButton(["收藏"], ["已收藏", "取消收藏"]);
     if (favoriteButton) {
       clickElement(favoriteButton);
@@ -2165,23 +2172,11 @@
   }
 
   function detectZhilianDeliveryStatus(root = document) {
-    const successLabels = ["已投递", "已申请", "投递成功", "申请成功", "继续沟通"];
-    const elements = Array.from(root.querySelectorAll?.("button, a, [role='button']") || [])
-      .filter((el) => el.offsetParent !== null);
-    const matched = elements.some((el) => {
-      const texts = [
-        el.innerText,
-        el.textContent,
-        el.getAttribute?.("aria-label"),
-        el.getAttribute?.("title")
-      ].filter(Boolean).map(compact);
-      return texts.some(text => successLabels.some(label => text === label));
-    });
-    if (matched) return "已投递";
-    const dialogs = Array.from(root.querySelectorAll?.("[role='dialog'], .el-dialog, [class*='dialog'], [class*='modal']") || []);
-    if (dialogs.some(el => el.offsetParent !== null
-      && /已向对方发送简历和打招呼语/.test(el.innerText || el.textContent || ""))) return "已投递";
-    return "";
+    return window.GetJobsZhilianPageEvidence.evaluateEvidence(root, observeZhilianRuntimePage()).outcome === "CONFIRMED" ? "已投递" : "";
+  }
+
+  function observeZhilianRuntimePage() {
+    return window.GetJobsZhilianPageEvidence.observe({ document, href: window.location.href, signals: buildPageBlockDiagnostics() });
   }
 
   function detectZhilianDeliveryFailure(fallback) {
@@ -2909,7 +2904,7 @@
   function isStrongLoginPrompt(text, url) {
     const current = String(url || "");
     if (/passport|login|user\/login|扫码登录|二维码登录/.test(current)) return true;
-    return /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
+    return /请先登录|请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
   }
 
   function first(value, fallback) {

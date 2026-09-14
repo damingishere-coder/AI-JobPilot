@@ -22,12 +22,14 @@ import java.util.Map;
 public class DeliveryAttemptController {
     @org.springframework.beans.factory.annotation.Value("${application.runtime.boss-enabled:false}")
     private boolean bossRuntimeEnabled;
+    @org.springframework.beans.factory.annotation.Value("${application.runtime.zhilian-enabled:false}")
+    private boolean zhilianRuntimeEnabled;
     private final DeliveryAttemptService deliveryAttemptService;
     private final LocalActionTokenService localActionTokenService;
 
     @GetMapping("/runtime-capabilities")
     public Map<String,Object> runtimeCapabilities() {
-        return Map.of("protocol","application-runtime/1","bossEnabled",bossRuntimeEnabled,"zhilianEnabled",false);
+        return Map.of("protocol","application-runtime/1","bossEnabled",bossRuntimeEnabled,"zhilianEnabled",zhilianRuntimeEnabled);
     }
 
     @GetMapping("/recovery")
@@ -53,6 +55,7 @@ public class DeliveryAttemptController {
                 .body(Map.of("success", false, "message", "本地操作令牌无效，请刷新页面后重试"));
         boolean valid = request != null && request.platform() != null
                 && (!bossRuntimeEnabled || !"boss".equals(request.platform()) || request.reconciliationOnly() || request.runtimeClient())
+                && (!zhilianRuntimeEnabled || !"zhilian".equals(request.platform()) || request.reconciliationOnly() || request.runtimeClient())
                 && deliveryAttemptService.validateDispatch(requestKey, request.platform(), request.profileId(),
                 request.id(), request.url(), request.greeting(), request.reconciliationOnly());
         return ResponseEntity.status(valid ? 200 : 409).body(Map.of("success", valid,
