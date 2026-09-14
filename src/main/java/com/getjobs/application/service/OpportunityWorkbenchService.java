@@ -24,7 +24,8 @@ public class OpportunityWorkbenchService {
         UNKNOWN("结果未知待对账",true),FAILED("失败待处理",true),WAITING_CONFIRM("等待确认投递",true),
         HR_REVIEW("HR 消息待核实",true),FOLLOW_UP("到期待跟进",true),RUNNING("投递请求中",false),
         AWAITING_REPLY("已投待回复",false),REPLIED("HR 已回复",false),CHATTING("沟通中",false),
-        INTERVIEW_INVITED("面试邀请待安排",true),INTERVIEW("面试阶段",false),OFFER("Offer",false),
+        INTERVIEW_INVITED("面试邀请待安排",true),INTERVIEW_PREPARE("七天内面试待准备",true),INTERVIEW_CHECK("面试时间已过待核实",true),
+        INTERVIEW_SCHEDULED("已约面试",false),INTERVIEW("面试阶段",false),OFFER("Offer",false),
         DISCOVERED_TODAY("今日新发现",false),HIGH_MATCH("较高匹配待关注",false);
         final String label;final boolean action;
         Bucket(String label,boolean action){this.label=label;this.action=action;}
@@ -60,6 +61,9 @@ public class OpportunityWorkbenchService {
             case REPLIED -> "stage='RECRUITER_REPLIED'";
             case CHATTING -> "stage IN('CHATTING','PHONE_SCREEN')";
             case INTERVIEW_INVITED -> "interview_invited=1 AND stage NOT IN('INTERVIEW','OFFER','REJECTED','WITHDRAWN')";
+            case INTERVIEW_PREPARE -> "EXISTS(SELECT 1 FROM interview i WHERE i.opportunity_id=facts.id AND i.status='SCHEDULED' AND julianday(i.scheduled_at)>=julianday(?) AND julianday(i.scheduled_at)<julianday(?) AND json_array_length(i.preparation_json)<4)";
+            case INTERVIEW_CHECK -> "EXISTS(SELECT 1 FROM interview i WHERE i.opportunity_id=facts.id AND i.status='SCHEDULED' AND julianday(i.scheduled_at)<julianday(?))";
+            case INTERVIEW_SCHEDULED -> "EXISTS(SELECT 1 FROM interview i WHERE i.opportunity_id=facts.id AND i.status='SCHEDULED' AND julianday(i.scheduled_at)>=julianday(?))";
             case INTERVIEW -> "stage='INTERVIEW'";
             case OFFER -> "stage='OFFER'";
             case DISCOVERED_TODAY -> "origin<>'LEGACY_IMPORT' AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?)";
@@ -69,6 +73,8 @@ public class OpportunityWorkbenchService {
     private List<Object> args(long profile,Bucket bucket,Instant instant) {
         List<Object> args=new ArrayList<>();args.add(profile);
         if(bucket==Bucket.FOLLOW_UP) args.add(instant.toString());
+        if(Set.of(Bucket.INTERVIEW_PREPARE,Bucket.INTERVIEW_CHECK,Bucket.INTERVIEW_SCHEDULED).contains(bucket)) args.add(instant.toString());
+        if(bucket==Bucket.INTERVIEW_PREPARE) args.add(instant.plus(Duration.ofDays(7)).toString());
         if(bucket==Bucket.DISCOVERED_TODAY) {
             var start=instant.atZone(ZONE).toLocalDate().atStartOfDay(ZONE);
             args.add(start.toInstant().toString());args.add(start.plusDays(1).toInstant().toString());

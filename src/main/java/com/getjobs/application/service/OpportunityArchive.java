@@ -13,6 +13,10 @@ public final class OpportunityArchive {
     }
 
     public static void requireIdle(Connection connection,String platform,long profile) throws SQLException {
+        try(var query=connection.prepareStatement("SELECT COUNT(*) FROM interview i JOIN opportunity o ON o.id=i.opportunity_id WHERE o.profile_id=? AND o.platform=? AND o.archived=0 AND i.status='SCHEDULED'")) {
+            query.setLong(1,profile);query.setString(2,platform);
+            try(var rows=query.executeQuery()) { if(rows.next() && rows.getLong(1)>0) throw new IllegalStateException("仍有已安排面试，请先完成或取消后归档"); }
+        }
         for(String table:new String[]{"job_analysis_task","delivery_attempt"}) {
             String predicate=table.equals("job_analysis_task")?"status IN ('PENDING','LEASED','UNKNOWN')":"state IN ('REQUESTED','UNKNOWN')";
             try(var query=connection.prepareStatement("SELECT COUNT(*) FROM "+table+" WHERE profile_id=? AND lower(platform)=? AND "+predicate)) {
