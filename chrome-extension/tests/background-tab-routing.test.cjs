@@ -41,6 +41,7 @@ function loadBackground({
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,
+  runtimeClaim = { success: true, enabled: false },
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
   }
@@ -205,6 +206,7 @@ function loadBackground({
       }
       if (String(url).endsWith("/validate-dispatch")) return Promise.resolve(jsonResponse({ success: dispatchAllowed },
         { ok: dispatchAllowed, status: dispatchAllowed ? 200 : 409 }));
+      if (String(url).endsWith("/runtime/claim") && runtimeClaim) return Promise.resolve(jsonResponse(runtimeClaim));
       return fetchImpl(url, options);
     },
     setTimeout,
@@ -231,6 +233,29 @@ function dispatchRuntimeMessage(listener, message, sender) {
     if (asyncResponse !== true) queueMicrotask(() => resolve(undefined));
   });
 }
+
+test("runtime claim loss is never retried and does not invoke the page executor", async () => {
+  let calls = 0;
+  const task = { id:1, profileId:1, requestKey:'permit-1', greeting:'synthetic', url:'https://www.zhipin.com/job_detail/test.html' };
+  const {context,sentMessages} = loadBackground({
+    tabs:[{id:7,url:task.url},{id:99,url:'http://localhost:6866'}], runtimeClaim:null,
+    bossDeliveryResponses:[{outcome:'CONFIRMED'}],
+    fetchImpl:async(url) => { assert.ok(url.endsWith('/runtime/claim')); calls++; throw new Error('lost after commit'); }
+  });
+  const result = await context.deliverBossTask({id:7},{},task,{runId:'run',runtimeSessionId:'session',correlationId:'correlation'},99,1,1);
+  assert.equal(calls,1); assert.equal(result.outcome,'UNKNOWN'); assert.equal(result.haltBatch,true);
+  assert.equal(sentMessages.some(entry=>entry.message.type==='BOSS_DELIVER_CURRENT_V2'),false);
+});
+
+test("closed workbench prevents the next runtime task and duplicate claims do not fall back", async () => {
+  const task={id:1,profileId:1,requestKey:'permit-1',greeting:'synthetic',url:'https://www.zhipin.com/job_detail/test.html'};
+  for (const tabs of [[{id:7,url:task.url}],[{id:7,url:task.url},{id:99,url:'http://localhost:6866'}]]) {
+    const {context,sentMessages}=loadBackground({tabs,runtimeClaim:{success:false,errorCode:'RUNTIME_RECONCILIATION_REQUIRED'},bossDeliveryResponses:[{}]});
+    const result=await context.deliverBossTask({id:7},{},task,{runId:'run',runtimeSessionId:'session',correlationId:'correlation'},99,1,1);
+    assert.equal(result.haltBatch,true); assert.equal(result.actionStarted,false);
+    assert.equal(sentMessages.some(entry=>entry.message.type==='BOSS_DELIVER_CURRENT_V2'),false);
+  }
+});
 
 test("accepts the actual Zhilian content script version", async () => {
   const { context } = loadBackground({
@@ -754,7 +779,7 @@ test("halts a Boss batch after the first unknown result and leaves later jobs un
     greeting: `岗位 ${id} 的精确话术`
   }));
   const { context, sentMessages } = loadBackground({
-    tabs: [{ id: 7, windowId: 1, url: tasks[0].url, status: "complete" }],
+    tabs: [{ id: 7, windowId: 1, url: tasks[0].url, status: "complete" }, { id: 99, url: "http://localhost:6866" }],
     bossDeliveryResponses: [{
       success: false,
       outcome: "UNKNOWN",
@@ -774,7 +799,7 @@ test("halts a Boss batch after the first unknown result and leaves later jobs un
     { id: 7, windowId: 1, url: tasks[0].url, status: "complete" },
     { hosts: ["zhipin.com"], contentScript: "boss-content.js" },
     { type: "BOSS_DELIVER_BATCH", tasks },
-    null
+    99
   );
 
   assert.equal(result.success, false);
@@ -1366,11 +1391,11 @@ test('Boss stops the whole batch on platform restrictions but can pass an indivi
     const tasks = [1, 2].map(id => ({id, requestKey:`guard-${id}`, url:`https://www.zhipin.com/job_detail/guard-${id}.html`, greeting:'已确认的原话术'}));
     const response = {success:false, outcome:'FAILED', evidence:'PLATFORM_ERROR', failureType, message:failureType};
     const {context, sentMessages} = loadBackground({
-      tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'}],
+      tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'},{id:99,url:'http://localhost:6866'}],
       bossDeliveryResponses:[response, response],
       fetchImpl:async (_,options) => jsonResponse({success:true,accepted:true,state:JSON.parse(options.body).outcome}),
     });
-    const result = await context.handleBossDeliver({id:7}, {hosts:['zhipin.com'],contentScript:'boss-content.js'}, {type:'BOSS_DELIVER_BATCH',tasks}, null);
+    const result = await context.handleBossDeliver({id:7}, {hosts:['zhipin.com'],contentScript:'boss-content.js'}, {type:'BOSS_DELIVER_BATCH',tasks}, 99);
     const mustStop = failureType !== 'JOB_CLOSED';
     assert.equal(result.halted, mustStop);
     assert.equal(sentMessages.filter(entry=>entry.message.type==='BOSS_DELIVER_CURRENT_V2').length, mustStop ? 1 : 2);

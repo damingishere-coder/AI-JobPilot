@@ -8,6 +8,29 @@ import { Button } from "@/components/ui/button"
 type Row = {
   request_key: string; profile_id: number; job_row_id: number; state: string
   evidence: string; message: string; company_name: string; job_name: string; greeting_snapshot: string
+  runtime_phase?: string; run_id?: string
+}
+
+const phases: Record<string, string> = { LEGACY: "历史记录，执行阶段未知", NOT_STARTED: "尚未领取", CLAIMED: "已领取，未签发操作许可", EFFECT_POSSIBLE: "可能已执行，只读核对", SETTLED: "结果已保存" }
+
+function RuntimeTimeline({ requestKey }: { requestKey: string }) {
+  const [events, setEvents] = useState<Array<{ action_seq: number; action: string; phase: string; evidence?: string; observed_at: string }>>([])
+  const [error, setError] = useState("")
+  async function load() {
+    try {
+      const response = await fetch(`${API_BASE}/api/delivery-attempts/${encodeURIComponent(requestKey)}/runtime`, { cache: "no-store" })
+      if (!response.ok) throw new Error("执行记录暂时无法读取")
+      const result = await response.json()
+      if (!Array.isArray(result)) throw new Error("执行记录格式不正确")
+      setEvents(result); setError("")
+    } catch (e) { setError(e instanceof Error ? e.message : "执行记录暂时无法读取") }
+  }
+  return <details onToggle={event => { if (event.currentTarget.open) void load() }}>
+    <summary>查看执行记录</summary>
+    {error && <p role="status">{error}</p>}
+    {!error && !events.length && <p>暂无执行记录；历史记录不能据此判断为未执行。</p>}
+    {events.map(event => <p key={event.action_seq}>{event.observed_at} · {event.action} · {phases[event.phase] || event.phase}{event.evidence ? ` · ${event.evidence}` : ""}</p>)}
+  </details>
 }
 
 export function DeliveryRecovery({ platform }: { platform: "boss" | "zhilian" }) {
@@ -70,6 +93,14 @@ export function DeliveryRecovery({ platform }: { platform: "boss" | "zhilian" })
   }
 
   const pending = rows.filter(row => row.state !== "CONFIRMED")
+  async function pauseRuntime(requestKey: string) {
+    try {
+      const response = await localActionFetch(`${API_BASE}/api/delivery-attempts/${encodeURIComponent(requestKey)}/runtime/pause`, { method: "POST" })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.message || "暂停未确认，请刷新后核对")
+      stop.current = true; setStatus(result.message)
+    } catch (e) { setStatus(e instanceof Error ? e.message : "暂停未确认，请刷新后核对") }
+  }
   return <section className="rounded-xl border bg-card p-4 space-y-3" aria-label="投递中断恢复">
     <div className="flex flex-wrap items-center gap-3">
       <strong>投递中断恢复</strong>
@@ -86,6 +117,9 @@ export function DeliveryRecovery({ platform }: { platform: "boss" | "zhilian" })
         <p>{row.job_row_id} · {row.job_name} · {row.company_name} · {row.state === "FAILED" ? "可续投" : "先核对"}</p>
         <p className="text-muted-foreground">{row.greeting_snapshot}</p>
         <p className="text-muted-foreground">{row.message}</p>
+        {row.runtime_phase && <p>{phases[row.runtime_phase] || "执行阶段待核对"}</p>}
+        {platform === "boss" && row.run_id && row.state === "REQUESTED" && <Button variant="outline" onClick={() => void pauseRuntime(row.request_key)}>暂停此投递批次</Button>}
+        <RuntimeTimeline requestKey={row.request_key} />
       </article>)}</div>
     </details>}
   </section>

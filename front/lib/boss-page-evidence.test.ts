@@ -65,3 +65,25 @@ it('the actual delivery entry stops before any click when login overlays an old 
   expect(clicks).toHaveLength(0)
   expect(messages).toHaveLength(1)
 })
+
+it('an uncertain or reused durable permit never clicks favorite or contact', async () => {
+  for (const response of [{ success: false }, { success: true, data: { success: true, permitted: false } }]) {
+    const h = harness('<div class="job-banner">岗位</div><button>感兴趣</button><button>立即沟通</button>')
+    for (const node of h.doc.querySelectorAll('*')) node.getBoundingClientRect = () => ({ width: 100, height: 20 }) as DOMRect
+    const clicks: unknown[] = [], requests: unknown[] = []
+    const scope: Record<string, any> = { location: new URL('https://www.zhipin.com/job_detail/fixture001.html'), setTimeout: () => 0,
+      getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api }
+    const context = { window: scope, document: h.doc, URL, URLSearchParams, console, setTimeout: () => 0, clicks,
+      chrome: { runtime: { onMessage: { addListener: () => {} }, sendMessage: async (request: unknown) => { requests.push(request); return response } } } }
+    runInNewContext(readFileSync(resolve(root, 'boss-scan-support.js'), 'utf8'), context)
+    const code = readFileSync(resolve(root, 'boss-content.js'), 'utf8').replace(/\}\)\(\);\s*$/, `
+      waitForPage = async () => {}; sleep = async () => {}; clickElement = element => clicks.push(element);
+      window.testDelivery = deliverOnCurrentPage;
+    })();`)
+    runInNewContext(code, context)
+    const result = await scope.testDelivery({ id:1,profileId:1,requestKey:'synthetic',url:scope.location.href,greeting:'模拟话术',
+      runtime:{runtimeSessionId:'session',claimVersion:1} }, {pageTabId:99})
+    expect(result).toMatchObject({outcome:'UNKNOWN',actionStarted:false,haltBatch:true})
+    expect(clicks).toHaveLength(0); expect(requests).toHaveLength(1)
+  }
+})
