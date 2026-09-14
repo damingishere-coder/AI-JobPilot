@@ -391,6 +391,7 @@ public class BossAnalyticsController {
         Map<String, Object> task = new HashMap<>();
         task.put("id", job.getId());
         task.put("platform", "boss");
+        task.put("profileId", job.getProfileId());
         task.put("url", Objects.toString(job.getJobUrl(), ""));
         task.put("companyName", Objects.toString(job.getCompanyName(), ""));
         task.put("jobName", Objects.toString(job.getJobName(), ""));

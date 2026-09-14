@@ -38,6 +38,22 @@ public class DeliveryAttemptController {
 
     public record ResumeRequest(long profileId) {}
 
+    @PostMapping("/{requestKey}/validate-dispatch")
+    public ResponseEntity<?> validateDispatch(@PathVariable("requestKey") String requestKey,
+            @RequestBody DispatchRequest request,
+            @RequestHeader(value = LocalActionTokenService.HEADER_NAME, required = false) String token) {
+        if (!localActionTokenService.isValid(token)) return ResponseEntity.status(401)
+                .body(Map.of("success", false, "message", "本地操作令牌无效，请刷新页面后重试"));
+        boolean valid = request != null && request.platform() != null
+                && deliveryAttemptService.validateDispatch(requestKey, request.platform(), request.profileId(),
+                request.id(), request.url(), request.greeting(), request.reconciliationOnly());
+        return ResponseEntity.status(valid ? 200 : 409).body(Map.of("success", valid,
+                "message", valid ? "已核对确认快照" : "确认记录或任务快照已变化，已停止派发，请刷新后核对"));
+    }
+
+    public record DispatchRequest(String platform, long profileId, long id, String url,
+                                  String greeting, boolean reconciliationOnly) {}
+
     @GetMapping
     public List<DeliveryAttemptService.AttemptView> listRecent(
             @RequestParam("platform") String platform,

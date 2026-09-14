@@ -1,8 +1,6 @@
 package com.getjobs.application.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.getjobs.application.entity.CookieEntity;
-import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.Job51ConfigEntity;
 import com.getjobs.application.entity.Job51OptionEntity;
 import com.getjobs.application.dto.DeliveryResultRequest;
@@ -332,10 +330,9 @@ public class JobController {
         Map<String, Object> response = new HashMap<>();
         try {
             playwrightManager.setLoginStatus("51job", false);
-            cookieService.clearCookieByPlatform("51job", "manual logout");
             try { playwrightManager.clear51jobCookies(); } catch (Exception e) { log.warn("清理51job上下文Cookie异常: {}", e.getMessage()); }
             response.put("success", true);
-            response.put("message", "51job已退出登录，数据库Cookie和上下文Cookie均已清理");
+            response.put("message", "51job已退出登录，浏览器会话已清理；历史数据库记录保留");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("退出登录失败", e);
@@ -348,34 +345,13 @@ public class JobController {
     /** 读取数据库中的 51job Cookie 记录 */
     @GetMapping("/51job/cookie")
     public ResponseEntity<Map<String, Object>> get51jobCookieRecord() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            CookieEntity cookie = cookieService.getCookieByPlatform("51job");
-            Map<String, Object> data = CookieResponseView.from(cookie, "51job", "未找到51job Cookie记录");
-            response.put("success", true);
-            response.put("data", data);
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "读取Cookie记录失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("51job");
     }
 
     /** 主动保存51job Cookie到数据库 */
     @PostMapping("/51job/save-cookie")
     public ResponseEntity<Map<String, Object>> save51jobCookie() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            playwrightManager.save51jobCookiesToDb("manual save");
-            response.put("success", true);
-            response.put("message", "已主动保存51job Cookie到数据库");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "保存51job Cookie失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("51job");
     }
 
     /** 启动51job自动投递任务 */

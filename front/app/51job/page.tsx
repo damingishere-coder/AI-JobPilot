@@ -38,7 +38,6 @@ export default function Job51Page() {
   const [loadingConfig, setLoadingConfig] = useState(true)
   const [isCustomArea, setIsCustomArea] = useState(false)
   const [backendAvailable, setBackendAvailable] = useState(false)
-  const [cookieSavedAfterLogin, setCookieSavedAfterLogin] = useState(false)
 
   useEffect(() => {
     if (!backendAvailable) {
@@ -71,10 +70,6 @@ export default function Job51Page() {
             try {
               const data = JSON.parse(event.data)
               setIsLoggedIn(data.job51LoggedIn || false)
-              if (data.job51LoggedIn && !cookieSavedAfterLogin) {
-                fetch(`${API_BASE}/api/cookie/save?platform=51job`, { method: 'POST' }).catch(() => {})
-                setCookieSavedAfterLogin(true)
-              }
               setCheckingLogin(false)
             } catch (error) {
               console.error('[51job SSE] ❌ 解析连接消息失败:', error)
@@ -88,10 +83,6 @@ export default function Job51Page() {
               const data = JSON.parse(event.data)
               if (data.platform === '51job') {
                 setIsLoggedIn(data.isLoggedIn)
-                if (data.isLoggedIn && !cookieSavedAfterLogin) {
-                  fetch(`${API_BASE}/api/cookie/save?platform=51job`, { method: 'POST' }).catch(() => {})
-                  setCookieSavedAfterLogin(true)
-                }
                 setCheckingLogin(false)
               }
             } catch (error) {
@@ -247,23 +238,11 @@ export default function Job51Page() {
       const response = await fetch(`${API_BASE}/api/51job/logout`, { method: 'POST' })
       const data = await response.json()
       setIsLoggedIn(false)
-      setLogoutResult({ success: data.success, message: data.success ? '已退出登录，Cookie已清空。' : data.message })
+      setLogoutResult({ success: data.success, message: data.success ? '已退出旧版浏览器会话；历史数据库记录保留。' : data.message })
       setShowLogoutResultDialog(true)
     } catch (error) {
       setLogoutResult({ success: false, message: '退出登录失败：网络或服务异常。' })
       setShowLogoutResultDialog(true)
-    }
-  }
-
-  const handleSaveCookie = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/cookie/save?platform=51job`, { method: 'POST' })
-      const data = await response.json()
-      setSaveResult({ success: data.success, message: data.success ? '配置保存成功。' : data.message })
-      setShowSaveDialog(true)
-    } catch (error) {
-      setSaveResult({ success: false, message: '配置保存失败：网络或服务异常。' })
-      setShowSaveDialog(true)
     }
   }
 
@@ -299,14 +278,8 @@ export default function Job51Page() {
         body: JSON.stringify(payload),
       })
       if (response.ok) {
-        // 保存配置成功后，同步保存 Cookie（按你的要求加到保存按钮）
-        try {
-          await fetch(`${API_BASE}/api/cookie/save?platform=51job`, { method: 'POST' })
-        } catch (e) {
-          console.warn('[51job] 保存 Cookie 失败:', e)
-        }
         await fetchAllData()
-        setSaveResult({ success: true, message: '保存成功，配置与Cookie已更新。' })
+        setSaveResult({ success: true, message: '配置已保存。登录会话由浏览器保留。' })
       } else {
         setSaveResult({ success: false, message: '保存失败：后端返回异常状态。' })
       }
@@ -469,7 +442,7 @@ export default function Job51Page() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">退出后将清除Cookie并切换为未登录状态。</p>
+              <p className="text-sm text-muted-foreground mb-4">退出后将清除旧版自动化浏览器会话。历史数据库记录保留，日常 Chrome 登录不受影响。</p>
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" onClick={() => setShowLogoutDialog(false)} className="rounded-lg px-4">取消</Button>
                 <Button onClick={async () => { await triggerLogout(); setShowLogoutDialog(false) }} className="app-button-danger px-4">确认退出</Button>
@@ -497,7 +470,7 @@ export default function Job51Page() {
         </div>
       )}
 
-      {/* 保存Cookie结果弹框 */}
+      {/* 保存配置结果弹框 */}
       {showSaveDialog && saveResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <Card className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-[92%] max-w-sm border-0">

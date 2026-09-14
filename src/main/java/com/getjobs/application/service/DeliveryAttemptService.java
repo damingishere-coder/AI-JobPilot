@@ -477,6 +477,33 @@ public class DeliveryAttemptService {
                         "ORDER BY a.job_row_id DESC", normalized, currentProfileId(), day.toString(), day.plusDays(1).toString());
     }
 
+    /** Read-only preflight. This is not an execution claim; durable ownership follows in P0.4. */
+    public boolean validateDispatch(String requestKey, String platform, long profileId, long rowId,
+                                    String url, String greeting, boolean reconciliationOnly) {
+        if (!Set.of("boss", "zhilian").contains(platform) || profileId != currentProfileId()) return false;
+        Attempt attempt = findByRequestKey(requestKey);
+        if (attempt == null || !platform.equals(attempt.platform()) || !sameProfile(profileId, attempt.profileId())
+                || rowId != attempt.jobRowId()) return false;
+        Attempt latest = findLatest(platform, profileId, rowId);
+        if (latest == null || latest.id() != attempt.id()) return false;
+        if (reconciliationOnly) {
+            if (attempt.stateEnum() != State.REQUESTED && attempt.stateEnum() != State.UNKNOWN) return false;
+        } else if (attempt.stateEnum() != State.REQUESTED) return false;
+        String table = platform.equals("boss") ? "boss_data" : "zhilian_data";
+        String urlColumn = platform.equals("boss") ? "job_url" : "job_link";
+        String keyColumn = platform.equals("boss") ? "encrypt_id" : "job_id";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("SELECT j." + urlColumn + " AS url, j." + keyColumn +
+                " AS job_key, a.greeting_snapshot FROM " + table + " j JOIN delivery_attempt a " +
+                "ON a.job_row_id=j.id AND a.profile_id=j.profile_id WHERE a.request_key=? AND a.platform=?",
+                requestKey, platform);
+        if (rows.size() != 1) return false;
+        Map<String, Object> row = rows.getFirst();
+        String snapshot = java.util.Objects.toString(row.get("greeting_snapshot"), "");
+        return sameJobKey(attempt.jobKey(), java.util.Objects.toString(row.get("job_key"), ""))
+                && java.util.Objects.equals(url, row.get("url")) && java.util.Objects.equals(greeting, snapshot)
+                && (reconciliationOnly || !snapshot.isBlank());
+    }
+
     /** Resume the saved, user-confirmed snapshot; unknown/in-flight attempts are read-only checks. */
     public Map<String, Object> prepareRecovery(String requestKey, long expectedProfileId) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);

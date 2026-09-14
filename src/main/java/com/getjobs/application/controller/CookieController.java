@@ -1,94 +1,40 @@
 package com.getjobs.application.controller;
 
-import com.getjobs.application.entity.CookieEntity;
-import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.service.CookieService;
 import com.getjobs.worker.manager.PlaywrightManager;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
+import java.util.Set;
 
-import java.util.*;
-
-/**
- * 统一的 Cookie 读/写控制器
- * 提供：
- * - GET /api/cookie?platform=... 读取指定平台的 Cookie 记录
- * - POST /api/cookie/save?platform=...&remark=... 保存当前上下文 Cookie 到数据库
- */
-@Slf4j
+/** 保留旧路由的明确停用响应，不访问浏览器或历史 Cookie。 */
 @RestController
 @RequestMapping("/api/cookie")
 @RequiredArgsConstructor
 public class CookieController {
-
+    // 保留构造兼容；禁止调用这些依赖。
     private final CookieService cookieService;
     private final PlaywrightManager playwrightManager;
+    private static final Set<String> PLATFORMS = Set.of("boss", "zhilian", "liepin", "51job");
 
-    private static final Set<String> ALLOWED_PLATFORMS = Set.of("boss", "liepin", "51job", "zhilian");
+    public static ResponseEntity<Map<String, Object>> retired(String platform) {
+        if (!PLATFORMS.contains(platform)) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "message", "不支持的平台"));
+        }
+        return ResponseEntity.status(410).body(Map.of(
+                "success", false, "errorCode", "BROWSER_SESSION_ONLY", "platform", platform,
+                "message", "Cookie 保存和读取已停用。请在浏览器中手动登录；会话仅由浏览器保存，历史数据库记录保留。"));
+    }
 
     @GetMapping
     public ResponseEntity<Map<String, Object>> getCookie(@RequestParam("platform") String platform) {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            if (!ALLOWED_PLATFORMS.contains(platform)) {
-                response.put("success", false);
-                response.put("message", "不支持的平台: " + platform);
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            CookieEntity cookie = cookieService.getCookieByPlatform(platform);
-            Map<String, Object> data = CookieResponseView.from(cookie, platform, "未找到Cookie记录");
-            response.put("success", true);
-            response.put("data", data);
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("读取Cookie记录失败", e);
-            response.put("success", false);
-            response.put("message", "读取Cookie记录失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return retired(platform);
     }
 
     @PostMapping("/save")
-    public ResponseEntity<Map<String, Object>> saveCookie(
-            @RequestParam("platform") String platform,
-            @RequestParam(value = "remark", defaultValue = "manual save") String remark
-    ) {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            if (!ALLOWED_PLATFORMS.contains(platform)) {
-                response.put("success", false);
-                response.put("message", "不支持的平台: " + platform);
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            if ("boss".equals(platform)) {
-                PlaywrightManager.BossSearchSessionStatus sessionStatus = playwrightManager.verifyBossSearchSession();
-                response.put("searchReady", sessionStatus.searchReady());
-                response.put("homeLoggedIn", sessionStatus.homeLoggedIn());
-                response.put("currentUrl", sessionStatus.currentUrl());
-                response.put("failureReason", sessionStatus.failureReason());
-                if (!sessionStatus.searchReady()) {
-                    response.put("success", false);
-                    response.put("message", sessionStatus.failureReason());
-                    return ResponseEntity.badRequest().body(response);
-                }
-            }
-            playwrightManager.saveCookiesToDb(platform, remark);
-            response.put("success", true);
-            response.put("message", String.format("已主动保存 %s Cookie 到数据库", platform));
-            return ResponseEntity.ok(response);
-        } catch (IllegalArgumentException e) {
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.badRequest().body(response);
-        } catch (Exception e) {
-            log.error("保存Cookie失败", e);
-            response.put("success", false);
-            response.put("message", "保存Cookie失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+    public ResponseEntity<Map<String, Object>> saveCookie(@RequestParam("platform") String platform,
+            @RequestParam(value = "remark", defaultValue = "manual save") String remark) {
+        return retired(platform);
     }
 }

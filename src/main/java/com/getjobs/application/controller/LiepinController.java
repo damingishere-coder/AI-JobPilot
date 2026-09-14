@@ -1,7 +1,5 @@
 package com.getjobs.application.controller;
 
-import com.getjobs.application.entity.CookieEntity;
-import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.LiepinConfigEntity;
 import com.getjobs.application.entity.LiepinOptionEntity;
 import com.getjobs.application.dto.DeliveryResultRequest;
@@ -322,22 +320,11 @@ public class LiepinController {
      */
     @GetMapping("/cookie")
     public ResponseEntity<Map<String, Object>> getLiepinCookieRecord() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            CookieEntity cookie = cookieService.getCookieByPlatform("liepin");
-            Map<String, Object> data = CookieResponseView.from(cookie, "liepin", "未找到猎聘Cookie记录");
-            response.put("success", true);
-            response.put("data", data);
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "读取Cookie记录失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("liepin");
     }
 
     /**
-     * 退出登录：清空数据库Cookie并清理运行中的上下文Cookie
+     * 退出登录：仅清理运行中的浏览器会话
      */
     @PostMapping("/logout")
     public ResponseEntity<Map<String, Object>> logoutLiepin() {
@@ -346,8 +333,6 @@ public class LiepinController {
             // 更新登录状态为未登录并触发SSE通知
             playwrightManager.setLoginStatus("liepin", false);
 
-            // 清空数据库中猎聘平台的所有 Cookie 值
-            cookieService.clearCookieByPlatform("liepin", "manual logout");
 
             // 清理运行中的上下文Cookie
             try {
@@ -357,7 +342,7 @@ public class LiepinController {
             }
 
             response.put("success", true);
-            response.put("message", "猎聘已退出登录，数据库Cookie和上下文Cookie均已清理");
+            response.put("message", "猎聘已退出登录，浏览器会话已清理；历史数据库记录保留");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("猎聘退出登录失败", e);
@@ -372,16 +357,6 @@ public class LiepinController {
      */
     @PostMapping("/save-cookie")
     public ResponseEntity<Map<String, Object>> saveLiepinCookie() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            playwrightManager.saveLiepinCookiesToDb("manual save");
-            response.put("success", true);
-            response.put("message", "已主动保存猎聘Cookie到数据库");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "保存猎聘Cookie失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("liepin");
     }
 }
