@@ -12,7 +12,7 @@
 | P0.5 | 智联 Runtime | 已接入同一领取/许可/暂停协议；复用 V21，平台 DOM 独立；默认关闭，真实单条验收待完成；见 zhilian-runtime-adapter.md |
 | P0.6 | 离线浏览器回归 / 双平台 Smoke | 已建立 Chromium/MV3/HTTP+SQLite 回归及 Windows/Linux CI；完整采集 AI E2E 与真实网站 Smoke 尚未验收；见 browser-regression-gates.md |
 | P1.1 | 不可变简历及分析快照 | 已实现 V22、加密版本、冻结上下文、兼容批次及历史未知展示；生产发布单独验收；见 analysis-context-snapshots.md |
-| P1.2 | Opportunity / Event | 依赖 Phase A 门禁和 P1.1；Migration、历史回填保护 |
+| P1.2 | Opportunity / Event | V23 最小模型、事务事件、归档恢复与独立阶段；被动复用旧稳定执行链，真实 Smoke 仍阻止新 Runtime 启用；见 opportunity-event-foundation.md |
 | P1.3 | Outcome / HR 关联 | 依赖 P1.2；结构化历史与聊天保留期分离 |
 | P1.4 | CRM 工作台 | 依赖 P1.3；保留旧页面和静态导出 |
 | P1.5 | 面试记录 | 依赖 P1.4；人工确认、不接外部日历 |

@@ -40,7 +40,10 @@ type NavGroup = {
 const navGroups: NavGroup[] = [
   {
     title: '工作台',
-    items: [{ href: '/', icon: BiHomeAlt, label: '首页', color: 'text-blue-500' }],
+    items: [
+      { href: '/', icon: BiHomeAlt, label: '首页', color: 'text-blue-500' },
+      { href: '/opportunities', icon: BiBriefcase, label: '求职机会', color: 'text-teal-500' },
+    ],
   },
   {
     title: '求职资料',

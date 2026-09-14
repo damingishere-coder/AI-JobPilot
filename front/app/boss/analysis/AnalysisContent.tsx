@@ -262,7 +262,7 @@ export default function AnalysisContent({
           icon={<BiBarChart size={28} />}
           actions={
             <Button size="sm" variant="destructive" onClick={clearAnalysisAndSelection} disabled={clearingAnalysis}>
-              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "归档中..." : "归档列表"}
             </Button>
           }
         />
