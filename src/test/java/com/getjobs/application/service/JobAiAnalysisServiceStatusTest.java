@@ -368,6 +368,16 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
+    void bossSearchKeywordCannotTurnAnUnrelatedJobIntoMatchingEvidence() {
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(aiService.sendStructuredRequest(any(),any())).thenReturn(batchResult("需核实实际职责"));
+        var request=bossRequest();request.setKeyword("Java");request.setJobName("保险代理人");request.setJobDescription("负责保险产品销售");
+        var result=service.analyzeJob(request);
+        assertThat(result.getDimensions()).hasSize(6).allSatisfy(dimension->assertThat(dimension.getStatus()).isEqualTo("UNKNOWN"));
+    }
+
+    @Test
     void skippedZhilianJobIsNotReturnedToWaitingConfirmByLateAnalysis() {
         when(zhilianJobDataMapper.selectOne(any())).thenReturn(zhilianJob(DeliveryStatus.SKIPPED));
         service.updatePlatformCache(zhilianRequest(), analysis("APPLY"));

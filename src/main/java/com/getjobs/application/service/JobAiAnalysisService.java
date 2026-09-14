@@ -948,7 +948,6 @@ public class JobAiAnalysisService {
                                       String resumeText) {
         if (result == null) return;
         String jobSource = String.join("\n",
-                "zhilian".equalsIgnoreCase(request.getPlatform()) ? "" : safe(request.getKeyword()),
                 safe(request.getCompanyName()),
                 safe(request.getJobName()),
                 safe(request.getSalary()),
@@ -1194,6 +1193,7 @@ public class JobAiAnalysisService {
             entity.setGreeting(result.getGreeting());
             entity.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
             entity.setRawResponse(diagnostic);
+            entity.setEvaluatedResultCipher(analysisContexts.encryptEvaluatedResult(request,result.toReasonText()));
             entity.setAnalysisContext(request.getRuntimeContext()==null ? null : request.getAnalysisContext());
             if (request.getRuntimeContext()!=null) entity.setResumeVersionId(request.getRuntimeContext().basis().resumeVersionId());
             entity.setCreatedAt(LocalDateTime.now());

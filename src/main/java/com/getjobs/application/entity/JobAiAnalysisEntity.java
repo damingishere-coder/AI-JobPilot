@@ -61,6 +61,11 @@ public class JobAiAnalysisEntity {
     @lombok.ToString.Exclude
     private String analysisContext;
 
+    @TableField("evaluated_result_cipher")
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    private String evaluatedResultCipher;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 
