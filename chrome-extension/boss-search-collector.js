@@ -24,7 +24,7 @@
 
     candidates.forEach((root, index) => {
       try {
-        const job = parseCard(root, keyword, selectors);
+        const job = parseCard(root, keyword, selectors, browserContext());
         const missingFields = requiredMissingFields(job);
         missingFields.forEach((field) => {
           missingFieldCounts[field] = (missingFieldCounts[field] || 0) + 1;
@@ -93,7 +93,7 @@
     return uniqueNodes(roots).filter(isLikelyJobCard);
   }
 
-  function parseCard(root, keyword, selectors) {
+  function parseCard(root, keyword, selectors, context) {
     const text = compact(root?.innerText || root?.textContent || "");
     const lines = cardLines(root);
     const detailLinkSelector = selectors.DETAIL_LINK_SELECTOR || "a[href*='/job_detail/'], a[href*='job_detail']";
@@ -104,7 +104,7 @@
       link?.getAttribute?.("href")
         || link?.href
         || attr(root, ["data-url", "data-href", "href"])
-        || extractJobUrlFromText(text)
+        || extractJobUrlFromText(text), context
     );
     const id = compact(
       extractBossId(url)
@@ -118,7 +118,7 @@
       textOf(root, fieldSelectors.title),
       attr(link, ["title", "aria-label"]),
       compact(link?.innerText || link?.textContent || ""),
-      lines.find((line) => isLikelyTitle(line, salary))
+      lines.find((line) => isLikelyTitle(line, salary, context))
     ), salary);
     const company = cleanField(firstNonEmpty(
       textOf(root, fieldSelectors.company),
@@ -217,10 +217,10 @@
       .filter((line, index, lines) => lines.indexOf(line) === index);
   }
 
-  function isLikelyTitle(line, salary) {
+  function isLikelyTitle(line, salary, context) {
     const value = cleanField(line, salary);
     if (!value || value.length > 80 || isNoisy(value)) return false;
-    if (isNonJobNavigationTitle(value)) return false;
+    if (isNonJobNavigationTitle(value, context)) return false;
     if (isLikelyCompany(value, "", salary)) return false;
     return /工程师|开发|运营|产品|经理|设计|测试|销售|顾问|算法|前端|后端|全栈|Java|Python|Go|C\+\+|Android|iOS|数据|实习|专员|主管|总监/i.test(value)
       || value.length <= 30;
@@ -243,10 +243,14 @@
       .replace(/立即沟通|继续沟通|感兴趣|收藏/g, ""));
   }
 
-  function normalizeBossJobUrl(value) {
-    const support = window.GetJobsBossScanSupport || {};
+  function browserContext() {
+    return { origin: window.location.origin, support: window.GetJobsBossScanSupport || {} };
+  }
+
+  function normalizeBossJobUrl(value, context = browserContext()) {
+    const { origin, support = {} } = context;
     if (support.normalizeBossJobUrl) {
-      return support.normalizeBossJobUrl(value, window.location.origin);
+      return support.normalizeBossJobUrl(value, origin);
     }
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -255,7 +259,7 @@
     const candidate = match ? match[0] : raw;
     if (!/job_detail/i.test(candidate)) return "";
     try {
-      const parsed = new URL(candidate, window.location.origin);
+      const parsed = new URL(candidate, origin);
       parsed.hash = "";
       if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
       if (!parsed.pathname.includes("/job_detail/")) return "";
@@ -277,20 +281,20 @@
     return compact(match?.[1] || "");
   }
 
-  function isCollectableBossJob(job) {
-    return Boolean(job?.title && job?.company && isBossJobDetailUrl(job?.url) && !isNonJobNavigationTitle(job?.title));
+  function isCollectableBossJob(job, context = browserContext()) {
+    return Boolean(job?.title && job?.company && isBossJobDetailUrl(job?.url, context) && !isNonJobNavigationTitle(job?.title, context));
   }
 
-  function isBossJobDetailUrl(url) {
-    const support = window.GetJobsBossScanSupport || {};
+  function isBossJobDetailUrl(url, context = browserContext()) {
+    const { origin, support = {} } = context;
     if (support.isBossJobDetailUrl) {
-      return support.isBossJobDetailUrl(url, window.location.origin);
+      return support.isBossJobDetailUrl(url, origin);
     }
-    return Boolean(extractBossId(normalizeBossJobUrl(url)));
+    return Boolean(extractBossId(normalizeBossJobUrl(url, context)));
   }
 
-  function isNonJobNavigationTitle(value) {
-    const support = window.GetJobsBossScanSupport || {};
+  function isNonJobNavigationTitle(value, context = browserContext()) {
+    const { support = {} } = context;
     if (support.isNonJobNavigationTitle) return support.isNonJobNavigationTitle(value);
     return /^(职位搜索|搜索职位|岗位搜索|搜索岗位|职位|岗位|工作搜索|公司搜索|搜索公司|全部职位|全部岗位|返回列表)$/.test(compact(value));
   }
@@ -321,6 +325,8 @@
 
   window.GetJobsBossSearchCollector = Object.freeze({
     collectVisibleJobs,
-    resolveKeyword
+    resolveKeyword,
+    parseCard,
+    isCollectableBossJob
   });
 })();

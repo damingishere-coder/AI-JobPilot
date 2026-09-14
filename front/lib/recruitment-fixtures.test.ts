@@ -46,4 +46,27 @@ describe('versioned recruitment fixture baseline', () => {
     if (expected.cardCount !== undefined) expect(doc.querySelectorAll('.job-card')).toHaveLength(expected.cardCount)
     if (expected.marker) expect(doc.body.textContent).toContain(expected.marker)
   })
+  it('BOSS explicit parsers do not read the ambient page or mutate the supplied DOM', () => {
+    const fixture = fixtures.find(f => f.id === 'boss/detail/full')!
+    const { doc, scope } = load(fixture)
+    const before = doc.documentElement.outerHTML
+    Object.defineProperty(scope, 'location', { get() { throw new Error('ambient location read') } })
+    expect(scope.GetJobsBossDetailCollector.parseDetail(doc, {}, scope.GetJobsBossSelectors.DETAIL_FIELD_SELECTORS, 'https://www.zhipin.com/job_detail/fixture001.html')).toMatchObject(fixture.expected.detail)
+    expect(doc.documentElement.outerHTML).toBe(before)
+    const list = load(fixtures.find(f => f.id === 'boss/search/cards')!)
+    const card = list.doc.querySelector('.job-card-box')!
+    const original = card.outerHTML
+    const context = { origin: 'https://www.zhipin.com', support: list.scope.GetJobsBossScanSupport }
+    Object.defineProperty(list.scope, 'location', { get() { throw new Error('ambient location read') } })
+    const parsed = list.scope.GetJobsBossSearchCollector.parseCard(card, '运营', list.scope.GetJobsBossSelectors, context)
+    expect(parsed).toMatchObject({ id: 'fixture001', title: 'AI产品运营' })
+    expect(list.scope.GetJobsBossSearchCollector.isCollectableBossJob(parsed, context)).toBe(true)
+    expect(card.outerHTML).toBe(original)
+  })
+  it('BOSS wrapper and explicit parser keep the same complete detail result', () => {
+    const { doc, scope } = load(fixtures.find(f => f.id === 'boss/detail/full')!)
+    const base = { location: '上海', description: '旧简介', title: '旧标题' }
+    const parser = scope.GetJobsBossDetailCollector
+    expect(parser.parseDetail(doc, base, scope.GetJobsBossSelectors.DETAIL_FIELD_SELECTORS, scope.location.href)).toEqual(parser.collectCurrentDetail(base))
+  })
 })
