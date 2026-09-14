@@ -56,8 +56,24 @@ dependencies {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags("browser") }
     finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.register<JavaExec>("installRegressionBrowser") {
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("com.microsoft.playwright.CLI")
+    args = if (providers.gradleProperty("withBrowserDeps").isPresent)
+        listOf("install", "--with-deps", "chromium") else listOf("install", "chromium")
+}
+
+tasks.register<Test>("browserRegressionTest") {
+    description = "Offline Chromium extension regression; temporary profiles, no recruitment network or AI"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("browser") }
+    maxParallelForks = 1
+    environment("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
 }
 
 tasks.jacocoTestReport {
