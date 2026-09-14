@@ -4110,12 +4110,17 @@
   }
 
   function classifyDeliveryFailure(message) {
-    const text = compact([message, document.body?.innerText || "", window.location.href || ""].filter(Boolean).join(" "));
+    const text = compact(message || "");
+    const pageText = compact(document.body?.innerText || "");
+    const url = window.location.href || "";
     let failureType = "UNKNOWN_ERROR";
-    if (isStrongLoginPrompt(text, window.location.href) || /(登录|重新登录|未登录|扫码|账号登录)/.test(text)) {
-      failureType = "LOGIN_EXPIRED";
-    } else if (isSecurityPrompt(text) || /(安全验证|验证码|滑块|验证|风控|实名认证|账号异常|操作过于频繁)/.test(text)) {
+    if (isSecurityPrompt(pageText) || /\/(?:verify|captcha)(?:[/.]|$)/i.test(url)
+        || /(安全验证|验证码|滑块|风控|实名认证|账号异常|操作过于频繁)/.test(text)) {
       failureType = "PLATFORM_VERIFICATION";
+    } else if (isStrongLoginPrompt(pageText, url) || /(登录|重新登录|未登录|扫码登录|账号登录)/.test(text)) {
+      failureType = "LOGIN_EXPIRED";
+    } else if (/(今日沟通.*?已用完|沟通次数.*?已用完|沟通上限|已达上限)/.test(text)) {
+      failureType = "DELIVERY_LIMIT";
     } else if (/(职位已关闭|停止招聘|职位不存在|该职位.*不存在|岗位关闭|已下线|暂停招聘)/.test(text)) {
       failureType = "JOB_CLOSED";
     } else if (/(已投递|已申请|已沟通|继续沟通|重复投递)/.test(text)) {

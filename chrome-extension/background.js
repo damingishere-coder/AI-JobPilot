@@ -1572,7 +1572,8 @@ async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, to
   });
   if (response) {
     const recorded = await recordBossDeliveryResponse(task, response);
-    return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded };
+    const haltBatch = response.haltBatch || ["LOGIN_EXPIRED", "PLATFORM_VERIFICATION", "DELIVERY_LIMIT"].includes(response.failureType);
+    return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded, haltBatch };
   }
   return await inferBossDeliveryAfterEmptyResponse(tabId, task);
 }

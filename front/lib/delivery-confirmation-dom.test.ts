@@ -108,3 +108,20 @@ test('BOSS acknowledges only the positive-quota reminder once, never restriction
   assert.equal(acknowledge(acknowledged), false);
   assert.equal(clicks, 1);
 });
+
+test('BOSS classifies actual restrictions without mistaking the QR sharing footer for login', () => {
+  const document = dom('<p>微信扫码分享</p><p>职位已关闭</p>');
+  const location = { href: 'https://www.zhipin.com/job_detail/example.html' };
+  const code = readFunction('boss-content.js', 'isStrongLoginPrompt', 'buildNavigationKey')
+    + readFunction('boss-content.js', 'classifyDeliveryFailure', 'normalizeFailurePayload');
+  const classify = vm.runInNewContext(code + '; classifyDeliveryFailure', {
+    document, window: { location }, compact: (s: unknown) => String(s || '').trim(),
+    isSecurityPrompt: (s: string) => s.includes('请完成安全验证'),
+  });
+  assert.equal(classify('职位已关闭').failureType, 'JOB_CLOSED');
+  assert.equal(classify('今日沟通次数已用完').failureType, 'DELIVERY_LIMIT');
+  assert.equal(classify('Boss登录状态失效').failureType, 'LOGIN_EXPIRED');
+  assert.equal(classify('Boss页面出现安全验证').failureType, 'PLATFORM_VERIFICATION');
+  location.href = 'https://www.zhipin.com/web/passport/zp/verify.html';
+  assert.equal(classify('当前页面不是目标岗位详情页').failureType, 'PLATFORM_VERIFICATION');
+});

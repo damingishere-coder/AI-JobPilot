@@ -38,6 +38,29 @@ test('ready page only probes status and never sends a delivery command', async (
   const h = harness(); assert.equal((await h.run()).success, true); assert.equal(h.counts().sends, 1);
 });
 
+test('verification and login redirects halt immediately without repeated navigation', async () => {
+  for (const [path, type] of [['/web/passport/zp/verify.html', 'PLATFORM_VERIFICATION'], ['/web/passport/login', 'LOGIN_EXPIRED']]) {
+    const h = harness({ configure: o => { o.chrome.tabs.get = async () => ({ url: 'https://www.zhipin.com' + path, status: 'complete' }); } });
+    const result = await h.run();
+    assert.equal(result.failureType, type);
+    assert.equal(result.haltBatch, true);
+    assert.equal(result.actionStarted, false);
+    assert.deepEqual(h.counts(), { injections: 0, sends: 0, navigations: 1 });
+  }
+});
+
+test('a navigation timeout on verification preserves the page without retrying navigation', async () => {
+  const h = harness({ configure: o => {
+    const navigate = o.navigate;
+    o.navigate = async () => { await navigate(); throw new Error('岗位导航超时'); };
+    o.chrome.tabs.get = async () => ({url:'https://www.zhipin.com/web/passport/zp/verify.html',status:'complete'});
+  } });
+  const result = await h.run();
+  assert.equal(result.haltBatch, true);
+  assert.equal(result.failureType, 'PLATFORM_VERIFICATION');
+  assert.deepEqual(h.counts(), {injections:0,sends:0,navigations:1});
+});
+
 test('rejects an unsupported target before navigating and rejects a changed job ID', async () => {
   const invalid = harness({ configure: o => { o.targetUrl = 'https://example.com/job_detail/abc.html'; } });
   assert.equal((await invalid.run()).evidence, 'PRE_ACTION_ERROR');
