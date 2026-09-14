@@ -41,7 +41,7 @@ class JobAnalysisTaskStoreTest {
         store = new JobAnalysisTaskStore(
                 jdbcTemplate,
                 new DataSourceTransactionManager(dataSource),
-                new ObjectMapper()
+                new ObjectMapper(), AnalysisContextTestSupport.create(jdbcTemplate,tempDir)
         );
         store.validateSchema();
     }
@@ -59,6 +59,55 @@ class JobAnalysisTaskStoreTest {
         assertThat(second.created()).isTrue();
         assertThat(second.task().id()).isNotEqualTo(first.task().id());
         assertThat(bossAgain.task().id()).isEqualTo(boss.task().id());
+    }
+
+    @Test void queuedSnapshotKeepsOriginalResumeIntroductionAndThresholdAndSeparatesBatches() {
+        var firstRequest=request(4L,"zhilian","frozen-one","run");
+        jdbcTemplate.update("INSERT INTO resume_profile(profile_id,resume_text) VALUES(4,'简历甲-虚构经历')");
+        jdbcTemplate.update("INSERT INTO ai(profile_id,introduce,apply_threshold) VALUES(4,'介绍甲',81)");
+        var first=store.submit(firstRequest).task();
+        jdbcTemplate.update("UPDATE resume_profile SET resume_text='简历乙-虚构经历' WHERE profile_id=4");
+        jdbcTemplate.update("UPDATE ai SET introduce='介绍乙',apply_threshold=42 WHERE profile_id=4");
+        var second=store.submit(request(4L,"zhilian","frozen-two","run")).task();
+        var frozen=store.deserialize(first).getRuntimeContext();
+        assertThat(frozen.resumeText()).isEqualTo("简历甲-虚构经历");
+        assertThat(frozen.basis().introduction()).isEqualTo("介绍甲");
+        assertThat(frozen.basis().threshold()).isEqualTo(81);
+        assertThat(store.deserialize(second).getRuntimeContext().resumeText()).isEqualTo("简历乙-虚构经历");
+        assertThat(store.listCompatibleDuePending(first,4)).extracting(JobAnalysisTaskStore.TaskRecord::id).doesNotContain(second.id());
+        assertThat(first.requestJson()).doesNotContain("简历甲","介绍甲");
+        assertThat(jdbcTemplate.queryForList("SELECT content_cipher FROM resume_version",String.class)).allMatch(s->s.startsWith("v1:")&&!s.contains("简历"));
+        assertThatThrownBy(()->jdbcTemplate.update("UPDATE resume_version SET content_fingerprint='changed'")).hasMessageContaining("immutable");
+    }
+
+    @Test void missingOrTamperedHistoricalContextNeverFallsBackToCurrentResume() {
+        var task=store.submit(request(4L,"boss","missing-context","run")).task();
+        jdbcTemplate.update("UPDATE job_analysis_task SET request_json=json_remove(request_json,'$.analysisContext','$.contextKey') WHERE id=?",task.id());
+        assertThatThrownBy(()->store.deserialize(store.findById(task.id()))).hasMessageContaining("历史任务缺少冻结");
+        jdbcTemplate.update("UPDATE job_analysis_task SET request_json=json_set(?, '$.contextKey','forged') WHERE id=?",task.requestJson(),task.id());
+        assertThatThrownBy(()->store.deserialize(store.findById(task.id()))).hasMessageContaining("指纹不一致");
+    }
+
+    @Test void upgradeReusesMatchingCompletedLegacyTaskWithoutCallingAgain() {
+        var request=request(4L,"boss","legacy-completed","run");
+        String legacyKey=org.springframework.test.util.ReflectionTestUtils.invokeMethod(store,"taskKey",request,"boss",request.getJobKey());
+        var task=store.submit(request).task();
+        jdbcTemplate.update("UPDATE job_analysis_task SET status='SUCCEEDED',context_key=NULL,task_key=?,request_json=json_remove(request_json,'$.contextKey','$.analysisContext') WHERE id=?",legacyKey,task.id());
+        var repeated=store.submit(request);
+        assertThat(repeated.created()).isFalse();
+        assertThat(repeated.task().id()).isEqualTo(task.id());
+        assertThat(repeated.task().status()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test void changedResumeCannotBypassUnknownBillingConfirmation() {
+        var request=request(4L,"boss","unknown-snapshot","run");
+        var task=store.submit(request).task();
+        jdbcTemplate.update("UPDATE job_analysis_task SET status='UNKNOWN' WHERE id=?",task.id());
+        jdbcTemplate.update("INSERT INTO resume_profile(profile_id,resume_text) VALUES(4,'新的虚构简历')");
+        var again=store.submit(request);
+        assertThat(again.created()).isFalse();
+        assertThat(again.task().id()).isEqualTo(task.id());
+        assertThat(again.task().status()).isEqualTo("UNKNOWN");
     }
 
     @Test
@@ -127,7 +176,7 @@ class JobAnalysisTaskStoreTest {
         var request = request(1L, "zhilian", "locked", "run-lock");
         var original = jdbcTemplate.getDataSource();
         var retryJdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tempDir.resolve("analysis-task.db") + "?busy_timeout=10"));
-        var retryStore = new JobAnalysisTaskStore(retryJdbc, new DataSourceTransactionManager(retryJdbc.getDataSource()), new ObjectMapper());
+        var retryStore = new JobAnalysisTaskStore(retryJdbc, new DataSourceTransactionManager(retryJdbc.getDataSource()), new ObjectMapper(),AnalysisContextTestSupport.create(retryJdbc,tempDir));
         try (var connection = original.getConnection(); var statement = connection.createStatement(); var pool = Executors.newSingleThreadExecutor()) {
             statement.execute("BEGIN IMMEDIATE");
             statement.execute("UPDATE job_analysis_task SET id=id WHERE id=-1");

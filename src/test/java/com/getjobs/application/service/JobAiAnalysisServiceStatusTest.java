@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -70,6 +71,7 @@ class JobAiAnalysisServiceStatusTest {
     void setUp() {
         service = new JobAiAnalysisService(
                 aiService,
+                org.mockito.Mockito.mock(AnalysisContextService.class),
                 profileService,
                 resumeProfileMapper,
                 priorityCompanyMapper,
@@ -727,6 +729,23 @@ class JobAiAnalysisServiceStatusTest {
         ArgumentCaptor<String> schema = ArgumentCaptor.forClass(String.class);
         verify(aiService, times(2)).sendStructuredRequest(any(), schema.capture());
         assertThat(schema.getAllValues()).hasSize(2).allMatch(schema.getAllValues().get(0)::equals);
+    }
+
+    @Test void frozenInputsDriveActualPromptAndThresholdWithoutReadingCurrentResume() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        var request=bossRequest();
+        request.setContextKey("fixture-context");
+        request.setAnalysisContext("synthetic-cipher");
+        request.setRuntimeContext(new AnalysisContextService.Frozen(new AnalysisContextService.Basis(12,"",false,93,"fixture-provider","codex","fixture-model",AnalysisContextService.RULE,""),"冻结简历甲：Java研发经验"));
+        when(aiService.sendStructuredRequest(any(),any(),any())).thenReturn(batchResult("冻结输入"));
+        var result=service.analyzeJob(request);
+        assertThat(result.getThreshold()).isEqualTo(93);
+        assertThat(result.getAnalysisBasis()).containsEntry("resumeVersionId",12L).containsEntry("status","FROZEN");
+        ArgumentCaptor<String> prompt=ArgumentCaptor.forClass(String.class);
+        verify(aiService,org.mockito.Mockito.atLeastOnce()).sendStructuredRequest(prompt.capture(),any(),eq("fixture-provider"));
+        assertThat(prompt.getAllValues()).allMatch(value->value.contains("冻结简历甲"));
+        verify(resumeProfileMapper,never()).selectOne(any());
+        verify(aiService,never()).sendStructuredRequest(any(),any());
     }
 
     @Test

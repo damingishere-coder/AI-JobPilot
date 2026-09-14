@@ -59,7 +59,7 @@ class ChromeJobAnalysisQueueServiceTest {
         store = new JobAnalysisTaskStore(
                 jdbcTemplate,
                 new DataSourceTransactionManager(dataSource),
-                new ObjectMapper()
+                new ObjectMapper(), AnalysisContextTestSupport.create(jdbcTemplate,tempDir)
         );
         store.validateSchema();
         analysisService = mock(JobAiAnalysisService.class);
@@ -108,7 +108,7 @@ class ChromeJobAnalysisQueueServiceTest {
         long taskId = store.submit(request("boss", "job-seed-only", "run-before-restart")).task().id();
         JobAnalysisTaskStore flakyStore = spy(store);
         doThrow(new IllegalStateException("batch lookup failed"))
-                .when(flakyStore).listCompatibleDuePending(anyLong(), anyString(), anyInt());
+                .when(flakyStore).listCompatibleDuePending(any(JobAnalysisTaskStore.TaskRecord.class), anyInt());
         queue = new ChromeJobAnalysisQueueService(analysisService, flakyStore);
 
         queue.initialize();

@@ -56,6 +56,11 @@ public class JobAiAnalysisEntity {
     @TableField("raw_response")
     private String rawResponse;
 
+    private Long resumeVersionId;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
+    private String analysisContext;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 

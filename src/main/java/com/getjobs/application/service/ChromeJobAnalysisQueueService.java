@@ -343,7 +343,7 @@ public class ChromeJobAnalysisQueueService {
             claimedTasks.add(seed);
             try {
                 for (JobAnalysisTaskStore.TaskRecord candidate : taskStore.listCompatibleDuePending(
-                        seed.profileId(), seed.platform(), JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
+                        seed, JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
                     try {
                         JobAnalysisTaskStore.TaskRecord claimed = taskStore.claim(
                                 candidate.id(), leaseToken, LEASE_DURATION);
