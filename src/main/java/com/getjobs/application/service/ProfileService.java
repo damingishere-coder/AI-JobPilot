@@ -24,6 +24,7 @@ public class ProfileService {
     private static final List<String> PROFILE_RELATED_TABLES = List.of(
             "ai",
             "resume_profile",
+            "resume_version",
             "boss_config",
             "zhilian_config",
             "liepin_config",

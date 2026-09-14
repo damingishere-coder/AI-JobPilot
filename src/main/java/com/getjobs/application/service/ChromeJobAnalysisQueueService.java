@@ -271,7 +271,8 @@ public class ChromeJobAnalysisQueueService {
                             action -> taskStore.executeWithLease(task.id(), leaseToken, action)
                     ));
                 } catch (Exception e) {
-                    finishAfterExecutionException(task, leaseToken, null, e);
+                    requests.remove(task.id());
+                    rejectBeforeAnalysis(task, leaseToken, e);
                 }
             }
             if (batch.isEmpty()) return;
@@ -343,7 +344,7 @@ public class ChromeJobAnalysisQueueService {
             claimedTasks.add(seed);
             try {
                 for (JobAnalysisTaskStore.TaskRecord candidate : taskStore.listCompatibleDuePending(
-                        seed.profileId(), seed.platform(), JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
+                        seed, JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
                     try {
                         JobAnalysisTaskStore.TaskRecord claimed = taskStore.claim(
                                 candidate.id(), leaseToken, LEASE_DURATION);
@@ -430,6 +431,17 @@ public class ChromeJobAnalysisQueueService {
         }, LEASE_HEARTBEAT_SECONDS, LEASE_HEARTBEAT_SECONDS, TimeUnit.SECONDS);
     }
 
+    private void rejectBeforeAnalysis(JobAnalysisTaskStore.TaskRecord task,String leaseToken,Exception error) {
+        String message = firstNonBlank(error.getMessage(),"分析输入不可用，未调用 AI");
+        try {
+            var identity = taskStore.deserializeForReconciliation(task);
+            taskStore.executeWithLease(task.id(),leaseToken,()->jobAiAnalysisService.markAnalysisInterrupted(identity,message));
+        } catch (Exception identityError) {
+            log.warn("AI 任务 {} 的输入不可恢复；不猜测岗位归属",task.id());
+        }
+        taskStore.complete(task.id(),leaseToken,true,message);
+    }
+
     private void finishAfterExecutionException(JobAnalysisTaskStore.TaskRecord task,
                                                String leaseToken,
                                                JobAiAnalysisService.JobAnalysisRequest request,
@@ -437,7 +449,7 @@ public class ChromeJobAnalysisQueueService {
         String message = firstNonBlank(error.getMessage(), "AI 分析执行异常");
         try {
             JobAiAnalysisService.JobAnalysisRequest recoverableRequest = request == null
-                    ? taskStore.deserialize(task)
+                    ? taskStore.deserializeForReconciliation(task)
                     : request;
             JobAiAnalysisService.PlatformAnalysisState platformState =
                     jobAiAnalysisService.inspectPlatformAnalysis(recoverableRequest);
@@ -472,7 +484,7 @@ public class ChromeJobAnalysisQueueService {
 
     private void reconcileExpiredLease(JobAnalysisTaskStore.TaskRecord task) {
         try {
-            JobAiAnalysisService.JobAnalysisRequest request = taskStore.deserialize(task);
+            JobAiAnalysisService.JobAnalysisRequest request = taskStore.deserializeForReconciliation(task);
             JobAiAnalysisService.PlatformAnalysisState platformState =
                     jobAiAnalysisService.inspectPlatformAnalysis(request);
             if (platformState.completed()) {

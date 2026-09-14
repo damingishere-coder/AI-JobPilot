@@ -610,6 +610,11 @@ public class DatabaseSchemaService {
                 "salary_median_k", "salary_months"
         ));
         if (requireV7TaskSchema) bossDataColumns.add("scan_result_source");
+        if (requireV7TaskSchema) {
+            requiredTables.add("resume_version");
+            requiredColumns.put("resume_version",Set.of("profile_id","content_fingerprint","content_cipher"));
+            requiredColumns.put("job_ai_analysis",Set.of("profile_id","resume_version_id","analysis_context"));
+        }
         requiredColumns.put("boss_data", bossDataColumns);
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));
         requiredColumns.put("liepin_data", Set.of("job_id", "delivered"));
@@ -655,7 +660,7 @@ public class DatabaseSchemaService {
                 ? Set.of(
                 "profile_id", "platform", "status", "scan_run_id", "task_key", "job_key",
                 "job_row_id", "request_json", "attempt_count", "next_retry_at", "lease_owner",
-                "lease_expires_at", "last_error", "started_at", "completed_at"
+                "lease_expires_at", "last_error", "started_at", "completed_at", "context_key"
         )
                 : Set.of("profile_id", "platform", "status", "scan_run_id"));
         List<String> requiredIndexes = new ArrayList<>(List.of(

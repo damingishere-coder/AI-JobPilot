@@ -43,6 +43,7 @@ public class JobAnalysisTaskStore {
     private final JdbcTemplate jdbcTemplate;
     private final PlatformTransactionManager transactionManager;
     private final ObjectMapper objectMapper;
+    private final AnalysisContextService analysisContexts;
 
     private static final RowMapper<TaskRecord> TASK_MAPPER = (rs, rowNum) -> new TaskRecord(
             rs.getLong("id"),
@@ -102,8 +103,6 @@ public class JobAnalysisTaskStore {
         String platform = normalizePlatform(request.getPlatform());
         String jobKey = stableJobKey(request);
         validateTargetJobIdentity(request, platform, jobKey);
-        String taskKey = taskKey(request, platform, jobKey);
-        String requestJson = serialize(request);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         for (int attempt = 0; attempt < 4; attempt++) {
@@ -112,6 +111,21 @@ public class JobAnalysisTaskStore {
             // Acquire SQLite's write reservation before reading. A deferred read transaction
             // cannot safely upgrade after a consumer has committed a concurrent write.
             jdbcTemplate.update("UPDATE job_analysis_task SET id=id WHERE id=-1");
+            request.setJobKey(jobKey);
+            // A changed resume/provider must never bypass an unresolved billing outcome.
+            List<TaskRecord> unknown = jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                "WHERE profile_id=? AND platform=? AND job_key=? AND status='UNKNOWN' ORDER BY id DESC LIMIT 1",
+                TASK_MAPPER,request.getProfileId(),platform,jobKey);
+            if (!unknown.isEmpty()) return SubmitResult.existing(unknown.getFirst(),"该岗位存在未知调用结果，请先显式确认或对账");
+            request.setAnalysisContext(null);
+            request.setContextKey(null);
+            request.setRuntimeContext(null);
+            TaskRecord legacy = findByTaskKey(taskKey(request,platform,jobKey));
+            if (legacy!=null && legacy.statusEnum()==Status.SUCCEEDED)
+                return SubmitResult.existing(legacy,"复用历史已完成分析，不因快照升级重新调用 AI");
+            analysisContexts.freeze(request);
+            String taskKey = taskKey(request, platform, jobKey);
+            String requestJson = serialize(request);
             TaskRecord exact = findByTaskKey(taskKey);
             if (exact != null) {
                 return SubmitResult.existing(exact, duplicateMessage(exact));
@@ -128,11 +142,11 @@ public class JobAnalysisTaskStore {
             int inserted = jdbcTemplate.update("INSERT INTO job_analysis_task (" +
                                 "profile_id, platform, scan_run_id, status, total_count, processed_count, " +
                                 "success_count, failed_count, message, created_at, updated_at, task_key, job_key, " +
-                                "job_row_id, request_json, attempt_count) " +
-                                "VALUES (?, ?, ?, 'PENDING', 1, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT DO NOTHING",
+                                "job_row_id, request_json, attempt_count, context_key) " +
+                                "VALUES (?, ?, ?, 'PENDING', 1, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?) ON CONFLICT DO NOTHING",
                         request.getProfileId(), platform, blankToNull(request.getScanRunId()),
                         "已持久化，等待 AI 分析", now, now, taskKey, jobKey,
-                        request.getJobRowId(), requestJson);
+                        request.getJobRowId(), requestJson, request.getContextKey());
             TaskRecord stored = findByTaskKey(taskKey);
             if (stored == null) {
                 stored = findActive(request.getProfileId(), platform, jobKey);
@@ -282,6 +296,14 @@ public class JobAnalysisTaskStore {
                 normalizePlatform(platform),
                 dbTime(LocalDateTime.now()),
                 safeLimit);
+    }
+
+    public List<TaskRecord> listCompatibleDuePending(TaskRecord seed, int limit) {
+        return jdbcTemplate.query("SELECT " + selectColumns() + " FROM job_analysis_task " +
+                "WHERE profile_id=? AND lower(platform)=? AND context_key=(SELECT context_key FROM job_analysis_task WHERE id=?) " +
+                "AND task_key IS NOT NULL AND request_json IS NOT NULL AND status='PENDING' " +
+                "AND (next_retry_at IS NULL OR next_retry_at<=?) ORDER BY id LIMIT ?",TASK_MAPPER,
+            seed.profileId(),normalizePlatform(seed.platform()),seed.id(),dbTime(LocalDateTime.now()),Math.max(1,Math.min(limit,4)));
     }
 
     public List<TaskRecord> listExpiredLeases(int limit) {
@@ -569,6 +591,13 @@ public class JobAnalysisTaskStore {
     }
 
     public JobAiAnalysisService.JobAnalysisRequest deserialize(TaskRecord task) {
+        var request = deserializeForReconciliation(task);
+        analysisContexts.hydrate(request);
+        return request;
+    }
+
+    /** Identity only: usable for recovery, never as an AI execution input. */
+    public JobAiAnalysisService.JobAnalysisRequest deserializeForReconciliation(TaskRecord task) {
         if (task == null || task.requestJson() == null || task.requestJson().isBlank()) {
             throw new IllegalArgumentException("任务缺少可恢复的请求快照");
         }
@@ -645,8 +674,8 @@ public class JobAnalysisTaskStore {
         inputs.put("degree", canonical(request.getDegree()));
         inputs.put("companyInfo", canonical(request.getCompanyInfo()));
         inputs.put("jobDescription", canonical(request.getJobDescription()));
-        inputs.put("resumeFingerprint", currentResumeFingerprint(request.getProfileId()));
-        if ("zhilian".equalsIgnoreCase(platform)) {
+        inputs.put("resumeFingerprint", request.getContextKey()==null?currentResumeFingerprint(request.getProfileId()):request.getContextKey());
+        if (request.getContextKey()==null && "zhilian".equalsIgnoreCase(platform)) {
             List<String> introductions = jdbcTemplate.query(
                     "SELECT COALESCE(introduce, '') FROM ai WHERE profile_id=? ORDER BY updated_at DESC, id DESC LIMIT 1",
                     (rs, rowNum) -> rs.getString(1), request.getProfileId());

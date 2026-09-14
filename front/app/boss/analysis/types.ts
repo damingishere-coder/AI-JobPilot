@@ -99,6 +99,7 @@ export type AiReasonHardConflict = {
 }
 
 export type ParsedAiReason = {
+  analysisBasis?: { resumeVersionId: number; provider: string; model: string; rule: string }
   greetingGenerationOutcome?: string
   greetingGenerationErrorCode?: string
   schemaVersion: number

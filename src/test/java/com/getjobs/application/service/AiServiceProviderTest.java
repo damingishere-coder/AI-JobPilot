@@ -47,6 +47,14 @@ class AiServiceProviderTest {
         verify(codexCliService).generateText("岗位分析", config);
     }
 
+    @Test void changedProviderIdentityStopsBeforeLaunchingCli() {
+        when(configService.getAiConfigs()).thenReturn(Map.of("AI_PROVIDER","codex","CODEX_MODEL","new-model"));
+        String expected=AnalysisContextService.providerIdentity(Map.of("AI_PROVIDER","codex","CODEX_MODEL","old-model"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.sendStructuredRequest("fixture","{}",expected))
+            .hasMessageContaining("未调用 Provider");
+        org.mockito.Mockito.verifyNoInteractions(codexCliService);
+    }
+
     @Test
     void structuredRequestUsesCodexOutputSchema() {
         Map<String, String> config = Map.of(

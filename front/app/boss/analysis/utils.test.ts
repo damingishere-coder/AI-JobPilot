@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest"
 
 import { formatAiReasonDetail, parseAiReason, riskTextOf } from "./utils"
 
+it("区分冻结分析版本、历史未知和平台实际发送版本", () => {
+  const frozen = JSON.stringify({summary:"fixture",analysisBasis:{status:"FROZEN",resumeVersionId:12,provider:"codex",model:"fixture",rule:"v1"}})
+  expect(formatAiReasonDetail(frozen)).toContain("简历版本 #12")
+  expect(formatAiReasonDetail(frozen)).toContain("实际发送的简历版本尚未核验")
+  expect(formatAiReasonDetail('{"summary":"legacy"}')).toContain("历史上下文不完整")
+  expect(parseAiReason('{"analysisBasis":{"status":"FROZEN","resumeVersionId":"current"}}').analysisBasis).toBeUndefined()
+})
+
 describe("AI岗位理由兼容解析", () => {
   it("话术 UNKNOWN 单独显示且不要求重跑已完成匹配", () => {
     const reason = JSON.stringify({ schemaVersion: 2, summary: "匹配已完成", greetingGenerationOutcome: "UNKNOWN" })

@@ -64,6 +64,10 @@ public class AiService {
      */
     public String sendRequest(String content) {
         var cfg = configService.getAiConfigs();
+        return sendRequest(content,cfg);
+    }
+
+    private String sendRequest(String content, java.util.Map<String,String> cfg) {
         if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
             return codexCliService.generateText(content, cfg);
         }
@@ -130,14 +134,20 @@ public class AiService {
      * --output-schema 能力；其他兼容 Provider 保持原有请求协议并由调用方继续校验结果。
      */
     public String sendStructuredRequest(String content, String outputSchema) {
+        return sendStructuredRequest(content,outputSchema,null);
+    }
+
+    public String sendStructuredRequest(String content, String outputSchema, String expectedProviderIdentity) {
         if (outputSchema == null || outputSchema.isBlank()) {
             throw new IllegalArgumentException("结构化输出 Schema 不能为空");
         }
         var cfg = configService.getAiConfigs();
+        if (expectedProviderIdentity!=null && !expectedProviderIdentity.equals(AnalysisContextService.providerIdentity(cfg)))
+            throw new IllegalStateException("AI 配置已不同于入队快照，未调用 Provider；请重新提交分析");
         if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
             return codexCliService.generateStructuredText(content, outputSchema, cfg);
         }
-        return sendRequest(content);
+        return sendRequest(content,cfg);
     }
 
     /**
