@@ -108,6 +108,8 @@ class DeliveryRuntimeServiceTest {
         assertThat(runtime.timeline(key)).hasSize(2);
         assertThat(jdbc.queryForObject("SELECT state FROM delivery_attempt WHERE request_key=?",String.class,key)).isEqualTo("REQUESTED");
         assertThat(runtime.observe(key,new DeliveryRuntimeService.Observation(1,"one",1,"secret-chat","NONE",0,1))).containsEntry("success",false);
+        jdbc.update("UPDATE delivery_attempt SET state='UNKNOWN',evidence='SYNTHETIC_PRIVATE_CANARY' WHERE request_key=?",key);
+        assertThat(runtime.timeline(key).toString()).doesNotContain("SYNTHETIC_PRIVATE_CANARY").contains("UNCLASSIFIED");
     }
     @Test void pauseIsDurableAndPreventsPendingEffects() {
         runtime.claim(key,claim("one"));

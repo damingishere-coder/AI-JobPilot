@@ -29,6 +29,9 @@ WHEN NEW.state <> OLD.state AND NEW.runtime_phase <> 'LEGACY'
 BEGIN
     INSERT INTO runtime_event(attempt_id, action_seq, action, phase, evidence)
     VALUES(NEW.id, (SELECT COALESCE(MAX(action_seq),0)+1 FROM runtime_event WHERE attempt_id=NEW.id),
-        'VERIFY_APPLY', NEW.state, NEW.evidence);
+        'VERIFY_APPLY', NEW.state,
+        CASE WHEN NEW.evidence IN ('PLATFORM_STATUS_TEXT','PLATFORM_SUCCESS_DIALOG','EXISTING_CONVERSATION',
+            'GREETING_RENDERED_EXACT','NO_CONFIRMATION','PLATFORM_ERROR','PRE_ACTION_ERROR',
+            'MANUAL_RECONCILIATION','BATCH_HALTED_BEFORE_ACTION') THEN NEW.evidence ELSE 'UNCLASSIFIED' END);
     UPDATE delivery_attempt SET runtime_phase='SETTLED' WHERE id=NEW.id;
 END;
