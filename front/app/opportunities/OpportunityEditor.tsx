@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { applicationStatuses, jobDescription, opportunityApi, stages, type OpportunityDetail } from '@/lib/opportunities'
+import { applicationStatuses, eventLabel, eventSourceLabel, jobDescription, opportunityApi, stages, type OpportunityDetail } from '@/lib/opportunities'
+import FeedbackSection from './FeedbackSection'
 
 export default function OpportunityEditor({ detail, onSaved, onClose }: { detail: OpportunityDetail; onSaved: () => void; onClose: () => void }) {
   const [stage, setStage] = useState(detail.stage)
@@ -34,13 +35,14 @@ export default function OpportunityEditor({ detail, onSaved, onClose }: { detail
       <label>下一步事项<textarea className="mt-1 block w-full rounded border bg-background p-2" maxLength={500} value={nextAction} onChange={e => setNextAction(e.target.value)} /></label>
     </div>
     <details><summary className="cursor-pointer text-sm">更正已有结果或回退阶段</summary><div className="mt-2 space-y-2">
-      <label>选择要更正的事件<select className="ml-2 rounded border bg-background p-2" value={correction} onChange={e => setCorrection(e.target.value)}><option value="">不更正</option>{detail.events.map(e => <option key={e.id} value={e.id}>#{e.id} {e.type}</option>)}</select></label>
+      <label>选择要更正的事件<select className="ml-2 rounded border bg-background p-2" value={correction} onChange={e => setCorrection(e.target.value)}><option value="">不更正</option>{detail.events.map(e => <option key={e.id} value={e.id}>#{e.id} {eventLabel(e.type)}</option>)}</select></label>
       <label className="block">更正原因<input className="ml-2 rounded border bg-background p-2" maxLength={1000} value={reason} onChange={e => setReason(e.target.value)} /></label>
     </div></details>
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <div className="flex flex-wrap gap-2"><Button disabled={busy} onClick={() => save()}>保存记录</Button><Button variant="outline" disabled={busy} onClick={() => save(!detail.archived)}>{detail.archived ? '恢复到当前列表' : '归档此机会'}</Button>{['boss', 'zhilian'].includes(detail.platform) && <Link className="p-2 text-sm underline" href={`/${detail.platform}/analysis`}>原平台分析与投递对账</Link>}</div>
+    <FeedbackSection detail={detail} onSaved={onSaved} />
     <details><summary className="cursor-pointer">JD 与 AI 分析</summary><p className="my-3 whitespace-pre-wrap text-sm">{jobDescription(detail.job_snapshot)}</p>{detail.analyses.map(a => <p key={a.id} className="mb-2 text-sm">分析 #{a.id} · {a.score} 分 · {a.decision} · 分析简历 {a.resume_version_id ? `v${a.resume_version_id}` : '版本未知'}<br />{a.summary}</p>)}</details>
     <div><h3 className="font-medium">投递记录</h3>{detail.applications.length === 0 && <p className="text-sm text-muted-foreground">尚无投递请求</p>}{detail.applications.map(a => <p key={a.id} className="mt-1 text-sm">#{a.id} · {applicationStatuses[a.state]} · {a.evidence || '无结果证据'}</p>)}</div>
-    <details open><summary className="cursor-pointer font-medium">最近 200 条时间线</summary><ol className="mt-2 space-y-2">{detail.events.map(e => <li key={e.id} className="border-l-2 pl-3 text-sm"><span>#{e.id} · {e.type} · {e.source}</span><br /><span className="text-muted-foreground">{e.occurred_at || `发生时间未知；记录于 ${e.observed_at}`}</span>{e.reason && <p>更正原因：{e.reason}</p>}</li>)}</ol></details>
+    <details open><summary className="cursor-pointer font-medium">最近 200 条时间线</summary><ol className="mt-2 space-y-2">{detail.events.map(e => <li key={e.id} className="border-l-2 pl-3 text-sm"><span>#{e.id} · {eventLabel(e.type)} · {eventSourceLabel(e.source)}</span><br /><span className="text-muted-foreground">{e.occurred_at || `发生时间未知；记录于 ${e.observed_at}`}</span>{e.reason && <p>{e.type === 'CORRECTION' ? '更正原因' : '备注'}：{e.reason}</p>}</li>)}</ol></details>
   </section>
 }

@@ -51,6 +51,10 @@ export type Profile = {
 }
 
 const impactLabels: Record<string, string> = {
+  opportunity: '求职机会',
+  opportunity_event: '求职历史事件',
+  opportunity_conversation: '机会与会话关联',
+  resume_version: '历史简历版本',
   ai: 'AI配置',
   resume_profile: '简历',
   boss_config: 'Boss配置',
