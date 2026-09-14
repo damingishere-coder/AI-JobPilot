@@ -21,7 +21,9 @@ public class OpportunityService {
 
     public Map<String,Object> list(String stage,boolean archived,int page,int size) {
         long profile=profiles.getCurrentProfileId();
-        int limit=Math.max(1,Math.min(100,size)),offset=Math.max(0,Math.min(10000,page-1))*limit;
+        int limit=Math.max(1,Math.min(100,size));
+        int safePage=Math.max(1,Math.min(10001,page));
+        int offset=(safePage-1)*limit;
         String filter=" WHERE o.profile_id=? AND o.archived=?";
         List<Object> args=new ArrayList<>(List.of(profile,archived?1:0));
         if(stage!=null&&!stage.isBlank()) { filter+=" AND o.stage=?";args.add(OpportunityStage.valueOf(stage).name()); }
@@ -30,7 +32,7 @@ public class OpportunityService {
         var rows=jdbc.queryForList("SELECT o.id,o.platform,o.job_key,o.job_name,o.company_name,o.stage,o.interest,o.archived,o.follow_up_at,o.version,o.created_at,o.updated_at," +
             "COALESCE((SELECT a.state FROM delivery_attempt a WHERE a.profile_id=o.profile_id AND a.platform=o.platform AND a.job_key=o.job_key ORDER BY a.id DESC LIMIT 1),'NOT_REQUESTED') AS application_status " +
             "FROM opportunity o"+filter+" ORDER BY o.updated_at DESC,o.id DESC LIMIT ? OFFSET ?",args.toArray());
-        return Map.of("items",rows,"total",total,"page",Math.max(1,page),"size",limit);
+        return Map.of("items",rows,"total",total,"page",safePage,"size",limit);
     }
 
     public Map<String,Object> detail(long id) {

@@ -56,10 +56,11 @@ public class V23__opportunity_event_foundation extends BaseJavaMigration {
                 s.execute(capture(p,"j."," FROM "+p.table()+" j","LEGACY_IMPORT"));
                 for(String operation:List.of("INSERT","UPDATE"))
                     s.execute("CREATE TRIGGER opportunity_capture_"+p.table()+"_"+operation.toLowerCase()+" AFTER "+operation+" ON "+p.table()+" BEGIN "+capture(p,"NEW.","","COLLECTOR")+"; END");
-                s.execute("CREATE TRIGGER opportunity_protect_"+p.table()+" BEFORE DELETE ON "+p.table()+
-                    " WHEN EXISTS(SELECT 1 FROM opportunity o WHERE o.profile_id=OLD.profile_id AND o.platform='"+p.platform()+"' AND o.job_key=trim(CAST(OLD."+p.key()+" AS TEXT))) " +
-                    "BEGIN SELECT RAISE(ABORT,'岗位已有求职历史，请归档而非删除'); END");
             }
+            s.execute("CREATE TRIGGER opportunity_protect_boss_data BEFORE DELETE ON boss_data WHEN EXISTS(SELECT 1 FROM opportunity o WHERE o.profile_id=OLD.profile_id AND o.platform='boss' AND o.job_key=trim(CAST(OLD.encrypt_id AS TEXT))) BEGIN SELECT RAISE(ABORT,'岗位已有求职历史，请归档而非删除'); END");
+            s.execute("CREATE TRIGGER opportunity_protect_zhilian_data BEFORE DELETE ON zhilian_data WHEN EXISTS(SELECT 1 FROM opportunity o WHERE o.profile_id=OLD.profile_id AND o.platform='zhilian' AND o.job_key=trim(CAST(OLD.job_id AS TEXT))) BEGIN SELECT RAISE(ABORT,'岗位已有求职历史，请归档而非删除'); END");
+            s.execute("CREATE TRIGGER opportunity_protect_liepin_data BEFORE DELETE ON liepin_data WHEN EXISTS(SELECT 1 FROM opportunity o WHERE o.profile_id=OLD.profile_id AND o.platform='liepin' AND o.job_key=trim(CAST(OLD.job_id AS TEXT))) BEGIN SELECT RAISE(ABORT,'岗位已有求职历史，请归档而非删除'); END");
+            s.execute("CREATE TRIGGER opportunity_protect_job51_data BEFORE DELETE ON job51_data WHEN EXISTS(SELECT 1 FROM opportunity o WHERE o.profile_id=OLD.profile_id AND o.platform='51job' AND o.job_key=trim(CAST(OLD.job_id AS TEXT))) BEGIN SELECT RAISE(ABORT,'岗位已有求职历史，请归档而非删除'); END");
             // Attempts whose original job cache was already removed remain traceable by stable key.
             s.execute("""
                 INSERT INTO opportunity(profile_id,platform,job_key,origin)

@@ -50,6 +50,10 @@ class OpportunityServiceTest {
         assertThat(service.list(null,false,1,20)).containsEntry("total",1L);
         assertThat(attempts.requestZhilian(10,1,"job-a").created()).isTrue();
     }
+    @Test void extremePaginationCannotOverflowOrReturnAnUnboundedPage() {
+        assertThat(service.list(null,false,Integer.MIN_VALUE,Integer.MAX_VALUE)).containsEntry("page",1).containsEntry("size",100);
+        assertThat(service.list(null,false,Integer.MAX_VALUE,Integer.MIN_VALUE)).containsEntry("page",10001).containsEntry("size",1);
+    }
     @Test void userCommandsAreIdempotentVersionedAndCorrectionsAreAppendOnly() {
         var first=command("update","INTERVIEW",null);
         service.change(id(),first);
