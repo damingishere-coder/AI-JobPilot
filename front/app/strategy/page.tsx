@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import ProfileSwitcher from '@/app/components/ProfileSwitcher'
 import { Button } from '@/components/ui/button'
 import { strategyApi, type StrategySnapshot } from '@/lib/strategy'
@@ -47,6 +48,7 @@ export default function StrategyPage() {
   return <main className="mx-auto max-w-6xl space-y-5 p-6">
     <h1 className="text-2xl font-semibold">求职策略</h1><p className="text-sm text-muted-foreground">根据真实反馈复盘下一步方向。统计在本机完成，生成快照不会调用 AI。</p>
     <ProfileSwitcher onProfileChange={profileChanged} />
+    <Button asChild variant="outline"><Link href="/strategy/ranking">预览三维推荐与求职偏好</Link></Button>
     <div className="flex flex-wrap gap-3"><label>统计窗口<select disabled={busy} className="ml-2 rounded border bg-background p-2" value={windowDays} onChange={e => setWindowDays(Number(e.target.value))}><option value={90}>最近 90 天</option><option value={30}>最近 30 天</option></select></label><Button disabled={busy || !profileId} onClick={create}>生成本地统计快照</Button><Button variant="outline" disabled={busy} onClick={() => setRevision(v => v + 1)}>刷新已有快照</Button></div>
     {snapshots.length > 0 && <label className="block">查看快照<select disabled={busy} className="ml-2 rounded border bg-background p-2" value={snapshot?.id || ''} onChange={e => run(() => strategyApi<StrategySnapshot>(`/snapshots/${e.target.value}`))}><option value="" disabled>选择快照</option>{snapshots.map(item => <option key={item.id} value={item.id}>#{item.id} · {item.window_days} 天 · {new Date(item.cutoff).toLocaleString('zh-CN')}</option>)}</select></label>}
     {busy && <p role="status">正在处理统计…</p>}{error && <p role="alert" className="text-red-600">{error}</p>}

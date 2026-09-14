@@ -616,11 +616,12 @@ public class DatabaseSchemaService {
             requiredColumns.put("interview",Set.of("profile_id","opportunity_id","round_number","scheduled_at","status","version","note_cipher"));
             requiredTables.add("strategy_snapshot");
             requiredColumns.put("strategy_snapshot",Set.of("profile_id","window_days","cutoff","through_event_id","result_json","version"));
+            requiredColumns.put("ai",Set.of("profile_id","apply_threshold","priority_apply_threshold","preference_json","preference_version","ranking_enabled"));
             requiredColumns.put("opportunity_conversation",Set.of("opportunity_id","conversation_id","profile_id","active"));
             requiredColumns.put("opportunity",Set.of("profile_id","platform","job_key","stage","interest","version","archived"));
             requiredColumns.put("opportunity_event",Set.of("profile_id","opportunity_id","event_key","type","source","occurred_at","observed_at"));
             requiredColumns.put("resume_version",Set.of("profile_id","content_fingerprint","content_cipher"));
-            requiredColumns.put("job_ai_analysis",Set.of("profile_id","resume_version_id","analysis_context"));
+            requiredColumns.put("job_ai_analysis",Set.of("profile_id","resume_version_id","analysis_context","evaluated_result_cipher"));
         }
         requiredColumns.put("boss_data", bossDataColumns);
         requiredColumns.put("zhilian_data", Set.of("profile_id", "job_id", "delivery_status", "scan_run_id"));

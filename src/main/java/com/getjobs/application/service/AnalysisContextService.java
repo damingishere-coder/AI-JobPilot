@@ -12,12 +12,17 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class AnalysisContextService {
-    public static final String RULE = "job-evidence-20260914-v1";
+    public static final String RULE = "job-evidence-20260914-v2";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final HrAssistantCryptoService crypto;
     private final ConfigService config;
     private final GreetingPolicy greetingPolicy;
+
+    public String encryptEvaluatedResult(JobAiAnalysisService.JobAnalysisRequest request,String result) {
+        return crypto.encrypt(result,evaluatedResultAad(request.getProfileId(),request.getPlatform(),request.getJobKey()));
+    }
+    static String evaluatedResultAad(long profile,String platform,String key) { return "evaluated-analysis:"+profile+":"+platform.toLowerCase(Locale.ROOT)+":"+key; }
 
     public long saveResumeVersion(long profileId, String text) {
         String content = Objects.toString(text, "");
