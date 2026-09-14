@@ -6,7 +6,7 @@ import { opportunityApi, type OpportunityDetail } from '@/lib/opportunities'
 
 export const feedbackTypes: Record<string, string> = {
   RECRUITER_REPLIED: 'HR 已回复', CHATTING: '继续沟通', PHONE_SCREEN: '电话沟通', INTERVIEW_INVITED: '收到面试邀请',
-  OFFER: '收到 Offer', REJECTED: '收到淘汰结果', WITHDRAWN: '主动退出', NO_REPLY_OBSERVED: '已检查，暂未回复',
+  OFFER: '收到 Offer', REJECTED: '收到淘汰结果', WITHDRAWN: '主动退出', NO_REPLY_OBSERVED: '已检查，暂未回复', NO_INTERVIEW_OBSERVED: '已检查，暂未获得面试邀请',
 }
 type Conversation = { id: number; hrName: string; companyName: string; jobName: string; candidate: boolean; linked: number; linked_count: number }
 type Message = { from: string; text: string; time: string; type: string }
@@ -15,6 +15,7 @@ export default function FeedbackSection({ detail, onSaved }: { detail: Opportuni
   const [conversations, setConversations] = useState<Conversation[] | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [type, setType] = useState('RECRUITER_REPLIED')
+  const absence = type === 'NO_REPLY_OBSERVED' || type === 'NO_INTERVIEW_OBSERVED'
   const [occurred, setOccurred] = useState('')
   const [until, setUntil] = useState('')
   const [attempt, setAttempt] = useState('')
@@ -43,15 +44,15 @@ export default function FeedbackSection({ detail, onSaved }: { detail: Opportuni
     <div className="grid gap-3 md:grid-cols-2">
       <label>反馈类型<select className="mt-1 block w-full rounded border bg-background p-2" value={type} onChange={e => setType(e.target.value)}>{Object.entries(feedbackTypes).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
       <label>发生时间（不确定可留空）<input type="datetime-local" className="mt-1 block w-full rounded border bg-background p-2" value={occurred} onChange={e => setOccurred(e.target.value)} /></label>
-      {type === 'NO_REPLY_OBSERVED' && <label>已核对回复的截止时间<input type="datetime-local" required className="mt-1 block w-full rounded border bg-background p-2" value={until} onChange={e => setUntil(e.target.value)} /></label>}
+      {absence && <label>已核对结果的截止时间<input type="datetime-local" required className="mt-1 block w-full rounded border bg-background p-2" value={until} onChange={e => setUntil(e.target.value)} /></label>}
       <label>归属投递记录<select className="mt-1 block w-full rounded border bg-background p-2" value={attempt} onChange={e => { setAttempt(e.target.value); setResumeVersion('') }}><option value="">归属未知 / 与投递无关</option>{confirmed.map(a => <option key={a.id} value={a.id}>投递 #{a.id} · {a.requested_at}</option>)}</select></label>
       <label>关联会话<select className="mt-1 block w-full rounded border bg-background p-2" value={conversation} onChange={e => setConversation(e.target.value)}><option value="">无 / 尚未关联</option>{conversations?.filter(c => c.linked).map(c => <option key={c.id} value={c.id}>会话 #{c.id} · {c.hrName || '历史名称已清理'}</option>)}</select></label>
       <label>平台实际发送的简历<select disabled={!attempt} className="mt-1 block w-full rounded border bg-background p-2" value={resumeVersion} onChange={e => setResumeVersion(e.target.value)}><option value="">尚未核实，版本未知</option>{versions.map(id => <option key={id} value={id}>我已核实：实际发送版本 #{id}</option>)}</select><span className="text-xs text-muted-foreground">仅在核实网站实际发送版本后选择，不能从分析版本推断。</span></label>
       <label>反馈备注<textarea maxLength={1000} className="mt-1 block w-full rounded border bg-background p-2" value={note} onChange={e => setNote(e.target.value)} /></label>
     </div>
     {error && <p role="alert" className="text-red-600">{error}</p>}
-    <Button disabled={busy || (type === 'NO_REPLY_OBSERVED' && (!until || !attempt))} onClick={() => run(() => save('/feedback', {
-      type, occurredAt: occurred ? new Date(occurred).toISOString() : null, observedUntil: type === 'NO_REPLY_OBSERVED' && until ? new Date(until).toISOString() : null,
+    <Button disabled={busy || (absence && (!until || !attempt))} onClick={() => run(() => save('/feedback', {
+      type, occurredAt: occurred ? new Date(occurred).toISOString() : null, observedUntil: absence && until ? new Date(until).toISOString() : null,
       attemptId: attempt ? Number(attempt) : null, conversationId: conversation ? Number(conversation) : null,
       actualSentResumeVersionId: resumeVersion ? Number(resumeVersion) : null, note,
     }))}>确认记录反馈</Button>

@@ -16,7 +16,7 @@
 | P1.3 | Outcome / HR 关联 | V24 用户确认关联、真实反馈、观察覆盖与来源事件；聊天过期后结构化历史保留；见 outcome-feedback-capture.md |
 | P1.4 | CRM 工作台 | 统一事项卡片/列表条件、查询参数详情、跟进和消息已查看；保留旧概览及扫描入口；见 crm-workbench.md |
 | P1.5 | 面试记录 | V25 独立轮次、改期取消、加密备注、人工准备及工作台提醒；不接外部日历；见 interview-tracking.md |
-| P1.6 | Strategy Analytics | 依赖真实反馈；显示样本与观察覆盖 |
+| P1.6 | Strategy Analytics | V26 固定统计快照、成熟期与观察覆盖、有效样本及人工审阅；见 strategy-feedback-analytics.md |
 | P1.7 | Fit / Preference / Opportunity Signal | 依赖 P1.6；预览及用户采用、不自动扩大投递范围 |
 
 约束：不保存招聘凭据/Cookie 到后端，不自动处理登录/验证；真实投递保留人工确认；UNKNOWN 不自动重发；不调用真实 AI 作回归；不删除旧执行链或历史数据。每轮独立提交和 PR，迁移编号与部署串行，验收区分代码、CI、部署、扩展加载及真实页面结果。

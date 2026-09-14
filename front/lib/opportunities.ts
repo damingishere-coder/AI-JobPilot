@@ -8,6 +8,7 @@ export const applicationStatuses: Record<string, string> = {
   NOT_REQUESTED: '尚未请求', REQUESTED: '请求中', CONFIRMED: '已确认', FAILED: '失败', UNKNOWN: '结果未知，需对账',
 }
 const eventLabels: Record<string, string> = {
+  OUTCOME_NO_INTERVIEW_OBSERVED: '已核对，暂未获得面试邀请', APPLICATION_ATTRIBUTION: '固定投递岗位归因',
   INTERVIEW_CREATED: '记录面试轮次', INTERVIEW_UPDATED: '更新面试安排或准备',
   DISCOVERED: '发现岗位', SEARCH_DISCOVERY: '搜索来源已记录', AI_ANALYZED: 'AI 分析完成',
   APPLICATION_REQUESTED: '用户已确认投递请求', APPLICATION_CONFIRMED: '投递结果已确认', APPLICATION_FAILED: '投递失败', APPLICATION_UNKNOWN: '投递结果未知',

@@ -614,6 +614,8 @@ public class DatabaseSchemaService {
             requiredTables.add("resume_version");
             requiredTables.addAll(List.of("opportunity","opportunity_event","opportunity_conversation","interview"));
             requiredColumns.put("interview",Set.of("profile_id","opportunity_id","round_number","scheduled_at","status","version","note_cipher"));
+            requiredTables.add("strategy_snapshot");
+            requiredColumns.put("strategy_snapshot",Set.of("profile_id","window_days","cutoff","through_event_id","result_json","version"));
             requiredColumns.put("opportunity_conversation",Set.of("opportunity_id","conversation_id","profile_id","active"));
             requiredColumns.put("opportunity",Set.of("profile_id","platform","job_key","stage","interest","version","archived"));
             requiredColumns.put("opportunity_event",Set.of("profile_id","opportunity_id","event_key","type","source","occurred_at","observed_at"));

@@ -23,6 +23,13 @@ it('keeps no-reply reporting disabled without an observation cutoff and a confir
   expect(screen.getByText('确认记录反馈')).toBeDisabled()
   expect(opportunityApi).not.toHaveBeenCalled()
 })
+it('requires a checked cutoff and confirmed application before recording no interview', () => {
+  render(<FeedbackSection detail={detail} onSaved={vi.fn()} />)
+  fireEvent.change(screen.getByLabelText('反馈类型'), { target: { value: 'NO_INTERVIEW_OBSERVED' } })
+  expect(screen.getByText('确认记录反馈')).toBeDisabled()
+  expect(screen.getByLabelText('已核对结果的截止时间')).toBeInTheDocument()
+  expect(opportunityApi).not.toHaveBeenCalled()
+})
 it('records only an explicitly selected outcome and leaves sent resume version unknown by default', async () => {
   vi.mocked(opportunityApi).mockResolvedValue({ success: true })
   const saved = vi.fn()

@@ -20,7 +20,8 @@ public class OpportunityFeedbackService {
     private final HrAssistantStore hr;
     private final HrAssistantCryptoService crypto;
     private final ObjectMapper json;
-    private static final Set<String> TYPES=Set.of("RECRUITER_REPLIED","CHATTING","PHONE_SCREEN","INTERVIEW_INVITED","OFFER","REJECTED","WITHDRAWN","NO_REPLY_OBSERVED");
+    private static final Set<String> TYPES=Set.of("RECRUITER_REPLIED","CHATTING","PHONE_SCREEN","INTERVIEW_INVITED","OFFER","REJECTED","WITHDRAWN","NO_REPLY_OBSERVED","NO_INTERVIEW_OBSERVED");
+    private static boolean absence(String type) { return Set.of("NO_REPLY_OBSERVED","NO_INTERVIEW_OBSERVED").contains(type); }
 
     public List<Map<String,Object>> conversations(long opportunityId) {
         var opportunity=owned(opportunityId);
@@ -69,7 +70,7 @@ public class OpportunityFeedbackService {
         if(request==null || request.type()==null || !TYPES.contains(request.type())) throw new IllegalArgumentException("反馈类型无效");
         String occurred=time(request.occurredAt());
         String observed=time(request.observedUntil());
-        if("NO_REPLY_OBSERVED".equals(request.type()) && observed==null) throw new IllegalArgumentException("请填写已核对回复的截止时间");
+        if(absence(request.type()) && observed==null) throw new IllegalArgumentException("请填写已核对结果的截止时间");
         if(request.note()!=null && request.note().length()>1000) throw new IllegalArgumentException("备注最多 1000 字");
         return new TransactionTemplate(transactions).execute(status->{
             var opportunity=locked(id);
@@ -81,10 +82,10 @@ public class OpportunityFeedbackService {
             if(request.attemptId()!=null && jdbc.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE id=? AND profile_id=? AND platform=? AND job_key=? AND state='CONFIRMED'",Integer.class,
                 request.attemptId(),profile,opportunity.get("platform"),opportunity.get("job_key"))!=1)
                 throw new IllegalArgumentException("反馈投递记录不存在、未确认或属于其他机会");
-            if("NO_REPLY_OBSERVED".equals(request.type()) && request.attemptId()==null)
+            if(absence(request.type()) && request.attemptId()==null)
                 throw new IllegalArgumentException("核对未回复须选择已确认投递记录");
             if(request.attemptId()!=null) {
-                String observation="NO_REPLY_OBSERVED".equals(request.type())?observed:occurred;
+                String observation=absence(request.type())?observed:occurred;
                 // A successful callback may arrive after the HR response. Use the known
                 // request boundary, never callback arrival time, as the earliest attribution.
                 if(observation!=null && jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event WHERE opportunity_id=? AND type='APPLICATION_REQUESTED' AND json_extract(payload,'$.attemptId')=? AND occurred_at IS NOT NULL AND julianday(occurred_at)>julianday(?)",Integer.class,id,request.attemptId(),observation)>0)
@@ -93,7 +94,7 @@ public class OpportunityFeedbackService {
             if(request.actualSentResumeVersionId()!=null && (request.attemptId()==null || jdbc.queryForObject("SELECT COUNT(*) FROM resume_version WHERE id=? AND profile_id=?",Integer.class,request.actualSentResumeVersionId(),profile)!=1))
                 throw new IllegalArgumentException("请指定已确认投递及当前档案中真实发送的简历版本");
             var stage=OpportunityStage.valueOf((String)opportunity.get("stage"));
-            if(!Set.of("NO_REPLY_OBSERVED","INTERVIEW_INVITED").contains(request.type())) {
+            if(!absence(request.type()) && !"INTERVIEW_INVITED".equals(request.type())) {
                 var target=OpportunityStage.valueOf(request.type());
                 // Older positive observations cannot regress a later stage; conflicting terminal
                 // outcomes must use the explicit correction workflow.
