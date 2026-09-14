@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-14-delivery-recovery";
+  const EXTENSION_VERSION = "2026-09-14-boss-evidence";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -3053,6 +3053,13 @@
       };
     }
     await sleep(1500);
+    const initialPage = observeBossRuntimePage();
+    if (["LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "QUOTA_LIMIT", "JOB_UNAVAILABLE", "ERROR"].includes(initialPage.blocker)) {
+      const failure = classifyDeliveryFailure(detectDeliveryFailure("") || "Boss页面存在阻碍，未执行投递");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR", "NOT_SENT", "PAGE_BLOCKED");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", actionStarted: false,
+        greetingOutcome: "NOT_SENT", failureType: failure.failureType, message: failure.failureReason, evidenceDetails: { page: initialPage } };
+    }
     if (detectBossDeliveryStatus(document)) {
       const messageText = "平台已显示历史沟通状态，本次跳过发送话术";
       await postDeliveryResult(task, true, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
@@ -3126,6 +3133,7 @@
     );
     const result = {
       success: confirmed,
+      evidenceDetails: greetingResult?.evidenceDetails || null,
       outcome: confirmed ? "CONFIRMED" : "UNKNOWN",
       evidence: confirmed ? "GREETING_RENDERED_EXACT" : (deliveryCheck.evidence || "CHAT_SURFACE_ONLY"),
       greetingOutcome: confirmed ? "CONFIRMED" : "UNKNOWN",
@@ -3166,7 +3174,8 @@
 
     const messageCountBefore = countRenderedGreetingMessages(greeting, input);
     clickElement(sendButton);
-    const sent = await waitForGreetingConfirmation(greeting, input, messageCountBefore, 6000);
+    const evidenceDetails = await waitForGreetingConfirmation(greeting, input, messageCountBefore, 6000);
+    const sent = evidenceDetails.outcome === "CONFIRMED";
     postProgress(message, sent ? "info" : "warning", sent
       ? "Boss Chrome已精确确认发送岗位话术。"
       : "Boss Chrome已点击发送，但未检测到精确话术出现在聊天记录。", {
@@ -3176,6 +3185,7 @@
     return {
       attempted: true,
       sent,
+      evidenceDetails,
       evidence: sent ? "GREETING_RENDERED_EXACT" : "GREETING_RENDER_UNCONFIRMED",
       message: sent ? "已精确确认发送岗位话术" : "点击发送后未检测到精确话术"
     };
@@ -3184,27 +3194,18 @@
   async function waitForGreetingConfirmation(greeting, input, beforeCount, timeoutMs) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (countRenderedGreetingMessages(greeting, input) > beforeCount) return true;
+      const afterCount = countRenderedGreetingMessages(greeting, input);
+      const page = observeBossRuntimePage();
+      const criticalBlock = ["LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "QUOTA_LIMIT", "JOB_UNAVAILABLE", "ERROR"].includes(page.blocker);
+      const evidence = window.GetJobsBossPageEvidence.evaluateEvidence({ beforeCount, afterCount, state: criticalBlock ? page : undefined });
+      if (criticalBlock || evidence.outcome === "CONFIRMED") return { ...evidence, beforeCount, afterCount, page };
       await sleep(200);
     }
-    return false;
+    return { ...window.GetJobsBossPageEvidence.evaluateEvidence(), beforeCount, afterCount: countRenderedGreetingMessages(greeting, input), page: observeBossRuntimePage() };
   }
 
   function countRenderedGreetingMessages(greeting, input) {
-    // The detail popup is separate from the full chat. Its send callback assigns
-    // a message id and changes .status to .success; an optimistic row is not proof.
-    const popupSelector = ".startchat-content .message > .message-list > .message-item";
-    const rows = Array.from(document.querySelectorAll(`${popupSelector}, .item-myself, .message-self, [data-direction='outbound']`));
-    if (rows.length) return rows.filter(row => {
-      if (row.offsetParent === null || row.querySelector(".send-failed, .message-failed, .sending, .status.error")) return false;
-      if (row.matches(popupSelector) && (!row.id || !row.querySelector(":scope > .status.success"))) return false;
-      const body = row.querySelector(".text-content, .text, .message-content") || row;
-      const copy = body.cloneNode(true);
-      copy.querySelectorAll(".message-status, .item-time, .quote-message, .status").forEach(n => n.remove());
-      copy.querySelectorAll("br").forEach(n => n.replaceWith("\n"));
-      return normalizeGreetingText(copy.textContent || "") === greeting;
-    }).length;
-    return 0;
+    return window.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
   }
 
   function buildDeliverySuccessMessage(favoriteButton, greetingResult) {
@@ -3991,6 +3992,7 @@
       currentUrl: diagnostics.currentUrl,
       title: diagnostics.title,
       pageState: diagnostics.pageState,
+      runtimePage: observeBossRuntimePage(),
       hasLoginPrompt: diagnostics.hasLoginPrompt,
       hasSecurityPrompt: diagnostics.hasSecurityPrompt,
       searchLike,
@@ -5034,14 +5036,12 @@
   }
 
   function detectBossDeliveryStatus(root = document) {
-    const text = compact([
-      ...Array.from(root.querySelectorAll?.("button, a, [role='button']") || [])
-        .filter((el) => el.offsetParent !== null)
-        .map((el) => [el.innerText, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("title")].filter(Boolean).join(" ")),
-      root === document ? "" : root.innerText
-    ].filter(Boolean).join(" "));
-    if (/(继续沟通|已沟通|已投递|已申请)/.test(text)) return "已投递";
-    return "";
+    return window.GetJobsBossPageEvidence.detectDeliveryStatus(document, root);
+  }
+
+  function observeBossRuntimePage() {
+    return window.GetJobsBossPageEvidence.observe({ document, href: window.location.href,
+      support: SCAN_SUPPORT, styleReader: node => window.getComputedStyle(node) });
   }
 
   function parseBossTextSections(text) {
