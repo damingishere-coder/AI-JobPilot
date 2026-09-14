@@ -4071,13 +4071,13 @@
     // Only acknowledge the non-binding positive-quota reminder from the job dialog.
     // Never dismiss exhausted quotas, verification, login or paid upgrade prompts.
     for (const dialog of document.querySelectorAll(".dialog-wrap")) {
-      if (dialog.offsetParent === null || acknowledged.has(dialog)) continue;
+      if (!isVisibleElement(dialog) || acknowledged.has(dialog)) continue;
       const title = compact(dialog.querySelector(".dialog-title h3")?.textContent || "");
       const content = compact(dialog.querySelector(".dialog-con")?.textContent || "");
       const remaining = content.match(/^您今天已与\d+位BOSS沟通[，,]\s*还剩(\d+)次沟通机会哦[！!。]?$/);
       if (title !== "温馨提示" || !remaining || Number(remaining[1]) <= 0) continue;
       const buttons = Array.from(dialog.querySelectorAll(".dialog-footer .btn-sure"))
-        .filter(button => button.offsetParent !== null && compact(button.textContent || "") === "好");
+        .filter(button => isVisibleElement(button) && compact(button.textContent || "") === "好");
       if (buttons.length !== 1) continue;
       acknowledged.add(dialog);
       clickElement(buttons[0]);

@@ -77,12 +77,20 @@ test('Zhilian recognizes the live daily-limit wording as a failed action', () =>
 test('BOSS acknowledges only the positive-quota reminder once, never restrictions or unrelated dialogs', () => {
   const document = dom('');
   let clicks = 0;
-  const code = readFunction('boss-content.js', 'acknowledgeRemainingCommunicationReminder', 'executeDeliveryOnce');
+  const code = readFunction('boss-content.js', 'isVisibleElement', 'isStrongLoginPrompt')
+    + readFunction('boss-content.js', 'acknowledgeRemainingCommunicationReminder', 'executeDeliveryOnce');
   const acknowledge = vm.runInNewContext(code + '; acknowledgeRemainingCommunicationReminder', {
-    document, compact: (s: unknown) => String(s || '').trim(), clickElement: () => { clicks++; },
+    document, window, compact: (s: unknown) => String(s || '').trim(), clickElement: () => { clicks++; },
   });
   const fixture = (content: string, title = '温馨提示') => {
     document.body.innerHTML = `<div class="dialog-wrap"><div class="dialog-title"><h3>${title}</h3></div><div class="dialog-con">${content}</div><div class="dialog-footer"><span class="btn btn-sure">好</span></div></div>`;
+    // Live BOSS CSS fixes this overlay to the viewport: visible with a null offsetParent.
+    const dialog = document.querySelector('.dialog-wrap') as HTMLElement;
+    dialog.style.position = 'fixed';
+    Object.defineProperty(dialog, 'offsetParent', { get: () => null });
+    for (const element of [dialog, document.querySelector('.btn-sure')!]) {
+      element.getBoundingClientRect = () => ({ width: 300, height: 150 }) as DOMRect;
+    }
   };
   const acknowledged = new WeakSet();
   fixture('您今天已与120位BOSS沟通，还剩30次沟通机会哦');
