@@ -260,9 +260,9 @@ class DeliveryAttemptServiceTest {
         insertBoss(60, DeliveryStatus.WAITING_CONFIRM);
         DeliveryAttemptService.RequestResult first = service.requestBoss(60, 1, "old-job", false);
         assertThat(first.created()).isTrue();
-        jdbcTemplate.update("DELETE FROM boss_data WHERE id=60");
-        jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status, created_at, updated_at) " +
-                "VALUES (60, 1, 'new-job', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", DeliveryStatus.WAITING_CONFIRM);
+        // V23 blocks destructive cache clearing. Simulate an incorrectly rebound source row
+        // directly to retain coverage of the independent Attempt identity guard.
+        jdbcTemplate.update("UPDATE boss_data SET encrypt_id='new-job',delivery_status=? WHERE id=60", DeliveryStatus.WAITING_CONFIRM);
 
         DeliveryAttemptService.RequestResult reused = service.requestBoss(60, 1, "new-job", false);
 

@@ -579,6 +579,11 @@ public class DeliveryAttemptService {
         }
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         return transaction.execute(status -> {
+            jdbcTemplate.update("UPDATE opportunity SET version=version WHERE id=-1");
+            if (jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity WHERE profile_id=? AND platform=? AND job_key=? AND archived=1",
+                    Integer.class, profileId, normalizedPlatform, jobKey.trim()) > 0) {
+                return RequestResult.rejected("请先在求职机会中恢复已归档岗位，再重新确认投递");
+            }
             Attempt latest = findLatest(normalizedPlatform, profileId, rowId);
             if (latest != null) {
                 if (!sameJobKey(jobKey, latest.jobKey())) {
@@ -616,6 +621,11 @@ public class DeliveryAttemptService {
         }
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         return transaction.execute(status -> {
+            jdbcTemplate.update("UPDATE opportunity SET version=version WHERE id=-1");
+            if (jdbcTemplate.queryForObject("SELECT COUNT(*) FROM opportunity WHERE profile_id=? AND platform=? AND job_key=? AND archived=1",
+                    Integer.class, profileId, normalizedPlatform, jobKey.trim()) > 0) {
+                return RequestResult.rejected("请先在求职机会中恢复已归档岗位，再重新确认投递");
+            }
             Attempt latest = findLatest(normalizedPlatform, profileId, rowId);
             if (latest == null || !sameJobKey(jobKey, latest.jobKey())) {
                 return RequestResult.rejected("没有可重试的同岗位投递记录");

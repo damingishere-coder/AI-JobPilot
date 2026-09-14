@@ -612,6 +612,9 @@ public class DatabaseSchemaService {
         if (requireV7TaskSchema) bossDataColumns.add("scan_result_source");
         if (requireV7TaskSchema) {
             requiredTables.add("resume_version");
+            requiredTables.addAll(List.of("opportunity","opportunity_event"));
+            requiredColumns.put("opportunity",Set.of("profile_id","platform","job_key","stage","interest","version","archived"));
+            requiredColumns.put("opportunity_event",Set.of("profile_id","opportunity_id","event_key","type","source","occurred_at","observed_at"));
             requiredColumns.put("resume_version",Set.of("profile_id","content_fingerprint","content_cipher"));
             requiredColumns.put("job_ai_analysis",Set.of("profile_id","resume_version_id","analysis_context"));
         }

@@ -50,6 +50,10 @@ class AnalysisClearSequenceSafetyTest {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM zhilian_data",Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL",Integer.class)).isEqualTo(2);
         jdbcTemplate.update("UPDATE delivery_attempt SET runtime_phase='LEGACY'");
+        assertThat(bossService.clearBossAnalysisData()).containsEntry("success", false);
+        assertThat(zhilianService.clearZhilianAnalysisData()).containsEntry("success", false);
+        jdbcTemplate.update("UPDATE delivery_attempt SET state='FAILED'");
+        jdbcTemplate.update("UPDATE job_analysis_task SET status='FAILED'");
 
         assertThat(bossService.clearBossAnalysisData()).containsEntry("success", true);
         assertThat(zhilianService.clearZhilianAnalysisData()).containsEntry("success", true);
@@ -63,7 +67,7 @@ class AnalysisClearSequenceSafetyTest {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt", Integer.class))
                 .isEqualTo(2);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL", Integer.class))
-                .isZero();
+                .isEqualTo(2);
     }
 
     @Test

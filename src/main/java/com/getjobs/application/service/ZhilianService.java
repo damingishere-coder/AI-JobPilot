@@ -676,6 +676,7 @@ public class ZhilianService {
         Long profileId = profileService.getCurrentProfileIdOrNull();
         if (profileId == null) return emptyStatsResponse();
         wrapper.eq("profile_id", profileId);
+        wrapper.apply(OpportunityArchive.visible("zhilian", "zhilian_data", "job_id"));
         List<ZhilianJobDataEntity> all = zhilianJobDataMapper.selectList(wrapper);
 
         List<ZhilianJobDataEntity> filtered = new ArrayList<>();
@@ -845,6 +846,7 @@ public class ZhilianService {
         }
 
         wrapper.orderByDesc("create_time");
+        wrapper.apply(OpportunityArchive.visible("zhilian", "zhilian_data", "job_id"));
         List<ZhilianJobDataEntity> all = zhilianJobDataMapper.selectList(wrapper);
 
         List<ZhilianJobDataEntity> filtered = new ArrayList<>();
@@ -885,58 +887,22 @@ public class ZhilianService {
     }
 
     /**
-     * 清空智联投递分析数据。用于切换候选人/简历前重置旧岗位和旧 AI 结果。
+     * 兼容旧清空路由：归档当前列表，保留求职历史。
      */
     public Map<String, Object> clearZhilianAnalysisData() {
-        Map<String, Object> resp = new HashMap<>();
-        Connection conn = null;
-        boolean originalAutoCommit = true;
-        try {
-            conn = dataSource.getConnection();
-            originalAutoCommit = conn.getAutoCommit();
-            conn.setAutoCommit(false);
-
-            int analysisDeleted;
-            int tasksDeleted;
-            int draftsDeleted;
-            int jobsDeleted;
-            try (Statement st = conn.createStatement()) {
-                Long profileId = profileService.getCurrentProfileId();
-                tasksDeleted = st.executeUpdate("DELETE FROM job_analysis_task WHERE lower(platform)='zhilian' " +
-                        "AND profile_id=" + profileId + " AND status<>'LEASED'");
-                try (java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM job_analysis_task " +
-                        "WHERE lower(platform)='zhilian' AND profile_id=" + profileId + " AND status='LEASED'")) {
-                    if (rs.next() && rs.getLong(1) > 0) {
-                        conn.rollback();
-                        resp.put("success", false);
-                        resp.put("message", "仍有智联 AI 分析正在执行，已阻止清空；请等待完成或进入 UNKNOWN 后再试");
-                        return resp;
-                    }
-                }
-                DeliveryRuntimeService.requireClearAllowed(conn, "zhilian", profileId);
-                analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
-                draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='zhilian' AND profile_id=" + profileId);
-                jobsDeleted = st.executeUpdate("DELETE FROM zhilian_data WHERE profile_id=" + profileId);
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                Map<String, Object> result = OpportunityArchive.platform(connection, "zhilian", profileService.getCurrentProfileId());
+                connection.commit();
+                return result;
+            } catch (Exception error) {
+                connection.rollback();
+                return Map.of("success", false, "message", "归档失败：" + error.getMessage());
             }
-
-            conn.commit();
-            resp.put("success", true);
-            resp.put("message", "智联投递分析数据已清空");
-            resp.put("jobsDeleted", jobsDeleted);
-            resp.put("analysisDeleted", analysisDeleted);
-            resp.put("tasksDeleted", tasksDeleted);
-            resp.put("draftsDeleted", draftsDeleted);
-            resp.put("total", 0);
-        } catch (Exception e) {
-            try { if (conn != null) conn.rollback(); } catch (Exception ignore) {}
-            log.warn("清空智联投递分析数据失败: {}", e.getMessage());
-            resp.put("success", false);
-            resp.put("message", "清空失败: " + e.getMessage());
-        } finally {
-            try { if (conn != null) conn.setAutoCommit(originalAutoCommit); } catch (Exception ignore) {}
-            try { if (conn != null) conn.close(); } catch (Exception ignore) {}
+        } catch (Exception error) {
+            return Map.of("success", false, "message", "归档失败：" + error.getMessage());
         }
-        return resp;
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s.trim(); }

@@ -700,14 +700,14 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   const working = useZhilianAnalysisSync(profileId, () => loadList(page, size), hasPending)
 
   const clearAnalysisData = async () => {
-    const ok = window.confirm("确认清空智联投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，此操作不能撤销，切换档案无需清空历史数据。")
+    const ok = window.confirm("确认归档当前智联列表？岗位、分析和投递历史会保留，可在“求职机会”的已归档列表恢复。")
     if (!ok) return
     try {
       setClearingAnalysis(true)
       const res = await fetch(`${API_BASE}/api/zhilian/analysis`, { method: "DELETE" })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.success === false) {
-        throw new Error(data.message || "清空失败")
+        throw new Error(data.message || "归档失败")
       }
       setItems([])
       setTotal(0)
@@ -715,9 +715,9 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
       setInputPage(1)
       setStats(null)
       await loadList(1, size)
-      alert(data.message || "智联投递分析数据已清空。")
+      alert(data.message || "智联当前列表已归档，历史已保留。")
     } catch (error) {
-      alert(error instanceof Error ? error.message : "清空失败：网络或服务异常。")
+      alert(error instanceof Error ? error.message : "归档失败：网络或服务异常。")
     } finally {
       setClearingAnalysis(false)
     }
@@ -1038,7 +1038,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
           icon={<BiBarChart size={28} />}
           actions={
             <Button size="sm" variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
-              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "归档中..." : "归档列表"}
             </Button>
           }
         />
@@ -1121,7 +1121,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
               <BiBriefcase className="mr-1" /> 刷新列表
             </Button>
             <Button variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
-              <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+              <BiTrash className="mr-1" /> {clearingAnalysis ? "归档中..." : "归档列表"}
             </Button>
             <Button variant="outline" onClick={exportCSV} disabled={exporting}>
               <BiDownload className="mr-1" /> 导出CSV

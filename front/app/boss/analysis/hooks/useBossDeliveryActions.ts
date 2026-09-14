@@ -456,22 +456,22 @@ export function useBossDeliveryActions({
   }, [loadList, openTextDialog, page, refreshStats, size])
 
   const clearAnalysisData = useCallback(async () => {
-    const ok = window.confirm("确认清空 Boss 投递分析数据？这会删除当前岗位列表、统计图和历史AI分析结果，适合切换人物或简历前使用。")
+    const ok = window.confirm("确认归档当前 Boss 列表？岗位、分析和投递历史会保留，可在“求职机会”的已归档列表恢复。")
     if (!ok) return
     try {
       setClearingAnalysis(true)
       const res = await fetch(`${API_BASE}/api/boss/analysis`, { method: "DELETE" })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.success === false) {
-        throw new Error(data.message || "清空失败")
+        throw new Error(data.message || "归档失败")
       }
       clearLocalJobs()
       clearStats()
       await loadList(1, size)
       await refreshStats()
-      openTextDialog("清空投递分析", data.message || "Boss投递分析数据已清空。")
+      openTextDialog("归档当前列表", data.message || "Boss 当前列表已归档，历史已保留。")
     } catch (error) {
-      openTextDialog("清空投递分析", error instanceof Error ? error.message : "清空失败：网络或服务异常。")
+      openTextDialog("归档当前列表", error instanceof Error ? error.message : "归档失败：网络或服务异常。")
     } finally {
       setClearingAnalysis(false)
     }

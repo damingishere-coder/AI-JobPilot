@@ -165,6 +165,7 @@ public class BossStatsSqlProvider {
 
     private String where(BossStatsQuery query) {
         StringBuilder sql = new StringBuilder("WHERE profile_id = #{profileId}");
+        sql.append(" AND ").append(com.getjobs.application.service.OpportunityArchive.visible("boss","boss_data","encrypt_id"));
         if (hasText(query.getScanRunId())) {
             sql.append(" AND scan_run_id = #{scanRunId}");
         }

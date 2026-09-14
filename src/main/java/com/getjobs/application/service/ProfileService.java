@@ -22,6 +22,8 @@ import java.util.Map;
 @DependsOn("databaseSchemaService")
 public class ProfileService {
     private static final List<String> PROFILE_RELATED_TABLES = List.of(
+            "opportunity_event",
+            "opportunity",
             "ai",
             "resume_profile",
             "resume_version",
@@ -157,13 +159,13 @@ public class ProfileService {
 
         boolean wasActive = entity.getIsActive() != null && entity.getIsActive() == 1;
         if (force) {
+            jdbcTemplate.update("UPDATE job_analysis_task SET id=id WHERE id=-1");
             Long unresolved = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=? " +
-                    "AND runtime_phase IN ('CLAIMED','EFFECT_POSSIBLE','SETTLED') AND state IN ('REQUESTED','UNKNOWN')", Long.class, id);
+                    "AND state IN ('REQUESTED','UNKNOWN')", Long.class, id);
             if (unresolved != null && unresolved > 0) return new DeleteProfileResult(false,
                     "该档案仍有已领取或结果未知的投递，请先对账后再删除。", impactCounts, getCurrentProfile(), true);
-            jdbcTemplate.update("DELETE FROM job_analysis_task WHERE profile_id=? AND status<>'LEASED'", id);
             Long leasedTasks = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND status='LEASED'",
+                    "SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND status IN('LEASED','UNKNOWN')",
                     Long.class,
                     id
             );
@@ -171,7 +173,7 @@ public class ProfileService {
                 status.setRollbackOnly();
                 return new DeleteProfileResult(
                         false,
-                        "该档案仍有 AI 分析正在执行，已阻止删除；请等待完成或进入 UNKNOWN 后再试。",
+                        "该档案仍有 AI 分析正在执行或结果未知，已阻止删除；请先完成或对账。",
                         impactCounts,
                         getCurrentProfile(),
                         true

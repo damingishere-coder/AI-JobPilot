@@ -42,7 +42,7 @@ export function BatchActionBar({
         <BiRefresh className="mr-1" /> 刷新数据
       </Button>
       <Button size="sm" variant="destructive" onClick={onClear} disabled={clearingAnalysis}>
-        <BiTrash className="mr-1" /> {clearingAnalysis ? "清空中..." : "清空分析"}
+        <BiTrash className="mr-1" /> {clearingAnalysis ? "归档中..." : "归档列表"}
       </Button>
       <Button size="sm" variant="outline" onClick={onToggleDetailColumns}>
         {showDetailColumns ? <BiChevronUp className="mr-1" /> : <BiChevronDown className="mr-1" />}
