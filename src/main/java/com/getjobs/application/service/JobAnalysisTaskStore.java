@@ -591,6 +591,13 @@ public class JobAnalysisTaskStore {
     }
 
     public JobAiAnalysisService.JobAnalysisRequest deserialize(TaskRecord task) {
+        var request = deserializeForReconciliation(task);
+        analysisContexts.hydrate(request);
+        return request;
+    }
+
+    /** Identity only: usable for recovery, never as an AI execution input. */
+    public JobAiAnalysisService.JobAnalysisRequest deserializeForReconciliation(TaskRecord task) {
         if (task == null || task.requestJson() == null || task.requestJson().isBlank()) {
             throw new IllegalArgumentException("任务缺少可恢复的请求快照");
         }
@@ -607,7 +614,6 @@ public class JobAnalysisTaskStore {
                 throw new IllegalStateException("AI 分析任务快照与任务索引不一致");
             }
             validateTargetJobIdentity(request, platform, jobKey);
-            analysisContexts.hydrate(request);
             return request;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("AI 分析任务请求快照损坏", e);

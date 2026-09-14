@@ -103,6 +103,16 @@ class ChromeJobAnalysisQueueServiceTest {
         assertThat(store.findById(taskId).attemptCount()).isEqualTo(1);
     }
 
+    @Test void oldPendingWithoutContextFailsBeforeProviderInsteadOfLeavingAStuckLease() {
+        long id=store.submit(request("boss","legacy-no-context","old-run")).task().id();
+        jdbcTemplate.update("UPDATE job_analysis_task SET context_key=NULL,request_json=json_remove(request_json,'$.analysisContext','$.contextKey') WHERE id=?",id);
+        queue=new ChromeJobAnalysisQueueService(analysisService,store);
+        queue.initialize();
+        awaitStatus(id,"FAILED");
+        verify(analysisService,never()).analyzeJobs(any());
+        assertThat(store.findById(id).lastError()).contains("历史任务缺少冻结");
+    }
+
     @Test
     void compatibleLookupFailureStillProcessesAlreadyClaimedSeed() {
         long taskId = store.submit(request("boss", "job-seed-only", "run-before-restart")).task().id();
