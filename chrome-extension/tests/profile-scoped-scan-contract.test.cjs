@@ -15,12 +15,12 @@ test("extension release and both content scripts use the profile-scoped contract
   const boss = source("boss-content.js");
   const zhilian = source("zhilian-content.js");
 
-  assert.equal(manifest.version, "1.8.11");
-  assert.match(background, /BACKGROUND_VERSION = "2026-09-14-runtime-claims"/);
-  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-runtime"/);
-  assert.match(boss, /EXTENSION_VERSION = "2026-09-14-boss-runtime"/);
-  assert.match(zhilian, /EXTENSION_VERSION = "2026-09-14-delivery-recovery"/);
-  assert.match(background, /REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-delivery-recovery"/);
+  assert.equal(manifest.version, "1.8.12");
+  assert.match(background, /BACKGROUND_VERSION = "2026-09-14-runtime-adapters"/);
+  assert.match(background, /REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-adapter"/);
+  assert.match(boss, /EXTENSION_VERSION = "2026-09-14-boss-adapter"/);
+  assert.match(zhilian, /EXTENSION_VERSION = "2026-09-14-zhilian-adapter"/);
+  assert.match(background, /REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-zhilian-adapter"/);
   const frontendBridge = fs.readFileSync(path.resolve(extensionDir, "../front/lib/chromeBridge.ts"), "utf8");
   assert.equal(frontendBridge.match(/REQUIRED_BACKGROUND_VERSION = '([^']+)'/)[1],
     background.match(/const BACKGROUND_VERSION = "([^"]+)"/)[1]);

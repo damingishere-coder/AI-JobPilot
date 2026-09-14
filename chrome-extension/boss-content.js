@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-14-boss-runtime";
+  const EXTENSION_VERSION = "2026-09-14-boss-adapter";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -3064,25 +3064,15 @@
       const messageText = "平台已显示历史沟通状态，本次跳过发送话术";
       await postDeliveryResult(task, true, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
       return { success: true, outcome: "CONFIRMED", evidence: "EXISTING_CONVERSATION",
-        greetingOutcome: "NOT_SENT", greetingEvidence: "ALREADY_CONTACTED", actionStarted: false, message: messageText };
+        greetingOutcome: "NOT_SENT", greetingEvidence: "ALREADY_CONTACTED", actionStarted: false, message: messageText,
+        evidenceDetails: { page: initialPage, effect: "ALREADY_CONTACTED" } };
     }
     if (task.reconciliationOnly) return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION",
       greetingOutcome: "UNKNOWN", actionStarted: false, message: "只读核对未发现历史沟通状态，未发送，请人工核对" };
-    if (task.runtime) {
-      try {
-        const permit = await callBossLocalApi("runtime-begin", {
-          profileId: task.profileId, ...task.runtime, pageType: initialPage.pageType, blocker: initialPage.blocker
-        }, { params: { requestKey: task.requestKey }, pageTabId: message.pageTabId });
-        if (permit.permitted !== true) throw new Error("执行许可未确认");
-        const currentPage = observeBossRuntimePage();
-        if (!isSameBossJobUrl(window.location.href, task.url) || currentPage.blocker !== "NONE"
-            || !isCurrentContentInstance()) throw new Error("许可签发后页面已变化");
-      } catch {
-        // The permit may already be durable. Never convert an uncertain grant into a retryable failure.
-        return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", haltBatch: true,
-          actionStarted: false, greetingOutcome: "UNKNOWN", message: "执行许可未确认或已使用，未点击；请只读核对。" };
-      }
-    }
+    const runtimeBlocked = await window.BrowserApplicationRuntime.beforeEffect({ task,
+      begin: body => callBossLocalApi("runtime-begin", body, { params: { requestKey: task.requestKey }, pageTabId: message.pageTabId }),
+      observe: observeBossRuntimePage, matches: () => isSameBossJobUrl(window.location.href, task.url), active: isCurrentContentInstance });
+    if (runtimeBlocked) return { ...runtimeBlocked, greetingOutcome: "UNKNOWN" };
     postProgress(message, "info", `Boss Chrome正在当前详情页投递：${task.companyName || ""} ${task.jobName || ""}`.trim(), {
       operation: "deliver",
       stage: "submitting",

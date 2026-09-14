@@ -312,6 +312,8 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",
+    "zhilian-page-evidence.js",
+    "browser-application-runtime.js",
     "zhilian-content.js"
   ]);
 });
@@ -359,6 +361,8 @@ test("reinjects all Zhilian dependencies when the content script is stale", asyn
     "zhilian-filters.js",
     "zhilian-scan-support.js",
     "zhilian-modern-collector.js",
+    "zhilian-page-evidence.js",
+    "browser-application-runtime.js",
     "zhilian-content.js"
   ]);
   assert.equal(await context.isContentScriptReady(1, "zhilian-content.js"), true);
@@ -1373,11 +1377,11 @@ test("Zhilian stops on login expiry, preserves untouched rows, and never steals 
   const requests = [];
   const tasks = [1,2,3].map(id => ({id, requestKey:`z-${id}`,url:`https://www.zhaopin.com/jobdetail/CC123J${id}.htm`}));
   const { context, sentMessages, tabUpdates, windowUpdates } = loadBackground({
-    tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete',active:false}],
+    tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete',active:false},{id:99,url:'http://localhost:6866'}],
     zhilianDeliveryResponses:[{success:false,outcome:'FAILED',evidence:'PRE_ACTION_ERROR',failureType:'LOGIN_EXPIRED',message:'请重新登录'}],
     fetchImpl:async(url,options)=>{const body=JSON.parse(options.body);requests.push(body);return jsonResponse({success:true,accepted:true,state:body.outcome})}
   });
-  const result = await context.handleZhilianDeliver({id:7,windowId:1}, {hosts:['zhaopin.com'],contentScript:'zhilian-content.js'}, {type:'ZHILIAN_DELIVER_BATCH',tasks},null);
+  const result = await context.handleZhilianDeliver({id:7,windowId:1}, {hosts:['zhaopin.com'],contentScript:'zhilian-content.js'}, {type:'ZHILIAN_DELIVER_BATCH',tasks},99);
   assert.equal(result.halted,true);
   assert.equal(result.unprocessedCount,2);
   assert.equal(sentMessages.filter(e=>e.message.type==='ZHILIAN_DELIVER_CURRENT_V2').length,1);
@@ -1406,10 +1410,10 @@ test('Boss stops the whole batch on platform restrictions but can pass an indivi
 
 test("Zhilian does not retry a send after a lost message channel", async () => {
   const tasks = [1,2].map(id=>({id,requestKey:`z-${id}`,url:`https://www.zhaopin.com/jobdetail/CC123J${id}.htm`}));
-  const {context,sentMessages} = loadBackground({tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'}],
+  const {context,sentMessages} = loadBackground({tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'},{id:99,url:'http://localhost:6866'}],
     zhilianDeliveryResponses:[new Error('message channel closed after click')],
     fetchImpl:async(url,options)=>jsonResponse({success:true,accepted:true,state:JSON.parse(options.body).outcome})});
-  const result=await context.handleZhilianDeliver({id:7,windowId:1},{hosts:['zhaopin.com'],contentScript:'zhilian-content.js'},{type:'ZHILIAN_DELIVER_BATCH',tasks},null);
+  const result=await context.handleZhilianDeliver({id:7,windowId:1},{hosts:['zhaopin.com'],contentScript:'zhilian-content.js'},{type:'ZHILIAN_DELIVER_BATCH',tasks},99);
   assert.equal(result.unknownCount,1);assert.equal(result.unprocessedCount,1);
   assert.equal(sentMessages.filter(e=>e.message.type==='ZHILIAN_DELIVER_CURRENT_V2').length,1);
 });

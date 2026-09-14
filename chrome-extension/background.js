@@ -1,5 +1,6 @@
 importScripts("boss-delivery-support.js");
 importScripts("application-runtime-protocol.js");
+importScripts("browser-application-runtime.js");
 const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
@@ -13,7 +14,8 @@ const PLATFORM_CONFIG = {
       "boss-api-collector.js",
       "boss-search-collector.js",
       "boss-detail-collector.js",
-        "boss-page-evidence.js",
+      "boss-page-evidence.js",
+      "browser-application-runtime.js",
       "boss-content.js",
       "boss-hr-support.js",
       "boss-hr-bridge.js",
@@ -28,6 +30,8 @@ const PLATFORM_CONFIG = {
       "continuous-scan-support.js", "zhilian-filters.js",
       "zhilian-scan-support.js",
       "zhilian-modern-collector.js",
+      "zhilian-page-evidence.js",
+      "browser-application-runtime.js",
       "zhilian-content.js"
     ]
   }
@@ -48,15 +52,15 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-14-runtime-claims";
+const BACKGROUND_VERSION = "2026-09-14-runtime-adapters";
 const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-runtime";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-delivery-recovery";
+const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-adapter";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-zhilian-adapter";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -878,6 +882,8 @@ function withBossHrTimeout(promise, timeoutMs) {
 async function handleZhilianLocalApiRequest(message) {
   const endpoint = resolveZhilianLocalApiEndpoint(message);
   if (!endpoint.success) return endpoint;
+  if (message.operation === "runtime-begin" && !await runtimeOwnerAlive(message.pageTabId))
+    return { success: false, errorCode: "WORKBENCH_CLOSED", message: "工作台已关闭，未执行平台动作" };
   if (isProfileScopedLocalApiOperation(message?.operation) && !normalizeProfileId(message?.body?.profileId)) {
     return profileRequiredResponse();
   }
@@ -885,6 +891,7 @@ async function handleZhilianLocalApiRequest(message) {
   const result = await requestLocalApi(endpoint.path, {
     operation: String(message.operation || ""),
     method: endpoint.method,
+    requireActionToken: endpoint.requireActionToken === true,
     body: message.body,
     timeoutMs: normalizeLocalApiTimeout(message.timeoutMs),
     pageTabId: message.pageTabId,
@@ -941,6 +948,7 @@ function resolveBossLocalApiEndpoint(message) {
 
 function resolveZhilianLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (operation === "runtime-begin") return resolveBossLocalApiEndpoint(message);
   if(operation === "filter-options") {
     const city=String(message?.params?.cityCode || "489");
     if(!/^\d+$/.test(city)) return {success:false,message:"智联城市代码无效"};
@@ -1435,6 +1443,16 @@ async function validateConfirmedTask(task, platform, pageTabId) {
   }
 }
 
+async function runtimeOwnerAlive(pageTabId) {
+  const page = await chrome.tabs.get(pageTabId).catch(() => null);
+  return Boolean(page && isAllowedPageUrl(page.url || ""));
+}
+
+async function claimRuntimeTask(task, message, platform, pageTabId) {
+  return BrowserApplicationRuntime.claim({ task, message, platform, pageTabId,
+    ownerAlive: runtimeOwnerAlive, request: requestLocalApi });
+}
+
 async function dispatchBlocker(task, platform, pageTabId) {
   try {
     await validateConfirmedTask(task, platform, pageTabId);
@@ -1559,24 +1577,9 @@ async function prepareBossDelivery(tabId, targetUrl) {
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
   const blocked = await dispatchBlocker(task, "boss", pageTabId);
   if (blocked) return blocked;
-  if (!task.reconciliationOnly) {
-    const ownerPage = await chrome.tabs.get(pageTabId).catch(() => null);
-    if (!ownerPage || !isAllowedPageUrl(ownerPage.url || "")) return {
-      success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted: false,
-      haltBatch: true, actionStarted: false, message: "工作台已关闭，未启动下一岗位；请在恢复列表核对。"
-    };
-    const claim = await requestLocalApi(`/api/delivery-attempts/${encodeURIComponent(task.requestKey)}/runtime/claim`, {
-      method: "POST", requireActionToken: true, platform: "boss", pageTabId, operation: "runtime-claim",
-      body: { platform: "boss", profileId: task.profileId, id: task.id, url: task.url, greeting: task.greeting,
-        runId: message.runId, runtimeSessionId: message.runtimeSessionId, correlationId: message.correlationId }
-    });
-    if (!claim.success || claim.data?.success !== true) return {
-      success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", persisted: false,
-      haltBatch: true, actionStarted: false, message: "执行领取未确认，已停止；只读核对后再处理。"
-    };
-    task = { ...task, runtime: claim.data.enabled === true
-      ? { runtimeSessionId: message.runtimeSessionId, claimVersion: claim.data.claimVersion } : null };
-  }
+  const admission = await claimRuntimeTask(task, message, "boss", pageTabId);
+  if (admission.blocked) return admission.blocked;
+  task = admission.task;
   if (!task?.url || !task?.id) {
     let persisted = false;
     if (task?.id) {
@@ -1639,19 +1642,23 @@ async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, to
     deliveryTotal: total
   });
   if (response) {
-    if (task.runtime && response.evidenceDetails?.page) {
-      const details = response.evidenceDetails;
-      await requestLocalApi(`/api/delivery-attempts/${encodeURIComponent(task.requestKey)}/runtime/observe`, {
-        method: "POST", requireActionToken: true, operation: "runtime-observe", platform: "boss", pageTabId,
-        body: { profileId: task.profileId, ...task.runtime, pageType: details.page.pageType,
-          blocker: details.page.blocker, beforeCount: details.beforeCount || 0, afterCount: details.afterCount || 0 }
-      }).catch(() => {}); // Diagnostics failing must not suppress the original result callback.
-    }
+    await recordRuntimeObservation(task, response, "boss", pageTabId);
     const recorded = await recordBossDeliveryResponse(task, response);
     const haltBatch = response.haltBatch || ["LOGIN_EXPIRED", "PLATFORM_VERIFICATION", "DELIVERY_LIMIT"].includes(response.failureType);
     return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded, haltBatch };
   }
   return await inferBossDeliveryAfterEmptyResponse(tabId, task);
+}
+
+async function recordRuntimeObservation(task, response, platform, pageTabId) {
+  if (!task.runtime || !response.evidenceDetails?.page) return;
+  const details = response.evidenceDetails;
+  await requestLocalApi(`/api/delivery-attempts/${encodeURIComponent(task.requestKey)}/runtime/observe`, {
+    method: "POST", requireActionToken: true, operation: "runtime-observe", platform, pageTabId,
+    body: { profileId: task.profileId, ...task.runtime, pageType: details.page.pageType, blocker: details.page.blocker,
+      beforeCount: Number.isInteger(details.beforeCount) ? details.beforeCount : null,
+      afterCount: Number.isInteger(details.afterCount) ? details.afterCount : null, effect: details.effect || "UNCONFIRMED" }
+  }).catch(() => {});
 }
 
 async function handleZhilianDeliver(tab, config, message, pageTabId) {
@@ -1761,6 +1768,9 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
 async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
   const blocked = await dispatchBlocker(task, "zhilian", pageTabId);
   if (blocked) return blocked;
+  const admission = await claimRuntimeTask(task, message, "zhilian", pageTabId);
+  if (admission.blocked) return admission.blocked;
+  task = admission.task;
   if (!task?.url || !task?.id) {
     let persisted = false;
     if (task?.id) {
@@ -1827,6 +1837,7 @@ async function sendZhilianDeliverCurrent(tabId, message, task, pageTabId, index,
     task, pageTabId, deliveryIndex: index, deliveryTotal: total
   });
   if (!response) return await inferZhilianDeliveryAfterEmptyResponse(tabId, task);
+  await recordRuntimeObservation(task, response, "zhilian", pageTabId);
   const recorded = await recordZhilianDeliveryResponse(task, response);
   const haltBatch = response.haltBatch || ["LOGIN_EXPIRED", "PLATFORM_VERIFICATION", "DELIVERY_LIMIT"].includes(response.failureType);
   return { ...response, ...recorded, haltBatch, success: recorded.outcome === "CONFIRMED" };

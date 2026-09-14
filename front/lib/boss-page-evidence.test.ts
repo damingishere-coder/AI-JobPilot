@@ -9,11 +9,11 @@ function harness(html: string, href = 'https://www.zhipin.com/job_detail/fixture
   doc.body.innerHTML = html
   Object.defineProperty(doc, 'readyState', { value: 'complete' })
   const scope: Record<string, any> = {}
-  for (const f of ['boss-scan-support.js', 'boss-page-evidence.js']) runInNewContext(readFileSync(resolve(root, f), 'utf8'), { window: scope, URL })
+  for (const f of ['boss-scan-support.js', 'boss-page-evidence.js', 'browser-application-runtime.js']) runInNewContext(readFileSync(resolve(root, f), 'utf8'), { window: scope, URL })
   // Layout is supplied only as a prerequisite; real layout belongs to browser regression.
   const visible = (node: Element) => !node.closest('[hidden],[style*="display:none"],[style*="display: none"]')
   const observe = () => scope.GetJobsBossPageEvidence.observe({ document: doc, href, support: scope.GetJobsBossScanSupport, visible })
-  return { doc, api: scope.GetJobsBossPageEvidence, observe }
+  return { doc, api: scope.GetJobsBossPageEvidence, observe, runtime: scope.BrowserApplicationRuntime }
 }
 it('does not promote a chat surface or existing contact into a new application', () => {
   const { api } = harness('')
@@ -49,7 +49,7 @@ it('the actual delivery entry stops before any click when login overlays an old 
   const h = harness('<div class="login-dialog">请先登录</div><button>继续沟通</button>')
   for (const node of h.doc.querySelectorAll('*')) node.getBoundingClientRect = () => ({ width: 100, height: 20 }) as DOMRect
   const messages: unknown[] = [], clicks: unknown[] = []
-  const scope: Record<string, any> = { location: new URL('https://www.zhipin.com/job_detail/fixture001.html'), setTimeout: () => 0, getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api }
+  const scope: Record<string, any> = { location: new URL('https://www.zhipin.com/job_detail/fixture001.html'), setTimeout: () => 0, getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api, BrowserApplicationRuntime: h.runtime }
   const context = { window: scope, document: h.doc, URL, URLSearchParams, console, setTimeout: () => 0,
     chrome: { runtime: { onMessage: { addListener: () => {} } } }, messages, clicks }
   runInNewContext(readFileSync(resolve(root, 'boss-scan-support.js'), 'utf8'), context)
@@ -72,7 +72,7 @@ it('an uncertain or reused durable permit never clicks favorite or contact', asy
     for (const node of h.doc.querySelectorAll('*')) node.getBoundingClientRect = () => ({ width: 100, height: 20 }) as DOMRect
     const clicks: unknown[] = [], requests: unknown[] = []
     const scope: Record<string, any> = { location: new URL('https://www.zhipin.com/job_detail/fixture001.html'), setTimeout: () => 0,
-      getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api }
+      getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api, BrowserApplicationRuntime: h.runtime }
     const context = { window: scope, document: h.doc, URL, URLSearchParams, console, setTimeout: () => 0, clicks,
       chrome: { runtime: { onMessage: { addListener: () => {} }, sendMessage: async (request: unknown) => { requests.push(request); return response } } } }
     runInNewContext(readFileSync(resolve(root, 'boss-scan-support.js'), 'utf8'), context)

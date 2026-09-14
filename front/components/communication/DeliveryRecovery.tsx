@@ -118,7 +118,7 @@ export function DeliveryRecovery({ platform }: { platform: "boss" | "zhilian" })
         <p className="text-muted-foreground">{row.greeting_snapshot}</p>
         <p className="text-muted-foreground">{row.message}</p>
         {row.runtime_phase && <p>{phases[row.runtime_phase] || "执行阶段待核对"}</p>}
-        {platform === "boss" && row.run_id && row.state === "REQUESTED" && <Button variant="outline" onClick={() => void pauseRuntime(row.request_key)}>暂停此投递批次</Button>}
+        {row.run_id && row.state === "REQUESTED" && <Button variant="outline" onClick={() => void pauseRuntime(row.request_key)}>暂停此投递批次</Button>}
         <RuntimeTimeline requestKey={row.request_key} />
       </article>)}</div>
     </details>}
