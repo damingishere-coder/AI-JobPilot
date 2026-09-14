@@ -54,6 +54,20 @@ class OpportunityServiceTest {
         assertThat(service.list(null,false,Integer.MIN_VALUE,Integer.MAX_VALUE)).containsEntry("page",1).containsEntry("size",100);
         assertThat(service.list(null,false,Integer.MAX_VALUE,Integer.MIN_VALUE)).containsEntry("page",10001).containsEntry("size",1);
     }
+    @Test void historicalEventCursorIsBoundedScopedAndDoesNotRepeatTheBoundary() {
+        jdbc.update("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<205) INSERT INTO opportunity_event(opportunity_id,profile_id,event_key,type,source) SELECT ?,1,'fixture:'||v,'USER_UPDATED','USER' FROM n",id());
+        long before=jdbc.queryForObject("SELECT MAX(id) FROM opportunity_event",Long.class);
+        var first=service.eventPage(id(),before,Integer.MAX_VALUE);
+        assertThat(first).containsEntry("hasMore",true);
+        @SuppressWarnings("unchecked") var items=(java.util.List<Map<String,Object>>)first.get("items");
+        assertThat(items).hasSize(100);
+        assertThat(((Number)items.getFirst().get("id")).longValue()).isLessThan(before);
+        long next=((Number)items.getLast().get("id")).longValue();
+        @SuppressWarnings("unchecked") var older=(java.util.List<Map<String,Object>>)service.eventPage(id(),next,100).get("items");
+        assertThat(((Number)older.getFirst().get("id")).longValue()).isLessThan(next);
+        when(profiles.getCurrentProfileId()).thenReturn(2L);
+        assertThatThrownBy(()->service.eventPage(id(),before,100)).hasMessageContaining("不属于");
+    }
     @Test void userCommandsAreIdempotentVersionedAndCorrectionsAreAppendOnly() {
         var first=command("update","INTERVIEW",null);
         service.change(id(),first);
