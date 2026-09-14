@@ -141,6 +141,7 @@ public class JobAiAnalysisService {
     public static final int DEFAULT_PRIORITY_APPLY_THRESHOLD = 65;
 
     private final AiService aiService;
+    private final AnalysisContextService analysisContexts;
     private final ProfileService profileService;
     private final ResumeProfileMapper resumeProfileMapper;
     private final PriorityCompanyMapper priorityCompanyMapper;
@@ -214,6 +215,7 @@ public class JobAiAnalysisService {
         } else {
             resumeProfileMapper.updateById(current);
         }
+        analysisContexts.saveResumeVersion(profileId,nextResumeText);
         return current;
     }
 
@@ -374,18 +376,20 @@ public class JobAiAnalysisService {
                         "岗位状态已变化或岗位不存在，未调用 AI Provider"));
                 continue;
             }
-            boolean priority = isPriorityCompany(request.getCompanyName(), profileId);
+            var frozen = request.getRuntimeContext();
+            boolean priority = frozen == null ? isPriorityCompany(request.getCompanyName(), profileId) : frozen.basis().priority();
             prepared.add(new PreparedJob(
                     job,
                     priority,
-                    resolveApplyThreshold(profileId, priority)
+                    frozen == null ? resolveApplyThreshold(profileId, priority) : frozen.basis().threshold()
             ));
         }
 
         if (prepared.isEmpty()) return completed;
         Long profileId = prepared.get(0).job().request().getProfileId();
-        ResumeProfileEntity resume = getResumeProfile(profileId);
-        String resumeText = resume == null ? "" : resume.getResumeText();
+        var frozen = prepared.getFirst().job().request().getRuntimeContext();
+        ResumeProfileEntity resume = frozen == null ? getResumeProfile(profileId) : null;
+        String resumeText = frozen == null ? resume == null ? "" : resume.getResumeText() : frozen.resumeText();
         if (resumeText == null || resumeText.trim().isEmpty()) {
             for (PreparedJob job : prepared) {
                 AnalysisResult failure = AnalysisResult.failed(
@@ -398,9 +402,10 @@ public class JobAiAnalysisService {
         }
 
         if (prepared.stream().allMatch(job -> "zhilian".equalsIgnoreCase(job.job().request().getPlatform()))) {
-            AiEntity config = aiService.getAiConfig(profileId);
-            if (config != null && config.getIntroduce() != null && !config.getIntroduce().isBlank()) {
-                resumeText += "\n\n候选人当前保存的技能介绍（补充材料；若与简历事实冲突应列为待核实，不得自行拼接经历）：\n" + config.getIntroduce();
+            AiEntity config = frozen == null ? aiService.getAiConfig(profileId) : null;
+            String introduction = frozen == null ? config == null ? "" : safe(config.getIntroduce()) : frozen.basis().introduction();
+            if (!introduction.isBlank()) {
+                resumeText += "\n\n候选人当前保存的技能介绍（补充材料；若与简历事实冲突应列为待核实，不得自行拼接经历）：\n" + introduction;
             }
         }
         String prompt = buildBatchPrompt(resumeText, prepared);
@@ -413,7 +418,7 @@ public class JobAiAnalysisService {
         String raw = null;
         try {
             raw = calls.invoke(AiAnalysisCallLedger.Purpose.MATCH_BATCH, null,
-                    () -> aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA));
+                    () -> sendFrozenRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA,prepared.getFirst().job().request()));
             BatchParse parsed;
             try {
                 parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
@@ -426,9 +431,9 @@ public class JobAiAnalysisService {
                 }
                 log.warn("AI岗位批量分析返回无效 JSON，将使用同一 Provider、模型和 Schema 重试一次: {}",
                         outputError.getMessage());
-                raw = calls.invoke(AiAnalysisCallLedger.Purpose.BATCH_FORMAT_REPAIR, null, () -> aiService.sendStructuredRequest(
+                raw = calls.invoke(AiAnalysisCallLedger.Purpose.BATCH_FORMAT_REPAIR, null, () -> sendFrozenRequest(
                         prompt + "\n\n重要：上一次输出不是有效的批量 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
-                        JOB_ANALYSIS_OUTPUT_SCHEMA
+                        JOB_ANALYSIS_OUTPUT_SCHEMA,prepared.getFirst().job().request()
                 ));
                 parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             }
@@ -472,7 +477,7 @@ public class JobAiAnalysisService {
             String retryPrompt = buildBatchPrompt(resumeText, List.of(job))
                     + "\n\n重要：上一次批量结果中这个岗位缺失或字段无效。本次只返回这个 taskId 的完整结果。";
             String retryRaw = calls.invoke(AiAnalysisCallLedger.Purpose.SINGLE_FORMAT_REPAIR, job.job().taskId(),
-                    () -> aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA));
+                    () -> sendFrozenRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA,job.job().request()));
             Set<Long> bossTaskIds = "boss".equalsIgnoreCase(job.job().request().getPlatform())
                     ? Set.of(job.job().taskId())
                     : Set.of();
@@ -512,6 +517,10 @@ public class JobAiAnalysisService {
         final String savedDiagnostic = diagnostic;
         result.setPriorityCompany(job.priority());
         result.setThreshold(job.threshold());
+        var frozen = job.job().request().getRuntimeContext();
+        result.setAnalysisBasis(frozen == null ? Map.of("status","INCOMPLETE") : Map.of(
+            "status","FROZEN","resumeVersionId",frozen.basis().resumeVersionId(),"provider",frozen.basis().provider(),
+            "model",frozen.basis().model(),"rule",frozen.basis().rule()));
         if (!result.isFailure() && !result.isStaleLease()) {
             boolean hasHardConflict = result.getHardConflicts() != null
                     && !result.getHardConflicts().isEmpty();
@@ -539,8 +548,10 @@ public class JobAiAnalysisService {
         Set<Long> taskIds = new HashSet<>();
         Long profileId = null;
         String platform = null;
+        String contextKey = jobs.getFirst()==null || jobs.getFirst().request()==null ? null : jobs.getFirst().request().getContextKey();
         for (BatchAnalysisJob job : jobs) {
             if (job == null || job.request() == null) throw new IllegalArgumentException("岗位分析请求不能为空");
+            if (!Objects.equals(contextKey,job.request().getContextKey())) throw new IllegalArgumentException("批次包含不同分析上下文");
             if (job.taskId() <= 0 || !taskIds.add(job.taskId())) {
                 throw new IllegalArgumentException("岗位分析批次包含无效或重复的 taskId");
             }
@@ -634,7 +645,7 @@ public class JobAiAnalysisService {
             jobArray.put(job);
         }
         String greetingInstruction = "greeting 必须是20到150字符的中文招呼语，根据岗位选择一项简历中最有分量的真实匹配亮点，自然开启交流，不必复述 JD；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n"
-                + greetingPolicy.instruction(jobs.getFirst().job().request().getProfileId());
+                + policyFor(jobs.getFirst().job().request()).instruction(jobs.getFirst().job().request().getProfileId());
         boolean containsZhilian = jobs.stream().anyMatch(prepared ->
                 "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
         String promptResume = bossBatch || containsZhilian ? safe(resumeText) : limit(resumeText, 6000);
@@ -741,8 +752,18 @@ public class JobAiAnalysisService {
         return result;
     }
 
+    private GreetingPolicy policyFor(JobAnalysisRequest request) {
+        return request.getRuntimeContext()==null ? greetingPolicy : new GreetingPolicy(request.getRuntimeContext().basis().portfolioUrl(),request.getProfileId());
+    }
+
+    private String sendFrozenRequest(String prompt,String schema,JobAnalysisRequest request) {
+        return request.getRuntimeContext()==null ? aiService.sendStructuredRequest(prompt,schema)
+            : aiService.sendStructuredRequest(prompt,schema,request.getRuntimeContext().basis().providerIdentity());
+    }
+
     private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText, AiAnalysisCallLedger calls) {
         JobAnalysisRequest request = prepared.job().request();
+        GreetingPolicy greetingPolicy = policyFor(request);
         result.setGreeting(greetingPolicy.prepare(result.getGreeting(), request.getProfileId()));
         if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
         String jobDescription = safe(request.getJobDescription()).trim();
@@ -767,7 +788,7 @@ public class JobAiAnalysisService {
                     "岗位 JD：\n" + jobDescription + "\n\n" +
                     "候选人简历：\n" + safe(resumeText);
             String raw = calls.invoke(AiAnalysisCallLedger.Purpose.GREETING_REPAIR, prepared.job().taskId(),
-                    () -> aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA));
+                    () -> sendFrozenRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA,request));
             JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
             String greeting = greetingPolicy.prepare(parsed.optString("greeting", ""), request.getProfileId());
             String jobEvidence = parsed.optString("jobEvidence", "").trim();
@@ -1173,6 +1194,8 @@ public class JobAiAnalysisService {
             entity.setGreeting(result.getGreeting());
             entity.setPriorityCompany(Boolean.TRUE.equals(result.getPriorityCompany()) ? 1 : 0);
             entity.setRawResponse(diagnostic);
+            entity.setAnalysisContext(request.getRuntimeContext()==null ? null : request.getAnalysisContext());
+            if (request.getRuntimeContext()!=null) entity.setResumeVersionId(request.getRuntimeContext().basis().resumeVersionId());
             entity.setCreatedAt(LocalDateTime.now());
             entity.setUpdatedAt(LocalDateTime.now());
             return jobAiAnalysisMapper.insert(entity) == 1;
@@ -1692,6 +1715,12 @@ public class JobAiAnalysisService {
         private String companyInfo;
         private String jobDescription;
         private String scanRunId;
+        @lombok.ToString.Exclude
+        private String analysisContext;
+        private String contextKey;
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        @lombok.ToString.Exclude
+        private AnalysisContextService.Frozen runtimeContext;
     }
 
     public record ThresholdApplicationResult(AiEntity thresholds, int bossHistoricalPromotedCount) {
@@ -1772,6 +1801,7 @@ public class JobAiAnalysisService {
         private String greetingGenerationOutcome;
         private String greetingGenerationErrorCode;
         private List<Map<String, Object>> callAudit = List.of();
+        private Map<String,Object> analysisBasis = Map.of("status","INCOMPLETE");
 
         public boolean shouldApply() {
             return "APPLY".equalsIgnoreCase(decision);
@@ -1797,6 +1827,7 @@ public class JobAiAnalysisService {
             map.put("greetingGenerationOutcome", greetingGenerationOutcome);
             map.put("greetingGenerationErrorCode", greetingGenerationErrorCode);
             map.put("logicalCalls", callAudit);
+            map.put("analysisBasis", analysisBasis);
             return new JSONObject(map).toString();
         }
 

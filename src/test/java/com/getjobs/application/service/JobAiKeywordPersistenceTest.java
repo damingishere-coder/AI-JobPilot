@@ -28,7 +28,7 @@ class JobAiKeywordPersistenceTest {
     @BeforeEach
     void setUp() {
         service = new JobAiAnalysisService(
-                mock(AiService.class), profileService, resumeProfileMapper,
+                mock(AiService.class), mock(AnalysisContextService.class), profileService, resumeProfileMapper,
                 mock(PriorityCompanyMapper.class), mock(JobAiAnalysisMapper.class),
                 mock(BossJobDataMapper.class), mock(ZhilianJobDataMapper.class),
                 mock(LiepinMapper.class), mock(Job51Mapper.class)

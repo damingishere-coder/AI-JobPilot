@@ -26,6 +26,7 @@ class BossThresholdReclassificationIntegrationTest {
     @DynamicPropertySource
     static void testProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", () -> "jdbc:sqlite:" + TEST_ROOT.resolve("thresholds.db"));
+        registry.add("app.hr-assistant.key-path", () -> TEST_ROOT.resolve("fixture.key").toString());
         registry.add("app.paths.data-dir", () -> TEST_ROOT.resolve("data").toString());
         registry.add("app.paths.output-dir", () -> TEST_ROOT.resolve("output").toString());
         registry.add("app.paths.cache-dir", () -> TEST_ROOT.resolve("cache").toString());

@@ -29,6 +29,7 @@ class JobAiAnalysisServicePriorityCompanyCacheTest {
     void setUp() {
         service = new JobAiAnalysisService(
                 null,
+                null,
                 profileService,
                 null,
                 priorityCompanyMapper,
