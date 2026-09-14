@@ -43,6 +43,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: '/', icon: BiHomeAlt, label: '工作台', color: 'text-blue-500' },
       { href: '/opportunities', icon: BiBriefcase, label: '求职机会', color: 'text-teal-500' },
+      { href: '/interviews', icon: BiTask, label: '面试', color: 'text-indigo-500' },
     ],
   },
   {

@@ -15,7 +15,7 @@
 | P1.2 | Opportunity / Event | V23 最小模型、事务事件、归档恢复与独立阶段；被动复用旧稳定执行链，真实 Smoke 仍阻止新 Runtime 启用；见 opportunity-event-foundation.md |
 | P1.3 | Outcome / HR 关联 | V24 用户确认关联、真实反馈、观察覆盖与来源事件；聊天过期后结构化历史保留；见 outcome-feedback-capture.md |
 | P1.4 | CRM 工作台 | 统一事项卡片/列表条件、查询参数详情、跟进和消息已查看；保留旧概览及扫描入口；见 crm-workbench.md |
-| P1.5 | 面试记录 | 依赖 P1.4；人工确认、不接外部日历 |
+| P1.5 | 面试记录 | V25 独立轮次、改期取消、加密备注、人工准备及工作台提醒；不接外部日历；见 interview-tracking.md |
 | P1.6 | Strategy Analytics | 依赖真实反馈；显示样本与观察覆盖 |
 | P1.7 | Fit / Preference / Opportunity Signal | 依赖 P1.6；预览及用户采用、不自动扩大投递范围 |
 

@@ -99,6 +99,8 @@ public class OpportunityService {
             }
             int archived=request.archived()==null?((Number)current.get("archived")).intValue():request.archived()?1:0;
             if(archived==1 && ((Number)current.get("archived")).intValue()==0) {
+                if(jdbc.queryForObject("SELECT COUNT(*) FROM interview WHERE opportunity_id=? AND status='SCHEDULED'",Integer.class,id)>0)
+                    throw new IllegalStateException("仍有已安排面试，请先完成或取消后归档");
                 var unresolved=jdbc.queryForObject("SELECT (SELECT COUNT(*) FROM delivery_attempt WHERE profile_id=? AND platform=? AND job_key=? AND state IN('REQUESTED','UNKNOWN')) + " +
                     "(SELECT COUNT(*) FROM job_analysis_task WHERE profile_id=? AND platform=? AND job_key=? AND status IN('PENDING','LEASED','UNKNOWN'))",Integer.class,
                     profile,current.get("platform"),current.get("job_key"),profile,current.get("platform"),current.get("job_key"));
