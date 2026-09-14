@@ -124,4 +124,19 @@ class DeliveryRuntimeServiceTest {
         attempts.snapshotGreeting(next,greeting,"USER_EDITED");
         assertThat(restarted.claim(next,new DeliveryRuntimeService.Claim("boss",1,11,url,greeting,"run","new","next-correlation"))).containsEntry("success",false);
     }
+    @Test void zhilianSharesThePermitAndPauseProtocolButHasIndependentRollout() {
+        String zurl="https://www.zhaopin.com/jobdetail/CC100J200.htm";
+        jdbc.update("INSERT INTO zhilian_data(id,profile_id,job_id,job_link,delivery_status) VALUES(20,1,'CC100J200',?,?)",zurl,DeliveryStatus.WAITING_CONFIRM);
+        String zkey=attempts.requestZhilian(20,1,"CC100J200").requestKey();
+        attempts.snapshotGreeting(zkey,greeting,"USER_EDITED");
+        var zRuntime=new DeliveryRuntimeService(jdbc,attempts,manager,false);
+        org.springframework.test.util.ReflectionTestUtils.setField(zRuntime,"zhilianEnabled",true);
+        assertThat(zRuntime.enabled("boss")).isFalse();
+        assertThat(zRuntime.claim(zkey,new DeliveryRuntimeService.Claim("zhilian",1,20,zurl,greeting,"zrun","zowner","zcorr"))).containsEntry("enabled",true);
+        assertThat(zRuntime.begin(zkey,begin("zowner"))).containsEntry("permitted",true);
+        assertThat(zRuntime.begin(zkey,begin("zowner"))).containsEntry("success",false);
+        zRuntime.observe(zkey,new DeliveryRuntimeService.Observation(1,"zowner",1,"JOB_DETAIL","NONE",0,0,"ALREADY_APPLIED"));
+        assertThat(zRuntime.timeline(zkey).getLast()).containsEntry("detector_version","zhilian-page-evidence/1").containsEntry("evidence","ALREADY_APPLIED");
+        assertThat(zRuntime.pause(zkey)).containsEntry("success",true);
+    }
 }

@@ -1770,6 +1770,7 @@ public class BossService {
                         return resp;
                     }
                 }
+                DeliveryRuntimeService.requireClearAllowed(conn, "boss", profileId);
                 analysisDeleted = st.executeUpdate("DELETE FROM job_ai_analysis WHERE lower(platform)='boss' AND profile_id=" + profileId);
                 draftsDeleted = st.executeUpdate("DELETE FROM job_greeting_draft WHERE lower(platform)='boss' AND profile_id=" + profileId);
                 jobsDeleted = st.executeUpdate("DELETE FROM boss_data WHERE profile_id=" + profileId);

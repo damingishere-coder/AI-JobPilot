@@ -43,6 +43,14 @@ class AnalysisClearSequenceSafetyTest {
         BossService bossService = new BossService(null, null, null, null, null, dataSource, profileService);
         ZhilianService zhilianService = new ZhilianService(null, null, null, dataSource, profileService);
 
+        jdbcTemplate.update("UPDATE delivery_attempt SET runtime_phase='CLAIMED'");
+        assertThat(bossService.clearBossAnalysisData()).containsEntry("success",false);
+        assertThat(zhilianService.clearZhilianAnalysisData()).containsEntry("success",false);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM boss_data",Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM zhilian_data",Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM job_analysis_task WHERE task_key IS NOT NULL",Integer.class)).isEqualTo(2);
+        jdbcTemplate.update("UPDATE delivery_attempt SET runtime_phase='LEGACY'");
+
         assertThat(bossService.clearBossAnalysisData()).containsEntry("success", true);
         assertThat(zhilianService.clearZhilianAnalysisData()).containsEntry("success", true);
         jdbcTemplate.update("INSERT INTO boss_data(profile_id, encrypt_id, delivery_status) VALUES (1, 'boss-new', '待确认')");
