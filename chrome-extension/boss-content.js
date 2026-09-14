@@ -3191,11 +3191,13 @@
   }
 
   function countRenderedGreetingMessages(greeting, input) {
-    // The detail-page chat uses .item-myself .text; its row also includes “已发送”.
-    // Count outgoing message bodies once, excluding status labels and quoted messages.
-    const rows = Array.from(document.querySelectorAll(".item-myself, .message-self, [data-direction='outbound']"));
+    // The detail popup is separate from the full chat. Its send callback assigns
+    // a message id and changes .status to .success; an optimistic row is not proof.
+    const popupSelector = ".startchat-content .message > .message-list > .message-item";
+    const rows = Array.from(document.querySelectorAll(`${popupSelector}, .item-myself, .message-self, [data-direction='outbound']`));
     if (rows.length) return rows.filter(row => {
-      if (row.offsetParent === null || row.querySelector(".send-failed, .message-failed, .sending")) return false;
+      if (row.offsetParent === null || row.querySelector(".send-failed, .message-failed, .sending, .status.error")) return false;
+      if (row.matches(popupSelector) && (!row.id || !row.querySelector(":scope > .status.success"))) return false;
       const body = row.querySelector(".text-content, .text, .message-content") || row;
       const copy = body.cloneNode(true);
       copy.querySelectorAll(".message-status, .item-time, .quote-message, .status").forEach(n => n.remove());
