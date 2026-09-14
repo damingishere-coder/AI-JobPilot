@@ -30,13 +30,13 @@ test('BOSS counts exact outgoing body despite sent status and line breaks, exclu
   const document = dom('<div class="item-myself"><span class="message-status">已发送</span><div class="text">您好<br>作品集：https://example.com/</div></div>');
   const scope: Record<string, any> = {};
   vm.runInNewContext(fs.readFileSync(resolve(process.cwd(), '../chrome-extension/boss-page-evidence.js'), 'utf8'), { window: scope });
-  const count = (greeting: string, _input: unknown) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
-  assert.equal(count('您好\n作品集：https://example.com/', null), 1);
-  assert.equal(count('其他话术', null), 0);
+  const count = (greeting: string) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
+  assert.equal(count('您好\n作品集：https://example.com/'), 1);
+  assert.equal(count('其他话术'), 0);
   document.querySelector('.item-myself')!.insertAdjacentHTML('beforeend', '<span class="send-failed">发送失败</span>');
-  assert.equal(count('您好\n作品集：https://example.com/', null), 0);
+  assert.equal(count('您好\n作品集：https://example.com/'), 0);
   document.body.innerHTML = '<div class="message-content">您好</div>';
-  assert.equal(count('您好', null), 0);
+  assert.equal(count('您好'), 0);
 });
 
 test('BOSS detail popup requires the send callback message id and success status', () => {
@@ -44,22 +44,22 @@ test('BOSS detail popup requires the send callback message id and success status
   const document = dom('<div class="startchat-content"><div class="message"><ul class="message-list"><li class="message-item" id="385898401231112"><span class="status success">已发送</span><p class="text">您好，作品集：https://example.com/</p></li></ul></div></div>');
   const scope: Record<string, any> = {};
   vm.runInNewContext(fs.readFileSync(resolve(process.cwd(), '../chrome-extension/boss-page-evidence.js'), 'utf8'), { window: scope });
-  const count = (greeting: string, _input: unknown) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
+  const count = (greeting: string) => scope.GetJobsBossPageEvidence.countRenderedGreetingMessages(document, greeting);
   const greeting = '您好，作品集：https://example.com/';
-  assert.equal(count(greeting, null), 1);
-  assert.equal(count('不同话术', null), 0);
+  assert.equal(count(greeting), 1);
+  assert.equal(count('不同话术'), 0);
   const row = document.querySelector('.message-item')!;
   row.removeAttribute('id');
-  assert.equal(count(greeting, null), 0);
+  assert.equal(count(greeting), 0);
   row.id = '385898401231112';
   const status = row.querySelector('.status')!;
   status.className = 'status sending';
-  assert.equal(count(greeting, null), 0);
+  assert.equal(count(greeting), 0);
   status.className = 'status error';
-  assert.equal(count(greeting, null), 0);
+  assert.equal(count(greeting), 0);
   status.className = 'status success';
   document.querySelector('.startchat-content')!.className = 'unrelated';
-  assert.equal(count(greeting, null), 0);
+  assert.equal(count(greeting), 0);
 });
 
 test('Zhilian recognizes the live daily-limit wording as a failed action', () => {

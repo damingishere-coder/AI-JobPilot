@@ -3053,6 +3053,13 @@
       };
     }
     await sleep(1500);
+    const initialPage = observeBossRuntimePage();
+    if (["LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "QUOTA_LIMIT", "JOB_UNAVAILABLE", "ERROR"].includes(initialPage.blocker)) {
+      const failure = classifyDeliveryFailure(detectDeliveryFailure("") || "Boss页面存在阻碍，未执行投递");
+      await postDeliveryResult(task, false, failure, "PRE_ACTION_ERROR", "NOT_SENT", "PAGE_BLOCKED");
+      return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR", actionStarted: false,
+        greetingOutcome: "NOT_SENT", failureType: failure.failureType, message: failure.failureReason, evidenceDetails: { page: initialPage } };
+    }
     if (detectBossDeliveryStatus(document)) {
       const messageText = "平台已显示历史沟通状态，本次跳过发送话术";
       await postDeliveryResult(task, true, messageText, "EXISTING_CONVERSATION", "NOT_SENT", "ALREADY_CONTACTED");
@@ -3188,8 +3195,10 @@
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const afterCount = countRenderedGreetingMessages(greeting, input);
-      const evidence = window.GetJobsBossPageEvidence.evaluateEvidence({ beforeCount, afterCount });
-      if (evidence.outcome === "CONFIRMED") return { ...evidence, beforeCount, afterCount, page: observeBossRuntimePage() };
+      const page = observeBossRuntimePage();
+      const criticalBlock = ["LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "QUOTA_LIMIT", "JOB_UNAVAILABLE", "ERROR"].includes(page.blocker);
+      const evidence = window.GetJobsBossPageEvidence.evaluateEvidence({ beforeCount, afterCount, state: criticalBlock ? page : undefined });
+      if (criticalBlock || evidence.outcome === "CONFIRMED") return { ...evidence, beforeCount, afterCount, page };
       await sleep(200);
     }
     return { ...window.GetJobsBossPageEvidence.evaluateEvidence(), beforeCount, afterCount: countRenderedGreetingMessages(greeting, input), page: observeBossRuntimePage() };

@@ -45,3 +45,23 @@ it('uses external structure fixtures without recording body, URL queries or mess
   expect(JSON.stringify(state)).not.toMatch(/SECRET|岗位职责|示例科技公司/)
   expect(harness('<p>微信扫码分享</p><div class="job-banner">普通职位</div>').observe().blocker).toBe('NONE')
 })
+it('the actual delivery entry stops before any click when login overlays an old contact', async () => {
+  const h = harness('<div class="login-dialog">请先登录</div><button>继续沟通</button>')
+  for (const node of h.doc.querySelectorAll('*')) node.getBoundingClientRect = () => ({ width: 100, height: 20 }) as DOMRect
+  const messages: unknown[] = [], clicks: unknown[] = []
+  const scope: Record<string, any> = { location: new URL('https://www.zhipin.com/job_detail/fixture001.html'), setTimeout: () => 0, getComputedStyle: (node: Element) => window.getComputedStyle(node), GetJobsBossPageEvidence: h.api }
+  const context = { window: scope, document: h.doc, URL, URLSearchParams, console, setTimeout: () => 0,
+    chrome: { runtime: { onMessage: { addListener: () => {} } } }, messages, clicks }
+  runInNewContext(readFileSync(resolve(root, 'boss-scan-support.js'), 'utf8'), context)
+  const code = readFileSync(resolve(root, 'boss-content.js'), 'utf8').replace(/\}\)\(\);\s*$/, `
+    waitForPage = async () => {}; sleep = async () => {};
+    postDeliveryResult = async (...args) => messages.push(args);
+    clickElement = element => clicks.push(element);
+    window.testDelivery = deliverOnCurrentPage;
+  })();`)
+  runInNewContext(code, context)
+  const result = await scope.testDelivery({ id: 1, requestKey: 'synthetic', url: scope.location.href, greeting: '模拟话术' }, {})
+  expect(result).toMatchObject({ outcome: 'FAILED', actionStarted: false, greetingOutcome: 'NOT_SENT' })
+  expect(clicks).toHaveLength(0)
+  expect(messages).toHaveLength(1)
+})

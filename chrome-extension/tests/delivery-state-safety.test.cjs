@@ -51,7 +51,7 @@ test("Boss confirms only an exact rendered greeting and stops the batch on unkno
 
   assert.match(boss, /readChatInput\(input\)\s*!==\s*greeting/);
   assert.match(boss, /function normalizeGreetingText/);
-  assert.match(boss, /evaluateEvidence\(\{ beforeCount, afterCount \}\)/);
+  assert.match(boss, /evaluateEvidence\(\{ beforeCount, afterCount, state:/);
   assert.match(boss, /greetingEvidence:\s*greetingResult\?\.evidence/);
   assert.match(boss, /GREETING_INPUT_MISSING/);
   assert.match(boss, /GREETING_SEND_BUTTON_MISSING/);
