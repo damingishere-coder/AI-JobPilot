@@ -58,3 +58,18 @@ test('BOSS detail popup requires the send callback message id and success status
   document.querySelector('.startchat-content')!.className = 'unrelated';
   assert.equal(count(greeting, null), 0);
 });
+
+test('Zhilian recognizes the live daily-limit wording as a failed action', () => {
+  const document = dom('<div>今日投递已超过上限，明天再试吧！</div>');
+  const scope = { document, window: { location: { href: 'https://www.zhaopin.com/jobdetail/test.htm' } },
+    compact: (s: unknown) => String(s || '').trim(), isSecurityPrompt: () => false, isStrongLoginPrompt: () => false,
+    firstMatch: (s: string, pattern: RegExp) => s.match(pattern)?.[0] || '' };
+  const detect = vm.runInNewContext(readFunction('zhilian-content.js', 'detectZhilianDeliveryFailure', 'classifyDeliveryFailure') + '; detectZhilianDeliveryFailure', scope);
+  const classify = vm.runInNewContext(readFunction('zhilian-content.js', 'classifyDeliveryFailure', 'normalizeFailurePayload') + '; classifyDeliveryFailure', scope);
+  assert.equal(detect(''), '今日投递已超过上限');
+  assert.equal(classify(detect('')).failureType, 'DELIVERY_LIMIT');
+  document.body.innerHTML = '<div>今日投递机会已用完</div>';
+  assert.equal(classify(detect('')).failureType, 'DELIVERY_LIMIT');
+  document.body.innerHTML = '<div>普通岗位描述</div>';
+  assert.equal(detect(''), '');
+});

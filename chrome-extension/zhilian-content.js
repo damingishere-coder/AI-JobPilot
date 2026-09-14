@@ -2188,7 +2188,7 @@
     const text = compact(document.body?.innerText || "");
     if (isSecurityPrompt(text)) return "智联页面出现平台验证，请处理后重试";
     if (isStrongLoginPrompt(text, window.location.href)) return "智联登录状态失效，请在Chrome中重新登录后重试";
-    const reason = firstMatch(text, /(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|今日投递.*?已用完|投递上限|账号异常|操作过于频繁|请先完善简历|请上传简历|请先完成实名认证)/);
+    const reason = firstMatch(text, /(职位已关闭|停止招聘|职位不存在|岗位已下线|已暂停招聘|今日投递[^。！!\n]*?(?:已用完|超过上限)|投递上限|账号异常|操作过于频繁|请先完善简历|请上传简历|请先完成实名认证)/);
     return reason || fallback || "";
   }
 
@@ -2198,7 +2198,7 @@
     let failureType = "UNKNOWN_ERROR";
     if (isStrongLoginPrompt(document.body?.innerText || "", window.location.href) || /(登录失效|重新登录|未登录|账号登录)/.test(messageText)) {
       failureType = "LOGIN_EXPIRED";
-    } else if (/(今日投递.*已用完|投递上限)/.test(messageText)) {
+    } else if (/(今日投递[^。！!\n]*(?:已用完|超过上限)|投递上限)/.test(messageText)) {
       failureType = "DELIVERY_LIMIT";
     } else if (isSecurityPrompt(text) || /(账号异常|操作过于频繁|请先完成实名认证)/.test(messageText)) {
       failureType = "PLATFORM_VERIFICATION";
