@@ -341,30 +341,7 @@ public class PlaywrightUtil {
      * @param deviceType 设备类型
      */
     public static void saveCookies(String path, DeviceType deviceType) {
-        try {
-            List<Cookie> cookies = getContext(deviceType).cookies();
-            JSONArray jsonArray = new JSONArray();
-
-            for (Cookie cookie : cookies) {
-                JSONObject jsonObject = new JSONObject();
-                jsonObject.put("name", cookie.name);
-                jsonObject.put("value", cookie.value);
-                jsonObject.put("domain", cookie.domain);
-                jsonObject.put("path", cookie.path);
-                if (cookie.expires != null) {
-                    jsonObject.put("expires", cookie.expires);
-                }
-                jsonObject.put("secure", cookie.secure);
-                jsonObject.put("httpOnly", cookie.httpOnly);
-                jsonArray.put(jsonObject);
-            }
-
-            Path targetPath = ensureParentDirectory(path);
-            Files.writeString(targetPath, jsonArray.toString(4), StandardCharsets.UTF_8);
-            log.info("Cookie已保存到文件: {} (设备类型: {})", path, deviceType);
-        } catch (IOException e) {
-            log.error("保存Cookie失败 (设备类型: {})", deviceType, e);
-        }
+        throw new UnsupportedOperationException("Cookie 文件导入导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -383,46 +360,7 @@ public class PlaywrightUtil {
      * @param deviceType 设备类型
      */
     public static void loadCookies(String path, DeviceType deviceType) {
-        try {
-            String jsonText = Files.readString(Paths.get(path), StandardCharsets.UTF_8);
-            JSONArray jsonArray = new JSONArray(jsonText);
-
-            List<Cookie> cookies = new ArrayList<>();
-            for (int i = 0; i < jsonArray.length(); i++) {
-                JSONObject jsonObject = jsonArray.getJSONObject(i);
-
-                Cookie cookie = new Cookie(
-                        jsonObject.getString("name"),
-                        jsonObject.getString("value"));
-
-                if (!jsonObject.isNull("domain")) {
-                    cookie.domain = jsonObject.getString("domain");
-                }
-
-                if (!jsonObject.isNull("path")) {
-                    cookie.path = jsonObject.getString("path");
-                }
-
-                if (!jsonObject.isNull("expires")) {
-                    cookie.expires = jsonObject.getDouble("expires");
-                }
-
-                if (!jsonObject.isNull("secure")) {
-                    cookie.secure = jsonObject.getBoolean("secure");
-                }
-
-                if (!jsonObject.isNull("httpOnly")) {
-                    cookie.httpOnly = jsonObject.getBoolean("httpOnly");
-                }
-
-                cookies.add(cookie);
-            }
-
-            getContext(deviceType).addCookies(cookies);
-            log.info("已从文件加载Cookie: {} (设备类型: {})", path, deviceType);
-        } catch (IOException e) {
-            log.error("加载Cookie失败 (设备类型: {})", deviceType, e);
-        }
+        throw new UnsupportedOperationException("Cookie 文件导入导出已停用，请使用浏览器会话。");
     }
 
     /**

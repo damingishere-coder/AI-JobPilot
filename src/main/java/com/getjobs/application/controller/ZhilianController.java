@@ -6,8 +6,6 @@ import com.getjobs.application.dto.ChromeJobDto;
 import com.getjobs.application.dto.ConfirmBatchRequest;
 import com.getjobs.application.dto.DeliveryResultRequest;
 import com.getjobs.application.dto.GreetingConfirmationRequest;
-import com.getjobs.application.entity.CookieEntity;
-import com.getjobs.application.controller.support.CookieResponseView;
 import com.getjobs.application.entity.ZhilianConfigEntity;
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.ChromeJobAnalysisQueueService;
@@ -235,7 +233,7 @@ public class ZhilianController {
     }
 
     /**
-     * 退出登录：清空数据库Cookie并清理运行中的上下文Cookie
+     * 退出登录：仅清理运行中的浏览器会话
      */
     @PostMapping("/logout")
     public ResponseEntity<Map<String, Object>> logoutZhilian() {
@@ -244,8 +242,6 @@ public class ZhilianController {
             // 更新登录状态为未登录并触发SSE通知
             playwrightManager.setLoginStatus("zhilian", false);
 
-            // 清空数据库中 智联招聘 平台的所有 Cookie 值
-            cookieService.clearCookieByPlatform("zhilian", "manual logout");
 
             // 清理运行中的上下文Cookie
             try {
@@ -255,7 +251,7 @@ public class ZhilianController {
             }
 
             response.put("success", true);
-            response.put("message", "智联招聘已退出登录，数据库Cookie和上下文Cookie均已清理");
+            response.put("message", "智联招聘已退出登录，浏览器会话已清理；历史数据库记录保留");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("退出登录失败", e);
@@ -272,18 +268,7 @@ public class ZhilianController {
      */
     @GetMapping("/cookie")
     public ResponseEntity<Map<String, Object>> getZhilianCookieRecord() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            CookieEntity cookie = cookieService.getCookieByPlatform("zhilian");
-            Map<String, Object> data = CookieResponseView.from(cookie, "zhilian", "未找到智联招聘Cookie记录");
-            response.put("success", true);
-            response.put("data", data);
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "读取Cookie记录失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("zhilian");
     }
 
     /**
@@ -291,17 +276,7 @@ public class ZhilianController {
      */
     @PostMapping("/save-cookie")
     public ResponseEntity<Map<String, Object>> saveZhilianCookie() {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            playwrightManager.saveZhilianCookiesToDb("manual save");
-            response.put("success", true);
-            response.put("message", "已主动保存智联招聘Cookie到数据库");
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "保存智联招聘Cookie失败: " + e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        return CookieController.retired("zhilian");
     }
 
     // ==================== 数据分析与列表 ====================
@@ -860,6 +835,10 @@ public class ZhilianController {
     @PostMapping("/start")
     public ResponseEntity<Map<String, Object>> startZhilianJob() {
         Map<String, Object> response = new HashMap<>();
+        response.put("executionMode", "PLAYWRIGHT_LEGACY");
+        response.put("recommendedMode", "CHROME_BRIDGE");
+        response.put("automaticFallback", false);
+        log.info("Legacy 智联扫描入口被主动调用；该路径只扫描与分析，不作为 Chrome 自动降级");
 
         try {
             // 未登录则不允许启动
@@ -892,7 +871,7 @@ public class ZhilianController {
             }, jobTaskExecutor);
 
             response.put("success", true);
-            response.put("message", "智联招聘扫描任务启动成功，将生成待确认岗位");
+            response.put("message", "Legacy 智联扫描已启动，将生成待确认岗位；建议使用 Chrome 扫描入口");
             response.put("status", "started");
 
             log.info("通过API启动智联招聘扫描任务成功");
@@ -1054,6 +1033,7 @@ public class ZhilianController {
         Map<String, Object> task = new HashMap<>();
         task.put("id", job.getId());
         task.put("platform", "zhilian");
+        task.put("profileId", job.getProfileId());
         task.put("url", Objects.toString(job.getJobLink(), ""));
         task.put("companyName", Objects.toString(job.getCompanyName(), ""));
         task.put("jobName", Objects.toString(job.getJobTitle(), ""));

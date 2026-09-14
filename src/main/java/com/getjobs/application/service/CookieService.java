@@ -1,17 +1,14 @@
 package com.getjobs.application.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.getjobs.application.entity.CookieEntity;
 import com.getjobs.application.mapper.CookieMapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Cookie服务类
+ * 已停用的 Cookie 存储兼容入口；禁止读取、修改或删除历史记录。
  */
 @Service
 @RequiredArgsConstructor
@@ -25,11 +22,7 @@ public class CookieService {
      * @return Cookie实体
      */
     public CookieEntity getCookieByPlatform(String platform) {
-        LambdaQueryWrapper<CookieEntity> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(CookieEntity::getPlatform, platform)
-                .orderByDesc(CookieEntity::getUpdatedAt)
-                .last("LIMIT 1");
-        return cookieMapper.selectOne(wrapper);
+        throw new UnsupportedOperationException("招聘会话仅保留在浏览器；后端 Cookie 存储已停用，历史记录保留。");
     }
 
     /**
@@ -40,24 +33,7 @@ public class CookieService {
      * @return 是否成功
      */
     public boolean saveOrUpdateCookie(String platform, String cookieValue, String remark) {
-        CookieEntity existingCookie = getCookieByPlatform(platform);
-
-        if (existingCookie != null) {
-            // 更新现有Cookie
-            existingCookie.setCookieValue(cookieValue);
-            existingCookie.setRemark(remark);
-            existingCookie.setUpdatedAt(LocalDateTime.now());
-            return cookieMapper.updateById(existingCookie) > 0;
-        } else {
-            // 新建Cookie
-            CookieEntity newCookie = new CookieEntity();
-            newCookie.setPlatform(platform);
-            newCookie.setCookieValue(cookieValue);
-            newCookie.setRemark(remark);
-            newCookie.setCreatedAt(LocalDateTime.now());
-            newCookie.setUpdatedAt(LocalDateTime.now());
-            return cookieMapper.insert(newCookie) > 0;
-        }
+        throw new UnsupportedOperationException("招聘会话仅保留在浏览器；后端 Cookie 存储已停用，历史记录保留。");
     }
 
     /**
@@ -67,12 +43,7 @@ public class CookieService {
      * @return 影响行数是否大于0
      */
     public boolean clearCookieByPlatform(String platform, String remark) {
-        UpdateWrapper<CookieEntity> updateWrapper = new UpdateWrapper<>();
-        updateWrapper.eq("platform", platform)
-                .set("cookie_value", "")
-                .set("remark", remark)
-                .set("updated_at", LocalDateTime.now());
-        return cookieMapper.update(null, updateWrapper) > 0;
+        throw new UnsupportedOperationException("招聘会话仅保留在浏览器；后端 Cookie 存储已停用，历史记录保留。");
     }
 
     /**
@@ -81,9 +52,7 @@ public class CookieService {
      * @return 是否成功
      */
     public boolean deleteCookie(String platform) {
-        LambdaQueryWrapper<CookieEntity> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(CookieEntity::getPlatform, platform);
-        return cookieMapper.delete(wrapper) > 0;
+        throw new UnsupportedOperationException("招聘会话仅保留在浏览器；后端 Cookie 存储已停用，历史记录保留。");
     }
 
     /**
@@ -91,6 +60,6 @@ public class CookieService {
      * @return Cookie列表
      */
     public List<CookieEntity> getAllCookies() {
-        return cookieMapper.selectList(null);
+        throw new UnsupportedOperationException("招聘会话仅保留在浏览器；后端 Cookie 存储已停用，历史记录保留。");
     }
 }

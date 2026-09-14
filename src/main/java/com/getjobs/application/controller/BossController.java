@@ -559,14 +559,13 @@ public class BossController {
         Map<String, Object> response = new HashMap<>();
         try {
             playwrightManager.setLoginStatus("boss", false);
-            cookieService.clearCookieByPlatform("boss", "manual logout");
             try { 
                 playwrightManager.clearBossCookies(); 
             } catch (Exception e) { 
                 log.warn("清理Boss上下文Cookie异常: {}", e.getMessage()); 
             }
             response.put("success", true);
-            response.put("message", "Boss已退出登录，数据库Cookie和上下文Cookie均已清理");
+            response.put("message", "Boss已退出登录，浏览器会话已清理；历史数据库记录保留");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("退出登录失败", e);

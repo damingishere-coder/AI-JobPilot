@@ -172,15 +172,9 @@ export default function LiepinPage() {
       })
 
       if (response.ok) {
-        // 统一保存 Cookie（Liepin）
-        try {
-          await fetch(`${API_BASE}/api/cookie/save?platform=liepin`, { method: 'POST' })
-        } catch (e) {
-          console.warn('保存 Cookie 失败（Liepin）:', e)
-        }
 
         fetchAllData()
-        setSaveResult({ success: true, message: '保存成功，配置与Cookie已更新。' })
+        setSaveResult({ success: true, message: '配置已保存。登录会话由浏览器保留。' })
         setShowSaveDialog(true)
       } else {
         console.warn('保存失败：后端返回非 2xx 状态')
@@ -243,8 +237,8 @@ export default function LiepinPage() {
       if (data.success) {
         setIsLoggedIn(false)
         setIsDelivering(false)
-        console.info('已退出登录，数据库Cookie已置空')
-        setLogoutResult({ success: true, message: '已退出登录，Cookie已清空。' })
+        console.info('已退出旧版浏览器会话，历史数据库记录保留')
+        setLogoutResult({ success: true, message: '已退出旧版浏览器会话；历史数据库记录保留。' })
         setShowLogoutResultDialog(true)
       } else {
         console.warn('退出登录失败：', data.message)
@@ -435,7 +429,7 @@ export default function LiepinPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-0">
-                <p className="text-sm text-muted-foreground mb-4">退出后将清除Cookie并切换为未登录状态。</p>
+                <p className="text-sm text-muted-foreground mb-4">退出后将清除旧版自动化浏览器会话。历史数据库记录保留，日常 Chrome 登录不受影响。</p>
                 <div className="flex justify-end gap-2">
                   <Button
                     variant="ghost"

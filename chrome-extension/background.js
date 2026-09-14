@@ -1,4 +1,5 @@
 importScripts("boss-delivery-support.js");
+importScripts("application-runtime-protocol.js");
 const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
@@ -46,7 +47,7 @@ const PLATFORM_SHARED_SCAN_KEYS = {
   boss: ["__GET_JOBS_BOSS_SHARED_SCAN_TASK__", "__GET_JOBS_BOSS_SHARED_SCAN_CANCEL__"],
   zhilian: ["__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__", "__GET_JOBS_ZHILIAN_SHARED_SCAN_CANCEL__"]
 };
-const BACKGROUND_VERSION = "2026-09-14-delivery-recovery";
+const BACKGROUND_VERSION = "2026-09-14-runtime-contract";
 const contentScriptPreparations = new Map();
 let zhilianPagePreparation = null;
 const CONTENT_READY_RETRIES = 12;
@@ -1174,7 +1175,8 @@ async function handlePageMessageInternal(message, sender) {
   if (pageTabId) pageTabs.set(pageTabId, Date.now());
 
   if (message.type === "GET_JOBS_EXTENSION_PING") {
-    return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION };
+    return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION,
+      runtimeProtocol: ApplicationRuntimeProtocol.VERSION };
   }
 
   if (message.type === "BOSS_HR_OPEN_CHAT") return await openBossHrChat();
@@ -1182,6 +1184,17 @@ async function handlePageMessageInternal(message, sender) {
   const platform = message.platform || inferPlatform(message.type);
   if (!platform || !PLATFORM_CONFIG[platform]) {
     return { success: false, message: "未知平台" };
+  }
+
+  if (ApplicationRuntimeProtocol.isDelivery(message.type)) {
+    try {
+      message = ApplicationRuntimeProtocol.freezeDispatch(message);
+      // Check the entire fixed batch before creating/navigating any recruiting tab.
+      for (const task of message.tasks || [message.task]) await validateConfirmedTask(task, platform, pageTabId);
+    } catch (error) {
+      return { success: false, haltBatch: true, errorCode: error.code || error.message,
+        message: "投递协议或确认快照不兼容，已停止派发。请刷新工作台并核对确认记录。" };
+    }
   }
 
   if (isProfileScopedScanMessage(message.type)) {
@@ -1399,6 +1412,29 @@ function platformStartUrl(message) {
   return undefined;
 }
 
+async function validateConfirmedTask(task, platform, pageTabId) {
+  const result = await requestLocalApi(`/api/delivery-attempts/${encodeURIComponent(task.requestKey)}/validate-dispatch`, {
+    method: "POST", requireActionToken: true, platform, pageTabId, operation: "validate-dispatch",
+    body: { platform, profileId: task.profileId, id: task.id, url: task.url,
+      greeting: task.greeting, reconciliationOnly: task.reconciliationOnly === true }
+  });
+  if (!result.success || result.data?.success !== true) {
+    const error = new Error("CONFIRMATION_CHANGED"); error.code = "CONFIRMATION_CHANGED"; throw error;
+  }
+}
+
+async function dispatchBlocker(task, platform, pageTabId) {
+  try {
+    await validateConfirmedTask(task, platform, pageTabId);
+    return null;
+  } catch {
+    // A refused/unknown authorization is not a platform outcome. Leave the original attempt untouched.
+    return { success: false, haltBatch: true, persisted: false, actionStarted: false,
+      outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", errorCode: "CONFIRMATION_CHANGED",
+      message: "无法核对最新确认快照，已停止操作；请刷新后在恢复列表核对。" };
+  }
+}
+
 async function handleBossDeliver(tab, config, message, pageTabId) {
   if (message.type === "BOSS_DELIVER_ONE") {
     const result = await deliverBossTask(tab, config, message.task, message, pageTabId, 1, 1).catch(async (error) => {
@@ -1509,6 +1545,8 @@ async function prepareBossDelivery(tabId, targetUrl) {
 }
 
 async function deliverBossTask(tab, config, task, message, pageTabId, index, total) {
+  const blocked = await dispatchBlocker(task, "boss", pageTabId);
+  if (blocked) return blocked;
   if (!task?.url || !task?.id) {
     let persisted = false;
     if (task?.id) {
@@ -1683,6 +1721,8 @@ async function handleZhilianDeliver(tab, config, message, pageTabId) {
 
 
 async function deliverZhilianTask(tab, config, task, message, pageTabId, index, total) {
+  const blocked = await dispatchBlocker(task, "zhilian", pageTabId);
+  if (blocked) return blocked;
   if (!task?.url || !task?.id) {
     let persisted = false;
     if (task?.id) {

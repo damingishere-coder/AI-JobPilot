@@ -1,0 +1,22 @@
+# AI Job Agent 升级实施记录
+
+保留稳定 V1，按依赖逐轮交付；未通过真实网站门禁不能标记 Phase A 完成。
+
+| 轮次 | 主题 | 状态/依赖 |
+| --- | --- | --- |
+| P0.1 | 入口、会话边界、Runtime 协议 | 已实施，发布/加载扩展验收单独记录；见 application-runtime-v1.md |
+| P0.7 | AI UNKNOWN | 待实施，可与 DOM 轮次独立交付 |
+| P0.2 | 脱敏 Fixture / BOSS Parser | 待实施；真实脱敏与合成样本必须区分 |
+| P0.3 | BOSS State / Evidence | 依赖 P0.2 |
+| P0.4 | BOSS Action / 执行领取 / Recovery | 依赖 P0.3；Migration；真实单条人工确认门禁 |
+| P0.5 | 智联 Runtime | 依赖 P0.4；保留独立 DOM；真实单条人工确认门禁 |
+| P0.6 | 离线浏览器回归 / 双平台 Smoke | harness 可提前，验收依赖 P0.4/P0.5 |
+| P1.1 | 不可变简历及分析快照 | 依赖 P0.7；Migration |
+| P1.2 | Opportunity / Event | 依赖 Phase A 门禁和 P1.1；Migration、历史回填保护 |
+| P1.3 | Outcome / HR 关联 | 依赖 P1.2；结构化历史与聊天保留期分离 |
+| P1.4 | CRM 工作台 | 依赖 P1.3；保留旧页面和静态导出 |
+| P1.5 | 面试记录 | 依赖 P1.4；人工确认、不接外部日历 |
+| P1.6 | Strategy Analytics | 依赖真实反馈；显示样本与观察覆盖 |
+| P1.7 | Fit / Preference / Opportunity Signal | 依赖 P1.6；预览及用户采用、不自动扩大投递范围 |
+
+约束：不保存招聘凭据/Cookie 到后端，不自动处理登录/验证；真实投递保留人工确认；UNKNOWN 不自动重发；不调用真实 AI 作回归；不删除旧执行链或历史数据。每轮独立提交和 PR，迁移编号与部署串行，验收区分代码、CI、部署、扩展加载及真实页面结果。

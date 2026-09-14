@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { REQUIRED_BACKGROUND_VERSION, sendChromeBridgeMessage } from './chromeBridge'
+import { REQUIRED_BACKGROUND_VERSION, REQUIRED_RUNTIME_PROTOCOL, sendChromeBridgeMessage } from './chromeBridge'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -17,7 +17,7 @@ function bridge(version: string, success = true) {
         source: fakeWindow, origin: fakeWindow.location.origin,
         data: { source: 'GET_JOBS_EXTENSION', requestId: message.requestId,
           response: message.type === 'GET_JOBS_EXTENSION_PING'
-            ? { success, version, message: success ? '' : '扩展未连接' } : { success: true } },
+            ? { success, version, runtimeProtocol: REQUIRED_RUNTIME_PROTOCOL, message: success ? '' : '扩展未连接' } : { success: true } },
       })))
     },
   }

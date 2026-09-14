@@ -1,11 +1,7 @@
 package com.getjobs.worker.manager;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.getjobs.application.entity.CookieEntity;
-import com.getjobs.application.service.CookieService;
 import com.getjobs.worker.utils.BrowserLaunchSettings;
 import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.WaitUntilState;
 import com.microsoft.playwright.options.LoadState;
 import jakarta.annotation.PreDestroy;
@@ -20,7 +16,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,10 +98,6 @@ public class PlaywrightManager {
   private static final String JOB51_URL = "https://www.51job.com";
     private static final String ZHILIAN_URL = "https://www.zhaopin.com";
     private static final String ZHILIAN_LOGIN_URL = "https://passport.zhaopin.com/login";
-    // 降噪：51job Cookie保存日志节流状态
-    private volatile long last51CookieLogMs = 0L;
-    private volatile int last51CookieLogCount = -1;
-    private volatile String last51CookieRemark = "";
 
     public record BossSearchSessionStatus(
             boolean homeLoggedIn,
@@ -114,9 +105,6 @@ public class PlaywrightManager {
             String currentUrl,
             String failureReason
     ) {}
-
-    @Autowired
-    private CookieService cookieService;
 
     @Value("${app.browser.user-data-dir:}")
     private String browserUserDataDir;
@@ -163,7 +151,9 @@ public class PlaywrightManager {
             log.info("✓ Playwright引擎已启动");
 
             BrowserLaunchSettings launchSettings = BrowserLaunchSettings.from(
-                    browserUserDataDir,
+                    browserUserDataDir == null || browserUserDataDir.isBlank()
+                            ? Path.of(System.getProperty("user.home"), ".ai-jobpilot", "legacy-browser").toString()
+                            : browserUserDataDir,
                     browserExecutablePath,
                     browserChannel,
                     browserHeadless,
@@ -225,7 +215,7 @@ public class PlaywrightManager {
             zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
             log.info("✓ 智联招聘 Page已创建");
 
-            // 并发执行各平台的初始化逻辑（导航、Cookie加载等）
+            // 并发执行各平台的初始化逻辑（导航、登录状态检测等）
             log.info("开始并发初始化所有平台...");
             CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("Boss", this::setupBossPlatform), jobTaskExecutor);
             CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(() -> setupPlatformSafely("猎聘", this::setupLiepinPlatform), jobTaskExecutor);
@@ -333,30 +323,12 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置Boss直聘平台（加载Cookie、导航、监控）
+     * 设置Boss直聘平台（浏览器会话、导航、监控）
      */
     private void setupBossPlatform() {
         log.info("开始初始化Boss直聘平台...");
 
-        // 尝试从数据库加载Boss平台Cookie到上下文
-        try {
-            CookieEntity cookieEntity = cookieService.getCookieByPlatform("boss");
-            if (cookieEntity != null && cookieEntity.getCookieValue() != null && !cookieEntity.getCookieValue().isBlank()) {
-                String cookieStr = cookieEntity.getCookieValue();
-                List<Cookie> cookies = parseCookiesFromString(cookieStr);
-
-                if (!cookies.isEmpty()) {
-                    context.addCookies(cookies);
-                    log.info("已从数据库加载Boss Cookie并注入浏览器上下文，共 {} 条", cookies.size());
-                } else {
-                    log.warn("解析Cookie失败，未能加载任何Cookie");
-                }
-            } else {
-                log.info("数据库未找到Boss Cookie或值为空，跳过Cookie注入");
-            }
-        } catch (Exception e) {
-            log.warn("从数据库加载Boss Cookie失败: {}", e.getMessage());
-        }
+        // 会话由浏览器资料目录保留；不从数据库注入 Cookie。
 
         // 导航到Boss直聘首页（带重试机制）
         int maxRetries = 3;
@@ -405,7 +377,7 @@ public class PlaywrightManager {
             }
 
             // 初始化阶段不主动跳转登录页，仅在导航后设置状态
-            // 参考猎聘实现：加载Cookie并导航后，由业务侧决定是否触发后续登录流程
+            // 参考猎聘实现：使用浏览器会话并导航后，由业务侧决定是否触发后续登录流程
         } catch (Exception e) {
             log.warn("Boss直聘页面导航失败: {}", e.getMessage());
         }
@@ -877,10 +849,6 @@ public class PlaywrightManager {
         try {
             Page page = ensureBossPage();
             boolean loggedIn = checkIfLoggedIn();
-            if (!loggedIn) {
-                loggedIn = reloadBossCookiesFromDb();
-                page = ensureBossPage();
-            }
             if (loggedIn) {
                 navigateBossPage(page, BOSS_URL, "zhipin.com");
                 setLoginStatus("boss", true);
@@ -917,30 +885,12 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置猎聘平台（加载Cookie、导航、监控）
+     * 设置猎聘平台（浏览器会话、导航、监控）
      */
     private void setupLiepinPlatform() {
         log.info("开始初始化猎聘平台...");
 
-        // 尝试从数据库加载猎聘平台Cookie到上下文
-        try {
-            CookieEntity cookieEntity = cookieService.getCookieByPlatform("liepin");
-            if (cookieEntity != null && cookieEntity.getCookieValue() != null && !cookieEntity.getCookieValue().isBlank()) {
-                String cookieStr = cookieEntity.getCookieValue();
-                List<Cookie> cookies = parseCookiesFromString(cookieStr);
-
-                if (!cookies.isEmpty()) {
-                    context.addCookies(cookies);
-                    log.info("已从数据库加载猎聘 Cookie并注入浏览器上下文，共 {} 条", cookies.size());
-                } else {
-                    log.warn("解析猎聘Cookie失败，未能加载任何Cookie");
-                }
-            } else {
-                log.info("数据库未找到猎聘Cookie或值为空，跳过Cookie注入");
-            }
-        } catch (Exception e) {
-            log.warn("从数据库加载猎聘Cookie失败: {}", e.getMessage());
-        }
+        // 会话由浏览器资料目录保留；不从数据库注入 Cookie。
 
         // 导航到猎聘首页（带重试机制）
         int maxRetries = 3;
@@ -1096,30 +1046,12 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置51job平台（加载Cookie、导航、监控）
+     * 设置51job平台（浏览器会话、导航、监控）
      */
     private void setup51jobPlatform() {
         log.info("开始初始化51job平台...");
 
-        // 尝试从数据库加载51job平台Cookie到上下文
-        try {
-            CookieEntity cookieEntity = cookieService.getCookieByPlatform("51job");
-            if (cookieEntity != null && cookieEntity.getCookieValue() != null && !cookieEntity.getCookieValue().isBlank()) {
-                String cookieStr = cookieEntity.getCookieValue();
-                List<Cookie> cookies = parseCookiesFromString(cookieStr);
-
-                if (!cookies.isEmpty()) {
-                    context.addCookies(cookies);
-                    log.info("已从数据库加载51job Cookie并注入浏览器上下文，共 {} 条", cookies.size());
-                } else {
-                    log.warn("解析51job Cookie失败，未能加载任何Cookie");
-                }
-            } else {
-                log.info("数据库未找到51job Cookie或值为空，跳过Cookie注入");
-            }
-        } catch (Exception e) {
-            log.warn("从数据库加载51job Cookie失败: {}", e.getMessage());
-        }
+        // 会话由浏览器资料目录保留；不从数据库注入 Cookie。
 
         // 导航到51job首页（带重试机制）
         int maxRetries = 3;
@@ -1279,8 +1211,6 @@ public class PlaywrightManager {
         // 更新登录状态并通知
         setLoginStatus("51job", true);
 
-        // 登录成功时保存 Cookie 到数据库
-        save51jobCookiesToDatabase("login success");
     }
 
     /**
@@ -1299,7 +1229,7 @@ public class PlaywrightManager {
                     }
 
                     if (loggedIn) {
-                        // 交由统一回调处理登录成功逻辑（包含状态更新与保存 Cookie）
+                        // 交由统一回调处理登录成功逻辑（仅更新登录状态）
                         on51jobLoginSuccess();
                         log.info("后台等待检测到 51job 登录成功，用时约 {} 秒", i);
                         return;
@@ -1324,41 +1254,10 @@ public class PlaywrightManager {
     }
 
     /**
-     * 保存51job Cookie到数据库
-     *
-     * @param remark 备注信息
-     */
-  private void save51jobCookiesToDatabase(String remark) {
-      try {
-          List<com.microsoft.playwright.options.Cookie> cookies = context.cookies();
-          // 使用ObjectMapper序列化为JSON字符串
-          String cookieJson = new ObjectMapper().writeValueAsString(cookies);
-          boolean result = cookieService.saveOrUpdateCookie("51job", cookieJson, remark);
-          if (result) {
-                long now = System.currentTimeMillis();
-                boolean shouldInfoLog = (now - last51CookieLogMs) > 15000 // 至少间隔15秒
-                        || cookies.size() != last51CookieLogCount
-                        || (remark != null && !remark.equals(last51CookieRemark));
-                if (shouldInfoLog) {
-                    log.info("保存51job Cookie成功，共 {} 条，remark={}", cookies.size(), remark);
-                    last51CookieLogMs = now;
-                    last51CookieLogCount = cookies.size();
-                    last51CookieRemark = remark == null ? "" : remark;
-                } else {
-                    // 近似重复的频繁调用，改为debug降低噪音
-                    log.debug("保存51job Cookie成功(节流)，条数={}，remark={}", cookies.size(), remark);
-                }
-          }
-      } catch (Exception e) {
-          log.warn("保存51job Cookie失败: {}", e.getMessage());
-      }
-  }
-
-    /**
-     * 主动保存51job Cookie到数据库（用于调试/验证）
+     * 已停用：保存51job Cookie到数据库（用于调试/验证）
      */
     public void save51jobCookiesToDb(String remark) {
-        save51jobCookiesToDatabase(remark);
+        throw new UnsupportedOperationException("Cookie 导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -1445,7 +1344,7 @@ public class PlaywrightManager {
                 log.warn("未找到微信扫码登录按钮，用户可在登录页自行选择扫码方式");
             }
 
-            // 不阻塞等待：监控会自动检测到登录成功并保存Cookie
+            // 不阻塞等待：监控会自动检测到登录成功
         } catch (Exception e) {
             log.error("触发51job登录流程失败: {}", e.getMessage(), e);
             throw new RuntimeException("触发51job登录流程失败", e);
@@ -1453,30 +1352,12 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置智联招聘平台（加载Cookie、导航、监控）
+     * 设置智联招聘平台（浏览器会话、导航、监控）
      */
     private void setupZhilianPlatform() {
         log.info("开始初始化智联招聘平台...");
 
-        // 尝试从数据库加载智联招聘平台Cookie到上下文
-        try {
-            CookieEntity cookieEntity = cookieService.getCookieByPlatform("zhilian");
-            if (cookieEntity != null && cookieEntity.getCookieValue() != null && !cookieEntity.getCookieValue().isBlank()) {
-                String cookieStr = cookieEntity.getCookieValue();
-                List<Cookie> cookies = parseCookiesFromString(cookieStr);
-
-                if (!cookies.isEmpty()) {
-                    context.addCookies(cookies);
-                    log.info("已从数据库加载智联招聘 Cookie并注入浏览器上下文，共 {} 条", cookies.size());
-                } else {
-                    log.warn("解析智联招聘Cookie失败，未能加载任何Cookie");
-                }
-            } else {
-                log.info("数据库未找到智联招聘Cookie或值为空，跳过Cookie注入");
-            }
-        } catch (Exception e) {
-            log.warn("从数据库加载智联招聘Cookie失败: {}", e.getMessage());
-        }
+        // 会话由浏览器资料目录保留；不从数据库注入 Cookie。
 
         // 导航到智联招聘首页（带重试机制）
         int maxRetries = 3;
@@ -1752,34 +1633,13 @@ public class PlaywrightManager {
         // 更新登录状态并通知
         setLoginStatus("zhilian", true);
 
-        // 登录成功时保存 Cookie 到数据库
-        saveZhilianCookiesToDatabase("login success");
     }
 
     /**
-     * 保存智联招聘Cookie到数据库
-     *
-     * @param remark 备注信息
-     */
-    private void saveZhilianCookiesToDatabase(String remark) {
-        try {
-            List<com.microsoft.playwright.options.Cookie> cookies = context.cookies();
-            // 使用ObjectMapper序列化为JSON字符串
-            String cookieJson = new ObjectMapper().writeValueAsString(cookies);
-            boolean result = cookieService.saveOrUpdateCookie("zhilian", cookieJson, remark);
-            if (result) {
-                log.info("保存智联招聘Cookie成功，共 {} 条，remark={}", cookies.size(), remark);
-            }
-        } catch (Exception e) {
-            log.warn("保存智联招聘Cookie失败: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * 主动保存智联招聘Cookie到数据库（用于调试/验证）
+     * 已停用：保存智联招聘Cookie到数据库（用于调试/验证）
      */
     public void saveZhilianCookiesToDb(String remark) {
-        saveZhilianCookiesToDatabase(remark);
+        throw new UnsupportedOperationException("Cookie 导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -1789,13 +1649,7 @@ public class PlaywrightManager {
      * @param remark   备注
      */
     public void saveCookiesToDb(String platform, String remark) {
-        switch (platform) {
-            case "boss" -> saveBossCookiesToDatabase(remark);
-            case "liepin" -> saveLiepinCookiesToDatabase(remark);
-            case "51job" -> save51jobCookiesToDatabase(remark);
-            case "zhilian" -> saveZhilianCookiesToDatabase(remark);
-            default -> throw new IllegalArgumentException("Unsupported platform: " + platform);
-        }
+        throw new UnsupportedOperationException("Cookie 导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -1859,34 +1713,13 @@ public class PlaywrightManager {
         // 更新登录状态并通知
         setLoginStatus("liepin", true);
 
-        // 登录成功时保存 Cookie 到数据库
-        saveLiepinCookiesToDatabase("login success");
     }
 
     /**
-     * 保存猎聘Cookie到数据库
-     *
-     * @param remark 备注信息
-     */
-    private void saveLiepinCookiesToDatabase(String remark) {
-        try {
-            List<com.microsoft.playwright.options.Cookie> cookies = context.cookies();
-            // 使用ObjectMapper序列化为JSON字符串
-            String cookieJson = new ObjectMapper().writeValueAsString(cookies);
-            boolean result = cookieService.saveOrUpdateCookie("liepin", cookieJson, remark);
-            if (result) {
-                log.info("保存猎聘Cookie成功，共 {} 条，remark={}", cookies.size(), remark);
-            }
-        } catch (Exception e) {
-            log.warn("保存猎聘Cookie失败: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * 主动保存猎聘Cookie到数据库（用于调试/验证）
+     * 已停用：保存猎聘Cookie到数据库（用于调试/验证）
      */
     public void saveLiepinCookiesToDb(String remark) {
-        saveLiepinCookiesToDatabase(remark);
+        throw new UnsupportedOperationException("Cookie 导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -1957,64 +1790,10 @@ public class PlaywrightManager {
         // 更新登录状态并通知（统一使用setLoginStatus方法）
         setLoginStatus(platform, true);
 
-        // 登录成功时保存 Cookie 到数据库（仅 boss 平台）
-        if ("boss".equals(platform)) {
-            saveBossCookiesToDatabase("login success");
-        }
-    }
-
-    /**
-     * 统一的Boss Cookie保存方法（使用JSON序列化）
-     *
-     * @param remark 备注信息
-     */
-    private void saveBossCookiesToDatabase(String remark) {
-        try {
-            List<com.microsoft.playwright.options.Cookie> cookies = filterBossCookies(context.cookies());
-            // 使用ObjectMapper序列化为JSON字符串
-            String cookieJson = new ObjectMapper().writeValueAsString(cookies);
-            boolean result = cookieService.saveOrUpdateCookie("boss", cookieJson, remark);
-            if (result) {
-                log.info("保存Boss Cookie成功，共 {} 条，remark={}", cookies.size(), remark);
-            }
-        } catch (Exception e) {
-            log.warn("保存Boss Cookie失败: {}", e.getMessage());
-        }
     }
 
     public boolean reloadBossCookiesFromDb() {
-        try {
-            if (context == null) {
-                log.warn("共享上下文不存在，无法重新加载Boss Cookie");
-                return false;
-            }
-
-            CookieEntity cookieEntity = cookieService.getCookieByPlatform("boss");
-            if (cookieEntity == null || cookieEntity.getCookieValue() == null || cookieEntity.getCookieValue().isBlank()) {
-                log.warn("数据库未找到Boss Cookie或值为空，无法重新加载");
-                setLoginStatus("boss", false);
-                return false;
-            }
-
-            List<Cookie> cookies = parseCookiesFromString(cookieEntity.getCookieValue());
-            if (cookies.isEmpty()) {
-                log.warn("解析Boss Cookie为空，无法重新加载");
-                setLoginStatus("boss", false);
-                return false;
-            }
-
-            context.addCookies(cookies);
-            Page page = ensureBossPage();
-            navigateBossPage(page, BOSS_URL, "zhipin.com");
-            boolean loggedIn = checkIfLoggedIn();
-            setLoginStatus("boss", loggedIn);
-            log.info("已重新加载Boss Cookie并刷新登录状态: loggedIn={}, cookieCount={}", loggedIn, cookies.size());
-            return loggedIn;
-        } catch (Exception e) {
-            log.warn("重新加载Boss Cookie失败: {}", e.getMessage());
-            setLoginStatus("boss", false);
-            return false;
-        }
+        throw new UnsupportedOperationException("Cookie 导入已停用，请在浏览器中手动登录。");
     }
 
     /**
@@ -2024,7 +1803,6 @@ public class PlaywrightManager {
         try {
             Page page = ensureBossPage();
             if (isLoggedIn("boss") && checkIfLoggedIn()) {
-                saveBossCookiesToDatabase("login status refresh");
                 return true;
             }
 
@@ -2038,12 +1816,7 @@ public class PlaywrightManager {
             }
 
             boolean loggedIn = checkIfLoggedIn();
-            if (!loggedIn) {
-                loggedIn = reloadBossCookiesFromDb();
-            } else {
-                setLoginStatus("boss", true);
-                saveBossCookiesToDatabase("login status refresh");
-            }
+            setLoginStatus("boss", loggedIn);
             return loggedIn;
         } catch (Exception e) {
             log.warn("刷新Boss登录状态失败: {}", e.getMessage());
@@ -2053,25 +1826,10 @@ public class PlaywrightManager {
     }
 
     /**
-     * 主动保存 Boss Cookie 到数据库（用于调试/验证）
+     * 已停用：保存 Boss Cookie 到数据库（用于调试/验证）
      */
     public void saveBossCookiesToDb(String remark) {
-        saveBossCookiesToDatabase(remark);
-        reloadBossCookiesFromDb();
-    }
-
-    private List<com.microsoft.playwright.options.Cookie> filterBossCookies(List<com.microsoft.playwright.options.Cookie> cookies) {
-        if (cookies == null || cookies.isEmpty()) {
-            return List.of();
-        }
-        List<com.microsoft.playwright.options.Cookie> filtered = new ArrayList<>();
-        for (com.microsoft.playwright.options.Cookie cookie : cookies) {
-            String domain = cookie.domain == null ? "" : cookie.domain.toLowerCase();
-            if (domain.equals("zhipin.com") || domain.equals("www.zhipin.com") || domain.endsWith(".zhipin.com")) {
-                filtered.add(cookie);
-            }
-        }
-        return filtered;
+        throw new UnsupportedOperationException("Cookie 导出已停用，请使用浏览器会话。");
     }
 
     /**
@@ -2310,62 +2068,6 @@ public class PlaywrightManager {
 
 //            log.info("登录状态已更新: platform={}, isLoggedIn={}", platform, isLoggedIn);
         }
-    }
-
-    /**
-     * 从JSON字符串解析Cookie列表
-     *
-     * @param cookieJson Cookie的JSON字符串
-     * @return Cookie列表
-     */
-    private List<Cookie> parseCookiesFromString(String cookieJson) {
-        List<Cookie> cookies = new ArrayList<>();
-
-        try {
-            ObjectMapper objectMapper = new ObjectMapper();
-            com.fasterxml.jackson.databind.JsonNode jsonArray = objectMapper.readTree(cookieJson);
-
-            for (com.fasterxml.jackson.databind.JsonNode node : jsonArray) {
-                // 创建Cookie对象（name和value是必需的）
-                Cookie cookie = new Cookie(
-                        node.get("name").asText(),
-                        node.get("value").asText()
-                );
-
-                // 设置可选字段
-                if (node.has("domain") && !node.get("domain").isNull()) {
-                    cookie.domain = node.get("domain").asText();
-                }
-                if (node.has("path") && !node.get("path").isNull()) {
-                    cookie.path = node.get("path").asText();
-                }
-                if (node.has("expires") && !node.get("expires").isNull()) {
-                    cookie.expires = node.get("expires").asDouble();
-                }
-                if (node.has("httpOnly") && !node.get("httpOnly").isNull()) {
-                    cookie.httpOnly = node.get("httpOnly").asBoolean();
-                }
-                if (node.has("secure") && !node.get("secure").isNull()) {
-                    cookie.secure = node.get("secure").asBoolean();
-                }
-                if (node.has("sameSite") && !node.get("sameSite").isNull()) {
-                    String sameSite = node.get("sameSite").asText();
-                    if (sameSite != null && !sameSite.isEmpty()) {
-                        cookie.sameSite = com.microsoft.playwright.options.SameSiteAttribute.valueOf(
-                                sameSite.toUpperCase()
-                        );
-                    }
-                }
-
-                cookies.add(cookie);
-            }
-
-            log.debug("成功解析Cookie，共 {} 条", cookies.size());
-        } catch (Exception e) {
-            log.error("解析Cookie JSON失败: {}", e.getMessage(), e);
-        }
-
-        return cookies;
     }
 
     /**
