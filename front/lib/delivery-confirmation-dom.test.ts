@@ -73,3 +73,30 @@ test('Zhilian recognizes the live daily-limit wording as a failed action', () =>
   document.body.innerHTML = '<div>普通岗位描述</div>';
   assert.equal(detect(''), '');
 });
+
+test('BOSS acknowledges only the positive-quota reminder once, never restrictions or unrelated dialogs', () => {
+  const document = dom('');
+  let clicks = 0;
+  const code = readFunction('boss-content.js', 'acknowledgeRemainingCommunicationReminder', 'executeDeliveryOnce');
+  const acknowledge = vm.runInNewContext(code + '; acknowledgeRemainingCommunicationReminder', {
+    document, compact: (s: unknown) => String(s || '').trim(), clickElement: () => { clicks++; },
+  });
+  const fixture = (content: string, title = '温馨提示') => {
+    document.body.innerHTML = `<div class="dialog-wrap"><div class="dialog-title"><h3>${title}</h3></div><div class="dialog-con">${content}</div><div class="dialog-footer"><span class="btn btn-sure">好</span></div></div>`;
+  };
+  const acknowledged = new WeakSet();
+  fixture('您今天已与120位BOSS沟通，还剩30次沟通机会哦');
+  assert.equal(acknowledge(acknowledged), true);
+  assert.equal(acknowledge(acknowledged), false);
+  assert.equal(clicks, 1);
+  for (const content of ['您今天已与150位BOSS沟通，还剩0次沟通机会哦', '今日沟通次数已用完', '请完成安全验证', '请重新登录', '购买会员获得30次沟通机会', '您今天已与120位BOSS沟通，还剩30次沟通机会哦，请同意服务协议']) {
+    fixture(content);
+    assert.equal(acknowledge(acknowledged), false);
+  }
+  fixture('您今天已与120位BOSS沟通，还剩30次沟通机会哦', '服务协议');
+  assert.equal(acknowledge(acknowledged), false);
+  fixture('您今天已与120位BOSS沟通，还剩30次沟通机会哦');
+  (document.querySelector('.dialog-wrap') as HTMLElement).style.display = 'none';
+  assert.equal(acknowledge(acknowledged), false);
+  assert.equal(clicks, 1);
+});

@@ -4042,9 +4042,11 @@
 
   async function waitForDeliveryOpened(beforeUrl, task, timeoutMs = 9000) {
     const startedAt = Date.now();
+    const acknowledgedReminders = new WeakSet();
     while (Date.now() - startedAt < timeoutMs) {
       const failure = detectDeliveryFailure("");
       if (failure) return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure };
+      acknowledgeRemainingCommunicationReminder(acknowledgedReminders);
       if (detectBossDeliveryStatus(document)) {
         return { success: true, outcome: "CONFIRMED", evidence: "PLATFORM_STATUS_TEXT", message: "Boss页面已显示沟通或投递状态" };
       }
@@ -4063,6 +4065,25 @@
     const failure = detectDeliveryFailure("");
     if (failure) return { success: false, outcome: "FAILED", evidence: "PLATFORM_ERROR", message: failure };
     return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", message: "点击立即沟通后未出现明确平台结果" };
+  }
+
+  function acknowledgeRemainingCommunicationReminder(acknowledged) {
+    // Only acknowledge the non-binding positive-quota reminder from the job dialog.
+    // Never dismiss exhausted quotas, verification, login or paid upgrade prompts.
+    for (const dialog of document.querySelectorAll(".dialog-wrap")) {
+      if (dialog.offsetParent === null || acknowledged.has(dialog)) continue;
+      const title = compact(dialog.querySelector(".dialog-title h3")?.textContent || "");
+      const content = compact(dialog.querySelector(".dialog-con")?.textContent || "");
+      const remaining = content.match(/^您今天已与\d+位BOSS沟通[，,]\s*还剩(\d+)次沟通机会哦[！!。]?$/);
+      if (title !== "温馨提示" || !remaining || Number(remaining[1]) <= 0) continue;
+      const buttons = Array.from(dialog.querySelectorAll(".dialog-footer .btn-sure"))
+        .filter(button => button.offsetParent !== null && compact(button.textContent || "") === "好");
+      if (buttons.length !== 1) continue;
+      acknowledged.add(dialog);
+      clickElement(buttons[0]);
+      return true;
+    }
+    return false;
   }
 
   function executeDeliveryOnce(task, action) {
