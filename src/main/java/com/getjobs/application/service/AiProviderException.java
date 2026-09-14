@@ -52,6 +52,11 @@ public class AiProviderException extends RuntimeException {
         TIMEOUT,
         NETWORK,
         EMPTY_RESPONSE,
-        INVALID_RESPONSE
+        INVALID_RESPONSE,
+        CLI_NOT_STARTED,
+        CLI_EXIT,
+        CLI_RESULT_MISSING,
+        CLI_IO,
+        INTERRUPTED
     }
 }
