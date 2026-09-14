@@ -24,6 +24,8 @@ public class CorsConfig {
             "/api/boss/ai-keywords",
             "/api/boss/jobs/*/delivery-result",
             "/api/hr-assistant/**",
+            "/api/delivery-attempts/*/runtime/**",
+            "/api/delivery-attempts/*/validate-dispatch",
             "/api/zhilian/chrome/**",
             "/api/zhilian/jobs/*/delivery-result"
     );

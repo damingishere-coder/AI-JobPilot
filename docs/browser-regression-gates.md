@@ -23,7 +23,17 @@ Linux CI 使用 `installRegressionBrowser -PwithBrowserDeps` 安装 Chromium 系
 - 主动停止 MV3 service worker 后，实际 page-bridge → background 握手恢复，不启动投递标签页。
 - 扩展 Runtime → HTTP → 真实 DeliveryRuntimeService / DeliveryAttemptService → 全量 Flyway 初始化的临时 SQLite：许可至多一次、UNKNOWN 重复回调幂等、重建服务后拒绝重发。
 
-最后一项的 HTTP 是测试服务封装，尚不等于 Spring Controller、Token、完整采集与 Mock AI 的全链 E2E；相关边界仍由现有 Java/扩展 Contract Test 覆盖。合成 Fixture 也不代表当前招聘页面已经验收。
+新增 `FullPipelineBrowserRegressionTest` 接通真实 Spring Boot 随机端口、Controller、Token、持久 AI 队列及全量迁移后的临时 SQLite：
+
+- BOSS 生产 Parser 从合成页面采集，通过真实 background 的 `chrome-jobs` 消息入库；只有 AI Provider 是 Mockito，执行一次。
+- 采集请求即使携带旧 `autoDeliver=true` 也不会生成 Attempt；错误话术快照被拒绝。测试确认页点击后通过真实确认 API 产生一次请求。
+- 真实扩展 Runtime 领取、background 转发 begin、模拟平台副作用、生产 Detector / Evidence、真实结果 Controller、Attempt / Opportunity 事务事件贯通。
+- 跨副作用边界后重复 begin、页面刷新均不能再次操作；迟到 callback 和重复 callback 只落一份确认事实，重采集不重复调用 AI。
+- 已知扩展的确认快照校验 / Runtime CORS 与操作令牌同时验证；未知扩展和招聘网页仍被拒绝，扩展不能自行调用用户确认接口。
+
+新测试仅在临时扩展副本中将 6866 替换为测试随机端口，worker fetch 只允许这个精确回环 origin；页面网络默认拒绝，招聘 URL 仅由 Fixture 路由返回。临时消息钩子调用生产 background 的 `validateConfirmedTask` / `claimRuntimeTask`，不模拟它们的实现；该钩子不进入生产包。生产权限和端口不变。测试发现并修复了确认快照校验和 Runtime 路径缺少扩展 CORS 规则造成的真实 403。回归调用 `AiService` / `CodexCliService` 的 Mock，不会调用收费模型。
+
+边界：确认界面是小型测试页面，平台副作用是合成 DOM 变化；Next.js 实际确认组件仍由现有 DOM/组件测试覆盖。这里不宣称真实网站、完整 Next.js 浏览器交互或真人投递已经通过。已有五项 Chromium/MV3 回归继续保留。
 
 ## 真实网站门禁（当前待完成）
 
@@ -39,4 +49,4 @@ BOSS、智联 runtime 开关均保持默认关闭，直到对应平台的受控�
 
 ## 回退
 
-本轮无生产迁移/业务变更；可独立回退测试与 CI 提交。P0.4/P0.5 的安全许可和旧事实保留，不因测试基础设施回退而弱化。
+本轮无生产迁移；测试可独立回退。CORS 修复仅允许已知扩展访问 Runtime 路径，仍需操作令牌及执行身份校验；若回退该修复，新 Runtime 将再次被 403 阻止，不能绕过许可继续投递。P0.4/P0.5 的安全许可和旧事实保留。

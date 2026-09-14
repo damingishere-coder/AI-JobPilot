@@ -10,7 +10,7 @@
 | P0.3 | BOSS State / Evidence | 已实施；只读状态、原话术计数抽取、关键阻碍优先；结构化持久化在 P0.4；见 boss-page-evidence.md |
 | P0.4 | BOSS Action / 执行领取 / Recovery | 已实现 V21 和默认关闭的单次许可路径；上线前仍需离线浏览器及真实单条人工确认门禁；见 boss-action-recovery.md |
 | P0.5 | 智联 Runtime | 已接入同一领取/许可/暂停协议；复用 V21，平台 DOM 独立；默认关闭，真实单条验收待完成；见 zhilian-runtime-adapter.md |
-| P0.6 | 离线浏览器回归 / 双平台 Smoke | 已建立 Chromium/MV3/HTTP+SQLite 回归及 Windows/Linux CI；完整采集 AI E2E 与真实网站 Smoke 尚未验收；见 browser-regression-gates.md |
+| P0.6 | 离线浏览器回归 / 双平台 Smoke | Chromium/MV3 回归及 Windows/Linux CI；已补生产 Parser→background→真实 Spring/Mock AI/SQLite→确认→单次许可→证据回调完整离线链，修复 Runtime CORS；真实页面 Fixture 与双平台 Smoke 仍待用户验收；见 browser-regression-gates.md |
 | P1.1 | 不可变简历及分析快照 | 已实现 V22、加密版本、冻结上下文、兼容批次及历史未知展示；生产发布单独验收；见 analysis-context-snapshots.md |
 | P1.2 | Opportunity / Event | V23 最小模型、事务事件、归档恢复与独立阶段；被动复用旧稳定执行链，真实 Smoke 仍阻止新 Runtime 启用；见 opportunity-event-foundation.md |
 | P1.3 | Outcome / HR 关联 | V24 用户确认关联、真实反馈、观察覆盖与来源事件；聊天过期后结构化历史保留；见 outcome-feedback-capture.md |

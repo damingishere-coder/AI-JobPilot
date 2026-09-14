@@ -52,6 +52,20 @@ class CorsConfigTest {
     }
 
     @Test
+    void runtimePermitAllowsOnlyKnownExtensionAndDoesNotOpenOtherApis() throws Exception {
+        for (String action : new String[]{"claim", "begin", "observe", "pause"}) {
+            String path = "/api/delivery-attempts/fixture-key/runtime/" + action;
+            assertThat(preflight(path, CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).as(action).isEqualTo(200);
+            assertThat(preflight(path, "chrome-extension://abcdefghijklmnop").getStatus()).isEqualTo(403);
+            assertThat(preflight(path, "https://www.zhipin.com").getStatus()).isEqualTo(403);
+        }
+        assertThat(preflight("/api/config", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(403);
+        assertThat(preflight("/api/boss/jobs/1/confirm", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(403);
+        assertThat(preflight("/api/delivery-attempts/fixture-key/validate-dispatch", CorsConfig.CHROME_EXTENSION_ORIGIN).getStatus()).isEqualTo(200);
+        assertThat(preflight("/api/delivery-attempts/fixture-key/validate-dispatch", "https://www.zhipin.com").getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void rejectsUnknownChromeExtensionForBossCollectionEndpoint() throws Exception {
         MockHttpServletResponse response = preflight(
                 "/api/boss/chrome/jobs",
