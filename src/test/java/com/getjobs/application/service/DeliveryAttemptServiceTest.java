@@ -367,6 +367,27 @@ class DeliveryAttemptServiceTest {
                 .containsEntry("reconciliationOnly", false);
     }
 
+    @Test
+    void dispatchRequiresLatestConfirmedSnapshotAndUnknownOnlyAllowsVerification() {
+        insertZhilian(90, DeliveryStatus.WAITING_CONFIRM);
+        String url = "https://jobs.zhaopin.com/test90.htm";
+        jdbcTemplate.update("UPDATE zhilian_data SET job_link=? WHERE id=90", url);
+        String greeting = "您好，我有相关产品运营和流程优化经验，希望进一步了解岗位要求。";
+        assertThat(service.validateDispatch("unconfirmed", "zhilian", 1, 90, url, greeting, false)).isFalse();
+        var request = service.requestZhilian(90, 1, "zhilian-90");
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url, greeting, false)).isFalse();
+        service.snapshotGreeting(request.requestKey(), greeting, "USER_EDITED");
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url, greeting, false)).isTrue();
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 2, 90, url, greeting, false)).isFalse();
+        assertThat(service.validateDispatch(request.requestKey(), "boss", 1, 90, url, greeting, false)).isFalse();
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url + "changed", greeting, false)).isFalse();
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url, "篡改话术", false)).isFalse();
+        service.resolve("zhilian", 1L, 90, request.requestKey(), DeliveryAttemptService.State.UNKNOWN,
+                "NO_CONFIRMATION", "timeout", null, null);
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url, greeting, false)).isFalse();
+        assertThat(service.validateDispatch(request.requestKey(), "zhilian", 1, 90, url, greeting, true)).isTrue();
+    }
+
     private void insertBoss(long id, String status) {
         jdbcTemplate.update("INSERT INTO boss_data(id, profile_id, encrypt_id, delivery_status, created_at, updated_at) " +
                 "VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", id, "boss-" + id, status);

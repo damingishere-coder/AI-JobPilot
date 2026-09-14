@@ -40,6 +40,7 @@ function loadBackground({
   bossHrContentVersion = "2026-09-07-hr-autopilot",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
+  dispatchAllowed = true,
   fetchImpl = async () => {
     throw new Error("fetch should not be called");
   }
@@ -198,7 +199,14 @@ function loadBackground({
     URL,
     URLSearchParams,
     AbortController,
-    fetch: fetchImpl,
+    fetch: (url, options) => {
+      if ((bossDeliveryResponses.length || zhilianDeliveryResponses.length) && String(url).endsWith("/api/local-auth/action-token")) {
+        return Promise.resolve(jsonResponse({ success: true, data: { token: "synthetic-delivery-token" } }));
+      }
+      if (String(url).endsWith("/validate-dispatch")) return Promise.resolve(jsonResponse({ success: dispatchAllowed },
+        { ok: dispatchAllowed, status: dispatchAllowed ? 200 : 409 }));
+      return fetchImpl(url, options);
+    },
     setTimeout,
     clearTimeout
   });
@@ -1390,4 +1398,29 @@ test("a failed read-only reconciliation cannot turn an uncertain prior send into
   const boss=await context.recordBossDeliveryResponse({id:1,requestKey:'old',reconciliationOnly:true},
     {outcome:'FAILED',evidence:'PRE_ACTION_ERROR',greetingOutcome:'NOT_SENT'});
   assert.equal(boss.outcome,'UNKNOWN');
+});
+
+
+test("unconfirmed or incompatible dispatch never opens a platform tab", async () => {
+  const { context, tabList, sentMessages } = loadBackground({ tabs: [] });
+  const result = await context.handlePageMessage({ type: "BOSS_DELIVER_ONE", platform: "boss",
+    task: { id: 1, url: "https://www.zhipin.com/job_detail/test.html" } }, { tab: { id: 20 } });
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, "RUNTIME_PROTOCOL_MISMATCH");
+  assert.equal(tabList.length, 0); assert.equal(sentMessages.length, 0);
+});
+
+test("refused confirmation snapshot stops before navigation or delivery callback", async () => {
+  const { context, tabUpdates, sentMessages } = loadBackground({
+    tabs: [{ id: 7, url: "https://www.zhipin.com/", status: "complete" }], dispatchAllowed: false,
+    fetchImpl: async url => {
+      assert.ok(url.endsWith("/api/local-auth/action-token"));
+      return jsonResponse({ success: true, data: { token: "synthetic-token" } });
+    }
+  });
+  const result = await context.deliverBossTask({ id: 7 }, {}, { id: 1, profileId: 1, requestKey: "old",
+    url: "https://www.zhipin.com/job_detail/test.html", greeting: "synthetic" }, {}, null, 1, 1);
+  assert.equal(result.actionStarted, false); assert.equal(result.persisted, false);
+  assert.equal(result.haltBatch, true);
+  assert.equal(tabUpdates.length, 0); assert.equal(sentMessages.length, 0);
 });
