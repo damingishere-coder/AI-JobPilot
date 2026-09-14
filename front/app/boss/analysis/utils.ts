@@ -135,6 +135,12 @@ export function parseAiReason(value?: string | null): ParsedAiReason {
     const schemaVersion = numberValue(parsed.schemaVersion) ?? 1
     return {
       schemaVersion,
+      analysisBasis: isRecord(parsed.analysisBasis) && parsed.analysisBasis.status === "FROZEN"
+        && typeof parsed.analysisBasis.resumeVersionId === "number" && Number.isSafeInteger(parsed.analysisBasis.resumeVersionId) && parsed.analysisBasis.resumeVersionId > 0
+        ? { resumeVersionId: parsed.analysisBasis.resumeVersionId,
+            provider: typeof parsed.analysisBasis.provider === "string" ? parsed.analysisBasis.provider : "未知",
+            model: typeof parsed.analysisBasis.model === "string" ? parsed.analysisBasis.model : "未知",
+            rule: typeof parsed.analysisBasis.rule === "string" ? parsed.analysisBasis.rule : "未知" } : undefined,
       greetingGenerationOutcome: typeof parsed.greetingGenerationOutcome === "string" ? parsed.greetingGenerationOutcome : undefined,
       greetingGenerationErrorCode: typeof parsed.greetingGenerationErrorCode === "string" ? parsed.greetingGenerationErrorCode : undefined,
       summary: typeof parsed.summary === "string" && parsed.summary.trim()
@@ -167,6 +173,9 @@ export function parseAiReason(value?: string | null): ParsedAiReason {
 export function formatAiReasonDetail(value?: string | null) {
   const reason = parseAiReason(value)
   const sections: string[] = [`结论\n${reason.summary}`]
+  sections.push(reason.analysisBasis
+    ? `分析依据\n简历版本 #${reason.analysisBasis.resumeVersionId}；${reason.analysisBasis.provider} / ${reason.analysisBasis.model}\n规则：${reason.analysisBasis.rule}\n使用入队时保存的资料。招聘平台实际发送的简历版本尚未核验。`
+    : "分析依据\n历史上下文不完整，无法确定当时使用的简历版本；不会用当前简历回填。")
   if (reason.greetingGenerationOutcome === "UNKNOWN") {
     sections.push("话术补生成\n结果未知，可能已产生调用。岗位匹配结果已保留，不会自动重新分析；可手工编辑话术并在投递前确认。")
   } else if (reason.greetingGenerationOutcome === "FAILED") {
@@ -185,7 +194,7 @@ export function formatAiReasonDetail(value?: string | null) {
     sections.push(`硬冲突\n${reason.hardConflicts.map((item, index) =>
       `${index + 1}. ${item.requirement}\n   岗位原文：${item.jobEvidence.join("；")}\n   简历原文：${item.resumeEvidence.join("；")}`).join("\n")}`)
   }
-  if (reason.threshold !== undefined) sections.push(`当前投递阈值\n${reason.threshold}`)
+  if (reason.threshold !== undefined) sections.push(`分析时投递阈值\n${reason.threshold}`)
   if (reason.errorCode) sections.push(`错误代码\n${reason.errorCode}`)
   return sections.join("\n\n")
 }

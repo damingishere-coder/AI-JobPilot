@@ -11,7 +11,7 @@
 | P0.4 | BOSS Action / 执行领取 / Recovery | 已实现 V21 和默认关闭的单次许可路径；上线前仍需离线浏览器及真实单条人工确认门禁；见 boss-action-recovery.md |
 | P0.5 | 智联 Runtime | 已接入同一领取/许可/暂停协议；复用 V21，平台 DOM 独立；默认关闭，真实单条验收待完成；见 zhilian-runtime-adapter.md |
 | P0.6 | 离线浏览器回归 / 双平台 Smoke | harness 可提前，验收依赖 P0.4/P0.5 |
-| P1.1 | 不可变简历及分析快照 | 依赖 P0.7；Migration |
+| P1.1 | 不可变简历及分析快照 | 已实现 V22、加密版本、冻结上下文、兼容批次及历史未知展示；生产发布单独验收；见 analysis-context-snapshots.md |
 | P1.2 | Opportunity / Event | 依赖 Phase A 门禁和 P1.1；Migration、历史回填保护 |
 | P1.3 | Outcome / HR 关联 | 依赖 P1.2；结构化历史与聊天保留期分离 |
 | P1.4 | CRM 工作台 | 依赖 P1.3；保留旧页面和静态导出 |
