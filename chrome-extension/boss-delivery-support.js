@@ -1,11 +1,23 @@
 (function (root) {
+  function authenticationBlock(value) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || !/(^|\.)zhipin\.com$/.test(url.hostname)) return "";
+      if (/\/(?:verify|captcha)(?:[/.]|$)/i.test(url.pathname)) return "Boss页面出现安全验证，已暂停投递，请手动处理";
+      if (/\/(?:passport|login)(?:[/.]|$)/i.test(url.pathname)) return "Boss登录状态失效，已暂停投递，请手动登录";
+    } catch {}
+    return "";
+  }
+
   function preparationFailure(error) {
     const message = error?.message || String(error);
     const common = /permission|Cannot access|站点权限|脚本未就绪|扩展版本|登录|安全验证|验证码/i.test(message);
     return { success: false, outcome: "FAILED", evidence: "PRE_ACTION_ERROR",
       greetingOutcome: "NOT_SENT", greetingEvidence: "PRE_ACTION_ERROR",
       actionStarted: false, haltBatch: common, message,
-      failureType: /permission|Cannot access|站点权限/i.test(message) ? "EXTENSION_PERMISSION" : "PRE_ACTION_ERROR" };
+      failureType: /安全验证|验证码/.test(message) ? "PLATFORM_VERIFICATION"
+        : /登录/.test(message) ? "LOGIN_EXPIRED"
+        : /permission|Cannot access|站点权限/i.test(message) ? "EXTENSION_PERMISSION" : "PRE_ACTION_ERROR" };
   }
 
   async function prepare({ chrome, tabId, targetUrl, navigate, ensure, sleep }) {
@@ -25,6 +37,8 @@
         if (url.protocol !== "https:" || !(url.hostname === "zhipin.com" || url.hostname.endsWith(".zhipin.com"))) {
           throw new Error("Boss页面尚未就绪，请打开已登录的Boss岗位页面");
         }
+        const blocked = authenticationBlock(url.href);
+        if (blocked) throw new Error(blocked);
         if (targetUrl && url.pathname !== new URL(targetUrl).pathname) throw new Error("目标岗位ID与当前页面不一致，尚未执行投递");
         if (before.status === "loading" || (before.pendingUrl && before.pendingUrl !== before.url)) {
           throw new Error("Boss页面仍在跳转，尚未执行投递");
@@ -43,6 +57,11 @@
       } catch (error) {
         lastError = error;
         if (/站点权限|登录|安全验证|验证码/.test(error?.message || "")) break;
+        // Navigation may time out before yielding a verification redirect. Preserve that
+        // page instead of navigating to the job again on the next preparation attempt.
+        const current = await chrome.tabs.get(tabId).catch(() => null);
+        const blocked = authenticationBlock(current?.url) || authenticationBlock(current?.pendingUrl);
+        if (blocked) { lastError = new Error(blocked); break; }
         if (attempt < 2) await sleep(500);
       }
     }

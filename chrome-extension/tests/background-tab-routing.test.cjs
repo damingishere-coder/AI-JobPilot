@@ -1353,6 +1353,24 @@ test("Zhilian stops on login expiry, preserves untouched rows, and never steals 
   assert.equal(windowUpdates.some(e=>e.updates.focused===true),false);
 });
 
+test('Boss stops the whole batch on platform restrictions but can pass an individual closed job', async () => {
+  for (const failureType of ['LOGIN_EXPIRED', 'PLATFORM_VERIFICATION', 'DELIVERY_LIMIT', 'JOB_CLOSED']) {
+    const tasks = [1, 2].map(id => ({id, requestKey:`guard-${id}`, url:`https://www.zhipin.com/job_detail/guard-${id}.html`, greeting:'已确认的原话术'}));
+    const response = {success:false, outcome:'FAILED', evidence:'PLATFORM_ERROR', failureType, message:failureType};
+    const {context, sentMessages} = loadBackground({
+      tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'}],
+      bossDeliveryResponses:[response, response],
+      fetchImpl:async (_,options) => jsonResponse({success:true,accepted:true,state:JSON.parse(options.body).outcome}),
+    });
+    const result = await context.handleBossDeliver({id:7}, {hosts:['zhipin.com'],contentScript:'boss-content.js'}, {type:'BOSS_DELIVER_BATCH',tasks}, null);
+    const mustStop = failureType !== 'JOB_CLOSED';
+    assert.equal(result.halted, mustStop);
+    assert.equal(sentMessages.filter(entry=>entry.message.type==='BOSS_DELIVER_CURRENT_V2').length, mustStop ? 1 : 2);
+    assert.equal(result.unprocessedCount, mustStop ? 1 : 0);
+    if (mustStop) assert.equal(result.results[1].evidence, 'BATCH_HALTED_BEFORE_ACTION');
+  }
+});
+
 test("Zhilian does not retry a send after a lost message channel", async () => {
   const tasks = [1,2].map(id=>({id,requestKey:`z-${id}`,url:`https://www.zhaopin.com/jobdetail/CC123J${id}.htm`}));
   const {context,sentMessages} = loadBackground({tabs:[{id:7,windowId:1,url:tasks[0].url,status:'complete'}],
