@@ -92,7 +92,6 @@ public class CodexCliService {
     }
 
     String run(String content, List<Path> imagePaths, String outputSchema, Map<String, String> config) {
-        String executable = resolveExecutable(value(config, "CODEX_PATH", "codex"));
         String model = value(config, "CODEX_MODEL", "gpt-6-astra");
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
         long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
@@ -101,8 +100,10 @@ public class CodexCliService {
         Path outputPath = null;
         Path outputSchemaPath = null;
         Process process = null;
+        String clientRequestId = java.util.UUID.randomUUID().toString();
         boolean slotAcquired = false;
         try {
+            String executable = resolveExecutable(value(config, "CODEX_PATH", "codex"));
             tempDirectory = Files.createTempDirectory("jobpilot-codex-");
             outputPath = tempDirectory.resolve("final.txt");
             if (outputSchema != null && !outputSchema.isBlank()) {
@@ -128,30 +129,37 @@ public class CodexCliService {
             if (processBudgetMillis <= 0) {
                 throw new IllegalStateException("Codex CLI 总执行时间已耗尽");
             }
-            process = builder.start();
+            process = startProcess(builder);
             try (var writer = process.outputWriter(StandardCharsets.UTF_8)) {
                 writer.write(buildPrompt(content, imagePaths != null && !imagePaths.isEmpty()));
             }
             if (!process.waitFor(processBudgetMillis, TimeUnit.MILLISECONDS)) {
-                terminateProcessTree(process);
-                throw new IllegalStateException("Codex CLI 执行超时（>" + timeoutSeconds + " 秒）");
+                throw cliFailure(AiProviderException.Code.TIMEOUT, "Codex CLI 执行超时", clientRequestId, true, null);
             }
             if (process.exitValue() != 0) {
-                throw new IllegalStateException("Codex CLI 执行失败（退出码 " + process.exitValue() + "）");
+                throw cliFailure(AiProviderException.Code.CLI_EXIT, "Codex CLI 非正常退出", clientRequestId, true, null);
             }
             if (!Files.isRegularFile(outputPath)) {
-                throw new IllegalStateException("Codex CLI 未生成最终结果文件");
+                throw cliFailure(AiProviderException.Code.CLI_RESULT_MISSING, "Codex CLI 未生成最终结果文件", clientRequestId, true, null);
             }
             String result = Files.readString(outputPath, StandardCharsets.UTF_8).trim();
             if (result.isBlank()) {
-                throw new IllegalStateException("Codex CLI 返回空结果");
+                throw cliFailure(AiProviderException.Code.EMPTY_RESPONSE, "Codex CLI 返回空结果", clientRequestId, true, null);
             }
             return result;
+        } catch (AiProviderException e) {
+            throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Codex CLI 任务被中断", e);
+            throw cliFailure(AiProviderException.Code.INTERRUPTED, "Codex CLI 任务被中断", clientRequestId, process != null, e);
         } catch (IOException e) {
-            throw new IllegalStateException("Codex CLI 无法启动，请检查 CODEX_PATH", e);
+            throw cliFailure(process == null ? AiProviderException.Code.CLI_NOT_STARTED : AiProviderException.Code.CLI_IO,
+                    process == null ? "Codex CLI 未启动，请检查路径与临时目录" : "Codex CLI 输入或结果读取失败",
+                    clientRequestId, process != null, e);
+        } catch (RuntimeException e) {
+            throw cliFailure(process == null ? AiProviderException.Code.CLI_NOT_STARTED : AiProviderException.Code.CLI_IO,
+                    process == null ? "Codex CLI 未启动，等待名额或准备阶段失败" : "Codex CLI 执行结果无法读取",
+                    clientRequestId, process != null, e);
         } finally {
             if (process != null) {
                 terminateProcessTree(process);
@@ -163,6 +171,18 @@ public class CodexCliService {
             deleteQuietly(outputSchemaPath);
             deleteQuietly(tempDirectory);
         }
+    }
+
+    // Test seam: tests supply a simulated Process and never invoke a real AI CLI.
+    Process startProcess(ProcessBuilder builder) throws IOException {
+        return builder.start();
+    }
+
+    private AiProviderException cliFailure(AiProviderException.Code code, String message, String requestId,
+                                           boolean unknown, Throwable cause) {
+        return new AiProviderException(code,
+                message + (unknown ? "；结果未知，可能已产生调用，核对后再决定是否重试" : "；尚未发起调用")
+                        + "（requestId=" + requestId + "）", null, requestId, "", unknown, cause);
     }
 
     List<String> buildCommand(String executable, String model, Path workingDirectory, Path outputPath, Path imagePath) {

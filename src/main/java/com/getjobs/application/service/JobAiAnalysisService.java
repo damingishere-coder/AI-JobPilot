@@ -409,9 +409,11 @@ public class JobAiAnalysisService {
                 .filter(job -> "boss".equalsIgnoreCase(job.job().request().getPlatform()))
                 .map(job -> job.job().taskId())
                 .collect(Collectors.toSet());
+        AiAnalysisCallLedger calls = new AiAnalysisCallLedger(expectedTaskIds);
         String raw = null;
         try {
-            raw = aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            raw = calls.invoke(AiAnalysisCallLedger.Purpose.MATCH_BATCH, null,
+                    () -> aiService.sendStructuredRequest(prompt, JOB_ANALYSIS_OUTPUT_SCHEMA));
             BatchParse parsed;
             try {
                 parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
@@ -424,10 +426,10 @@ public class JobAiAnalysisService {
                 }
                 log.warn("AI岗位批量分析返回无效 JSON，将使用同一 Provider、模型和 Schema 重试一次: {}",
                         outputError.getMessage());
-                raw = aiService.sendStructuredRequest(
+                raw = calls.invoke(AiAnalysisCallLedger.Purpose.BATCH_FORMAT_REPAIR, null, () -> aiService.sendStructuredRequest(
                         prompt + "\n\n重要：上一次输出不是有效的批量 JSON。本次只返回一个完全符合 Schema 的 JSON 对象，不要输出 Markdown、解释或额外文本。",
                         JOB_ANALYSIS_OUTPUT_SCHEMA
-                );
+                ));
                 parsed = parseBatchResults(raw, expectedTaskIds, bossTaskIds);
             }
 
@@ -437,7 +439,8 @@ public class JobAiAnalysisService {
                 PreparedJob job = byTaskId.get(entry.getKey());
                 if (job != null) {
                     verifyQuotedEvidence(entry.getValue(), job.job().request(), resumeText);
-                    ensureBossGreeting(entry.getValue(), job, resumeText);
+                    ensureBossGreeting(entry.getValue(), job, resumeText, calls);
+                    entry.getValue().setCallAudit(calls.snapshot());
                     completed.put(entry.getKey(), finalizeResult(
                             job, entry.getValue(), responseDiagnostic(raw), true));
                 }
@@ -446,14 +449,14 @@ public class JobAiAnalysisService {
                 PreparedJob job = byTaskId.get(entry.getKey());
                 if (job == null || completed.containsKey(entry.getKey())) continue;
                 completed.put(entry.getKey(), retrySingleInvalidJob(
-                        resumeText, job, entry.getValue()));
+                        resumeText, job, entry.getValue(), calls));
             }
             return completed;
         } catch (Exception e) {
             log.warn("AI岗位批量分析失败: {}", e.getMessage());
             for (PreparedJob job : prepared) {
                 if (completed.containsKey(job.job().taskId())) continue;
-                completed.put(job.job().taskId(), finalizeFailure(job, e, true));
+                completed.put(job.job().taskId(), finalizeFailure(job, e, true, calls));
             }
             return completed;
         }
@@ -461,14 +464,15 @@ public class JobAiAnalysisService {
 
     private AnalysisResult retrySingleInvalidJob(String resumeText,
                                                  PreparedJob job,
-                                                 AiOutputException initialError) {
+                                                 AiOutputException initialError, AiAnalysisCallLedger calls) {
         if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
         try {
             log.warn("AI岗位批量结果中的任务 {} 缺失或无效，将只重试该岗位一次: {}",
                     job.job().taskId(), initialError.getMessage());
             String retryPrompt = buildBatchPrompt(resumeText, List.of(job))
                     + "\n\n重要：上一次批量结果中这个岗位缺失或字段无效。本次只返回这个 taskId 的完整结果。";
-            String retryRaw = aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA);
+            String retryRaw = calls.invoke(AiAnalysisCallLedger.Purpose.SINGLE_FORMAT_REPAIR, job.job().taskId(),
+                    () -> aiService.sendStructuredRequest(retryPrompt, JOB_ANALYSIS_OUTPUT_SCHEMA));
             Set<Long> bossTaskIds = "boss".equalsIgnoreCase(job.job().request().getPlatform())
                     ? Set.of(job.job().taskId())
                     : Set.of();
@@ -478,18 +482,20 @@ public class JobAiAnalysisService {
                 throw retried.errors().getOrDefault(job.job().taskId(), initialError);
             }
             verifyQuotedEvidence(result, job.job().request(), resumeText);
-            ensureBossGreeting(result, job, resumeText);
+            ensureBossGreeting(result, job, resumeText, calls);
+            result.setCallAudit(calls.snapshot());
             return finalizeResult(job, result, responseDiagnostic(retryRaw), true);
         } catch (Exception e) {
-            return finalizeFailure(job, e, true);
+            return finalizeFailure(job, e, true, calls);
         }
     }
 
-    private AnalysisResult finalizeFailure(PreparedJob job, Exception error, boolean providerWasCalled) {
+    private AnalysisResult finalizeFailure(PreparedJob job, Exception error, boolean providerWasCalled, AiAnalysisCallLedger calls) {
         if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
         AnalysisResult result = AnalysisResult.failed(
                 DeliveryStatus.AI_ANALYSIS_FAILED,
                 error == null ? "AI 分析失败" : error.getMessage());
+        result.setCallAudit(calls.snapshot());
         result.setErrorCode(errorCode(error));
         result.setProviderOutcomeUnknown(
                 error instanceof AiProviderException providerError && providerError.isOutcomeUnknown());
@@ -500,6 +506,10 @@ public class JobAiAnalysisService {
                                           AnalysisResult result,
                                           String diagnostic,
                                           boolean providerWasCalled) {
+        if (!result.getCallAudit().isEmpty()) {
+            diagnostic = new JSONObject(diagnostic).put("logicalCalls", result.getCallAudit()).toString();
+        }
+        final String savedDiagnostic = diagnostic;
         result.setPriorityCompany(job.priority());
         result.setThreshold(job.threshold());
         if (!result.isFailure() && !result.isStaleLease()) {
@@ -511,7 +521,7 @@ public class JobAiAnalysisService {
         if (!isLeaseCurrent(job.job().leaseIsCurrent())) return AnalysisResult.staleLease();
         AtomicReference<AnalysisResult> storedResult = new AtomicReference<>(result);
         if (!executeLeaseWrite(job.job().leaseWriteGuard(), () -> storedResult.set(persistAndUpdate(
-                job.job().request(), result, diagnostic, providerWasCalled)))) {
+                job.job().request(), result, savedDiagnostic, providerWasCalled)))) {
             return AnalysisResult.staleLease();
         }
         return storedResult.get();
@@ -731,7 +741,7 @@ public class JobAiAnalysisService {
         return result;
     }
 
-    private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText) {
+    private void ensureBossGreeting(AnalysisResult result, PreparedJob prepared, String resumeText, AiAnalysisCallLedger calls) {
         JobAnalysisRequest request = prepared.job().request();
         result.setGreeting(greetingPolicy.prepare(result.getGreeting(), request.getProfileId()));
         if (!"boss".equalsIgnoreCase(request.getPlatform())) return;
@@ -756,7 +766,8 @@ public class JobAiAnalysisService {
                     "岗位：" + safe(request.getJobName()) + "\n" +
                     "岗位 JD：\n" + jobDescription + "\n\n" +
                     "候选人简历：\n" + safe(resumeText);
-            String raw = aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA);
+            String raw = calls.invoke(AiAnalysisCallLedger.Purpose.GREETING_REPAIR, prepared.job().taskId(),
+                    () -> aiService.sendStructuredRequest(prompt, BOSS_GREETING_OUTPUT_SCHEMA));
             JSONObject parsed = new JSONObject(repairJsonObject(extractJson(raw)));
             String greeting = greetingPolicy.prepare(parsed.optString("greeting", ""), request.getProfileId());
             String jobEvidence = parsed.optString("jobEvidence", "").trim();
@@ -769,7 +780,11 @@ public class JobAiAnalysisService {
                 throw outputError("AI_GREETING_INVALID", "AI 返回的 BOSS 话术缺少可核验的 JD 或简历依据", raw);
             }
             result.setGreeting(greeting);
+            result.setGreetingGenerationOutcome("RESPONSE_RECEIVED");
         } catch (Exception error) {
+            boolean unknown = error instanceof AiProviderException provider && provider.isOutcomeUnknown();
+            result.setGreetingGenerationOutcome(unknown ? "UNKNOWN" : "FAILED");
+            result.setGreetingGenerationErrorCode(errorCode(error));
             log.warn("Boss岗位 {} 的定制打招呼语重试失败，将使用档案默认兜底: {}",
                     request.getJobKey(), error.getMessage());
             result.setGreeting("");
@@ -1615,6 +1630,7 @@ public class JobAiAnalysisService {
         diagnostic.put("errorCode", errorCode(error));
         diagnostic.put("message", limit(error == null ? "AI 分析失败" : safe(error.getMessage()), 300));
         if (error instanceof AiProviderException providerError) {
+            diagnostic.put("outcomeUnknown", providerError.isOutcomeUnknown());
             diagnostic.put("clientRequestId", safe(providerError.getClientRequestId()));
             diagnostic.put("providerRequestId", safe(providerError.getProviderRequestId()));
             diagnostic.put("httpStatus", providerError.getHttpStatus() == null
@@ -1753,6 +1769,9 @@ public class JobAiAnalysisService {
         private boolean staleLease;
         private String errorCode;
         private boolean providerOutcomeUnknown;
+        private String greetingGenerationOutcome;
+        private String greetingGenerationErrorCode;
+        private List<Map<String, Object>> callAudit = List.of();
 
         public boolean shouldApply() {
             return "APPLY".equalsIgnoreCase(decision);
@@ -1775,6 +1794,9 @@ public class JobAiAnalysisService {
                     .map(HardConflict::toMap).toList());
             map.put("threshold", threshold);
             map.put("errorCode", errorCode);
+            map.put("greetingGenerationOutcome", greetingGenerationOutcome);
+            map.put("greetingGenerationErrorCode", greetingGenerationErrorCode);
+            map.put("logicalCalls", callAudit);
             return new JSONObject(map).toString();
         }
 

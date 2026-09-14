@@ -864,6 +864,28 @@ class JobAiAnalysisServiceStatusTest {
         assertThat(result.isFailure()).isTrue();
         assertThat(result.getErrorCode()).isEqualTo("AI_PROVIDER_TIMEOUT");
         assertThat(result.isProviderOutcomeUnknown()).isTrue();
+        verify(aiService, times(1)).sendStructuredRequest(any(), any());
+        assertThat(result.getCallAudit()).singleElement().satisfies(call -> {
+            assertThat(call).containsEntry("purpose", "MATCH_BATCH").containsEntry("outcome", "UNKNOWN");
+        });
+    }
+
+    @Test
+    void unknownGreetingDoesNotDiscardMatchOrAutomaticallyRepeatAnyCall() {
+        when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
+        when(resumeProfileMapper.selectOne(any())).thenReturn(resume());
+        when(aiService.sendStructuredRequest(any(), any())).thenReturn(missingGreetingBatch())
+                .thenThrow(new AiProviderException(AiProviderException.Code.CLI_RESULT_MISSING,
+                        "结果未知", null, "synthetic-greeting-call", "", true, null));
+        var result = service.analyzeJob(bossRequest());
+        assertThat(result.isFailure()).isFalse();
+        assertThat(result.isProviderOutcomeUnknown()).isFalse();
+        assertThat(result.getGreetingGenerationOutcome()).isEqualTo("UNKNOWN");
+        assertThat(result.getGreeting()).isEmpty();
+        assertThat(lastBossUpdate().getDeliveryStatus()).isEqualTo(DeliveryStatus.WAITING_CONFIRM);
+        assertThat(result.toReasonText()).contains("greetingGenerationOutcome", "UNKNOWN", "GREETING_REPAIR");
+        assertThat(result.getCallAudit()).hasSize(2);
+        verify(aiService, times(2)).sendStructuredRequest(any(), any());
     }
 
     @Test
