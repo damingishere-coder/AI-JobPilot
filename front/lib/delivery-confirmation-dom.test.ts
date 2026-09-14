@@ -36,3 +36,25 @@ test('BOSS counts exact outgoing body despite sent status and line breaks, exclu
   document.body.innerHTML = '<div class="message-content">您好</div>';
   assert.equal(count('您好', null), 0);
 });
+
+test('BOSS detail popup requires the send callback message id and success status', () => {
+  // Structure from BOSS public chatDialog renderer, independently observed in live UI.
+  const document = dom('<div class="startchat-content"><div class="message"><ul class="message-list"><li class="message-item" id="385898401231112"><span class="status success">已发送</span><p class="text">您好，作品集：https://example.com/</p></li></ul></div></div>');
+  const code = readFunction('boss-content.js', 'countRenderedGreetingMessages', 'buildDeliverySuccessMessage');
+  const count = vm.runInNewContext(code + '; countRenderedGreetingMessages', { document, normalizeGreetingText: (s: unknown) => String(s || '').trim() });
+  const greeting = '您好，作品集：https://example.com/';
+  assert.equal(count(greeting, null), 1);
+  assert.equal(count('不同话术', null), 0);
+  const row = document.querySelector('.message-item')!;
+  row.removeAttribute('id');
+  assert.equal(count(greeting, null), 0);
+  row.id = '385898401231112';
+  const status = row.querySelector('.status')!;
+  status.className = 'status sending';
+  assert.equal(count(greeting, null), 0);
+  status.className = 'status error';
+  assert.equal(count(greeting, null), 0);
+  status.className = 'status success';
+  document.querySelector('.startchat-content')!.className = 'unrelated';
+  assert.equal(count(greeting, null), 0);
+});
