@@ -97,7 +97,7 @@ class BrowserRuntimeRegressionTest {
         worker.getByText("缺少职位描述（JD）", new Page.GetByTextOptions().setExact(false)).waitFor();
         var bundle = new com.fasterxml.jackson.databind.ObjectMapper().readTree(worker.locator("#preview").inputValue());
         assertThat(bundle.path("coverage").path("descriptions").asInt()).isZero();
-        assertThat(bundle.path("provenance").path("redactionVersion").asText()).isEqualTo("structural-fixture/3");
+        assertThat(bundle.path("provenance").path("redactionVersion").asText()).isEqualTo("structural-fixture/4");
         assertThat(worker.locator("#download").isDisabled()).isTrue();
         worker.locator("#reviewed").check();
         assertThat(worker.locator("#download").isEnabled()).isTrue();
