@@ -18,6 +18,31 @@ function doc(html: string) {
   return d
 }
 describe('user-triggered structural redaction', () => {
+  it('recognizes split-page company links without retaining HR containers or arbitrary boss-info', () => {
+    // Class relationships observed through the live BOSS DOM; all content is synthetic.
+    const input = doc('<li class="job-card-box"><div class="job-title"><a class="job-name" href="/job_detail/PRIVATE_ID.html">PRIVATE_TITLE</a><span class="job-salary">30-50K</span></div><div class="job-card-footer"><a class="boss-info" href="/gongsi/PRIVATE_COMPANY.html"><img src="PRIVATE_AVATAR"><span>PRIVATE_COMPANY</span></a><span>PRIVATE_CITY</span></div><div class="boss-info">PRIVATE_HR</div></li><div class="job-detail-body"><h3>职位描述</h3><p class="desc">PRIVATE_JD<span style="visibility:hidden">PRIVATE_NOISE</span></p><div class="job-boss-info"><h2>PRIVATE_HR_NAME</h2><div class="company-name">PRIVATE_HR_COMPANY</div></div><div class="recruiter-info">PRIVATE_RECRUITER</div></div>')
+    const list = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'SEARCH')
+    const listDoc = doc(list.html)
+    expect(listDoc.querySelectorAll('.boss-info')).toHaveLength(1)
+    expect(listDoc.querySelector('.job-card-footer > a.boss-info')?.textContent).toBe('示例科技公司001')
+    expect(list.warnings).not.toContain('MISSING_COMPANY')
+    const detail = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'JOB_DETAIL')
+    const detailDoc = doc(detail.html)
+    expect(detailDoc.querySelector('.job-detail-body > .desc')?.textContent).toContain('岗位职责：负责示例产品')
+    expect(detailDoc.querySelector('.job-detail-body > .desc > span')?.getAttribute('style')).toContain('visibility: hidden')
+    expect(detailDoc.querySelector('.job-boss-info,.recruiter-info,.company-name')).toBeNull()
+    expect(detail.warnings).not.toContain('MISSING_DESCRIPTION')
+    expect(detail.warnings).toContain('MISSING_COMPANY')
+    expect(JSON.stringify([list, detail])).not.toMatch(/PRIVATE|gongsi|src=/)
+  })
+  it('does not interpret generic desc or nested HR cards as public company/JD fields', () => {
+    const input = doc('<div class="job-detail-body"><section><p class="desc">PRIVATE_OTHER</p></section><div class="job-boss-info"><li class="job-card-box"><div class="job-card-footer"><a class="boss-info"><span class="company-name">PRIVATE_NESTED_HR</span></a></div></li></div></div>')
+    const detail = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'JOB_DETAIL')
+    expect(detail.warnings).toContain('MISSING_DESCRIPTION')
+    expect(detail.warnings).toContain('MISSING_COMPANY')
+    expect(doc(detail.html).querySelector('.job-card-box,.boss-info')).toBeNull()
+    expect(detail.html).not.toContain('岗位职责：')
+  })
   it('uses the nearest field element, so salary inside a title wrapper remains salary', () => {
     const input = doc('<li class="job-card-box"><div class="job-title"><a class="job-name" href="/job_detail/PRIVATE_ID.html">PRIVATE_TITLE</a><span class="job-salary"><em>30-50K</em></span></div><div class="company-name"><span class="job-area">PRIVATE_CITY</span>PRIVATE_COMPANY</div></li>')
     const output = doc(exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'SEARCH').html)
