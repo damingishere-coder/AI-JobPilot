@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-/** Real extension and Spring HTTP pipeline. Recruiting pages, user confirmation UI and AI are fixtures. */
+/** Built Next.js, real extension and Spring HTTP; only recruiting pages/effects and AI are fixtures. */
 @Tag("browser")
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,properties={
     "app.auto-open-browser=false","app.browser.initialize-on-startup=false","app.static-server.enabled=false",
@@ -41,10 +41,12 @@ class FullPipelineBrowserRegressionTest {
     }
     @LocalServerPort int port;
     @Autowired JdbcTemplate jdbc;
-    @Autowired GreetingDraftService greetings;
     @MockitoBean ZhilianOptionInitializer options;
     @MockitoBean AiService ai;
     @MockitoBean CodexCliService cli;
+    // Prevent this production configuration's localhost:6866 discovery probe in isolated tests.
+    // Built frontend files are served by the bounded browser route below instead.
+    @MockitoBean com.getjobs.application.config.StaticResourceConfiguration staticResources;
     Playwright playwright;BrowserContext browser;Page extension;Page job;Page workbench;
     String origin;AtomicInteger aiCalls=new AtomicInteger();
 
@@ -79,8 +81,28 @@ class FullPipelineBrowserRegressionTest {
             +JSON.writeValueAsString(origin)+")throw new Error('OFFLINE_NETWORK_DENIED');return nativeFetch(input,options);};\n";
         // The Java Playwright version has no service-worker handle. This temporary-only hook
         // calls the production dispatch/claim helpers without starting platform clicks.
-        String hook="\nchrome.runtime.onMessage.addListener((message,sender,respond)=>{if(message.type!=='OFFLINE_PIPELINE_CLAIM')return false;"
-            +"(async()=>{try{await validateConfirmedTask(message.task,'boss',message.owner);respond(await claimRuntimeTask(message.task,{runId:'fixture-confirm',runtimeSessionId:'fixture-session',correlationId:'fixture-correlation'},'boss',message.owner));}catch(error){respond({testError:error.message});}})();return true;});";
+        String hook="""
+            \nlet offlineDispatch=null,offlineComplete=null;
+            const realPageHandler=handlePageMessageInternal;
+            handlePageMessageInternal=async(message,sender)=>{
+              if(message.type==='BOSS_DELIVERY_PREFLIGHT')return {success:true,version:BACKGROUND_VERSION};
+              if(message.type==='BOSS_DELIVER_ONE'){
+                offlineDispatch={message,owner:sender.tab.id};
+                return new Promise(resolve=>{offlineComplete=resolve;});
+              }
+              return realPageHandler(message,sender);
+            };
+            chrome.runtime.onMessage.addListener((message,sender,respond)=>{
+              if(message.type==='OFFLINE_PIPELINE_READ'){respond(offlineDispatch);return false;}
+              if(message.type==='OFFLINE_PIPELINE_COMPLETE'){offlineComplete({success:true,persisted:true,message:'离线证据已确认'});respond(true);return false;}
+              if(message.type!=='OFFLINE_PIPELINE_CLAIM')return false;
+              (async()=>{try{
+                const {message:dispatch,owner}=offlineDispatch;
+                await validateConfirmedTask(dispatch.task,'boss',owner);
+                respond(await claimRuntimeTask(dispatch.task,dispatch,'boss',owner));
+              }catch(error){respond({testError:error.message});}})();return true;
+            });
+            """;
         Path background=copy.resolve("background.js");Files.writeString(background,guard+Files.readString(background)+hook);
         Files.writeString(copy.resolve("probe.js"),guard);
         Files.writeString(copy.resolve("pipeline.html"),"<!doctype html><script src='probe.js'></script><script src='browser-application-runtime.js'></script>");
@@ -88,12 +110,18 @@ class FullPipelineBrowserRegressionTest {
         browser=playwright.chromium().launchPersistentContext(ROOT.resolve("browser"),new BrowserType.LaunchPersistentContextOptions()
             .setChannel("chromium").setHeadless(true).setArgs(List.of("--disable-extensions-except="+copy,"--load-extension="+copy,"--disable-background-networking")));
         browser.setDefaultTimeout(12000);
-        browser.route("**/*",route->{String url=route.request().url();if(url.startsWith("chrome-extension://")||URI.create(url).getAuthority().equals("127.0.0.1:"+port)) route.resume();else route.abort();});
+        browser.route("**/*",route->{
+            String url=route.request().url();
+            if(url.startsWith("chrome-extension://")) route.resume();
+            else if(origin.equals(URI.create(url).getScheme()+"://"+URI.create(url).getAuthority())) {
+                if(URI.create(url).getPath().startsWith("/api/")) route.resume();
+                else OfflineFrontendResources.serve(route,port);
+            } else route.abort();
+        });
         byte[] hash=java.security.MessageDigest.getInstance("SHA-256").digest(Base64.getDecoder().decode(JSON.readTree(Files.readString(copy.resolve("manifest.json"))).path("key").asText()));
         StringBuilder id=new StringBuilder();for(int i=0;i<16;i++){id.append((char)('a'+((hash[i]&255)>>4)));id.append((char)('a'+(hash[i]&15)));}
         extension=browser.newPage();extension.navigate("chrome-extension://"+id+"/pipeline.html");
-        workbench=browser.newPage();workbench.route(origin+"/offline-confirm",route->route.fulfill(new Route.FulfillOptions().setContentType("text/html").setBody("<!doctype html><meta charset='utf-8'><button id='confirm'>确认虚构岗位</button><output id='result'></output>")));
-        workbench.navigate(origin+"/offline-confirm");
+        workbench=browser.newPage();
         job=browser.newPage();String html=Files.readString(Path.of("chrome-extension/tests/fixtures/boss/detail/full.html"))
             .replace("AI产品运营","Java后端工程师").replace("负责产品需求分析、运营推广和数据跟踪。任职要求：熟悉人工智能产品并具备项目交付经验。","Java 和 Spring Boot 后端开发、系统设计。任职要求：Java 项目交付经验。");
         job.route(JOB_URL,route->route.fulfill(new Route.FulfillOptions().setContentType("text/html").setBody("<!doctype html><meta charset='utf-8'>"+html)));
@@ -114,17 +142,28 @@ class FullPipelineBrowserRegressionTest {
         // Even the legacy autoDeliver flag above cannot authorize an attempt; stale preview cannot either.
         assertThat(http("/api/boss/jobs/"+row+"/confirm",Map.of("greetingSnapshot","stale preview")).path("success").asBoolean()).isFalse();
         assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
-        String greeting=greetings.resolveForJob("boss",row).finalGreeting();
-        workbench.evaluate("args=>{document.querySelector('#confirm').onclick=async()=>{const response=await fetch('/api/boss/jobs/'+args.id+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({greetingSnapshot:args.greeting})});window.confirmedTask=await response.json();document.querySelector('#result').textContent=window.confirmedTask.success?'已确认':'失败';}}",Map.of("id",Math.toIntExact(row),"greeting",greeting));
-        workbench.locator("#confirm").click();workbench.waitForFunction("window.confirmedTask?.success===true");
-        JsonNode task=tree(workbench.evaluate("window.confirmedTask.task"));String key=task.path("requestKey").asText();assertThat(key).isNotBlank();
+        workbench.navigate(origin+"/boss/analysis");
+        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).first().click();
+        Locator dialog=workbench.getByRole(com.microsoft.playwright.options.AriaRole.DIALOG);
+        assertThat(dialog.innerText()).contains("核对最终沟通话术","Java后端工程师");
+        assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
+        // Cancelling the real Next.js preview leaves no request or platform action.
+        dialog.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("取消").setExact(true)).click();
+        assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
+        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).first().click();
+        dialog.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("确认并交给 Chrome").setExact(true)).click();
+        await(()->tree(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_READ'})")).has("message"));
+        JsonNode dispatch=tree(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_READ'})"));
+        JsonNode task=dispatch.path("message").path("task");String key=task.path("requestKey").asText();assertThat(key).isNotBlank();
+        assertThat(dispatch.path("message").path("runtimeProtocol").asText()).isEqualTo("application-runtime/1");
+        assertThat(dispatch.path("message").path("runId").asText()).isNotBlank();
         var unauthorized=HttpRequest.newBuilder(URI.create(origin+"/api/delivery-attempts/"+key+"/runtime/claim"))
             .header("Origin",com.getjobs.application.config.CorsConfig.CHROME_EXTENSION_ORIGIN)
             .header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build();
         assertThat(HttpClient.newHttpClient().send(unauthorized,HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(401);
         assertThat(jdbc.queryForObject("SELECT runtime_phase FROM delivery_attempt",String.class)).isEqualTo("NOT_STARTED");
-        var tabs=tree(extension.evaluate("async()=>await chrome.tabs.query({})"));int owner=0;for(var tab:tabs) if(tab.path("url").asText().equals(workbench.url())) owner=tab.path("id").asInt();assertThat(owner).isPositive();
-        JsonNode claimed=tree(extension.evaluate("async args=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_CLAIM',...args})",Map.of("task",JSON.convertValue(task,Map.class),"owner",owner)));
+        int owner=dispatch.path("owner").asInt();assertThat(owner).isPositive();
+        JsonNode claimed=tree(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_CLAIM'})"));
         assertThat(claimed.has("task")).withFailMessage(claimed.toString()).isTrue();JsonNode runtimeTask=claimed.path("task");assertThat(runtimeTask.path("runtime").path("claimVersion").asInt()).isEqualTo(1);
         String execute="const task="+runtimeTask+";const before=GetJobsBossPageEvidence.countRenderedGreetingMessages(document,task.greeting);const blocked=await BrowserApplicationRuntime.beforeEffect({task,begin:async body=>{const response=await chrome.runtime.sendMessage({source:'GET_JOBS_BOSS_CONTENT',type:'BOSS_LOCAL_API',operation:'runtime-begin',params:{requestKey:task.requestKey},pageTabId:"+owner+",body});return response.data||{};},observe:()=>GetJobsBossPageEvidence.observe({document,href:location.href,styleReader:getComputedStyle}),matches:()=>location.href===task.url,active:()=>true});if(blocked)return {blocked};const row=document.createElement('div');row.className='item-myself';const text=document.createElement('div');text.className='text-content';text.textContent=task.greeting;row.append(text);document.body.append(row);const after=GetJobsBossPageEvidence.countRenderedGreetingMessages(document,task.greeting);return GetJobsBossPageEvidence.evaluateEvidence({beforeCount:before,afterCount:after,state:GetJobsBossPageEvidence.observe({document,href:location.href,styleReader:getComputedStyle})});";
         JsonNode evidence=tree(probe(execute));assertThat(evidence.path("outcome").asText()).withFailMessage(evidence.toString()).isEqualTo("CONFIRMED");
@@ -136,6 +175,13 @@ class FullPipelineBrowserRegressionTest {
         String report="return await chrome.runtime.sendMessage({source:'GET_JOBS_BOSS_CONTENT',type:'BOSS_LOCAL_API',operation:'delivery-result',params:{id:"+row+"},body:"+JSON.writeValueAsString(callback)+"});";
         assertThat(tree(probe(report)).path("data").path("accepted").asBoolean()).isTrue();
         assertThat(tree(probe(report)).path("data").path("idempotent").asBoolean()).isTrue();
+        assertThat(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_COMPLETE'})")).isEqualTo(true);
+        workbench.getByText("离线证据已确认",new Page.GetByTextOptions().setExact(true)).waitFor();
+        var refreshed=workbench.waitForResponse(response->response.url().startsWith(origin+"/api/boss/list?"),()->workbench.reload());
+        assertThat(refreshed.status()).isEqualTo(200);
+        workbench.getByRole(com.microsoft.playwright.options.AriaRole.HEADING,new Page.GetByRoleOptions().setName("Boss 投递分析")).waitFor();
+        workbench.getByText("当前筛选下没有待确认岗位。",new Page.GetByTextOptions().setExact(true)).waitFor();
+        assertThat(workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).count()).isZero();
         assertThat(jdbc.queryForObject("SELECT state FROM delivery_attempt",String.class)).isEqualTo("CONFIRMED");
         assertThat(jdbc.queryForObject("SELECT delivery_status FROM boss_data",String.class)).isEqualTo("已投递");
         assertThat(jdbc.queryForObject("SELECT stage FROM opportunity",String.class)).isEqualTo("APPLIED");

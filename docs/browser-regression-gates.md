@@ -7,11 +7,12 @@
 Windows：
 
 ```powershell
+pnpm --dir front build
 .\gradlew.bat installRegressionBrowser
 .\gradlew.bat browserRegressionTest
 ```
 
-Linux CI 使用 `installRegressionBrowser -PwithBrowserDeps` 安装 Chromium 系统依赖。CI 在 Windows/Linux 两个系统分别运行。
+Linux CI 使用 `installRegressionBrowser -PwithBrowserDeps` 安装 Chromium 系统依赖。CI 在 Windows/Linux 两个系统分别运行，并下载同一提交的 Frontend Job 构建产物；缺少实际 Next.js 产物时测试失败，不退回简化页面。
 
 测试复制生产扩展到 JUnit 临时目录，使用全新 Chromium 资料目录。生产 manifest 保持原样；临时副本在 background 启动前禁止 fetch，页面网络默认全部拦截。HTML 来自合成 Fixture；唯一网络例外是单项测试创建的随机回环端口，连接该测试的临时 SQLite。不会访问 6866 服务、招聘站点、账号、Cookie 或 AI Provider。测试中的 localhost 工作台 URL 完全由路由离线响应。
 
@@ -26,14 +27,14 @@ Linux CI 使用 `installRegressionBrowser -PwithBrowserDeps` 安装 Chromium 系
 新增 `FullPipelineBrowserRegressionTest` 接通真实 Spring Boot 随机端口、Controller、Token、持久 AI 队列及全量迁移后的临时 SQLite：
 
 - BOSS 生产 Parser 从合成页面采集，通过真实 background 的 `chrome-jobs` 消息入库；只有 AI Provider 是 Mockito，执行一次。
-- 采集请求即使携带旧 `autoDeliver=true` 也不会生成 Attempt；错误话术快照被拒绝。测试确认页点击后通过真实确认 API 产生一次请求。
-- 真实扩展 Runtime 领取、background 转发 begin、模拟平台副作用、生产 Detector / Evidence、真实结果 Controller、Attempt / Opportunity 事务事件贯通。
-- 跨副作用边界后重复 begin、页面刷新均不能再次操作；迟到 callback 和重复 callback 只落一份确认事实，重采集不重复调用 AI。
+- 采集请求即使携带旧 `autoDeliver=true` 也不会生成 Attempt；错误话术快照被拒绝。构建后的实际 Next.js 分析页打开话术弹窗，取消不产生请求，点击“确认并交给 Chrome”后通过真实确认 API 产生一次请求。
+- 实际 chromeBridge / page-bridge 派发用户确认任务并附加关联标识；真实扩展 Runtime 领取、background 转发 begin、模拟平台副作用、生产 Detector / Evidence、真实结果 Controller、Attempt / Opportunity 事务事件贯通。
+- 跨副作用边界后重复 begin、页面刷新均不能再次操作；迟到 callback 和重复 callback 只落一份确认事实，重采集不重复调用 AI；真实确认页收到结果并刷新后不再显示待确认岗位。
 - 已知扩展的确认快照校验 / Runtime CORS 与操作令牌同时验证；未知扩展和招聘网页仍被拒绝，扩展不能自行调用用户确认接口。
 
-新测试仅在临时扩展副本中将 6866 替换为测试随机端口，worker fetch 只允许这个精确回环 origin；页面网络默认拒绝，招聘 URL 仅由 Fixture 路由返回。临时消息钩子调用生产 background 的 `validateConfirmedTask` / `claimRuntimeTask`，不模拟它们的实现；该钩子不进入生产包。生产权限和端口不变。测试发现并修复了确认快照校验和 Runtime 路径缺少扩展 CORS 规则造成的真实 403。回归调用 `AiService` / `CodexCliService` 的 Mock，不会调用收费模型。
+新测试仅在临时扩展副本中将 6866 替换为测试随机端口，worker fetch 只允许这个精确回环 origin；页面网络默认拒绝，招聘 URL 仅由 Fixture 路由返回。测试响应中的前端 JS 也仅替换允许的回环 origin；源文件与构建产物不改写。Spring 的前端探测配置被 Mock，避免启动时探测正式 6866。临时消息钩子拦截平台预检/动作，并调用生产 background 的 `validateConfirmedTask` / `claimRuntimeTask`，不模拟它们的实现；该钩子不进入生产包。生产权限和端口不变。测试发现并修复了确认快照校验和 Runtime 路径缺少扩展 CORS 规则造成的真实 403。回归调用 `AiService` / `CodexCliService` 的 Mock，不会调用收费模型。
 
-边界：确认界面是小型测试页面，平台副作用是合成 DOM 变化；Next.js 实际确认组件仍由现有 DOM/组件测试覆盖。这里不宣称真实网站、完整 Next.js 浏览器交互或真人投递已经通过。已有五项 Chromium/MV3 回归继续保留。
+边界：Next.js 实际确认组件与页面桥在 Chromium 中运行；平台预检由测试钩子返回，副作用仍是合成 DOM 变化。这里不宣称真实招聘网站、实际平台点击或真人投递已经通过。已有五项 Chromium/MV3 回归继续保留。
 
 ## 真实网站门禁（当前待完成）
 

@@ -13,6 +13,7 @@ permissions:
 jobs:
   browser-regression:
     name: Browser Regression (${{ matrix.os }})
+    needs: frontend
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +22,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      - name: Download built Next.js UI
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-regression-build
+          path: front/out
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -150,6 +156,14 @@ jobs:
       - name: Build frontend
         working-directory: front
         run: pnpm build
+
+      - name: Share built UI with browser regressions
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-regression-build
+          path: front/out
+          if-no-files-found: error
+          retention-days: 7
 
   chrome-extension:
     name: Chrome Extension
