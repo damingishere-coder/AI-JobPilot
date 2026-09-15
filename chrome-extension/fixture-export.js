@@ -1,6 +1,6 @@
 (function (root) {
   const VERSION = "structural-fixture/1";
-  const REDACTION_VERSION = "structural-fixture/2";
+  const REDACTION_VERSION = "structural-fixture/3";
   const errors = Object.freeze({
     UNSUPPORTED_PAGE: "当前页面不是受支持的 BOSS / 智联 HTTPS 招聘页。",
     CHAT_PAGE: "聊天页面不支持导出，请切换到岗位搜索列表或详情。",
@@ -86,7 +86,12 @@
       if (!text) return " ";
       if (fixedText.has(text)) return text;
       if (/^今日还可沟通\d{1,3}次$/.test(text)) return text === "今日还可沟通0次" ? text : "今日还可沟通3次";
-      const field = fields.find(([selector]) => parent?.closest(selector))?.[1];
+      // A title/layout wrapper can contain salary or company fields. The nearest
+      // matching element determines the replacement, not the order of distant ancestors.
+      let field;
+      for (let node = parent; node && !field; node = node.parentElement) {
+        field = fields.find(([selector]) => node.matches(selector))?.[1];
+      }
       if (field === "title") return alias(titles, text, "示例产品运营");
       if (field === "company") return alias(companies, text, "示例科技公司");
       if (field === "salary") return platform === "boss" ? "15-25K" : "8000-12000元";
