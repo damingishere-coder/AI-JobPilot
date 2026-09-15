@@ -1,6 +1,6 @@
 (function (root) {
   const VERSION = "structural-fixture/1";
-  const REDACTION_VERSION = "structural-fixture/3";
+  const REDACTION_VERSION = "structural-fixture/4";
   const errors = Object.freeze({
     UNSUPPORTED_PAGE: "当前页面不是受支持的 BOSS / 智联 HTTPS 招聘页。",
     CHAT_PAGE: "聊天页面不支持导出，请切换到岗位搜索列表或详情。",
@@ -33,22 +33,32 @@
     }
   });
   const classes = new Set(("job-list-box search-job-result pagination next prev disabled empty loading " +
-    "job-card-box job-card-wrapper job-card-body job-card job-name job-title company-name salary job-salary job-area tag-list " +
-    "job-banner job-detail-header job-description job-detail-section job-sec job-sec-text job-detail detail-content text company-info job-address " +
+    "job-card-box job-card-wrapper job-card-body job-card job-card-footer boss-info job-name job-title company-name salary job-salary job-area tag-list " +
+    "job-banner job-detail-header job-detail-body desc job-description job-detail-section job-sec job-sec-text job-detail detail-content text company-info job-address " +
     "boss-name boss-title boss-active-time dialog modal dialog-wrap login-dialog verify-dialog verify-box " +
     "job-list-panel job-split-layout__right job-card--active job-card__title-clamp job-card__salary job-card__skill-tags " +
     "job-card__company-name job-card__location job-detail-summary__title-text job-detail-summary__salary " +
     "job-detail-summary__tag job-description__content company-intro").split(" "));
   const tags = new Set("div section article main ul ol li a span p h1 h2 h3 h4 button br strong em label".split(" "));
-  const excluded = "script, style, link, img, svg, iframe, object, embed, input, textarea, select, form, [contenteditable], .item-myself, .message-list, .chat-list, .chat-message, .boss-info, .recruiter-info";
+  const excluded = "script, style, link, img, svg, iframe, object, embed, input, textarea, select, form, [contenteditable], .item-myself, .message-list, .chat-list, .chat-message, .job-boss-info, .recruiter-info";
+  // BOSS reuses boss-info for public company links in a job card footer.
+  // Only that exact context is allowed; HR containers and their descendants stay excluded.
+  const cardCompany = ".job-card-box .job-card-footer > a.boss-info";
+  function isExcluded(node) {
+    if (node.closest(excluded)) return true;
+    for (let parent = node; parent; parent = parent.parentElement) {
+      if (parent.matches(".boss-info") && !parent.matches(cardCompany)) return true;
+    }
+    return false;
+  }
   const fixedText = new Set(["请先登录", "登录", "扫码登录", "请完成安全验证", "安全验证", "滑动验证", "加载中", "暂无职位", "暂无相关职位", "页面加载失败", "刷新", "确认投递", "投递简历", "立即沟通", "继续沟通", "已沟通", "已投递", "已申请", "已发送", "发送失败", "发送中", "投递成功", "已向对方发送简历和打招呼语", "今日沟通次数已用完", "我知道了", "取消", "确定", "下一页", "上一页", "查看更多信息"]);
   const fields = [
     [".job-name,.job-title,.job-card__title-clamp,.job-detail-summary__title-text", "title"],
-    [".company-name,.job-card__company-name", "company"],
+    [`.company-name,.job-card__company-name,${cardCompany}`, "company"],
     [".salary,.job-salary,.job-card__salary,.job-detail-summary__salary", "salary"],
     [".job-area,.job-card__location", "location"],
     [".tag-list,.job-card__skill-tags", "tags"],
-    [".job-description,.job-description__content,.job-sec-text", "description"],
+    [".job-description,.job-description__content,.job-sec-text,.job-detail-body > .desc", "description"],
     [".company-info,.company-intro", "companyInfo"],
     [".job-address", "address"]
   ];
@@ -69,7 +79,7 @@
     const candidates = Array.from(document.querySelectorAll(selector));
     if (candidates.length > 1000) fail("TOO_LARGE");
     const selected = candidates
-      .filter(node => tags.has(node.localName) && !node.closest(excluded))
+      .filter(node => tags.has(node.localName) && !isExcluded(node))
       .filter((node, _, all) => !all.some(parent => parent !== node && parent.contains(node)));
     if (selected.length > 200) fail("TOO_LARGE");
     if (!selected.length) fail("NO_STRUCTURE");
@@ -106,7 +116,7 @@
     function copy(node, depth = 0) {
       if (++visited > 5000 || depth > 60) fail("TOO_LARGE");
       if (node.nodeType === 3) return out.createTextNode(substitute(node.textContent, node.parentElement));
-      if (node.nodeType !== 1 || node.matches(excluded)) return null;
+      if (node.nodeType !== 1 || isExcluded(node)) return null;
       if (!tags.has(node.localName)) return null;
       const clone = out.createElement(node.localName);
       const allowed = Array.from(node.classList).filter(name => classes.has(name));
@@ -146,8 +156,8 @@
     const coverage = {
       jobCards: count(".job-card-box,.job-card-wrapper,.job-card-body,.job-card"),
       titles: count(".job-name,.job-title,.job-card__title-clamp,.job-detail-summary__title-text"),
-      companies: count(".company-name,.job-card__company-name"),
-      descriptions: count(".job-description,.job-sec-text,.job-detail-section .text,.job-description__content"),
+      companies: count(`.company-name,.job-card__company-name,${cardCompany}`),
+      descriptions: count(".job-description,.job-sec-text,.job-detail-section .text,.job-description__content,.job-detail-body > .desc"),
       jobIdentities: count("[data-jobid],[data-job-id],[data-jid],[data-position-id],a[href*='/job_detail/'],a[href*='/jobdetail/']")
     };
     const warnings = [];
