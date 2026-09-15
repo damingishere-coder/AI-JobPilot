@@ -18,6 +18,15 @@ function doc(html: string) {
   return d
 }
 describe('user-triggered structural redaction', () => {
+  it('uses the nearest field element, so salary inside a title wrapper remains salary', () => {
+    const input = doc('<li class="job-card-box"><div class="job-title"><a class="job-name" href="/job_detail/PRIVATE_ID.html">PRIVATE_TITLE</a><span class="job-salary"><em>30-50K</em></span></div><div class="company-name"><span class="job-area">PRIVATE_CITY</span>PRIVATE_COMPANY</div></li>')
+    const output = doc(exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'SEARCH').html)
+    expect(output.querySelector('.job-name')?.textContent).toBe('示例产品运营001')
+    expect(output.querySelector('.job-salary')?.textContent).toBe('15-25K')
+    expect(output.querySelector('.job-area')?.textContent).toBe('北京')
+    expect(output.querySelector('.company-name')?.textContent).toContain('示例科技公司001')
+    expect(output.body.textContent).not.toContain('PRIVATE')
+  })
   it('exports BOSS collector-supported split containers without retaining unknown class names or private text', () => {
     const input = doc('<div class="new-job-list PRIVATE_CONTAINER"><div class="job-card-wrapper" data-jobid="PRIVATE_ID"><span class="job-name">PRIVATE_TITLE</span><span class="company-name">PRIVATE_COMPANY</span><span class="salary">30-50K</span></div></div><div class="job-detail"><div class="job-detail-header"><span class="job-name">PRIVATE_TITLE</span></div><div class="job-sec-text">PRIVATE_JD</div><div class="boss-info">PRIVATE_HR</div></div>')
     const list = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'SEARCH')

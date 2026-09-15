@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 const extension = resolve(process.cwd(), '../chrome-extension')
 const fixtureRoot = resolve(extension, 'tests/fixtures')
-type Fixture = { id: string; platform: string; file: string; provenance: { kind: string; reference: string; capturedAt: string | null; redactionVersion?: string; limitations?: string[] }; expected: { jobs?: Record<string, unknown>[]; candidateCount?: number; detail?: Record<string, unknown>; rejectedExpectedId?: string; cardCount?: number; marker?: string; absentSelectors?: string[] } }
+type Fixture = { id: string; platform: string; file: string; provenance: { kind: string; reference: string; capturedAt: string | null; redactionVersion?: string; limitations?: string[] }; expected: { jobs?: Record<string, unknown>[]; candidateCount?: number; detail?: Record<string, unknown>; rejectedExpectedId?: string; cardCount?: number; marker?: string; absentSelectors?: string[]; selectorCounts?: Record<string, number>; firstCard?: Record<string, unknown> } }
 const fixtures: Fixture[] = JSON.parse(readFileSync(resolve(fixtureRoot, 'catalog.json'), 'utf8'))
 function load(fixture: Fixture) {
   const doc = document.implementation.createHTMLDocument('offline fixture')
@@ -51,6 +51,11 @@ describe('versioned recruitment fixture baseline', () => {
     if (expected.cardCount !== undefined) expect(doc.querySelectorAll('.job-card')).toHaveLength(expected.cardCount)
     if (expected.marker) expect(doc.body.textContent).toContain(expected.marker)
     for (const selector of expected.absentSelectors || []) expect(doc.querySelector(selector)).toBeNull()
+    for (const [selector, count] of Object.entries(expected.selectorCounts || {})) expect(doc.querySelectorAll(selector)).toHaveLength(count)
+    if (expected.firstCard) {
+      const result = scope.GetJobsBossSearchCollector.parseCard(doc.querySelector('.job-card-box'), '运营', scope.GetJobsBossSelectors, { origin: 'https://www.zhipin.com', support: scope.GetJobsBossScanSupport })
+      expect(result).toMatchObject(expected.firstCard)
+    }
   })
   it('BOSS explicit parsers do not read the ambient page or mutate the supplied DOM', () => {
     const fixture = fixtures.find(f => f.id === 'boss/detail/full')!
