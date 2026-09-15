@@ -409,7 +409,7 @@
     "file": "boss/detail/redacted-header-only-20260915.html",
     "provenance": {
       "kind": "structural-redacted",
-      "capturedAt": "2026-09-15T01:19:39.4290000Z",
+      "capturedAt": "2026-09-15T01:19:39.429Z",
       "reference": "user-provided boss-job_detail-fixture.json",
       "redactionVersion": "structural-fixture/1",
       "limitations": [
@@ -430,6 +430,69 @@
         ".job-detail-section",
         ".company-name"
       ]
+    }
+  },
+  {
+    "id": "boss/search/redacted-split-20260915",
+    "platform": "boss",
+    "pageType": "SEARCH",
+    "file": "boss/search/redacted-split-20260915.html",
+    "provenance": {
+      "kind": "structural-redacted",
+      "capturedAt": "2026-09-15T01:44:20.2400000Z",
+      "reference": "user-provided boss-search-fixture.json",
+      "redactionVersion": "structural-fixture/2",
+      "limitations": [
+        "公司及 JD 结构标记缺失，不能证明完整解析通过。",
+        "搜索样本薪资被 1.8.13 错误替换为标题别名；保留原故障，不补造公司或 JD。",
+        "不同导出文件的 fixture001 等别名不能作为跨文件岗位关联证据。"
+      ]
+    },
+    "expected": {
+      "selectorCounts": {
+        ".job-card-box": 15,
+        ".job-name": 15,
+        ".job-salary": 15,
+        ".company-name": 0
+      },
+      "firstCard": {
+        "id": "fixture001",
+        "title": "示例产品运营001",
+        "company": "",
+        "salary": "示例产品运营002"
+      }
+    }
+  },
+  {
+    "id": "boss/detail/redacted-split-partial-20260915",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/detail/redacted-split-partial-20260915.html",
+    "provenance": {
+      "kind": "structural-redacted",
+      "capturedAt": "2026-09-15T01:44:26.1010000Z",
+      "reference": "user-provided boss-job_detail-fixture.json",
+      "redactionVersion": "structural-fixture/2",
+      "limitations": [
+        "公司及 JD 结构标记缺失，不能证明完整解析通过。",
+        "搜索样本薪资被 1.8.13 错误替换为标题别名；保留原故障，不补造公司或 JD。",
+        "不同导出文件的 fixture001 等别名不能作为跨文件岗位关联证据。"
+      ]
+    },
+    "expected": {
+      "detail": {
+        "title": "示例产品运营001",
+        "salary": "15-25K",
+        "company": ""
+      },
+      "absentSelectors": [
+        ".company-name",
+        ".job-description",
+        ".job-sec-text"
+      ],
+      "selectorCounts": {
+        "a[href*=\"/job_detail/\"]": 1
+      }
     }
   }
 ]
