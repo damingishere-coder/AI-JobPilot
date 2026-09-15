@@ -1,9 +1,29 @@
 (function (root) {
   const VERSION = "structural-fixture/1";
+  const REDACTION_VERSION = "structural-fixture/2";
+  const errors = Object.freeze({
+    UNSUPPORTED_PAGE: "当前页面不是受支持的 BOSS / 智联 HTTPS 招聘页。",
+    CHAT_PAGE: "聊天页面不支持导出，请切换到岗位搜索列表或详情。",
+    INVALID_TYPE: "样本类型不支持，请重新选择。",
+    NO_STRUCTURE: "未找到该类型的白名单结构。请确认岗位已加载；页面结构可能尚未适配，不会改为保存整页。",
+    TOO_LARGE: "页面结构过大，已停止导出。请减少加载的岗位后重试，不会输出截断样本。",
+    NO_ACTIVE_TAB: "未找到当前标签页，请保持招聘页面在前台。",
+    PAGE_CHANGED: "页面已变化或未返回有效样本，请在页面稳定后重新生成。",
+    CAPTURE_FAILED: "无法读取页面，请刷新招聘标签页并重新加载扩展后再试。"
+  });
+  const warningMessages = Object.freeze({
+    MISSING_JOB_CARDS: "缺少可识别的岗位卡片结构",
+    MISSING_TITLE: "缺少岗位标题",
+    MISSING_COMPANY: "缺少公司名称",
+    MISSING_DESCRIPTION: "缺少职位描述（JD）",
+    MISSING_JOB_IDENTITY: "缺少岗位 ID 或详情链接，不能验证岗位关联"
+  });
+  function fail(code) { const error = new Error(errors[code]); error.code = code; throw error; }
   const roots = Object.freeze({
     boss: {
-      SEARCH: ".job-list-box, .search-job-result, .pagination",
-      JOB_DETAIL: ".job-banner, .job-detail-header, .job-description, .job-detail-section, .job-sec, .company-info, .company-name, .job-address",
+      // Bounded patterns already supported by boss-selectors.js. Never use body/main or generic content roots.
+      SEARCH: ".job-list-box, .search-job-result, .pagination, .job-card-wrapper, .job-card-body, li.job-card-box, [class*='job-card'], [class*='search-list'], [class*='result-list'], [class*='job-list']",
+      JOB_DETAIL: ".job-banner, .job-detail-header, .job-description, .job-detail-section, .job-sec, .job-sec-text, .job-detail, .detail-content, [class*='job-detail'], [class*='job-sec'], [class*='description'], .company-info, .company-name, .job-address",
       BLOCKER: ".dialog, .modal, .dialog-wrap, .login-dialog, .verify-dialog, .verify-box"
     },
     zhilian: {
@@ -14,7 +34,7 @@
   });
   const classes = new Set(("job-list-box search-job-result pagination next prev disabled empty loading " +
     "job-card-box job-card-wrapper job-card-body job-card job-name job-title company-name salary job-salary job-area tag-list " +
-    "job-banner job-detail-header job-description job-detail-section job-sec job-sec-text text company-info job-address " +
+    "job-banner job-detail-header job-description job-detail-section job-sec job-sec-text job-detail detail-content text company-info job-address " +
     "boss-name boss-title boss-active-time dialog modal dialog-wrap login-dialog verify-dialog verify-box " +
     "job-list-panel job-split-layout__right job-card--active job-card__title-clamp job-card__salary job-card__skill-tags " +
     "job-card__company-name job-card__location job-detail-summary__title-text job-detail-summary__salary " +
@@ -34,24 +54,25 @@
   ];
   function platformFor(href) {
     const url = new URL(href);
-    if (url.protocol !== "https:") throw new Error("仅支持招聘网站 HTTPS 页面");
+    if (url.protocol !== "https:") fail("UNSUPPORTED_PAGE");
     if (/(^|\.)zhipin\.com$/i.test(url.hostname)) return "boss";
     if (/(^|\.)zhaopin\.com$/i.test(url.hostname)) return "zhilian";
-    throw new Error("当前页面不支持 Fixture 导出");
+    fail("UNSUPPORTED_PAGE");
   }
   // No outerHTML of the source, storage, network, page click or form reads.
   // Free text and attributes are substituted, not regex-scrubbed and retained.
   function capture(document, href, pageType) {
     const platform = platformFor(href);
-    if (/\/(chat|im|message)(\/|$)/i.test(new URL(href).pathname)) throw new Error("不导出聊天页面");
+    if (/\/(chat|im|message)(\/|$)/i.test(new URL(href).pathname)) fail("CHAT_PAGE");
     const selector = roots[platform][pageType];
-    if (!selector) throw new Error("不支持的样本类型");
+    if (!selector) fail("INVALID_TYPE");
     const candidates = Array.from(document.querySelectorAll(selector));
-    if (candidates.length > 200) throw new Error("匹配结构过多，已停止导出");
+    if (candidates.length > 1000) fail("TOO_LARGE");
     const selected = candidates
-      .filter(node => !node.closest(excluded))
+      .filter(node => tags.has(node.localName) && !node.closest(excluded))
       .filter((node, _, all) => !all.some(parent => parent !== node && parent.contains(node)));
-    if (!selected.length) throw new Error("未找到白名单结构；不会退回导出整个页面");
+    if (selected.length > 200) fail("TOO_LARGE");
+    if (!selected.length) fail("NO_STRUCTURE");
     const out = document.implementation.createHTMLDocument("脱敏结构样本");
     const identities = new Map(), titles = new Map(), companies = new Map();
     let visited = 0;
@@ -78,7 +99,7 @@
       return "脱敏文本";
     }
     function copy(node, depth = 0) {
-      if (++visited > 5000 || depth > 60) throw new Error("结构过大，已停止导出；不会输出不完整样本");
+      if (++visited > 5000 || depth > 60) fail("TOO_LARGE");
       if (node.nodeType === 3) return out.createTextNode(substitute(node.textContent, node.parentElement));
       if (node.nodeType !== 1 || node.matches(excluded)) return null;
       if (!tags.has(node.localName)) return null;
@@ -114,13 +135,40 @@
       const result = copy(node);
       if (result) out.body.appendChild(result);
     }
+    if (!out.body.children.length) fail("NO_STRUCTURE");
+    // Coverage describes retained structural markers, never claims the real text or platform flow was verified.
+    const count = selector => out.body.querySelectorAll(selector).length;
+    const coverage = {
+      jobCards: count(".job-card-box,.job-card-wrapper,.job-card-body,.job-card"),
+      titles: count(".job-name,.job-title,.job-card__title-clamp,.job-detail-summary__title-text"),
+      companies: count(".company-name,.job-card__company-name"),
+      descriptions: count(".job-description,.job-sec-text,.job-detail-section .text,.job-description__content"),
+      jobIdentities: count("[data-jobid],[data-job-id],[data-jid],[data-position-id],a[href*='/job_detail/'],a[href*='/jobdetail/']")
+    };
+    const warnings = [];
+    if (pageType === "SEARCH" && !coverage.jobCards) warnings.push("MISSING_JOB_CARDS");
+    if (pageType !== "BLOCKER") {
+      if (!coverage.titles) warnings.push("MISSING_TITLE");
+      if (!coverage.companies) warnings.push("MISSING_COMPANY");
+      if (!coverage.jobIdentities) warnings.push("MISSING_JOB_IDENTITY");
+    }
+    if (pageType === "JOB_DETAIL" && !coverage.descriptions) warnings.push("MISSING_DESCRIPTION");
     return {
       format: VERSION, platform, pageType,
-      provenance: { kind: "structural-redacted", capturedAt: new Date().toISOString(), source: "user-triggered-extension-export", content: "synthetic-replacements", redactionVersion: VERSION },
+      provenance: { kind: "structural-redacted", capturedAt: new Date().toISOString(), source: "user-triggered-extension-export", content: "synthetic-replacements", redactionVersion: REDACTION_VERSION },
       html: out.body.innerHTML, rootCount: selected.length, nodeCount: visited,
+      coverage, warnings,
       reviewRequired: true,
       limitations: ["自由文本与身份已替换，不能证明真实正文解析正确", "只保留白名单类名和有限样式，不是完整视觉快照", "岗位别名仅在本次导出内部保持关联", "不采集聊天，未知结构需要另写合成样本"]
     };
   }
-  root.GetJobsFixtureExporter = Object.freeze({ capture, platformFor, version: VERSION });
+  function captureSafely(document, href, pageType) {
+    try { return { ok: true, bundle: capture(document, href, pageType) }; }
+    catch (error) { return { ok: false, errorCode: Object.hasOwn(errors, error?.code) ? error.code : "CAPTURE_FAILED" }; }
+  }
+  root.GetJobsFixtureExporter = Object.freeze({
+    capture, captureSafely, platformFor, version: REDACTION_VERSION,
+    errorMessage: code => Object.hasOwn(errors, code) ? errors[code] : errors.CAPTURE_FAILED,
+    warningMessage: code => Object.hasOwn(warningMessages, code) ? warningMessages[code] : "部分结构未识别"
+  });
 })(typeof window !== "undefined" ? window : globalThis);

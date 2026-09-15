@@ -82,6 +82,28 @@ class BrowserRuntimeRegressionTest {
             + "const result = await chrome.scripting.executeScript({target:{tabId:tab.id},func:async()=>{" + body + "}}); return result[0].result; }", page.url());
     }
 
+    @Test void fixturePopupReportsMissingRootsAndIncompleteDetailAcrossRealInjection() throws Exception {
+        fixture("boss", "detail/redacted-header-only-20260915.html", "");
+        String original = page.locator("body").innerHTML();
+        worker.navigate(worker.url().replace("regression-probe.html", "fixture-popup.html"));
+        // Model the toolbar popup's active recruiting tab; all injection and exporter code stays real.
+        worker.evaluate("url=>{const query=chrome.tabs.query.bind(chrome.tabs);chrome.tabs.query=async()=>"
+            + "(await query({})).filter(tab=>tab.url===url);}", page.url());
+        worker.locator("#capture").click();
+        worker.getByText("未找到该类型的白名单结构", new Page.GetByTextOptions().setExact(false)).waitFor();
+        assertThat(worker.locator("#download").isDisabled()).isTrue();
+        worker.locator("#page-type").selectOption("JOB_DETAIL");
+        worker.locator("#capture").click();
+        worker.getByText("缺少职位描述（JD）", new Page.GetByTextOptions().setExact(false)).waitFor();
+        var bundle = new com.fasterxml.jackson.databind.ObjectMapper().readTree(worker.locator("#preview").inputValue());
+        assertThat(bundle.path("coverage").path("descriptions").asInt()).isZero();
+        assertThat(bundle.path("provenance").path("redactionVersion").asText()).isEqualTo("structural-fixture/2");
+        assertThat(worker.locator("#download").isDisabled()).isTrue();
+        worker.locator("#reviewed").check();
+        assertThat(worker.locator("#download").isEnabled()).isTrue();
+        assertThat(page.locator("body").innerHTML()).isEqualTo(original);
+    }
+
     @Test void realLayoutRejectsHiddenSuccessAndQuotaOverridesVisibleSuccess() throws Exception {
         fixture("zhilian", "states/success.html", "");
         assertThat(probe("return GetJobsZhilianPageEvidence.detectStatus(document)")).isEqualTo("已投递");

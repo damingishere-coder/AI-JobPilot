@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const root = resolve(process.cwd(), '../chrome-extension')
 const source = (name: string) => readFileSync(resolve(root, name), 'utf8')
-type Bundle = { html: string; platform: string; pageType: string; rootCount: number; provenance: { kind: string }; reviewRequired: boolean }
+type Bundle = { html: string; platform: string; pageType: string; rootCount: number; provenance: { kind: string }; reviewRequired: boolean; warnings: string[] }
 type Exporter = { capture(doc: Document, href: string, type: string): Bundle }
 function exporter() {
   const scope: { GetJobsFixtureExporter?: Exporter } = {}
@@ -18,6 +18,23 @@ function doc(html: string) {
   return d
 }
 describe('user-triggered structural redaction', () => {
+  it('exports BOSS collector-supported split containers without retaining unknown class names or private text', () => {
+    const input = doc('<div class="new-job-list PRIVATE_CONTAINER"><div class="job-card-wrapper" data-jobid="PRIVATE_ID"><span class="job-name">PRIVATE_TITLE</span><span class="company-name">PRIVATE_COMPANY</span><span class="salary">30-50K</span></div></div><div class="job-detail"><div class="job-detail-header"><span class="job-name">PRIVATE_TITLE</span></div><div class="job-sec-text">PRIVATE_JD</div><div class="boss-info">PRIVATE_HR</div></div>')
+    const list = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'SEARCH')
+    expect(doc(list.html).querySelector('.job-card-wrapper')).not.toBeNull()
+    expect(list.warnings).not.toContain('MISSING_JOB_CARDS')
+    const detail = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'JOB_DETAIL')
+    expect(doc(detail.html).querySelector('.job-sec-text')?.textContent).toContain('岗位职责：负责示例产品')
+    expect(detail.warnings).not.toContain('MISSING_DESCRIPTION')
+    expect(JSON.stringify([list, detail])).not.toMatch(/PRIVATE|new-job-list/)
+  })
+  it('marks the user-exported header-only detail as incomplete rather than treating header text as JD', () => {
+    const input = doc(readFileSync(resolve(root, 'tests/fixtures/boss/detail/redacted-header-only-20260915.html'), 'utf8'))
+    const bundle = exporter().capture(input, 'https://www.zhipin.com/web/geek/jobs', 'JOB_DETAIL')
+    expect(bundle.warnings).toContain('MISSING_DESCRIPTION')
+    expect(bundle.warnings).toContain('MISSING_COMPANY')
+    expect(bundle.html).not.toContain('岗位职责：')
+  })
   it.each(['boss', 'zhilian'])('discards arbitrary private text and attributes on %s', platform => {
     const d = doc(`<div class="${platform === 'boss' ? 'job-list-box' : 'job-list-panel'} PRIVATE_CLASS"><div data-token="PRIVATE_TOKEN" title="PRIVATE_TITLE" id="PRIVATE_ID" style="background:url(https://example.invalid/PRIVATE_STYLE)">PRIVATE_FREE_TEXT<a href="https://example.invalid/?key=PRIVATE_URL">PRIVATE_CONTACT</a><span aria-label="PRIVATE_LABEL">PRIVATE_NAME 13800138000 private@example.invalid</span><script>PRIVATE_SCRIPT</script><style>PRIVATE_CSS</style><form><input value="PRIVATE_PASSWORD"></form><div contenteditable>PRIVATE_EDITOR</div><div class="item-myself">PRIVATE_CHAT</div><div class="message-list">PRIVATE_MESSAGE</div><img src="https://example.invalid/PRIVATE_IMAGE"></div></div>`)
     const before = d.body.innerHTML
@@ -91,7 +108,7 @@ function popup(url = 'https://www.zhipin.com/web/geek/jobs') {
   }) as typeof d.createElement)
   const bundle = { html: '<div>脱敏文本</div>', platform: 'boss', pageType: 'SEARCH', rootCount: 1 }
   const query = vi.fn(async () => [{ id: 1, url }])
-  const executeScript = vi.fn(async () => [{ result: bundle }])
+  const executeScript = vi.fn(async () => [{ result: { ok: true, bundle } }])
   const scope = { document: d, chrome: { tabs: { query }, scripting: { executeScript } }, URL: Object.assign(class extends URL {}, { createObjectURL: blob, revokeObjectURL: vi.fn() }), Blob, setTimeout: (fn: () => void) => fn(), window: {} }
   runInNewContext(source('fixture-export.js'), scope)
   runInNewContext(source('fixture-popup.js'), scope)
@@ -99,6 +116,23 @@ function popup(url = 'https://www.zhipin.com/web/geek/jobs') {
   return { d, query, executeScript, blob, click, button }
 }
 describe('fixture popup confirmation boundary', () => {
+  it('shows a safe, specific root-missing diagnostic without leaking page error text', async () => {
+    const h = popup()
+    h.executeScript.mockResolvedValueOnce([] as any).mockResolvedValueOnce([{ result: { ok: false, errorCode: 'NO_STRUCTURE', message: 'PRIVATE_ERROR_URL' } }] as any)
+    h.button('capture').click()
+    await vi.waitFor(() => expect(h.button('capture').disabled).toBe(false))
+    expect(h.d.getElementById('status')?.textContent).toContain('未找到')
+    expect(h.d.getElementById('status')?.textContent).not.toContain('PRIVATE')
+    expect(h.button('download').disabled).toBe(true)
+  })
+  it('keeps partial samples review-gated and displays missing-JD warning', async () => {
+    const h = popup()
+    h.executeScript.mockResolvedValueOnce([] as any).mockResolvedValueOnce([{ result: { ok: true, bundle: { platform: 'boss', pageType: 'SEARCH', html: '<div></div>', rootCount: 1, warnings: ['MISSING_DESCRIPTION'] } } }] as any)
+    h.button('capture').click()
+    await vi.waitFor(() => expect(h.button('reviewed').disabled).toBe(false))
+    expect(h.d.getElementById('status')?.textContent).toContain('缺少职位描述')
+    expect(h.button('download').disabled).toBe(true)
+  })
   it('does nothing on open; capture previews and explicit review gates download', async () => {
     const h = popup()
     expect(h.query).not.toHaveBeenCalled()
