@@ -9,7 +9,7 @@
 | CRM 与面试 | #89、#90 | 工作台、事项列表、机会详情、时间线、跟进、独立面试轮次、改期取消及准备清单 |
 | 反馈与推荐 | #91、#92 | 观察覆盖、固定统计快照、策略审阅、Fit / Preference / 反馈信号、排序预览及主动启用 |
 
-本轮后续补齐真实扩展 → Spring / Mock AI / SQLite 的离线回归，并修复 Runtime 的 CORS 403。详细边界见 [browser-regression-gates.md](browser-regression-gates.md)。
+后续已补齐实际 Next.js 确认页面 → Chrome Bridge / 扩展 → Spring / Mock AI / SQLite 的离线回归，覆盖取消、确认、回调与刷新，并修复 Runtime 的 CORS 403。详细边界见 [browser-regression-gates.md](browser-regression-gates.md)。
 
 ## 本地发布验收
 
@@ -31,7 +31,7 @@
 5. 核对页面成功证据、同一 requestKey 的 Attempt / 时间线。已有 UNKNOWN 只读对账，不重投。
 6. 将日期、commit、扩展版本、平台、证据和 PASS / FAIL 写入验收记录。不要记录 Cookie、令牌、聊天正文或账号资料。
 
-真实 Smoke 未完成前不启用新 Runtime、不删除 Legacy、不宣称 Phase A 全部验收。整个 Next.js + 招聘网站真人流程不能由合成确认页面测试替代。
+真实 Smoke 未完成前不启用新 Runtime、不删除 Legacy、不宣称 Phase A 全部验收。实际 Next.js 确认链已由离线浏览器测试覆盖；招聘平台预检和副作用仍是合成场景，不能代替真人网站验收。
 
 ## 回滚与后续使用
 
