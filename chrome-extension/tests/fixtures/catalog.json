@@ -401,5 +401,35 @@
       "marker": "已向对方发送简历和打招呼语",
       "detectorCoverage": "existing-delivery-confirmation-dom"
     }
+  },
+  {
+    "id": "boss/detail/redacted-header-only-20260915",
+    "platform": "boss",
+    "pageType": "JOB_DETAIL",
+    "file": "boss/detail/redacted-header-only-20260915.html",
+    "provenance": {
+      "kind": "structural-redacted",
+      "capturedAt": "2026-09-15T01:19:39.4290000Z",
+      "reference": "user-provided boss-job_detail-fixture.json",
+      "redactionVersion": "structural-fixture/1",
+      "limitations": [
+        "1.8.12 仅导出标题和地址，缺少 JD、公司及岗位身份；是故障样本，不代表完整页面或采集通过。",
+        "截图只用于人工核对，不纳入仓库；原文已由用户导出器替换。"
+      ]
+    },
+    "expected": {
+      "detail": {
+        "title": "示例产品运营001",
+        "company": "",
+        "salary": "15-25K",
+        "companyAddress": "示例办公地址示例办公地址示例办公地址"
+      },
+      "absentSelectors": [
+        ".job-description",
+        ".job-sec-text",
+        ".job-detail-section",
+        ".company-name"
+      ]
+    }
   }
 ]

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 const extension = resolve(process.cwd(), '../chrome-extension')
 const fixtureRoot = resolve(extension, 'tests/fixtures')
-type Fixture = { id: string; platform: string; file: string; provenance: { kind: string; reference: string; capturedAt: string | null }; expected: { jobs?: Record<string, unknown>[]; candidateCount?: number; detail?: Record<string, unknown>; rejectedExpectedId?: string; cardCount?: number; marker?: string } }
+type Fixture = { id: string; platform: string; file: string; provenance: { kind: string; reference: string; capturedAt: string | null; redactionVersion?: string; limitations?: string[] }; expected: { jobs?: Record<string, unknown>[]; candidateCount?: number; detail?: Record<string, unknown>; rejectedExpectedId?: string; cardCount?: number; marker?: string; absentSelectors?: string[] } }
 const fixtures: Fixture[] = JSON.parse(readFileSync(resolve(fixtureRoot, 'catalog.json'), 'utf8'))
 function load(fixture: Fixture) {
   const doc = document.implementation.createHTMLDocument('offline fixture')
@@ -23,8 +23,13 @@ describe('versioned recruitment fixture baseline', () => {
   it('has unique identities and honest provenance', () => {
     expect(new Set(fixtures.map(f => f.id)).size).toBe(fixtures.length)
     for (const f of fixtures) {
-      expect(f.provenance.kind).toBe('synthetic')
-      expect(f.provenance.capturedAt).toBeNull()
+      expect(['synthetic', 'structural-redacted']).toContain(f.provenance.kind)
+      if (f.provenance.kind === 'synthetic') expect(f.provenance.capturedAt).toBeNull()
+      else {
+        expect(Number.isFinite(Date.parse(f.provenance.capturedAt!))).toBe(true)
+        expect(f.provenance.redactionVersion).toBeTruthy()
+        expect(f.provenance.limitations?.length).toBeGreaterThan(0)
+      }
       expect(f.provenance.reference).toBeTruthy()
       expect(f.file).toBe(`${f.id}.html`)
     }
@@ -45,6 +50,7 @@ describe('versioned recruitment fixture baseline', () => {
     if (expected.rejectedExpectedId) expect(scope.GetJobsZhilianModernCollector.readDetail(doc, doc.querySelector('.job-card'), expected.rejectedExpectedId)).toBeNull()
     if (expected.cardCount !== undefined) expect(doc.querySelectorAll('.job-card')).toHaveLength(expected.cardCount)
     if (expected.marker) expect(doc.body.textContent).toContain(expected.marker)
+    for (const selector of expected.absentSelectors || []) expect(doc.querySelector(selector)).toBeNull()
   })
   it('BOSS explicit parsers do not read the ambient page or mutate the supplied DOM', () => {
     const fixture = fixtures.find(f => f.id === 'boss/detail/full')!
