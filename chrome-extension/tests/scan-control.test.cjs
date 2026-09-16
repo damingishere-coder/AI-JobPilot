@@ -1,12 +1,12 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
 const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-function harness({failSave=false}={}){
+function harness({failSave=false,failFirstStopAck=false}={}){
  let clock=10000,saved=null,state={stage:'collecting'},reply={success:true,desired:'RUNNING',commands:[]},live=true,latched=false;
  const calls=[],timers=new Set();let onSleep=()=>{},held=null;
  const context=vm.createContext({Date:{now:()=>clock},console,
    setInterval:fn=>{timers.add(fn);return fn},clearInterval:fn=>timers.delete(fn),
    setTimeout:fn=>{clock+=2500;onSleep();return setImmediate(fn)},
-   chrome:{runtime:{sendMessage:async data=>{calls.push(structuredClone(data));if(held){const wait=held;held=null;await wait;}if(data.ack?.ok){reply={success:true,desired:reply.commands[0]?.kind==='RESUME'?'RUNNING':reply.desired,commands:[]}}return structuredClone(reply)}}}});
+   chrome:{runtime:{sendMessage:async data=>{calls.push(structuredClone(data));if(held){const wait=held;held=null;await wait;}if(data.ack?.id==='stop'&&failFirstStopAck){failFirstStopAck=false;return {success:false}}if(data.ack?.ok){reply={success:true,desired:reply.commands[0]?.kind==='RESUME'?'RUNNING':reply.desired,commands:[]}}return structuredClone(reply)}}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../scan-control.js'),'utf8'),context);
  const task={runId:'run',profileId:4,scanProtocol:1,scanOwnerToken:'owner',config:{keywords:['test']},updatedAt:clock};
  const control=context.GetJobsScanControl.create({platform:'boss',version:'1.8.16',instanceId:'10000-a',current:()=>live,
@@ -50,4 +50,11 @@ test('STOP ack created during heartbeat is sent after that heartbeat completes',
  const release=h.holdNext(),heartbeat=[...h.timers][0]();
  const finish=h.control.leave();release();await heartbeat;await finish;
  assert.ok(h.calls.some(c=>c.ack?.id==='stop'&&c.ack.ok===true));
+});
+
+test('failed STOP ack keeps heartbeat alive until a later durable handoff succeeds',async()=>{
+ const h=harness({failFirstStopAck:true});await h.control.enter(h.task);
+ h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});await h.control.checkpoint();await h.control.leave();
+ assert.equal(h.timers.size,1);await [...h.timers][0]();assert.equal(h.timers.size,0);
+ assert.equal(h.calls.filter(c=>c.ack?.id==='stop').length,2);
 });

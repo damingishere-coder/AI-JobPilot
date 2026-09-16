@@ -137,7 +137,7 @@ public class ScanRunService {
                     int inserted=jdbc.update("INSERT OR IGNORE INTO scan_event(platform,profile_id,run_id,event_id,epoch,seq,kind,payload,created_at) VALUES(?,?,?,?,?,?,?,?,?)",p,profile,run,id,ee,seq,kind,write(safe),now);
                     accepted.add(id);
                     var latest=row(p,profile,run);
-                    if(inserted==0||ee!=epoch||seq<=n(latest.get("last_seq"))) continue;
+                    if(inserted==0||ee!=epoch||seq<=n(latest.get("last_seq"))||TERMINAL.contains(latest.get("state"))) continue;
                     if("startFailure".equals(kind) && !"STARTING".equals(latest.get("state"))) continue;
                     String state=Objects.toString(safe.get("state"),latest.get("state").toString());
                     if(!Set.of("STARTING","RUNNING","PAUSED","BLOCKED","COMPLETE","PARTIAL","FAILED","STOPPED").contains(state)) state=latest.get("state").toString();

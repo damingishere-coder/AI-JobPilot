@@ -60,7 +60,7 @@
           status({stage:'stopped',isRunning:false,stopRequested:true,message:'扫描已停止',runId:task?.runId});
         }
         const state=readStatus();
-        if(stopped || ['complete','stopped','error'].includes(state?.stage)) {clearInterval(timer);task=null;}
+        if((stopped && !ack) || (!stopped && ['complete','stopped','error'].includes(state?.stage))) {clearInterval(timer);task=null;}
     }
     return {
       epochFor:runId=>task?.runId===runId?directive?.epoch:undefined,
@@ -73,6 +73,7 @@
         clearInterval(timer);
         timer=setInterval(async()=>{
           await sync(true);
+          if(stopped && !ack){clearInterval(timer);task=null;return;}
           if(!active && !waiting && directive?.commands?.length && readTask()) {
             active=true;
             const stopped=await check();active=false;

@@ -50,7 +50,11 @@ class BrowserRuntimeRegressionTest {
         var id = new StringBuilder();
         for (int i = 0; i < 16; i++) { id.append((char)('a' + ((hash[i] & 255) >> 4))); id.append((char)('a' + (hash[i] & 15))); }
         worker = context.newPage();
-        worker.navigate("chrome-extension://" + id + "/regression-probe.html");
+        // Hosted Windows runners can need more than 10s to cold-start MV3. Keep
+        // the ordinary 10s action timeout; only initial extension loading gets 30s.
+        worker.navigate("chrome-extension://" + id + "/regression-probe.html",
+            new Page.NavigateOptions().setTimeout(30000));
+        worker.waitForFunction("() => !!globalThis.BrowserApplicationRuntime");
         page = context.newPage();
     }
 

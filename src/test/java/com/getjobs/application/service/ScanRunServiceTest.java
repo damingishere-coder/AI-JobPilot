@@ -72,6 +72,12 @@ class ScanRunServiceTest {
         scans.sync("boss",4,"r1",Map.of("epoch",1,"ack",Map.of("id","stop-offline","ok",true)));
         assertEquals("STARTING",scans.detail("boss",4,"r2").get("state"));
     }
+    @Test void terminalSnapshotKeepsItsStageAndCountersWhileArchivingLateEvents(){
+        var complete=event("complete",1,1,"COMPLETE");complete.put("stage","complete");complete.put("keyword","final");
+        sync(1,List.of(complete),Map.of());sync(1,List.of(event("late-error",1,2,"FAILED")),Map.of());
+        assertEquals("COMPLETE",detail().get("state"));assertEquals("complete",detail().get("stage"));
+        assertEquals(2,scans.events("boss",4,"r1",0).size());
+    }
     @Test void historyIsNotInventedAndFailedCheckpointIsVisible(){
         db.update("INSERT INTO fresh_scan_receipt VALUES(4,'boss','old','job','kw',1,1,CURRENT_TIMESTAMP)");
         assertTrue(scans.list("boss",4).stream().anyMatch(r->Boolean.FALSE.equals(r.get("historyComplete"))));
