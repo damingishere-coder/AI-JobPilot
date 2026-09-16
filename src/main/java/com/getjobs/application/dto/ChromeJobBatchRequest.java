@@ -9,6 +9,7 @@ public class ChromeJobBatchRequest {
     private Long profileId;
     private Boolean freshOnly;
     private String runId;
+    private Long scanEpoch;
     private String keyword;
     private String collectionMode;
     private Boolean autoDeliver;

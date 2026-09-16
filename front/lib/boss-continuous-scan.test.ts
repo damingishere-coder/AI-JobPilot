@@ -23,7 +23,7 @@ function harness(onlyHistorical = false) {
   })
   const task = {keywords:['kw'],config:{searchJobLimit:30},continuousScan:{credited:{},receipts:{},keywords:{kw:{attempted:[],observed:[],elapsedMs:0,historyDuplicates:0,detailFailures:0,recoveryAttempts:0}}}}
   const checkpoints: unknown[]=[]
-  const context={window:{GetJobsContinuousScan:supportScope.GetJobsContinuousScan,location:{href:'https://www.zhipin.com/web/geek/job'}},document,Date,
+  const context={scanControl:{pausedMs:()=>0},hasStopRequested:async()=>false,window:{GetJobsContinuousScan:supportScope.GetJobsContinuousScan,location:{href:'https://www.zhipin.com/web/geek/job'}},document,Date,
     collectJobs:()=>({jobs:jobs()}),collectJobNodes:()=>[container.firstElementChild],isStopRequested:()=>false,
     isJobAllowedByDegree:()=>true,isDetailQueueJob:()=>true,handleBlockingState:()=>null,buildPageBlockDiagnostics:()=>({}),
     filterDuplicateJobs:vi.fn(async(list:Array<{id:string}>)=>({items:list.map(job=>({...job,duplicate:onlyHistorical || !job.id.startsWith('2-'),action:!onlyHistorical && job.id.startsWith('2-')?'NEW':'SKIP'}))})),

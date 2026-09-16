@@ -52,6 +52,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class BossController {
     @org.springframework.beans.factory.annotation.Autowired
     private com.getjobs.application.service.FreshScanReceiptService freshScanReceiptService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.ScanRunService scanRuns;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<jakarta.servlet.http.HttpServletRequest> scanHttpRequest;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.LocalActionTokenService scanTokens;
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final double MAX_BROWSER_COORDINATE = 10000.0;
     private static final String BOSS_BACKEND_SCAN_DISABLED_MESSAGE =
@@ -108,7 +115,6 @@ public class BossController {
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
         if (profileError != null) return profileError;
-        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("boss", request, this::receiveChromeJobs);
         Long profileId = request.getProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int insertedOrUpdated = 0;
@@ -118,6 +124,8 @@ public class BossController {
         int restored = 0;
         int listCollected = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
+        if (scanRuns != null && !scanRuns.accepts("boss", profileId, runId, request.getScanEpoch())) return ResponseEntity.status(409).body(Map.of("success", false, "errorCode", "SCAN_CONTROL_BLOCKED", "message", "本轮采集已暂停或停止，请等待控制确认"));
+        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("boss", request, this::receiveChromeJobs);
         // 兼容旧版扩展继续传入 autoDeliver，但扫描阶段永远不生成真实投递任务。
         boolean autoDeliver = false;
         boolean listOnlyCollection = isListOnlyCollection(request);
@@ -140,6 +148,7 @@ public class BossController {
                             : "Chrome已采集到 " + received + " 个Boss岗位，正在提交后台AI队列"
             ));
             for (ChromeJobDto dto : request.getJobs()) {
+                if(scanRuns != null && !scanRuns.accepts("boss", profileId, runId, request.getScanEpoch())) return ResponseEntity.status(409).body(Map.of("success",false,"errorCode","SCAN_CONTROL_BLOCKED","message","本轮采集已暂停或停止"));
                 if (jobRunCoordinator.isCancelRequested(runId)) {
                     jobRunCoordinator.clearCancel(runId);
                     sendBossProgress(profileId, JobProgressMessage.warning("boss", "Boss Chrome扫描已停止，后端已中断剩余岗位入队"));
@@ -408,6 +417,10 @@ public class BossController {
         if (error != null) return error;
         String runId = normalizeRunId(request.getRunId());
         if (runId == null) return ResponseEntity.badRequest().body(Map.of("success", false, "message", "恢复采集缺少批次ID"));
+        if (scanRuns != null && scanRuns.managed("boss", request.getProfileId(), runId)) {
+            if (scanTokens == null || scanHttpRequest == null || scanHttpRequest.getIfAvailable() == null || !scanTokens.isValid(scanHttpRequest.getIfAvailable().getHeader("X-Local-Action-Token"))) return ResponseEntity.status(401).body(Map.of("success",false,"message","本地操作令牌无效"));
+            return ResponseEntity.ok(scanRuns.command("boss", request.getProfileId(), runId, "RESUME", java.util.UUID.randomUUID().toString()));
+        }
         jobRunCoordinator.clearCancel(runId);
         return ResponseEntity.ok(Map.of("success", true, "runId", runId, "message", "采集停止标记已解除，等待扩展恢复断点"));
     }
@@ -418,6 +431,10 @@ public class BossController {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(profileId);
         if (profileError != null) return profileError;
         String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");
+        if (scanRuns != null && scanRuns.managed("boss", profileId, runId)) {
+            if (scanTokens == null || scanHttpRequest == null || scanHttpRequest.getIfAvailable() == null || !scanTokens.isValid(scanHttpRequest.getIfAvailable().getHeader("X-Local-Action-Token"))) return ResponseEntity.status(401).body(Map.of("success",false,"message","本地操作令牌无效"));
+            return ResponseEntity.ok(scanRuns.command("boss", profileId, runId, "STOP", java.util.UUID.randomUUID().toString()));
+        }
         jobRunCoordinator.requestCancel(runId);
         sendBossProgress(profileId, JobProgressMessage.warning("boss", "Boss Chrome扫描停止请求已发送"));
         return ResponseEntity.ok(Map.of(

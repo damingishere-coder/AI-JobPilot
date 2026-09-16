@@ -11,7 +11,7 @@ afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.un
 
 it('配置页不再嵌入分析；启动后提供带档案与批次的独立结果入口', async () => {
   sessionStorage.clear()
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/config') ? {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, headers:new Headers({'Content-Type':'application/json'}), text:async()=>JSON.stringify({success:true,data:{token:'offline-test'}}), json: async () => url.includes('/api/local-auth/action-token') ? {success:true,data:{token:'offline-test'}} : url.includes('/api/scan-runs') ? [] : url.endsWith('/config') ? {
     success: true, hasProfile: true, currentProfile: { id: 4, name: '测试档案' },
     config: { keywords: '["开发"]', cityCode: '489', salary: '0000,9999999', searchJobLimit: 20 },
     options: { city: [{ name: '全国', code: '489' }], salary: [{ name: '不限', code: '0000,9999999' }] },
@@ -44,7 +44,7 @@ const partialResult = {
 }
 
 function stubConfig() {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/config') ? {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, headers:new Headers({'Content-Type':'application/json'}), text:async()=>JSON.stringify({success:true,data:{token:'offline-test'}}), json: async () => url.includes('/api/local-auth/action-token') ? {success:true,data:{token:'offline-test'}} : url.includes('/api/scan-runs') ? [] : url.endsWith('/config') ? {
     success: true, hasProfile: true, currentProfile: { id: 4, name: '测试档案' },
     config: { keywords: '["开发"]', cityCode: '489', searchJobLimit: 20 }, options: { city: [], salary: [] }
   } : url.includes('/config/options/filters') ? {success:true,options:{}} : {} })))

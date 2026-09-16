@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-14-boss-adapter";
+  const EXTENSION_VERSION = "1.8.16";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -31,6 +31,10 @@
   let activeScanRunId = "";
   let activeScanPromise = null;
   const deliveryExecutions = new Map();
+  const scanControl = window.GetJobsScanControl?.create({platform:"boss", version:EXTENSION_VERSION,instanceId:CONTENT_INSTANCE_ID,
+    current:()=>isCurrentContentInstance(), readTask:readStoredScanTask, saveTask:async task=>{storeScanTask(task);await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:normalizeScanTask(task)});}, status:writeScanStatus,
+    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,setStopped:()=>{stopRequested=true;stopRequestedRunId=activeScanRunId;}});
+
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isCurrentContentInstance()) return;
@@ -838,7 +842,7 @@
     if (!isCurrentContentInstance() || activeScanPromise) return;
     if (!storedTask || storedTask.completed || stopRequested) return;
     // A reload/status probe must not undo an explicit pause or exhausted retry.
-    if (!force && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) return;
+    if (!force && storedTask.scanProtocol !== 1 && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) return;
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
       ? SCAN_SUPPORT.prepareTaskForResume(storedTask)
       : storedTask;
@@ -951,7 +955,12 @@
   async function runScan(message) {
     if (activeScanPromise) return activeScanPromise;
 
-    activeScanPromise = runScanInternal(message).finally(() => {
+    activeScanPromise = (async()=>{
+      await scanControl?.enter(normalizeScanTask(message));
+      if(await scanControl?.checkpoint()) return;
+      return runScanInternal(message);
+    })().finally(async () => {
+      await scanControl?.leave();
       activeScanPromise = null;
     });
     return activeScanPromise;
@@ -977,7 +986,7 @@
     }
 
     for (let index = currentIndex; index < keywords.length; index++) {
-      if (isStopRequested(runId)) stopRequested = true;
+      if (await hasStopRequested(runId)) stopRequested = true;
       if (stopRequested) break;
       if (index > currentIndex || task.phase === "nextKeyword") {
         await humanPause(1500, 3000);
@@ -1028,7 +1037,7 @@
       });
 
       if (task.phase === "detail" || task.phase === "submitting") {
-        if (isStopRequested(runId)) {
+        if (await hasStopRequested(runId)) {
           stopRequested = true;
           break;
         }
@@ -1090,7 +1099,7 @@
         currentUrl: window.location.href
       });
       await waitForPage();
-      if (isStopRequested(runId)) {
+      if (await hasStopRequested(runId)) {
         stopRequested = true;
         break;
       }
@@ -1100,7 +1109,7 @@
         currentUrl: window.location.href
       });
       const waitState = await waitForJobCards();
-      if (isStopRequested(runId)) {
+      if (await hasStopRequested(runId)) {
         stopRequested = true;
         break;
       }
@@ -1135,7 +1144,7 @@
       });
       const searchJobLimit = normalizeSearchJobLimit(task.config?.searchJobLimit);
       // Collect visible IDs before scrolling; virtual lists may recycle their cards.
-      if (isStopRequested(runId)) {
+      if (await hasStopRequested(runId)) {
         stopRequested = true;
         break;
       }
@@ -1306,7 +1315,7 @@
       return detailResult;
     }
 
-    if (isStopRequested(runId)) stopRequested = true;
+    if (await hasStopRequested(runId)) stopRequested = true;
 
     if (!stopRequested) {
       advanceKeywordCursor(task, userKeywordCount(task), "");
@@ -1547,7 +1556,7 @@
     let clicked = 0;
     let failed = 0;
 
-    for (let index = 0; index < nodes.length && jobs.length < limit && !isStopRequested(message?.runId); index++) {
+    for (let index = 0; index < nodes.length && jobs.length < limit && !(await hasStopRequested(message?.runId)); index++) {
       const node = nodes[index];
       const target = findBossCardClickTarget(node);
       if (!target) {
@@ -1605,19 +1614,19 @@
     const observed = new Set(discovery.observed);
     const attempted = new Set(discovery.attempted);
     const candidates = new Map();
-    let tick = Date.now();
+    let tick = (Date.now() - (scanControl?.pausedMs() || 0));
     let reason = target === 0 ? "target_reached" : "";
     let rounds = 0;
     const read = () => collectJobs(keyword, message, baseMeta, { maxNodes: Number.MAX_SAFE_INTEGER, warnLimit: 0 }).jobs;
     const checkpoint = () => {
-      discovery.elapsedMs += Date.now() - tick; tick = Date.now();
+      discovery.elapsedMs += (Date.now() - (scanControl?.pausedMs() || 0)) - tick; tick = (Date.now() - (scanControl?.pausedMs() || 0));
       discovery.observed = [...observed]; discovery.attempted = [...attempted]; discovery.pending = [...selected.values()];
       storeScanTask({ ...message, phase: "collecting" });
     };
     while (!reason) {
-      if (isStopRequested()) { reason = "stopped"; break; }
+      if (await hasStopRequested()) { reason = "stopped"; break; }
       if (handleBlockingState(message, buildPageBlockDiagnostics(), baseMeta)) return { blocked: true };
-      if (discovery.elapsedMs + Date.now() - tick >= support.MAX_ACTIVE_MS) { reason = "timeout_safety_cap"; break; }
+      if (discovery.elapsedMs + (Date.now() - (scanControl?.pausedMs() || 0)) - tick >= support.MAX_ACTIVE_MS) { reason = "timeout_safety_cap"; break; }
       rounds++;
       const visible = rounds === 1 ? [...initialCandidates, ...read()] : read();
       const unique = [...new Map(visible.map(job => [support.jobKey(job), job])).entries()].filter(([key]) => key);
@@ -1642,7 +1651,7 @@
       if (bossPlatformExhausted()) { reason = "platform_exhausted"; break; }
       const result = await support.advance({ doc: document, cards: collectJobNodes,
         readKeys: () => read().map(support.jobKey), seen: observed, sleep,
-        stopped: async () => isStopRequested(), recovery: discovery.recoveryAttempts > 0 });
+        stopped: async () => await hasStopRequested(), recovery: discovery.recoveryAttempts > 0 });
       if (result.stopped) { reason = "stopped"; break; }
       if (!result.grew) {
         const pager = support.pagination(document);
@@ -1969,7 +1978,7 @@
 
   async function waitForBossDetailChange(beforeSignature, job, timeoutMs) {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs && !isStopRequested()) {
+    while (Date.now() - startedAt < timeoutMs && !(await hasStopRequested())) {
       if (isBossDetailPageUrl(window.location.href)) return true;
       const nextSignature = bossDetailSignature();
       if (nextSignature && nextSignature !== beforeSignature && bossDetailLooksUseful(job)) return true;
@@ -2165,7 +2174,7 @@
 
     activeScanRunId = normalizeScanRunId(runId || message.runId || activeScanRunId);
 
-    if (isStopRequested(runId)) {
+    if (await hasStopRequested(runId)) {
       stopRequested = true;
       clearStoredScanTask();
       return { success: true, totalSaved };
@@ -2327,7 +2336,7 @@
     }
 
     if (currentJob) {
-      if (isStopRequested(runId)) {
+      if (await hasStopRequested(runId)) {
         stopRequested = true;
         clearStoredScanTask();
         return { success: true, totalSaved };
@@ -2375,7 +2384,7 @@
     }
 
     const nextIndex = detailIndex + 1;
-    if (isStopRequested(runId)) stopRequested = true;
+    if (await hasStopRequested(runId)) stopRequested = true;
     if (!stopRequested && nextIndex < jobs.length) {
       const nextTask = resetBossDetailNavigationState({ ...message, jobs, detailIndex: nextIndex, totalSaved });
       storeScanTask(nextTask);
@@ -2384,7 +2393,7 @@
 
     const detailSummary = summarizeJobCollection(jobs);
     const submitJobs = [...jobs, ...historicalJobs].filter(isSubmittableJob).map(normalizeJobForSubmit);
-    if (isStopRequested(runId)) {
+    if (await hasStopRequested(runId)) {
       stopRequested = true;
       clearStoredScanTask();
       return { success: true, totalSaved };
@@ -2487,7 +2496,7 @@
       });
       return { status: "same", targetUrl: normalizedTargetUrl };
     }
-    if (isStopRequested(message?.runId)) {
+    if (await hasStopRequested(message?.runId)) {
       stopRequested = true;
       return { status: "blocked", message: "Boss扫描已停止", targetUrl: normalizedTargetUrl };
     }
@@ -2497,7 +2506,7 @@
       return { status: "blocked", message: backgroundNavigation.message || "后台未返回成功状态", targetUrl: normalizedTargetUrl };
     }
     await sleep(DETAIL_NAVIGATION_GUARD_MS);
-    if (isStopRequested(message?.runId)) {
+    if (await hasStopRequested(message?.runId)) {
       stopRequested = true;
       return { status: "blocked", message: "Boss扫描已停止", targetUrl: normalizedTargetUrl };
     }
@@ -2559,7 +2568,7 @@
         resumable: true
       };
     }
-    if (data.cancelled || isStopRequested(runId)) {
+    if (data.cancelled || await hasStopRequested(runId)) {
       stopRequested = true;
       clearStoredScanTask();
       return {
@@ -2633,7 +2642,7 @@
             storeScanTask(task);
             if (canUseChromeStorage()) await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: normalizeScanTask(task) });
           },
-          stopped: async () => isStopRequested(options.runId), sleep,
+          stopped: async () => await hasStopRequested(options.runId), sleep,
           progress: counts => postProgress(message, "info", counts.waitingForCapacity ? "后台队列暂满，保留岗位等待入队" : `新岗位入队 ${counts.accepted}/${message.config.searchJobLimit}；AI分析独立继续`, { ...baseMeta, ...counts, stage: "submitting" }) });
       } catch (error) { return { success: false, resumable: true, message: error.message }; }
     }
@@ -2658,7 +2667,7 @@
       : Math.min(Math.max(numberValue(message?.submitBatchIndex), 0), batches.length);
 
     for (let index = startBatchIndex; index < batches.length; index++) {
-      if (isStopRequested(runId)) {
+      if (await hasStopRequested(runId)) {
         return { ...summary, cancelled: true };
       }
 
@@ -3426,6 +3435,7 @@
   }
 
   async function callBossLocalApi(operation, body, options = {}) {
+    if(operation === "chrome-jobs" && typeof scanControl !== "undefined") body={...body,scanEpoch:scanControl.epochFor(body?.runId)};
     if (!isCurrentContentInstance()) throw Object.assign(new Error("Boss页面脚本已被替换"), { code: "SCAN_SUPERSEDED" });
     const response = await chrome.runtime.sendMessage({
       source: "GET_JOBS_BOSS_CONTENT",
@@ -3471,6 +3481,7 @@
       pageTabId: message.pageTabId,
       payload: {
         platform: "boss",
+        scanInstanceId: CONTENT_INSTANCE_ID,
         profileId: normalizeProfileId(message?.profileId),
         type,
         message: text,
@@ -3479,7 +3490,7 @@
         ...(message.continuousScan ? { keywordResults: window.GetJobsContinuousScan.results(message) } : {}),
         ...meta
       }
-    });
+    }).then(result=>{if(message?.scanProtocol===1 && result?.success===false)scanControl?.fault();}).catch(()=>{if(message?.scanProtocol===1)scanControl?.fault();});
   }
 
   function normalizeScanTask(message) {
@@ -3886,6 +3897,7 @@
   }
 
   async function hasStopRequested(runId = "") {
+    if(await scanControl?.checkpoint()) return true;
     const targetRunId = normalizeScanRunId(runId || activeScanRunId);
     if (isStopRequested(targetRunId)) return true;
 
@@ -4218,7 +4230,7 @@
     const scrollRounds = Math.min(30, Math.max(6, Math.ceil(normalizeSearchJobLimit(searchJobLimit) / 10)));
     const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
     const scrollStep = Math.max(480, Math.min(900, Math.floor(viewportHeight * 0.9) || 640));
-    for (let i = 0; i < scrollRounds && !isStopRequested(); i++) {
+    for (let i = 0; i < scrollRounds && !(await hasStopRequested()); i++) {
       scrollBossResults(scrollStep);
       await humanPause(550, 950);
     }
@@ -4281,7 +4293,7 @@
 
   async function waitForJobCards() {
     let diagnostics = buildListDiagnostics();
-    for (let i = 0; i < 30 && !isStopRequested(); i++) {
+    for (let i = 0; i < 30 && !(await hasStopRequested()); i++) {
       diagnostics = buildListDiagnostics();
       if (collectJobNodes().length > 0 || diagnostics.embeddedJobs > 0 || diagnostics.hasBlockingState) {
         return { ready: true, diagnostics };
@@ -5292,8 +5304,8 @@
   function sleep(ms) {
     return new Promise((resolve) => {
       const startedAt = Date.now();
-      const tick = () => {
-        if (isStopRequested() || Date.now() - startedAt >= ms) {
+      const tick = async () => {
+        if (await hasStopRequested() || Date.now() - startedAt >= ms) {
           resolve();
           return;
         }

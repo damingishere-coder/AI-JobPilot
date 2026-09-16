@@ -149,7 +149,7 @@ describe('Zhilian modern split list', () => {
     const source = code.slice(code.indexOf('  async function collectModernZhilianJobs('), code.indexOf('  async function collectJobsAcrossSearchPages('))
     const saved: Record<string, unknown>[] = [], states: Record<string, unknown>[] = []
     const retained = { id: 'KEPT', title: '已采集岗位', url: 'https://www.zhaopin.com/jobdetail/KEPT.htm', detailVerified: true }
-    const collect = runInNewContext(`${source}\ncollectModernZhilianJobs`, {
+    const collect = runInNewContext(`${source}\ncollectModernZhilianJobs`, {scanControl:{pausedMs:()=>0},
       window: { GetJobsZhilianModernCollector: collector, GetJobsContinuousScan: continuous, GetJobsZhilianFilters: { verify: async () => {} } },
       document, Date, Set, WeakMap,
       normalizeCollectedJobs: (jobs: unknown) => jobs || [], storeScanTask: async (task: Record<string, unknown>) => saved.push(task),
@@ -267,6 +267,7 @@ describe('Zhilian modern split list', () => {
     const code = readFileSync(resolve(process.cwd(), '../chrome-extension/zhilian-content.js'), 'utf8')
     const functionSource = code.slice(code.indexOf('  async function collectModernZhilianJobs('), code.indexOf('  async function collectJobsAcrossSearchPages('))
     const context = {
+      scanControl: {pausedMs:()=>0},
       window: {
         GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters: {verify:async()=>({verified:true})},
         GetJobsZhilianModernCollector: collector, innerHeight: 800,
@@ -320,6 +321,7 @@ describe('Zhilian modern split list', () => {
       return { totalSaved: 20, totalRead: 20, totalReceived: 20, totalInsufficient: 0 }
     })
     const context = {
+      scanControl: {pausedMs:()=>0},
       stopRequested: false, Date, document, localStorage, window: { GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters:{verify:async()=>({verified:true})}, location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI产品运营' } },
       requestZhilianLocalApi:async()=>({version:'2026-09-08'}),
       normalizeScanTask: (m: unknown) => m, scanKeywords: () => ['AI产品运营'], normalizeTaskIndex: () => 0,
@@ -352,6 +354,7 @@ describe('Zhilian keyword outcomes', () => {
       return { totalSaved: task.totalSaved + task.jobs.length,
       totalRead: task.totalRead + task.jobs.length, totalReceived: task.totalReceived + task.jobs.length, totalInsufficient: 0 } })
     const context = {
+      scanControl: {pausedMs:()=>0},
       stopRequested: false, Date, document, localStorage,
       window: { GetJobsContinuousScan: continuous, localStorage, GetJobsZhilianFilters: { verify: async () => ({ verified: true }) }, location: { href: 'https://www.zhaopin.com/jobs' } },
       requestZhilianLocalApi: async () => ({}), normalizeScanTask: (m: unknown) => m,

@@ -49,7 +49,7 @@ it('waits beyond empty containers until real cards finish loading', async () => 
   const sleep = vi.fn(async () => { ticks++ })
   const wait = runInNewContext(`${fn('waitForJobCards')}\nwaitForJobCards`, {
     buildListDiagnostics: () => ({ resultContainers: 1, embeddedJobs: 0, hasBlockingState: false }),
-    collectJobNodes: () => ticks >= 3 ? [{}] : [], isStopRequested: () => false, sleep
+    collectJobNodes: () => ticks >= 3 ? [{}] : [], isStopRequested: () => false, hasStopRequested: async () => false, sleep
   })
   expect((await wait()).ready).toBe(true)
   expect(sleep).toHaveBeenCalledTimes(3)
@@ -57,7 +57,7 @@ it('waits beyond empty containers until real cards finish loading', async () => 
 it('times out on an empty loading shell rather than reporting ready', async () => {
   const wait = runInNewContext(`${fn('waitForJobCards')}\nwaitForJobCards`, {
     buildListDiagnostics: () => ({ resultContainers: 1, embeddedJobs: 0 }),
-    collectJobNodes: () => [], isStopRequested: () => false, sleep: async () => {}
+    collectJobNodes: () => [], isStopRequested: () => false, hasStopRequested: async () => false, sleep: async () => {}
   })
   expect((await wait()).ready).toBe(false)
 })
