@@ -40,7 +40,8 @@ type ChromeBridgeMessageEnvelope<T = unknown> = {
 export async function sendChromeBridgeMessage<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
   if (SCAN_START_TYPES.has(String(payload.type))) {
     const status = await sendBridgeRequest({ type: 'GET_JOBS_EXTENSION_PING' }, 3000)
-    if (!status.success) return { success: false, message: status.message || 'Chrome扩展未连接，请先检查扩展连接。' }
+    if (!status.success) return { success: false, ...(payload.scanProtocol === 1 ? {errorCode:'EXTENSION_NOT_CONNECTED'} : {}), message: status.message || 'Chrome扩展未连接，请先检查扩展连接。' }
+    if (payload.scanProtocol === 1 && status.scanProtocol !== 1) return {success:false,errorCode:'EXTENSION_RELOAD_REQUIRED',message:'请重新加载 1.8.16 或更新版投递牛马 Chrome Bridge，并刷新招聘平台页面。当前扩展不支持扫描记录与控制。'}
     if (status.version !== REQUIRED_BACKGROUND_VERSION || status.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) {
       return {
         success: false,

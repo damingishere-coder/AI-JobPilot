@@ -53,6 +53,13 @@ import java.util.stream.Collectors;
 public class ZhilianController {
     @org.springframework.beans.factory.annotation.Autowired
     private com.getjobs.application.service.FreshScanReceiptService freshScanReceiptService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.ScanRunService scanRuns;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<jakarta.servlet.http.HttpServletRequest> scanHttpRequest;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.getjobs.application.service.LocalActionTokenService scanTokens;
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -370,7 +377,6 @@ public class ZhilianController {
     public ResponseEntity<Map<String, Object>> receiveChromeJobs(@RequestBody ChromeJobBatchRequest request) {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(request == null ? null : request.getProfileId());
         if (profileError != null) return profileError;
-        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("zhilian", request, this::receiveChromeJobs);
         Long profileId = request.getProfileId();
         int received = request == null || request.getJobs() == null ? 0 : request.getJobs().size();
         int savedCount = 0;
@@ -379,6 +385,8 @@ public class ZhilianController {
         int insufficient = 0;
         int restored = 0;
         String runId = normalizeRunId(request == null ? null : request.getRunId());
+        if (scanRuns != null && !scanRuns.accepts("zhilian", profileId, runId, request.getScanEpoch())) return ResponseEntity.status(409).body(Map.of("success", false, "errorCode", "SCAN_CONTROL_BLOCKED", "message", "本轮采集已暂停或停止，请等待控制确认"));
+        if (Boolean.TRUE.equals(request.getFreshOnly())) return freshScanReceiptService.submit("zhilian", request, this::receiveChromeJobs);
         List<Map<String, Object>> analyses = new ArrayList<>();
         List<Map<String, Object>> items = new ArrayList<>();
         if (request != null && request.getJobs() != null) {
@@ -391,6 +399,7 @@ public class ZhilianController {
             }
             sendZhilianProgress(profileId, JobProgressMessage.info("zhilian", "Chrome已采集到 " + received + " 个智联岗位，正在提交后台AI队列"));
             for (ChromeJobDto dto : request.getJobs()) {
+                if(scanRuns != null && !scanRuns.accepts("zhilian", profileId, runId, request.getScanEpoch())) return ResponseEntity.status(409).body(Map.of("success",false,"errorCode","SCAN_CONTROL_BLOCKED","message","本轮采集已暂停或停止"));
                 String receiptKey = firstNonBlank(dto == null ? null : dto.getId(), dto == null ? null : extractUrlId(dto.getUrl()));
                 try {
                 if (jobRunCoordinator.isCancelRequested(runId)) {
@@ -582,6 +591,10 @@ public class ZhilianController {
         if (error != null) return error;
         String runId = normalizeRunId(request.getRunId());
         if (runId == null) return ResponseEntity.badRequest().body(Map.of("success", false, "message", "恢复采集缺少批次ID"));
+        if (scanRuns != null && scanRuns.managed("zhilian", request.getProfileId(), runId)) {
+            if (scanTokens == null || scanHttpRequest == null || scanHttpRequest.getIfAvailable() == null || !scanTokens.isValid(scanHttpRequest.getIfAvailable().getHeader("X-Local-Action-Token"))) return ResponseEntity.status(401).body(Map.of("success",false,"message","本地操作令牌无效"));
+            return ResponseEntity.ok(scanRuns.command("zhilian", request.getProfileId(), runId, "RESUME", java.util.UUID.randomUUID().toString()));
+        }
         jobRunCoordinator.clearCancel(runId);
         return ResponseEntity.ok(Map.of("success", true, "runId", runId, "message", "采集停止标记已解除，等待扩展恢复断点"));
     }
@@ -592,6 +605,10 @@ public class ZhilianController {
         ResponseEntity<Map<String, Object>> profileError = validateChromeProfile(profileId);
         if (profileError != null) return profileError;
         String runId = payload == null ? null : Objects.toString(payload.get("runId"), "");
+        if (scanRuns != null && scanRuns.managed("zhilian", profileId, runId)) {
+            if (scanTokens == null || scanHttpRequest == null || scanHttpRequest.getIfAvailable() == null || !scanTokens.isValid(scanHttpRequest.getIfAvailable().getHeader("X-Local-Action-Token"))) return ResponseEntity.status(401).body(Map.of("success",false,"message","本地操作令牌无效"));
+            return ResponseEntity.ok(scanRuns.command("zhilian", profileId, runId, "STOP", java.util.UUID.randomUUID().toString()));
+        }
         jobRunCoordinator.requestCancel(runId);
         sendZhilianProgress(profileId, JobProgressMessage.warning("zhilian", "智联 Chrome扫描停止请求已发送"));
         return ResponseEntity.ok(Map.of(

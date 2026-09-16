@@ -64,6 +64,7 @@ function loadBackground({
   const chrome = {
     permissions: { contains: async () => true },
     runtime: {
+      getManifest() { return JSON.parse(fs.readFileSync(path.join(EXTENSION_DIR,"manifest.json"),"utf8")); },
       onMessage: { addListener(listener) { runtimeMessageListener = listener; } },
       lastError: null
     },
@@ -308,6 +309,7 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "scan-control.js",
     "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",
@@ -357,6 +359,7 @@ test("reinjects all Zhilian dependencies when the content script is stale", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "scan-control.js",
     "continuous-scan-support.js",
     "zhilian-filters.js",
     "zhilian-scan-support.js",

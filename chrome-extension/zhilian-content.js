@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "2026-09-14-zhilian-adapter";
+  const EXTENSION_VERSION = "1.8.16";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -78,6 +78,10 @@
   ];
   let stopRequested = false;
   let activeScanPromise = null;
+  const scanControl = window.GetJobsScanControl?.create({platform:"zhilian", version:EXTENSION_VERSION,instanceId:CONTENT_INSTANCE_ID,
+    current:()=>window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ === CONTENT_INSTANCE_ID, readTask:readStoredScanTask, saveTask:async task=>{storeScanTask(task);await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:normalizeScanTask(task)});}, status:writeScanStatus,
+    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,setStopped:()=>{stopRequested=true;}});
+
   let expectedScanOwnerToken = "";
   let scanOwnershipLost = false;
   const deliveryExecutions = new Map();
@@ -413,7 +417,12 @@
   async function runScan(message) {
     if (activeScanPromise) return activeScanPromise;
 
-    activeScanPromise = runScanInternal(message).finally(() => {
+    activeScanPromise = (async()=>{
+      await scanControl?.enter(normalizeScanTask(message));
+      if(await scanControl?.checkpoint()) return;
+      return runScanInternal(message);
+    })().finally(async () => {
+      await scanControl?.leave();
       activeScanPromise = null;
     });
     return activeScanPromise;
@@ -824,11 +833,14 @@
     let stagnant = 0;
     const startedAt = Date.now();
     let lastCheckpointAt = startedAt;
+    const pauseBaseline = scanControl?.pausedMs() || 0;
     const deadline = startedAt + Math.max(0, (support?.MAX_ACTIVE_MS || 900000) - Number(discovery?.elapsedMs || 0));
+    const currentDeadline = () => deadline + (scanControl?.pausedMs() || 0) - pauseBaseline;
+    let checkpointPause = pauseBaseline;
     let stopReason = "";
     const checkpoint = async () => {
       if (discovery) {
-        discovery.elapsedMs += Date.now() - lastCheckpointAt; lastCheckpointAt = Date.now();
+        discovery.elapsedMs += Math.max(0,Date.now() - lastCheckpointAt - ((scanControl?.pausedMs() || 0)-checkpointPause)); lastCheckpointAt = Date.now(); checkpointPause=scanControl?.pausedMs() || 0;
         discovery.attempted = [...seenIds]; discovery.historyDuplicates = historyDuplicateCount; discovery.detailFailures = detailFailures;
       }
       await storeScanTask({
@@ -856,7 +868,7 @@
     // count or a synthetic page number as evidence of further loaded results.
     const seeds = collectZhilianInitialStateJobs(keyword);
     let seedDedupe;
-    try { seedDedupe = await filterZhilianDuplicateJobs(seeds, task, keyword, deadline); }
+    try { seedDedupe = await filterZhilianDuplicateJobs(seeds, task, keyword, currentDeadline()); }
     catch (error) {
       if (error.errorType !== "COLLECTION_TIMEOUT") throw error;
       await checkpoint();
@@ -873,7 +885,7 @@
     }
 
     while (!(stopReason = zhilianCollectionStopReason({ target: searchJobLimit, fresh: jobs.length,
-      pages: rounds, stagnantPages: 0, elapsedMs: Date.now() >= deadline ? 900000 : 0 }))) {
+      pages: rounds, stagnantPages: 0, elapsedMs: Date.now() >= currentDeadline() ? 900000 : 0 }))) {
       if (await hasStopRequested()) return { stopped: true, jobs };
       if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("智联搜索条件已改变，已保留采集断点");
       await window.GetJobsZhilianFilters.verify(document,config,task.filterCatalog,{sleep,shouldStop:hasStopRequested});
@@ -881,7 +893,7 @@
       if (blocked) return { paused: true, jobs, message: blocked.message };
       const countBefore = document.querySelectorAll(".job-list-panel .job-card").length;
       for (let cardIndex = 0; cardIndex < countBefore; cardIndex++) {
-        if (jobs.length >= searchJobLimit || Date.now() >= deadline) break;
+        if (jobs.length >= searchJobLimit || Date.now() >= currentDeadline()) break;
         if (await hasStopRequested()) return { stopped: true, jobs };
         if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取岗位时智联筛选发生变化，断点已保留");
         // Vue can replace the list after each selection. Resolve the current
@@ -891,7 +903,7 @@
         const visibleSignature = JSON.stringify(collector.readCard(card));
         if (visitedCards.get(card) === visibleSignature) continue;
         visitedCards.set(card, visibleSignature);
-        const prepared = await collector.prepareCard(document, card, { sleep, shouldStop: hasStopRequested, deadline });
+        const prepared = await collector.prepareCard(document, card, { sleep, shouldStop: hasStopRequested, deadline:currentDeadline(), pausedMs:()=>scanControl?.pausedMs() || 0 });
         const summary = prepared.summary;
         const matches = seeds.filter(seed => seed.title === summary.title && seed.company === summary.company && seed.salary === summary.salary);
         const expectedId = summary.id || (matches.length === 1 ? matches[0].id : "");
@@ -901,7 +913,7 @@
         if (expectedId && attemptedCards.has(expectedId)) continue;
         if (expectedId) attemptedCards.add(expectedId);
         const result = await collector.selectAndReadResult(document, prepared.card || card, {
-          expectedId, sleep, shouldStop: hasStopRequested, deadline, preparedCard: prepared
+          expectedId, sleep, shouldStop: hasStopRequested, deadline:currentDeadline(), pausedMs:()=>scanControl?.pausedMs() || 0, preparedCard: prepared
         });
         if (!isCurrentSearchPage(keyword, config, 1)) throw new Error("读取详情时智联筛选发生变化，禁止提交当前岗位");
         if (await hasStopRequested() || result.reason === "STOPPED") return { stopped: true, jobs };
@@ -943,7 +955,7 @@
         if (seenIds.has(job.id)) continue;
         job.keyword = keyword;
         let dedupe;
-        try { dedupe = await filterZhilianDuplicateJobs([job], task, keyword, deadline); }
+        try { dedupe = await filterZhilianDuplicateJobs([job], task, keyword, currentDeadline()); }
         catch (error) {
           if (error.errorType !== "COLLECTION_TIMEOUT") throw error;
           stopReason = "timeout_safety_cap";
@@ -962,7 +974,7 @@
         });
       }
       if (jobs.length >= searchJobLimit) break;
-      if (Date.now() >= deadline) { stopReason = "timeout_safety_cap"; break; }
+      if (Date.now() >= currentDeadline()) { stopReason = "timeout_safety_cap"; break; }
       const visibleKeys = () => Array.from(document.querySelectorAll(".job-list-panel .job-card"))
         .map(card => { const summary = collector.readCard(card); return summary.id || summary.url || JSON.stringify(summary); });
       const observed = new Set(discovery?.observed || []);
@@ -2021,6 +2033,7 @@
   }
 
   async function requestZhilianLocalApi(operation, options = {}) {
+    if(operation === "chrome-jobs" && typeof scanControl !== "undefined") options={...options,body:{...options.body,scanEpoch:scanControl.epochFor(options.body?.runId)}};
     let response;
     let timer;
     try {
@@ -2067,6 +2080,7 @@
       pageTabId: message.pageTabId,
       payload: {
         platform: "zhilian",
+        scanInstanceId: CONTENT_INSTANCE_ID,
         profileId: normalizeProfileId(message?.profileId),
         type,
         message: text,
@@ -2075,7 +2089,7 @@
         ...(message.continuousScan ? { keywordResults: window.GetJobsContinuousScan.results(message) } : {}),
         ...meta
       }
-    });
+    }).then(result=>{if(message?.scanProtocol===1 && result?.success===false)scanControl?.fault();}).catch(()=>{if(message?.scanProtocol===1)scanControl?.fault();});
   }
 
   function executeDeliveryOnce(task, action) {
@@ -2572,6 +2586,7 @@
   }
 
   async function hasStopRequested() {
+    if(await scanControl?.checkpoint()) return true;
     if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return true;
     if(scanOwnershipLost) return true;
     if(expectedScanOwnerToken) {
@@ -3490,16 +3505,12 @@
     });
   }
 
-  function sleep(ms) {
-    return new Promise((resolve) => {
-      const startedAt = Date.now();
-      const timer = window.setInterval(async () => {
-        if (await hasStopRequested() || Date.now() - startedAt >= ms) {
-          window.clearInterval(timer);
-          resolve();
-        }
-      }, Math.min(200, Math.max(50, ms)));
-    });
+  async function sleep(ms) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < ms) {
+      if (await hasStopRequested()) return;
+      await new Promise(resolve => setTimeout(resolve, Math.min(200, Math.max(1,ms-(Date.now()-startedAt)))));
+    }
   }
 
   function randomInt(min, max) {

@@ -39,11 +39,13 @@
     return matches.length === 1 ? matches[0] : null;
   }
 
-  async function prepareCard(document, card, { sleep, shouldStop, deadline = Infinity, summary = readCard(card) }) {
+  async function prepareCard(document, card, { sleep, shouldStop, deadline = Infinity, pausedMs = () => 0, summary = readCard(card) }) {
+    const pauseBaseline = pausedMs();
+    const currentDeadline = () => deadline + pausedMs() - pauseBaseline;
     let scrolledCard = null;
     for (let poll = 0; poll < 20; poll++) {
       if (await shouldStop()) return failure("STOPPED", summary);
-      if (Date.now() >= deadline) return failure("KEYWORD_TIMEOUT", summary);
+      if (Date.now() >= currentDeadline()) return failure("KEYWORD_TIMEOUT", summary);
       card = locateCard(document, card, summary);
       if (!card) return failure("CARD_DETACHED", summary);
       if (scrolledCard !== card) {
@@ -58,7 +60,7 @@
       summary = { ...summary, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value)) };
       if (current.title && current.company) return { card, summary: current };
       if (document.visibilityState === "hidden") return failure("PAGE_HIDDEN", summary);
-      await sleep(Math.min(500, Math.max(0, deadline - Date.now())));
+      await sleep(Math.min(500, Math.max(0, currentDeadline() - Date.now())));
     }
     return failure("CARD_NOT_READY", summary);
   }
@@ -92,8 +94,10 @@
     return inspectDetail(document, card, expectedId).job;
   }
 
-  async function selectOnce(document, card, { expectedId = "", sleep, shouldStop, deadline = Infinity, summary, transition, preparedCard }) {
-    const prepared = preparedCard || await prepareCard(document, card, { sleep, shouldStop, deadline, summary });
+  async function selectOnce(document, card, { expectedId = "", sleep, shouldStop, deadline = Infinity, pausedMs = () => 0, summary, transition, preparedCard }) {
+    const pauseBaseline = pausedMs();
+    const currentDeadline = () => deadline + pausedMs() - pauseBaseline;
+    const prepared = preparedCard || await prepareCard(document, card, { sleep, shouldStop, deadline:currentDeadline(), pausedMs, summary });
     if (!prepared.card) return prepared;
     card = prepared.card;
     if (!expectedId) {
@@ -110,7 +114,7 @@
       transition.initialized = true;
     }
     if (await shouldStop()) return failure("STOPPED", prepared.summary);
-    if (Date.now() >= deadline) return failure("KEYWORD_TIMEOUT", prepared.summary);
+    if (Date.now() >= currentDeadline()) return failure("KEYWORD_TIMEOUT", prepared.summary);
     if (!card.isConnected) return failure("CARD_DETACHED", prepared.summary);
     if (["title", "company", "salary", "location"].some(key => prepared.summary[key] && readCard(card)[key] !== prepared.summary[key])) return failure("IDENTITY_MISMATCH", prepared.summary);
     // Select only the title area; company, chat and application controls are never clicked.
@@ -119,10 +123,10 @@
     let result = failure("DETAIL_TIMEOUT", prepared.summary);
     for (let attempt = 0; attempt < 30; attempt++) {
       if (await shouldStop()) return failure("STOPPED", prepared.summary);
-      if (Date.now() >= deadline) return failure("KEYWORD_TIMEOUT", prepared.summary);
-      await sleep(Math.min(500, deadline - Date.now()));
+      if (Date.now() >= currentDeadline()) return failure("KEYWORD_TIMEOUT", prepared.summary);
+      await sleep(Math.min(500, currentDeadline() - Date.now()));
       if (await shouldStop()) return failure("STOPPED", prepared.summary);
-      if (Date.now() >= deadline) return failure("KEYWORD_TIMEOUT", prepared.summary);
+      if (Date.now() >= currentDeadline()) return failure("KEYWORD_TIMEOUT", prepared.summary);
       result = inspectDetail(document, card, expectedId);
       if (result.reason === "CARD_DETACHED" || result.reason === "CARD_NOT_READY") return { ...result, summary: prepared.summary };
       const job = result.job;

@@ -1,5 +1,8 @@
 'use client'
 
+import ScanHistory from '@/app/components/ScanHistory'
+import { registerScan, scanStartFailed, scanCommand } from '@/lib/scan-runs'
+
 import ScanResult, { readScanResult } from '@/app/zhilian/ScanResult'
 import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -880,6 +883,9 @@ export default function BossPage() {
   }
 
   const handleStartDelivery = async (resumeIncomplete = false) => {
+    let registeredRun = ''
+    let registeredProfile = 0
+    let dispatchAttempted = false
     try {
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
@@ -900,8 +906,17 @@ export default function BossPage() {
         return
       }
       focusLogSection()
+      if (resumeIncomplete && scanResult?.runId) {
+        await scanCommand('boss',profileId,scanResult.runId,'RESUME')
+        appendProgressLog({type:'info',message:'继续请求已保存，请在扫描记录中查看执行确认。'})
+        return
+      }
+      const runId = `boss-${Date.now()}`
+      await registerScan('boss',profileId,runId)
+      registeredRun = runId; registeredProfile = profileId
       const setup = await validateSetupForPlatform('boss', { requirePlatformLogin: false })
       if (!setup.ready) {
+        await scanStartFailed('boss',profileId,runId,'SETUP_NOT_READY')
         const message = formatSetupMissingMessage('Boss', setup.missing)
         appendProgressLog({ type: 'error', message })
         alert(message)
@@ -910,12 +925,14 @@ export default function BossPage() {
       setIsDelivering(true)
       setIsStopping(false)
       setIsScanPaused(false)
-      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `boss-${Date.now()}`
+
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
+      dispatchAttempted = true
       const data = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
+        scanProtocol: 1,
         resumeIncomplete,
         platform: 'boss',
         profileId,
@@ -941,6 +958,7 @@ export default function BossPage() {
         if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
         appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
+        await scanStartFailed('boss',profileId,runId,String(data.errorCode || 'START_FAILED'))
         console.warn('启动失败：', data.message)
         appendProgressLog({ type: 'error', message: data.message || 'Boss扫描启动失败。' })
         setIsDelivering(false)
@@ -949,6 +967,7 @@ export default function BossPage() {
         setActiveRunId(null)
       }
     } catch (error) {
+      if(registeredRun) await scanStartFailed('boss',registeredProfile,registeredRun,dispatchAttempted?'START_FAILED':'SETUP_NOT_READY').catch(()=>{})
       console.error('Failed to start delivery:', error)
       appendProgressLog({ type: 'error', message: 'Boss扫描启动失败：网络或服务异常。' })
       setIsDelivering(false)
@@ -1148,43 +1167,13 @@ export default function BossPage() {
   }
 
   const handleStopDelivery = async () => {
-    if (isStopping) return
+    if(isStopping || !activeRunId || !currentProfile?.id) return
     setIsStopping(true)
     try {
-      const runId = activeRunId
-      const profileId = normalizeScanProfileId(currentProfile?.id)
-      if (!profileId) throw new Error('当前档案 ID 无效')
-      await fetch(`${API_BASE}/api/boss/chrome/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId, profileId }),
-      }).catch(() => null)
-
-      const data = await sendChromeBridgeMessage({ type: 'BOSS_SCAN_STOP', platform: 'boss', runId, profileId }, 1500)
-
-      if (data.success) {
-        appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描停止请求已发送。' })
-        setIsDelivering(false)
-        setIsScanPaused(false)
-        setActiveRunId(null)
-      } else {
-        // 停止失败：也要将状态设置为未投递（因为可能任务已经结束）
-        console.warn('停止失败：', data.message)
-        appendProgressLog({ type: 'warning', message: data.message || 'Boss扫描可能已经结束。' })
-        setIsDelivering(false)
-        setIsScanPaused(false)
-        setActiveRunId(null)
-      }
-    } catch (error) {
-      console.error('Failed to stop delivery:', error)
-      // 停止失败：也要将状态设置为未投递
-      appendProgressLog({ type: 'error', message: 'Boss扫描停止失败：网络或服务异常。' })
-      setIsDelivering(false)
-      setIsScanPaused(false)
-      setActiveRunId(null)
-    } finally {
-      setIsStopping(false)
-    }
+      await scanCommand('boss',currentProfile.id,activeRunId,'STOP')
+      appendProgressLog({type:'warning',message:'停止请求已保存，等待扩展退出扫描；执行结果请查看扫描记录。'})
+    } catch {appendProgressLog({type:'error',message:'停止请求未保存，请检查后端连接并重试。'})}
+    finally {setIsStopping(false)}
   }
 
   const handleOpenPlatform = async () => {
@@ -1241,6 +1230,7 @@ export default function BossPage() {
 
   return (
     <div className="space-y-6">
+      <ScanHistory platform="boss" profileId={currentProfile?.id} />
       <PageHeader
         icon={<BiBriefcase className="text-2xl" />}
         title="Boss直聘配置"

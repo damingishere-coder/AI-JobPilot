@@ -1,3 +1,4 @@
+importScripts("scan-observer.js");
 importScripts("boss-delivery-support.js");
 importScripts("application-runtime-protocol.js");
 importScripts("browser-application-runtime.js");
@@ -7,6 +8,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhipin.com/",
     contentScript: "boss-content.js",
     contentScripts: [
+      "scan-control.js",
       "continuous-scan-support.js",
       "boss-selectors.js",
       "boss-debug.js",
@@ -27,6 +29,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
+      "scan-control.js",
       "continuous-scan-support.js", "zhilian-filters.js",
       "zhilian-scan-support.js",
       "zhilian-modern-collector.js",
@@ -59,8 +62,8 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "2026-09-14-boss-adapter";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "2026-09-14-zhilian-adapter";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.8.16";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -110,7 +113,18 @@ chrome.runtime.onInstalled?.addListener?.(() => {
   })().catch(error => console.warn("HR panel update failed:", error.message));
 });
 
+const scanObserver = GetJobsScanObserver.create({storage:chrome.storage.local, request:requestLocalApi, version:chrome.runtime.getManifest().version});
+chrome.storage.local.get('__GET_JOBS_SCAN_OBSERVER_V1__').then(data=>{if(Object.keys(data.__GET_JOBS_SCAN_OBSERVER_V1__||{}).length) chrome.alarms?.create?.('scan-observer-sync',{periodInMinutes:0.5});}).catch(()=>{});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === 'GET_JOBS_SCAN_CONTROL' && message.type === 'SCAN_CONTROL_SYNC') {
+    if (!isSupportedPlatformSender(sender) || message.platform !== (isBossSender(sender)?'boss':'zhilian')) {
+      sendResponse({success:false,errorCode:'SCAN_SENDER_REJECTED'}); return;
+    }
+    scanObserver.sync({...message,tabId:sender.tab.id}).then(sendResponse).catch(()=>sendResponse({success:false,errorCode:'SCAN_STORAGE_FAILED'}));
+    return true;
+  }
+
   if (message?.source === "GET_JOBS_BOSS_HR_CONTENT" && message.type === "BOSS_HR_CAPTURE_RESULT") {
     submitBossHrCapture(message, sender).then(sendResponse).catch(error => sendResponse({ success: false, errorCode: "HR_CAPTURE_SUBMIT_FAILED", message: error.message || String(error) }));
     return true;
@@ -215,11 +229,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.source === "GET_JOBS_PLATFORM") {
-    forwardPlatformEvent(message, sender).catch(() => {});
+    forwardPlatformEvent(message, sender).then(()=>sendResponse({success:true})).catch(()=>sendResponse({success:false,errorCode:"SCAN_STORAGE_FAILED"}));
+    return true;
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  scanObserver.closed(tabId).catch(()=>{});
   pageTabs.delete(tabId);
   clearScanSession("boss", tabId).catch(() => {});
   clearScanSession("zhilian", tabId).catch(() => {});
@@ -234,6 +250,7 @@ chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
 });
 
 chrome.alarms?.onAlarm?.addListener?.((alarm) => {
+  if (alarm?.name === 'scan-observer-sync') scanObserver.tick().catch(()=>{});
   if (alarm?.name === BOSS_HR_ALARM_NAME) runBossHrTick().catch(() => {});
 });
 
@@ -252,6 +269,7 @@ async function forwardPlatformEvent(message, sender) {
     if (session && normalizeProfileId(session.profileId) !== profileId) return;
     payload.profileId = profileId;
   }
+  if(payload.operation === 'scan') await scanObserver.event({platform,profileId:payload.profileId,runId:payload.runId},payload);
   await updateScanSessionFromEvent(platform, sender.tab?.id, payload);
   await broadcastPlatformEvent(payload, message.pageTabId);
 }
@@ -1196,7 +1214,7 @@ async function handlePageMessageInternal(message, sender) {
 
   if (message.type === "GET_JOBS_EXTENSION_PING") {
     return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION,
-      runtimeProtocol: ApplicationRuntimeProtocol.VERSION };
+      scanProtocol: 1, extensionVersion: chrome.runtime.getManifest().version, runtimeProtocol: ApplicationRuntimeProtocol.VERSION };
   }
 
   if (message.type === "BOSS_HR_OPEN_CHAT") return await openBossHrChat();
@@ -1281,6 +1299,7 @@ async function handlePageMessageInternal(message, sender) {
     let scanSession = null;
     if (isScanStartMessage(message.type)) {
       scanSession = await registerScanSession(platform, tab.id, message.runId, pageTabId, message.scanOwnerToken, message.profileId);
+      if(message.scanProtocol===1) {await scanObserver.attach({platform,profileId:message.profileId,runId:message.runId,tabId:tab.id,ownerToken:scanSession.ownerToken});await chrome.alarms?.create?.("scan-observer-sync",{periodInMinutes:0.5});}
       await postPlatformProgress(pageTabId, {
         platform, operation: "scan", type: "info", runId: message.runId, profileId: message.profileId,
         message: `${platform === "boss" ? "BOSS" : "智联"}使用独立扫描窗口，可与另一平台同时运行。请保持扫描窗口展开，勿最小化或关闭。`

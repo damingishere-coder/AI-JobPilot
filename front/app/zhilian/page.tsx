@@ -1,5 +1,8 @@
 'use client'
 
+import ScanHistory from '@/app/components/ScanHistory'
+import { registerScan, scanStartFailed, scanCommand } from '@/lib/scan-runs'
+
 import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
@@ -472,6 +475,9 @@ export default function ZhilianPage() {
     if (startingRef.current || isDelivering) return
     startingRef.current = true
     setIsStarting(true)
+    let registeredRun = ''
+    let registeredProfile = 0
+    let dispatchAttempted = false
     try {
       const keywords = normalizeKeywordTokens(config.keywords)
       if (!keywords.length) {
@@ -495,16 +501,26 @@ export default function ZhilianPage() {
         appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
         return
       }
+      if (resumeIncomplete && scanResult?.runId) {
+        await scanCommand('zhilian',profileId,scanResult.runId,'RESUME')
+        appendProgressLog({type:'info',message:'继续请求已保存，请在扫描记录中查看执行确认。'})
+        return
+      }
+      if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
+      const runId = `zhilian-${Date.now()}`
+      await registerScan('zhilian',profileId,runId)
+      registeredRun = runId; registeredProfile = profileId
       const setup = await validateSetupForPlatform('zhilian', { openPlatformPageIfMissing: true })
       if (!setup.ready) {
+        await scanStartFailed('zhilian',profileId,runId,'SETUP_NOT_READY')
         const message = formatSetupMissingMessage('智联招聘', setup.missing)
         appendProgressLog({ type: 'error', message })
         alert(message)
         return
       }
       if (profileRef.current !== profileId) return
-      const runId = resumeIncomplete && scanResult?.runId ? scanResult.runId : `zhilian-${Date.now()}`
-      if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
+
+
       setActiveRunId(runId)
       scanRunRef.current = runId
       setLatestRunId(runId)
@@ -514,8 +530,10 @@ export default function ZhilianPage() {
       setIsScanPaused(false)
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
+      dispatchAttempted = true
       const data = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
+        scanProtocol: 1,
         resumeIncomplete,
         platform: 'zhilian',
         profileId,
@@ -529,12 +547,14 @@ export default function ZhilianPage() {
       if (data.success) {
         appendProgressLog({ type: 'info', message: data.message || '智联招聘 Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
+        await scanStartFailed('zhilian',profileId,runId,String(data.errorCode || 'START_FAILED'))
         appendProgressLog({ type: 'error', message: data.message || '智联招聘扫描启动失败。' })
         setIsDelivering(false)
         setIsStopping(false)
         setActiveRunId(null)
       }
     } catch (error) {
+      if(registeredRun) await scanStartFailed('zhilian',registeredProfile,registeredRun,dispatchAttempted?'START_FAILED':'SETUP_NOT_READY').catch(()=>{})
       appendProgressLog({ type: 'error', message: '智联招聘扫描启动失败：网络或服务异常。' })
       setIsDelivering(false)
       setIsStopping(false)
@@ -546,36 +566,13 @@ export default function ZhilianPage() {
   }
 
   const handleStopDelivery = async () => {
-    if (isStopping) return
+    if(isStopping || !activeRunId || !currentProfile?.id) return
     setIsStopping(true)
     try {
-      const runId = activeRunId
-      const profileId = normalizeScanProfileId(currentProfile?.id)
-      if (!profileId) throw new Error('当前档案 ID 无效')
-      await fetch(`${API_BASE}/api/zhilian/chrome/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId, profileId }),
-      }).catch(() => null)
-      const data = await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_STOP', platform: 'zhilian', runId, profileId }, 1500)
-      if (data.success) {
-        appendProgressLog({ type: 'warning', message: data.message || '智联招聘扫描停止请求已处理。' })
-        await syncZhilianScanStatus(true, true)
-      } else {
-        appendProgressLog({ type: 'warning', message: data.message || '已发送后端停止请求，正在等待 Chrome 页面停止。' })
-        setIsDelivering(true)
-      }
-    } catch (error) {
-      appendProgressLog({ type: 'warning', message: '已发送后端停止请求，正在等待 Chrome 页面停止。' })
-      setIsDelivering(true)
-    } finally {
-      window.setTimeout(() => {
-        syncZhilianScanStatus(true, true)
-      }, 1200)
-      window.setTimeout(() => {
-        setIsStopping(false)
-      }, 5000)
-    }
+      await scanCommand('zhilian',currentProfile.id,activeRunId,'STOP')
+      appendProgressLog({type:'warning',message:'停止请求已保存，等待扩展退出扫描；执行结果请查看扫描记录。'})
+    } catch {appendProgressLog({type:'error',message:'停止请求未保存，请检查后端连接并重试。'})}
+    finally {setIsStopping(false)}
   }
 
   const handleOpenClawProbe = async () => {
@@ -701,6 +698,7 @@ export default function ZhilianPage() {
 
   return (
     <div className="space-y-6">
+      <ScanHistory platform="zhilian" profileId={currentProfile?.id} />
       <PageHeader
         icon={<BiBriefcase className="text-2xl" />}
         title="智联招聘配置"

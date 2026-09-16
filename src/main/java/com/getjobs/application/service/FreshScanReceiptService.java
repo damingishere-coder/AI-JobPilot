@@ -50,7 +50,7 @@ public class FreshScanReceiptService {
                 items.add(item(key, "INSUFFICIENT", false, false, "详情尚未完整核验，不占目标", "DETAIL_NOT_VERIFIED")); continue;
             }
             ChromeJobBatchRequest one = new ChromeJobBatchRequest();
-            one.setProfileId(request.getProfileId()); one.setRunId(request.getRunId());
+            one.setProfileId(request.getProfileId()); one.setRunId(request.getRunId()); one.setScanEpoch(request.getScanEpoch());
             one.setKeyword(request.getKeyword()); one.setJobs(List.of(job)); one.setAutoDeliver(false);
             var response = receiver.apply(one);
             var body = response.getBody() == null ? Map.<String, Object>of() : response.getBody();

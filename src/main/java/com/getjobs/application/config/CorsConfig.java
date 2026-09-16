@@ -21,6 +21,7 @@ public class CorsConfig {
     );
     private static final List<String> EXTENSION_API_PATHS = List.of(
             "/api/boss/chrome/**",
+            "/api/scan-runs/**",
             "/api/boss/ai-keywords",
             "/api/boss/jobs/*/delivery-result",
             "/api/hr-assistant/**",
