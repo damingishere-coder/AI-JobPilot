@@ -54,7 +54,7 @@
         }
         const url = new URL(before.url || "");
         if (url.protocol !== "https:" || !(url.hostname === "zhipin.com" || url.hostname.endsWith(".zhipin.com"))) {
-          throw new Error("Boss页面尚未就绪，请打开已登录的Boss岗位页面");
+          throw new Error("Boss页面尚未就绪，尚未执行投递");
         }
         if (targetUrl && url.pathname !== new URL(targetUrl).pathname) throw new Error("目标岗位ID与当前页面不一致，尚未执行投递");
         if (!await chrome.permissions.contains({ origins: [url.origin + "/*"] })) {

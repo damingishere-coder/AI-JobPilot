@@ -85,6 +85,16 @@ test('pending login redirect is preserved even when the committed job still look
   assert.deepEqual(h.counts(),{injections:0,sends:0,navigations:0});
 });
 
+test('a newly created blank tab without pendingUrl waits instead of being classified as logged out', async () => {
+  const h = harness({ configure: o => {
+    delete o.targetUrl;
+    o.chrome.tabs.get = async () => ({url:o.now()<1250?'about:blank':url,status:'complete'});
+  } });
+  assert.equal((await h.run()).success,true);
+  assert.equal(h.elapsed(),1250);
+  assert.deepEqual(h.counts(),{injections:1,sends:1,navigations:0});
+});
+
 test('explicit login and security status halt immediately even with a generic page message', async () => {
   for (const [flag, type] of [['hasLoginPrompt', 'LOGIN_EXPIRED'], ['hasSecurityPrompt', 'PLATFORM_VERIFICATION']]) {
     const h = harness({ configure: o => {

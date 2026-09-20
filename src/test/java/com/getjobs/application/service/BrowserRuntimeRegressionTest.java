@@ -38,6 +38,13 @@ class BrowserRuntimeRegressionTest {
             // Test-only bridge into the real MV3 worker; never copied to production.
             Files.writeString(background, """
               \nconst fixtureReceipts=[];
+              // Chrome-created tabs can navigate before Playwright attaches its
+              // route interceptor. Hand the blank tab to the test before navigation.
+              const fixtureCreateTab=chrome.tabs.create.bind(chrome.tabs);
+              chrome.tabs.create=options=>{
+                if(options.url!=='https://www.zhipin.com/')throw new Error('UNEXPECTED_FIXTURE_TAB');
+                return fixtureCreateTab({...options,url:'about:blank'});
+              };
               globalThis.fetch=async(url,options={})=>{
                 const parsed=new URL(url);let body;
                 if(parsed.origin!=='http://127.0.0.1:6866')throw new Error('OFFLINE_NETWORK_DENIED');
@@ -65,7 +72,8 @@ class BrowserRuntimeRegressionTest {
         context = playwright.chromium().launchPersistentContext(temp.resolve("profile"),
             new BrowserType.LaunchPersistentContextOptions().setChannel("chromium").setHeadless(true)
                 .setArgs(List.of("--disable-extensions-except=" + extension, "--load-extension=" + extension,
-                    "--disable-background-networking")));
+                    "--disable-background-networking",
+                    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")));
         context.setDefaultTimeout(10000);
         context.route("**/*", route -> {
             if (route.request().url().startsWith("chrome-extension://")) route.resume();
@@ -176,9 +184,12 @@ class BrowserRuntimeRegressionTest {
               """)));
         page.navigate(workbench);
         assertThat(ping()).isEqualTo(true);
-        Object prepared = worker.evaluate("""
-          ()=>chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',payload:{type:'BOSS_DELIVERY_PREFLIGHT',platform:'boss'}})
-          """);
+        Page landing = context.waitForPage(() -> worker.evaluate("""
+          ()=>{window.fixturePreflight=chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',payload:{type:'BOSS_DELIVERY_PREFLIGHT',platform:'boss'}});}
+          """));
+        // The context now owns the tab and its routes before the first HTTPS request.
+        landing.navigate("https://www.zhipin.com/");
+        Object prepared = worker.evaluate("()=>window.fixturePreflight");
         assertThat(((Map<?,?>)prepared).get("success")).as("preflight: %s", prepared).isEqualTo(true);
         Object result = worker.evaluate("""
           ()=>chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',payload:{type:'BOSS_DELIVER_ONE',platform:'boss',runtimeProtocol:'application-runtime/1',
