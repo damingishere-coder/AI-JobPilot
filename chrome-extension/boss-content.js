@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.19";
+  const EXTENSION_VERSION = "1.8.20";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
