@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.16";
+  const EXTENSION_VERSION = "1.8.17";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -7,6 +7,13 @@
   window.__GET_JOBS_BOSS_CONTENT__ = true;
   window.__GET_JOBS_BOSS_CONTENT_VERSION__ = EXTENSION_VERSION;
   window.__GET_JOBS_BOSS_CONTENT_INSTANCE_ID__ = CONTENT_INSTANCE_ID;
+  // BFCache freezes the old async runner instead of destroying it. Never let it
+  // resume clicks when the user returns; a fresh readiness injection owns the page.
+  window.addEventListener?.("pagehide", () => {
+    if (!isCurrentContentInstance()) return;
+    window.__GET_JOBS_BOSS_CONTENT_INSTANCE_ID__ = null;
+    window.__GET_JOBS_BOSS_CONTENT_VERSION__ = null;
+  }, { once: true });
 
   const SCAN_TASK_KEY = "__GET_JOBS_BOSS_SCAN_TASK__";
   const SCAN_CANCEL_KEY = "__GET_JOBS_BOSS_SCAN_CANCEL__";
@@ -3266,6 +3273,7 @@
   }
 
   function writeChatInput(input, text) {
+    if (!isCurrentContentInstance()) throw new Error("Boss页面已离开，已取消旧投递操作，请只读核对结果");
     input.focus?.();
     input.click?.();
     if (String(input.tagName || "").toLowerCase() === "textarea") {
@@ -4191,6 +4199,7 @@
   }
 
   function clickElement(el) {
+    if (!isCurrentContentInstance()) throw new Error("Boss页面已离开，已取消旧投递操作，请只读核对结果");
     el.scrollIntoView?.({ block: "center", inline: "center" });
     const rect = el.getBoundingClientRect();
     const options = { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
@@ -4206,8 +4215,11 @@
     } catch {
       // Some older pages may not expose PointerEvent.
     }
-    el.dispatchEvent(new MouseEvent("click", options));
-    el.click?.();
+    if (!isCurrentContentInstance()) throw new Error("Boss页面已离开，已取消旧投递操作，请只读核对结果");
+    // Dispatching click and then calling click() activates BOSS handlers twice:
+    // a favourite can toggle back, a chat can navigate, and a greeting can duplicate.
+    if (typeof el.click === "function") el.click();
+    else el.dispatchEvent(new MouseEvent("click", options));
   }
 
   function extractBossId(url) {
