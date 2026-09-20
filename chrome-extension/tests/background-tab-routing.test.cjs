@@ -235,6 +235,97 @@ function dispatchRuntimeMessage(listener, message, sender) {
   });
 }
 
+function bossHandoffFixture(phase = "OPENING_CHAT") {
+  const task = { id: 1, profileId: 4, requestKey: 'handoff-1', greeting: '已确认的话术',
+    url: 'https://www.zhipin.com/job_detail/target-job.html' };
+  const receipts = [];
+  const h = loadBackground({ tabs: [{ id: 7, url: task.url, status: 'complete' },
+    { id: 99, url: 'http://127.0.0.1:6866/boss/analysis' }],
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/action-token')) return jsonResponse({ success: true, data: { token: 'synthetic' } });
+      receipts.push(JSON.parse(options.body));
+      return jsonResponse({ success: true, accepted: true, state: receipts.at(-1).outcome });
+    } });
+  let initial = 0, continued = 0;
+  const send = h.context.chrome.tabs.sendMessage;
+  h.context.chrome.tabs.sendMessage = async (id, message) => {
+    if (message.type === 'BOSS_DELIVER_CURRENT_V2') {
+      initial++;
+      const sender = { frameId: 0, tab: { id, url: task.url }, url: task.url };
+      assert.equal(h.context.checkpointBossDelivery({ requestKey: task.requestKey, phase: 'OPENING_CHAT' }, sender).success, true);
+      if (phase === 'GREETING_STARTED') assert.equal(h.context.checkpointBossDelivery({ requestKey: task.requestKey, phase }, sender).success, true);
+      h.tabList.find(t => t.id === id).url = 'https://www.zhipin.com/web/geek/chat';
+      throw new Error('The page keeping the extension port is moved into back/forward cache, so the message channel is closed.');
+    }
+    if (message.type === 'BOSS_CONTINUE_GREETING') {
+      continued++;
+      const sender = { frameId: 0, tab: { id, url: 'https://www.zhipin.com/web/geek/chat' } };
+      assert.equal(h.context.checkpointBossDelivery({ requestKey: task.requestKey, phase: 'GREETING_STARTED' }, sender).success, true);
+      assert.equal(h.context.checkpointBossDelivery({ requestKey: task.requestKey, phase: 'GREETING_STARTED' }, sender).success, false);
+      return { success: true, outcome: 'CONFIRMED', evidence: 'GREETING_RENDERED_EXACT',
+        greetingOutcome: 'CONFIRMED', greetingEvidence: 'GREETING_RENDERED_EXACT' };
+    }
+    return send(id, message);
+  };
+  return { ...h, task, receipts, counts: () => ({ initial, continued }),
+    run: () => h.context.deliverBossTask({ id: 7 }, {}, task, { type: 'BOSS_DELIVER_ONE' }, 99, 1, 1) };
+}
+
+test('BOSS navigation hands off only the unsent greeting, never clicks contact again', async () => {
+  const h = bossHandoffFixture();
+  let failure;
+  const continueHandoff = h.context.continueBossGreetingAfterNavigation;
+  h.context.continueBossGreetingAfterNavigation = async (...args) => {
+    try { return await continueHandoff(...args); } catch (error) { failure = error.message; throw error; }
+  };
+  const result = await h.run();
+  assert.equal(result.outcome, 'CONFIRMED', JSON.stringify({ result, failure, counts: h.counts() }));
+  assert.deepEqual(h.counts(), { initial: 1, continued: 1 });
+  assert.equal(h.receipts.at(-1).greetingOutcome, 'CONFIRMED');
+});
+
+test('BOSS callback loss after greeting started never hands off or resends', async () => {
+  const h = bossHandoffFixture('GREETING_STARTED');
+  const result = await h.run();
+  assert.equal(result.outcome, 'UNKNOWN');
+  assert.deepEqual(h.counts(), { initial: 1, continued: 0 });
+  assert.equal(h.receipts.at(-1).outcome, 'UNKNOWN');
+});
+
+test('BOSS handoff waits for the navigation to appear in the tabs API', async () => {
+  const h = bossHandoffFixture();
+  const get = h.context.chrome.tabs.get;
+  let stale = 2;
+  h.context.chrome.tabs.get = async id => {
+    const tab = await get(id);
+    if (id === 7 && tab.url.includes('/web/geek/chat') && stale-- > 0) return { ...tab, url: h.task.url };
+    return tab;
+  };
+  assert.equal((await h.run()).outcome, 'CONFIRMED');
+  assert.deepEqual(h.counts(), { initial: 1, continued: 1 });
+});
+
+test('BOSS checkpoint rejects foreign tabs, nested frames and expired requests', async () => {
+  const h = bossHandoffFixture();
+  vm.runInContext(`bossDeliveryHandoffs.set('check', { tabId: 7, task: { url: 'https://www.zhipin.com/job_detail/target-job.html' }, phase: 'PREPARED' });`, h.context);
+  const message = { requestKey: 'check', phase: 'OPENING_CHAT' };
+  assert.equal(h.context.checkpointBossDelivery(message, { frameId: 0, tab: { id: 8, url: h.task.url } }).success, false);
+  assert.equal(h.context.checkpointBossDelivery(message, { frameId: 1, tab: { id: 7, url: h.task.url } }).success, false);
+  assert.equal(h.context.checkpointBossDelivery({ ...message, requestKey: 'expired' }, { tab: { id: 7, url: h.task.url } }).success, false);
+});
+
+test('BOSS failed handoff remains unknown without a second continuation', async () => {
+  const h = bossHandoffFixture();
+  const send = h.context.chrome.tabs.sendMessage;
+  let handoffs = 0;
+  h.context.chrome.tabs.sendMessage = (id, message) => {
+    if (message.type === 'BOSS_CONTINUE_GREETING') { handoffs++; throw new Error('channel closed again'); }
+    return send(id, message);
+  };
+  assert.equal((await h.run()).outcome, 'UNKNOWN');
+  assert.equal(handoffs, 1);
+});
+
 test("runtime claim loss is never retried and does not invoke the page executor", async () => {
   let calls = 0;
   const task = { id:1, profileId:1, requestKey:'permit-1', greeting:'synthetic', url:'https://www.zhipin.com/job_detail/test.html' };
