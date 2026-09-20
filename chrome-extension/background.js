@@ -44,6 +44,7 @@ const pageTabs = new Map();
 const scanStartQueues = new Map();
 const activeDeliveries = new Set();
 const deliveryTabs = new Map();
+const bossDeliveryHandoffs = new Map();
 const SCAN_WINDOW_KEY_PREFIX = "__GET_JOBS_SCAN_WINDOW_";
 let scanSessionsWriteQueue = Promise.resolve();
 let hrOutboxWriteQueue = Promise.resolve();
@@ -62,7 +63,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.8.17";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.8.18";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -117,6 +118,10 @@ const scanObserver = GetJobsScanObserver.create({storage:chrome.storage.local, r
 chrome.storage.local.get('__GET_JOBS_SCAN_OBSERVER_V1__').then(data=>{if(Object.keys(data.__GET_JOBS_SCAN_OBSERVER_V1__||{}).length) chrome.alarms?.create?.('scan-observer-sync',{periodInMinutes:0.5});}).catch(()=>{});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_DELIVERY_CHECKPOINT") {
+    sendResponse(checkpointBossDelivery(message, sender));
+    return;
+  }
   if (message?.source === 'GET_JOBS_SCAN_CONTROL' && message.type === 'SCAN_CONTROL_SYNC') {
     if (!isSupportedPlatformSender(sender) || message.platform !== (isBossSender(sender)?'boss':'zhilian')) {
       sendResponse({success:false,errorCode:'SCAN_SENDER_REJECTED'}); return;
@@ -1627,10 +1632,13 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
     return { ...prepared, outcome: task.reconciliationOnly ? "UNKNOWN" : prepared.outcome, persisted };
   }
 
+  bossDeliveryHandoffs.set(task.requestKey, { tabId: tab.id, task, phase: "PREPARED" });
   try {
     const result = await sendBossDeliverCurrent(tab.id, message, task, pageTabId, index, total);
     return { ...result, actionStarted: result.actionStarted ?? !task.reconciliationOnly };
   } catch (error) {
+    const resumed = await continueBossGreetingAfterNavigation(tab.id, task, message, pageTabId, index, total).catch(() => null);
+    if (resumed) return resumed;
     const errorMessage = buildContentScriptError("boss", error, "投递");
     const failure = classifyDeliveryFailure(errorMessage);
     let persisted = false;
@@ -1647,13 +1655,61 @@ async function deliverBossTask(tab, config, task, message, pageTabId, index, tot
       message: failure.failureReason,
       failureType: failure.failureType
     };
+  } finally {
+    bossDeliveryHandoffs.delete(task.requestKey);
   }
+}
+
+function checkpointBossDelivery(message, sender) {
+  const entry = bossDeliveryHandoffs.get(message.requestKey);
+  if (!entry || entry.task.reconciliationOnly || sender.frameId > 0 || !isBossSender(sender)
+      || sender.tab?.id !== entry.tabId) return { success: false };
+  const url = sender.url || sender.tab.url || "";
+  const onJob = isSameNavigationUrl(url, entry.task.url, { bossJobUrl: entry.task.url });
+  if (message.phase === "OPENING_CHAT" && entry.phase === "PREPARED" && onJob) {
+    entry.phase = "OPENING_CHAT";
+    return { success: true };
+  }
+  if (message.phase === "GREETING_STARTED" && ["OPENING_CHAT", "CONTINUING"].includes(entry.phase)
+      && (onJob || isBossChatUrl(url))) {
+    entry.phase = "GREETING_STARTED"; // Consume before clicking, never retry this effect.
+    return { success: true };
+  }
+  return { success: false };
+}
+
+async function continueBossGreetingAfterNavigation(tabId, task, message, pageTabId, index, total) {
+  const entry = bossDeliveryHandoffs.get(task.requestKey);
+  if (!entry || entry.phase !== "OPENING_CHAT" || task.reconciliationOnly) return null;
+  const deadline = Date.now() + 12000;
+  let current;
+  do {
+    current = await chrome.tabs.get(tabId);
+    const stable = current.status !== "loading" && (!current.pendingUrl || current.pendingUrl === current.url);
+    if (isBossChatUrl(current.url || "") && stable) break;
+    // The old document's channel can close before tabs.get reports navigation.
+    if (stable && !isSameNavigationUrl(current.url || "", task.url, { bossJobUrl: task.url })) return null;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  if (!isBossChatUrl(current?.url || "") || current.status === "loading"
+      || (current.pendingUrl && current.pendingUrl !== current.url)) return null;
+  if (!await runtimeOwnerAlive(pageTabId) || await dispatchBlocker(task, "boss", pageTabId)) return null;
+  await ensureContentScript(tabId, PLATFORM_CONFIG.boss.contentScript);
+  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["boss-hr-identity.js"] });
+  entry.phase = "CONTINUING"; // Only one handoff; callback loss here remains UNKNOWN.
+  const response = await chrome.tabs.sendMessage(tabId, { ...message, source: "GET_JOBS_BACKGROUND",
+    type: "BOSS_CONTINUE_GREETING", task, handoffTracked: true, pageTabId, deliveryIndex: index, deliveryTotal: total });
+  if (!response) return null;
+  await recordRuntimeObservation(task, response, "boss", pageTabId);
+  const recorded = await recordBossDeliveryResponse(task, response);
+  return { ...response, ...recorded, success: recorded.outcome === "CONFIRMED", actionStarted: true };
 }
 
 async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, total) {
   const response = await chrome.tabs.sendMessage(tabId, {
     ...message,
     type: "BOSS_DELIVER_CURRENT_V2",
+    handoffTracked: true,
     source: "GET_JOBS_BACKGROUND",
     task,
     pageTabId,
@@ -1666,6 +1722,8 @@ async function sendBossDeliverCurrent(tabId, message, task, pageTabId, index, to
     const haltBatch = response.haltBatch || ["LOGIN_EXPIRED", "PLATFORM_VERIFICATION", "DELIVERY_LIMIT"].includes(response.failureType);
     return { ...response, success: recorded.outcome === "CONFIRMED", ...recorded, haltBatch };
   }
+  const continued = await continueBossGreetingAfterNavigation(tabId, task, message, pageTabId, index, total);
+  if (continued) return continued;
   return await inferBossDeliveryAfterEmptyResponse(tabId, task);
 }
 

@@ -6,6 +6,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const ATTRIBUTE = "data-getjobs-hr-uid";
+  const JOB_KEY = "data-getjobs-job-key";
   const MESSAGE_TYPE = "data-getjobs-hr-message-type";
   const EVENT = "getjobs:hr:refresh-identities";
 
@@ -26,6 +27,7 @@
   function sync(documentRef) {
     // Clear first: virtual-list nodes can be reused for a different person.
     for (const node of documentRef.querySelectorAll(`[${ATTRIBUTE}]`)) node.removeAttribute(ATTRIBUTE);
+    for (const node of documentRef.querySelectorAll(`[${JOB_KEY}]`)) node.removeAttribute(JOB_KEY);
     for (const node of documentRef.querySelectorAll(`[${MESSAGE_TYPE}]`)) node.removeAttribute(MESSAGE_TYPE);
     for (const row of documentRef.querySelectorAll(".chat-conversation .im-list > .message-item")) {
       try {
@@ -54,6 +56,7 @@
         if (!name || !text(source.name) || text(name.textContent) !== text(source.name)) continue;
         if (!brand || text(brand.textContent) !== text(source.brandName)) continue;
         card.setAttribute(ATTRIBUTE, uid);
+        if (/^[\w~-]+$/.test(text(source.encryptJobId))) card.setAttribute(JOB_KEY, text(source.encryptJobId));
       } catch {
         // Unsupported component shapes stay unbound and fail closed.
       }
@@ -64,7 +67,11 @@
         // The public chat component subscribes to selectedFriend$. Require
         // the right-hand conversation and the selected list card to agree.
         const uid = component?.$el === pane ? sourceUid(component.selectedFriend$) : "";
-        if (uid) pane.setAttribute(ATTRIBUTE, uid);
+        if (uid) {
+          pane.setAttribute(ATTRIBUTE, uid);
+          const jobKey = text(component.selectedFriend$.encryptJobId);
+          if (/^[\w~-]+$/.test(jobKey)) pane.setAttribute(JOB_KEY, jobKey);
+        }
       } catch { /* Leave an unsupported pane unbound. */ }
     }
   }

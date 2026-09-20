@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.17";
+  const EXTENSION_VERSION = "1.8.18";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -138,6 +138,12 @@
     if (message?.type === "BOSS_DELIVER_CURRENT_V2") {
       prepareStandaloneDelivery();
       handleDeliverCurrentMessage(message, sendResponse);
+      return true;
+    }
+    if (message?.type === "BOSS_CONTINUE_GREETING") {
+      executeDeliveryOnce(message.task, () => continueGreetingOnChatPage(message.task, message))
+        .then(sendResponse).catch(error => sendResponse({ success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION",
+          greetingOutcome: "UNKNOWN", message: error.message || String(error) }));
       return true;
     }
     if (message?.type === "BOSS_DELIVER_ONE") {
@@ -3127,6 +3133,7 @@
       operation: "deliver",
       stage: "submitting"
     });
+    await checkpointDelivery(task, message, "OPENING_CHAT");
     clickElement(chatButton);
     const successMessage = favoriteButton ? "Boss岗位已点击感兴趣并立即沟通" : "Boss岗位已点击立即沟通";
     const deliveryCheck = await waitForDeliveryOpened(beforeUrl, task, 9000);
@@ -3139,6 +3146,47 @@
       });
       return { ...deliveryCheck, message: failure.failureReason, failureType: failure.failureType };
     }
+    return finishConfiguredGreeting(task, message, deliveryCheck, successMessage, favoriteButton, earlyRespond);
+  }
+
+  async function checkpointDelivery(task, message, phase) {
+    if (!message?.handoffTracked) return;
+    if (!isCurrentContentInstance()) throw new Error("Boss页面已离开，请只读核对投递结果");
+    const response = await chrome.runtime.sendMessage({ source: "GET_JOBS_BOSS_CONTENT",
+      type: "BOSS_DELIVERY_CHECKPOINT", requestKey: task.requestKey, phase });
+    if (!response?.success) throw new Error("Boss投递阶段未获确认，已停止发送，请只读核对");
+  }
+
+  function chatMatchesDelivery(task) {
+    if (!isCurrentContentInstance() || !isBossChatPage(window.location.href)) return false;
+    document.dispatchEvent(new CustomEvent("getjobs:hr:refresh-identities"));
+    const pane = document.querySelector(".chat-conversation");
+    const selected = document.querySelectorAll(".user-list .friend-content.selected");
+    const expected = extractBossId(task.url);
+    return Boolean(pane && expected && selected.length === 1
+      && pane.getAttribute("data-getjobs-hr-uid")
+      && pane.getAttribute("data-getjobs-hr-uid") === selected[0].getAttribute("data-getjobs-hr-uid")
+      && pane.getAttribute("data-getjobs-job-key") === expected
+      && selected[0].getAttribute("data-getjobs-job-key") === expected
+      && !Array.from(pane.querySelectorAll(".pre-loading")).some(isVisibleChatInput));
+  }
+
+  async function continueGreetingOnChatPage(task, message) {
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline && isCurrentContentInstance() && isBossChatPage(window.location.href)) {
+      const failure = detectDeliveryFailure("");
+      if (failure) return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", haltBatch: true,
+        greetingOutcome: "UNKNOWN", message: failure, failureType: classifyDeliveryFailure(failure).failureType };
+      if (chatMatchesDelivery(task) && findChatInput()) {
+        return finishConfiguredGreeting(task, message, { evidence: "CHAT_SURFACE_ONLY" }, "Boss已核对新聊天页的岗位与招聘者", null);
+      }
+      await sleep(250);
+    }
+    return { success: false, outcome: "UNKNOWN", evidence: "NO_CONFIRMATION", greetingOutcome: "UNKNOWN",
+      greetingEvidence: "CHAT_IDENTITY_UNCONFIRMED", haltBatch: true, message: "无法核对聊天页的岗位和招聘者，未发送话术，请人工核对" };
+  }
+
+  async function finishConfiguredGreeting(task, message, deliveryCheck, successMessage, favoriteButton, earlyRespond) {
     const greetingResult = await sendConfiguredGreeting(task, message);
     const confirmed = greetingResult?.sent === true;
     const finalMessage = confirmed
@@ -3179,6 +3227,13 @@
     const input = await waitForChatInput(12000);
     if (!input) return { attempted: false, sent: false, evidence: "GREETING_INPUT_MISSING", message: "未出现聊天输入框" };
 
+    const matches = () => isBossChatPage(window.location.href) ? chatMatchesDelivery(task)
+      : isCurrentContentInstance() && isSameBossJobUrl(window.location.href, task.url);
+    if (!matches()) throw new Error("聊天对象已变化，已取消话术发送");
+    if (countRenderedGreetingMessages(greeting, input) > 0) {
+      return { attempted: false, sent: true, evidence: "GREETING_RENDERED_EXACT", message: "已存在精确话术，本次未重复发送" };
+    }
+
     writeChatInput(input, greeting);
     await sleep(400);
     if (readChatInput(input) !== greeting) {
@@ -3194,6 +3249,8 @@
     }
 
     const messageCountBefore = countRenderedGreetingMessages(greeting, input);
+    await checkpointDelivery(task, message, "GREETING_STARTED");
+    if (!matches()) throw new Error("聊天对象已变化，已取消话术发送");
     clickElement(sendButton);
     const evidenceDetails = await waitForGreetingConfirmation(greeting, input, messageCountBefore, 6000);
     const sent = evidenceDetails.outcome === "CONFIRMED";
