@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.18";
+  const EXTENSION_VERSION = "1.8.19";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -3342,7 +3342,8 @@
       return;
     }
     input.innerText = text;
-    input.textContent = text;
+    // innerText creates real line breaks in contenteditable. Replacing it with
+    // textContent would collapse those breaks under the editor's normal whitespace.
     input.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
   }
 

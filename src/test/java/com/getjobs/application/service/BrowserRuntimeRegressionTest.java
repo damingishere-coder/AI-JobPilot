@@ -108,6 +108,21 @@ class BrowserRuntimeRegressionTest {
         assertThat(page.locator("body").innerHTML()).isEqualTo(original);
     }
 
+    @Test void bossGreetingKeepsNewlinesInTheRealContenteditable() throws Exception {
+        fixture("boss", "detail/redacted-header-only-20260915.html",
+            "<div id='chat-input' contenteditable='true' style='white-space:normal'></div>");
+        String source = Files.readString(Path.of("chrome-extension/boss-content.js"));
+        String functions = source.substring(source.indexOf("  function writeChatInput("),
+            source.indexOf("  function findSendButton("));
+        assertThat(probe(functions + """
+            function isCurrentContentInstance() { return true; }
+            const input = document.getElementById('chat-input');
+            const expected = '测试岗位沟通。\\n个人作品集：https://example.invalid/';
+            writeChatInput(input, expected);
+            return readChatInput(input);
+            """)).isEqualTo("测试岗位沟通。\n个人作品集：https://example.invalid/");
+    }
+
     @Test void realLayoutRejectsHiddenSuccessAndQuotaOverridesVisibleSuccess() throws Exception {
         fixture("zhilian", "states/success.html", "");
         assertThat(probe("return GetJobsZhilianPageEvidence.detectStatus(document)")).isEqualTo("已投递");
