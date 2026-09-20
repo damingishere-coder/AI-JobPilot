@@ -17,7 +17,7 @@ class BrowserRuntimeRegressionTest {
     Page page;
     com.sun.net.httpserver.HttpServer api;
 
-    @BeforeEach void start() throws Exception {
+    @BeforeEach void start(TestInfo testInfo) throws Exception {
         Path extension = temp.resolve("extension");
         Path source = Path.of("chrome-extension").toAbsolutePath();
         try (var files = Files.walk(source)) {
@@ -34,12 +34,46 @@ class BrowserRuntimeRegressionTest {
         Path background = extension.resolve("background.js");
         Files.writeString(background, "globalThis.fetch = async () => { throw new Error('OFFLINE_REGRESSION_NETWORK_DENIED'); };\n"
             + Files.readString(background));
+        if (testInfo.getTestMethod().orElseThrow().getName().equals("bossColdPreflightNavigatesAndSendsOneMultilineGreetingAcrossDocuments")) {
+            // Test-only bridge into the real MV3 worker; never copied to production.
+            Files.writeString(background, """
+              \nconst fixtureReceipts=[];
+              // Chrome-created tabs can navigate before Playwright attaches its
+              // route interceptor. Hand the blank tab to the test before navigation.
+              const fixtureCreateTab=chrome.tabs.create.bind(chrome.tabs);
+              chrome.tabs.create=options=>{
+                if(options.url!=='https://www.zhipin.com/')throw new Error('UNEXPECTED_FIXTURE_TAB');
+                return fixtureCreateTab({...options,url:'about:blank'});
+              };
+              globalThis.fetch=async(url,options={})=>{
+                const parsed=new URL(url);let body;
+                if(parsed.origin!=='http://127.0.0.1:6866')throw new Error('OFFLINE_NETWORK_DENIED');
+                if(parsed.pathname==='/api/local-auth/action-token')body={success:true,data:{token:'offline-token'}};
+                else if(parsed.pathname.endsWith('/validate-dispatch'))body={success:true};
+                else if(parsed.pathname.endsWith('/runtime/claim'))body={success:true,enabled:false};
+                else if(parsed.pathname==='/api/boss/jobs/10/delivery-result'){
+                  const result=JSON.parse(options.body);fixtureReceipts.push(result);body={success:true,accepted:true,state:result.outcome};
+                } else throw new Error('UNEXPECTED_OFFLINE_API:'+parsed.pathname);
+                return new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
+              };
+              chrome.runtime.onMessage.addListener((message,sender,reply)=>{
+                if(message.type!=='OFFLINE_REGRESSION_REQUEST')return;
+                if(message.receipts){reply(fixtureReceipts);return;}
+                chrome.tabs.query({}).then(tabs=>{
+                  const owner=tabs.find(t=>t.url==='http://localhost:6866/offline-regression');
+                  return handlePageMessage(message.payload,{tab:owner});
+                }).then(reply,error=>reply({fixtureError:error.message}));
+                return true;
+              });
+              """, StandardOpenOption.APPEND);
+        }
         Files.writeString(extension.resolve("regression-probe.html"), "<!doctype html><title>Offline regression</title><script src='browser-application-runtime.js'></script>");
         playwright = Playwright.create();
         context = playwright.chromium().launchPersistentContext(temp.resolve("profile"),
             new BrowserType.LaunchPersistentContextOptions().setChannel("chromium").setHeadless(true)
                 .setArgs(List.of("--disable-extensions-except=" + extension, "--load-extension=" + extension,
-                    "--disable-background-networking")));
+                    "--disable-background-networking",
+                    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")));
         context.setDefaultTimeout(10000);
         context.route("**/*", route -> {
             if (route.request().url().startsWith("chrome-extension://")) route.resume();
@@ -106,6 +140,72 @@ class BrowserRuntimeRegressionTest {
         worker.locator("#reviewed").check();
         assertThat(worker.locator("#download").isEnabled()).isTrue();
         assertThat(page.locator("body").innerHTML()).isEqualTo(original);
+    }
+
+    @Test void bossColdPreflightNavigatesAndSendsOneMultilineGreetingAcrossDocuments() throws Exception {
+        // Real MV3 background/content scripts and document navigation; all pages
+        // and API responses are synthetic, with real recruitment network denied.
+        String workbench = "http://localhost:6866/offline-regression";
+        context.route(workbench, route -> route.fulfill(new Route.FulfillOptions().setContentType("text/html")
+            .setBody("<!doctype html><meta charset='utf-8'><title>Offline workbench</title>")));
+        context.route("https://www.zhipin.com/", route -> {
+            try { Thread.sleep(2300); } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            route.fulfill(new Route.FulfillOptions().setContentType("text/html")
+                .setBody("<!doctype html><meta charset='utf-8'><title>Offline BOSS</title><div>测试岗位首页</div>"));
+        });
+        context.route("https://www.zhipin.com/job_detail/fixture10.html", route -> route.fulfill(
+            new Route.FulfillOptions().setContentType("text/html").setBody("""
+              <!doctype html><meta charset='utf-8'><title>Offline job</title>
+              <div class='job-detail'><h1 class='job-title'>测试岗位</h1><p>测试职责</p>
+                <button onclick="sessionStorage.fixtureContactClicks=Number(sessionStorage.fixtureContactClicks||0)+1;location.href='/web/geek/chat'">立即沟通</button>
+              </div>
+              """)));
+        context.route("https://www.zhipin.com/web/geek/chat", route -> route.fulfill(
+            new Route.FulfillOptions().setContentType("text/html").setBody("""
+              <!doctype html><meta charset='utf-8'><title>Offline chat</title>
+              <div class='user-list'><div class='friend-content-warp'><div class='friend-content selected'>
+                <div class='name-box'><span class='name-text'>测试HR</span><span>测试公司</span></div>
+              </div></div></div>
+              <div class='chat-conversation'><div class='im-list'></div>
+                <div id='chat-input' class='chat-input' contenteditable='true' style='white-space:normal;min-height:40px'></div>
+                <button class='btn-send'>发送</button>
+              </div>
+              <script>
+                const props={friendId:'101',friendSource:0,uniqueId:'101-0',name:'测试HR',brandName:'测试公司',encryptJobId:'fixture10'};
+                const card=document.querySelector('.friend-content-warp'),pane=document.querySelector('.chat-conversation');
+                card.__vue__={$el:card,$props:{source:props}};pane.__vue__={$el:pane,selectedFriend$:props};
+                document.querySelector('.btn-send').onclick=()=>{
+                  sessionStorage.fixtureSendClicks=Number(sessionStorage.fixtureSendClicks||0)+1;
+                  const input=document.getElementById('chat-input'),row=document.createElement('div');row.className='message-self';
+                  const text=document.createElement('div');text.className='text-content';text.innerHTML=input.innerHTML;
+                  row.append(text);document.querySelector('.im-list').append(row);input.innerHTML='';
+                };
+              </script>
+              """)));
+        page.navigate(workbench);
+        assertThat(ping()).isEqualTo(true);
+        Page landing = context.waitForPage(() -> worker.evaluate("""
+          ()=>{window.fixturePreflight=chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',payload:{type:'BOSS_DELIVERY_PREFLIGHT',platform:'boss'}});}
+          """));
+        // The context now owns the tab and its routes before the first HTTPS request.
+        landing.navigate("https://www.zhipin.com/");
+        Object prepared = worker.evaluate("()=>window.fixturePreflight");
+        assertThat(((Map<?,?>)prepared).get("success")).as("preflight: %s", prepared).isEqualTo(true);
+        Object result = worker.evaluate("""
+          ()=>chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',payload:{type:'BOSS_DELIVER_ONE',platform:'boss',runtimeProtocol:'application-runtime/1',
+              runId:'fixture-run',runtimeSessionId:'fixture-session',correlationId:'fixture-correlation',
+              task:{id:10,profileId:1,requestKey:'fixture-delivery',url:'https://www.zhipin.com/job_detail/fixture10.html',
+                greeting:'测试岗位沟通。\\n个人作品集：https://example.invalid/'}}})
+          """);
+        assertThat(((Map<?,?>)result).get("outcome")).as("delivery: %s", result).isEqualTo("CONFIRMED");
+        assertThat(((Map<?,?>)result).get("greetingOutcome")).isEqualTo("CONFIRMED");
+        Page chat = context.pages().stream().filter(p -> p.url().equals("https://www.zhipin.com/web/geek/chat")).findFirst().orElseThrow();
+        assertThat(chat.locator(".message-self").count()).isEqualTo(1);
+        assertThat(chat.locator(".text-content").innerText()).isEqualTo("测试岗位沟通。\n个人作品集：https://example.invalid/");
+        assertThat(chat.evaluate("() => [sessionStorage.fixtureContactClicks,sessionStorage.fixtureSendClicks]"))
+            .isEqualTo(List.of("1","1"));
+        assertThat(worker.evaluate("async() => {const receipts=await chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',receipts:true});return receipts.length > 0 && receipts.every(r=>r.outcome==='CONFIRMED' && r.greetingOutcome==='CONFIRMED') }"))
+            .isEqualTo(true);
     }
 
     @Test void bossGreetingKeepsNewlinesInTheRealContenteditable() throws Exception {
