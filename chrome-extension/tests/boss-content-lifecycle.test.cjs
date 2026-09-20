@@ -12,7 +12,9 @@ function storage() {
 function harness() {
   const listeners = [], timers = [], messages = [], runs = [];
   const sessionStorage = storage(), localStorage = storage();
-  const window = { location: new URL('https://www.zhipin.com/web/geek/jobs?query=AI'), setTimeout: fn => timers.push(fn) };
+  const pageEvents = {};
+  const window = { location: new URL('https://www.zhipin.com/web/geek/jobs?query=AI'), setTimeout: fn => timers.push(fn),
+    addEventListener: (name, listener) => { pageEvents[name] = listener; } };
   const context = vm.createContext({ window, sessionStorage, localStorage, URL, console, setTimeout: window.setTimeout,
     chrome: { runtime: { onMessage: { addListener: fn => listeners.push(fn) }, sendMessage: async m => { messages.push(m); return { success: true }; } } },
     runs });
@@ -24,7 +26,7 @@ function harness() {
   })();`);
   const boot = () => vm.runInContext(instrumented, context);
   boot();
-  return { window, listeners, timers, messages, runs, sessionStorage, boot };
+  return { window, listeners, timers, messages, runs, sessionStorage, boot, pageEvents };
 }
 function task(extra = {}) {
   return { profileId: 4, runId: 'boss-test', keywords: ['AI'], currentIndex: 0, phase: 'searching',
@@ -78,4 +80,18 @@ test('pending navigation timers stop after pause or phase advance', () => {
   assert.equal(h.window.test.isSearchNavigationPending(task()), true);
   assert.equal(h.window.test.isSearchNavigationPending(task({pausedAt:Date.now()})), false);
   assert.equal(h.window.test.isSearchNavigationPending(task({phase:'detail'})), false);
+});
+
+test('BFCache pagehide retires the runner and permits a fresh readiness injection', async () => {
+  const h = harness(), old = h.window.test;
+  const firstId = h.window.__GET_JOBS_BOSS_CONTENT_INSTANCE_ID__;
+  h.pageEvents.pagehide();
+  let response;
+  h.listeners[0]({ source: 'GET_JOBS_BACKGROUND', type: 'PING_CONTENT' }, {}, value => { response = value; });
+  assert.equal(response, undefined, 'the frozen listener must not claim readiness');
+  assert.equal((await old.requestBackgroundNavigation('https://www.zhipin.com/job_detail/old.html')).success, false);
+  h.boot();
+  assert.notEqual(h.window.__GET_JOBS_BOSS_CONTENT_INSTANCE_ID__, firstId);
+  h.listeners[1]({ source: 'GET_JOBS_BACKGROUND', type: 'PING_CONTENT' }, {}, value => { response = value; });
+  assert.equal(response.success, true);
 });
