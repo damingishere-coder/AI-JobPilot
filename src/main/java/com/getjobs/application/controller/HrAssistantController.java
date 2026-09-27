@@ -70,8 +70,10 @@ public class HrAssistantController {
     @GetMapping("/autopilot/deliveries")
     public ResponseEntity<?> deliveryCounts() { return execute(()->autopilot.deliveryCounts(profileService.getCurrentProfileId())); }
 
-    @GetMapping("/autopilot/guard")
-    public ResponseEntity<?> guard() { return execute(()-> {
+    @PostMapping("/autopilot/guard")
+    public ResponseEntity<?> guard(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token)) return unauthorized();
+        return execute(()-> {
         Long id=profileService.getCurrentProfileId(); var p=autopilot.policy(id);
         return java.util.Map.of("enabled",p.enabled(),"paused",p.paused(),"version",p.version(),
                 "authorizationValid",autopilot.authorizationValid(id),"protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL);

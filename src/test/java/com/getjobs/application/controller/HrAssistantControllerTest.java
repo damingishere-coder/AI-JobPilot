@@ -55,6 +55,24 @@ class HrAssistantControllerTest {
     }
 
     @Test
+    void authorizationGuardRequiresPostAndLocalTokenBeforeReadingPolicy() throws Exception {
+        var policies=mock(com.getjobs.application.service.HrAutopilotStore.class);
+        controller.setAutopilot(policies);
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot/guard"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isMethodNotAllowed());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/autopilot/guard"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        verifyNoInteractions(policies,profiles);
+        when(profiles.getCurrentProfileId()).thenReturn(1L);
+        when(policies.policy(1L)).thenReturn(com.getjobs.application.service.HrAutopilotStore.Policy.defaults());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/autopilot/guard")
+                .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(policies).authorizationValid(1L);
+    }
+
+    @Test
     void validatesBoundSessionBeforeClaimingSendCommand() {
         when(profiles.getCurrentProfileId()).thenReturn(1L);
         HrAssistantController.SendCommandClaimRequest request = new HrAssistantController.SendCommandClaimRequest();

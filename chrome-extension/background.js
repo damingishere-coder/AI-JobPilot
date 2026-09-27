@@ -954,7 +954,7 @@ function resolveBossLocalApiEndpoint(message) {
   }
   if (operation === "hr-dedicated-open") return {success:true,method:"GET",path:"/api/hr-assistant/status"};
   if (operation === "hr-autopilot") return {success:true,method:"GET",path:"/api/hr-assistant/autopilot"};
-  if (operation === "hr-watch-guard") return {success:true,method:"GET",path:"/api/hr-assistant/autopilot/guard"};
+  if (operation === "hr-watch-guard") return {success:true,method:"POST",path:"/api/hr-assistant/autopilot/guard",requireActionToken:true};
   if (operation === "hr-pause" || operation === "hr-resume") return {success:true,method:"POST",path:"/api/hr-assistant/autopilot/"+(operation==="hr-pause"?"pause":"resume"),requireActionToken:true};
   if (operation === "hr-context") return {success:true,method:"GET",path:`/api/hr-assistant/proposals/${Number(message?.params?.id)}/context`};
   if (operation === "hr-status") return { success: true, method: "GET", path: "/api/hr-assistant/status" };
