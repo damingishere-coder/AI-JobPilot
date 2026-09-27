@@ -81,6 +81,7 @@ export default function HrAssistantSettingsCard() {
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState('')
   const [loadError, setLoadError] = useState('')
+  const [settingsRevision, setSettingsRevision] = useState(0)
   const loadSequence = useRef(0)
 
   const applySettings = (settings: HrAssistantSettings) => {
@@ -132,6 +133,7 @@ export default function HrAssistantSettingsCard() {
         throw new Error('当前档案已变化，请重新加载后再编辑')
       }
       applySettings(result.data)
+      setSettingsRevision(value => value + 1)
     } catch (error) {
       if (sequence === loadSequence.current) {
         setLoadError(friendlyApiError(error, 'BOSS HR 设置加载失败'))
@@ -196,6 +198,7 @@ export default function HrAssistantSettingsCard() {
       }
       applySettings(result.data)
       setStatus('BOSS HR 设置已加密保存。')
+      setSettingsRevision(value => value + 1)
     } catch (error) {
       setStatus(friendlyApiError(error, 'BOSS HR 设置保存失败'))
     } finally {
@@ -253,7 +256,7 @@ export default function HrAssistantSettingsCard() {
 
         {currentProfile && !loadError && !loading ? (
           <>
-            <HrAutopilotSettings key={currentProfile.id} profileId={Number(currentProfile.id)} />
+            <HrAutopilotSettings key={`${currentProfile.id}:${settingsRevision}`} profileId={Number(currentProfile.id)} settingsDirty={dirty || saving || loading} />
             <div>
               <h3 className="mb-3 text-sm font-semibold">沟通资料</h3>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

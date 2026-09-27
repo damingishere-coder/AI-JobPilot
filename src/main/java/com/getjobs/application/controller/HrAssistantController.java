@@ -58,11 +58,24 @@ public class HrAssistantController {
         result.put("version",p.version()); result.put("enabled",p.enabled()); result.put("paused",p.paused());
         result.put("resumeName",p.resumeName()); result.put("resumeSha256",p.resumeSha256()); result.put("facts",p.facts());
         result.put("rules",p.rules()); result.put("pendingFact",p.pendingFact()); result.put("authorizationValid",autopilot.authorizationValid(id));
+        result.put("replyMode",p.replyMode()); result.put("sharePhone",p.sharePhone()); result.put("shareResume",p.shareResume());
+        result.put("historyMode",p.historyMode()); result.put("historyDays",p.historyDays());
+        result.put("protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL);
+        result.put("communicationProfile",store.loadSettings(id).communicationProfile());
+        result.put("activity",autopilot.activity(id));
+        result.put("blockers",watchService.dutyBlockers(id));
         return result;
     }); }
 
     @GetMapping("/autopilot/deliveries")
     public ResponseEntity<?> deliveryCounts() { return execute(()->autopilot.deliveryCounts(profileService.getCurrentProfileId())); }
+
+    @GetMapping("/autopilot/guard")
+    public ResponseEntity<?> guard() { return execute(()-> {
+        Long id=profileService.getCurrentProfileId(); var p=autopilot.policy(id);
+        return java.util.Map.of("enabled",p.enabled(),"paused",p.paused(),"version",p.version(),
+                "authorizationValid",autopilot.authorizationValid(id),"protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL);
+    }); }
 
     @PutMapping("/autopilot")
     public ResponseEntity<?> saveAutopilot(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
@@ -74,10 +87,10 @@ public class HrAssistantController {
             if(watchService.status().watching() || watchService.status().scanRunning() || store.hasLeasedSendCommands())
                 throw new IllegalStateException("请先停止值守并等待发送结果后再修改托管授权");
             if(!request.rulesConfirmed()) throw new IllegalArgumentException("请先核对并确认托管规则");
-            return autopilot.configure(id,request.expectedVersion(),request.enabled(),request.resumeName(),request.resumeSha256());
+            return autopilot.configure(id,request.expectedVersion(),request.enabled(),request.resumeName(),request.resumeSha256(),request.replyMode(),request.sharePhone(),request.shareResume(),request.historyMode(),request.historyDays());
         }));
     }
-    public record AutopilotRequest(Long profileId,int expectedVersion,boolean enabled,boolean rulesConfirmed,String resumeName,String resumeSha256) { }
+    public record AutopilotRequest(Long profileId,int expectedVersion,boolean enabled,boolean rulesConfirmed,String resumeName,String resumeSha256,String replyMode,boolean sharePhone,boolean shareResume,String historyMode,int historyDays) { }
 
     @PostMapping("/autopilot/{operation:pause|resume}")
     public ResponseEntity<?> pauseAutopilot(@PathVariable String operation,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {

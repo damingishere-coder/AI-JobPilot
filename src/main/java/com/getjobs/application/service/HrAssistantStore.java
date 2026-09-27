@@ -240,6 +240,19 @@ public class HrAssistantStore {
         return count != null && count > 0;
     }
 
+    public boolean hasHandledSource(long conversationId, String sourceFingerprint, boolean reconsiderHistory) {
+        if (!reconsiderHistory) return hasProposalForSource(conversationId,sourceFingerprint);
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id WHERE p.conversation_id=? AND p.source_fingerprint=? AND NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY') AND NOT (p.status='EXPIRED' AND EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT') AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE')))",Integer.class,conversationId,sourceFingerprint)>0;
+    }
+
+    @Transactional
+    public void resumePendingCommands(Long profileId,String watchSessionId) {
+        // Only commands never leased to a browser can be resumed or re-evaluated.
+        jdbcTemplate.update("UPDATE hr_send_command SET status='STALE',outcome='EXPIRED_UNSENT',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING' AND expires_at<=datetime('now','localtime')",profileId);
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='APPROVED' AND id IN (SELECT proposal_id FROM hr_send_command WHERE outcome='EXPIRED_UNSENT')",profileId);
+        jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING'",watchSessionId,profileId);
+    }
+
     @Transactional
     public void expireAnsweredProposals(long conversationId) {
         jdbcTemplate.update("""

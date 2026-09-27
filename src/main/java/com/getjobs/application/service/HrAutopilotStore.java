@@ -12,48 +12,63 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class HrAutopilotStore {
-    public static final String RULES = "基于已确认简历事实回答并主动询问岗位职责、地点和待遇。期望15–20K，结合职责面议；不设城市或薪资硬底线，不自动拒绝。优先电话面试，到岗为确认Offer后两周内。对方索要才可发已配置电话或指定简历。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。历史只整理。";
+    public static final String PROTOCOL = "2026-09-27-hr-duty";
+    public static final String RULES = "基于当前档案中已确认的简历与沟通资料回答，可主动询问岗位职责、地点和待遇；不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final HrAssistantCryptoService crypto;
     private final HrAssistantStore hr;
 
     public record Policy(int version, boolean enabled, boolean paused, String resumeName,
-                         String resumeSha256, String facts, String rules, String pendingFact) {
-        public static Policy defaults() { return new Policy(1, false, false, "", "", "", RULES, ""); }
+                         String resumeSha256, String facts, String rules, String pendingFact,
+                         String replyMode, boolean sharePhone, boolean shareResume, String historyMode, int historyDays) {
+        public Policy {
+            replyMode = replyMode == null ? "REVIEW" : replyMode;
+            historyMode = historyMode == null ? "NEW_ONLY" : historyMode;
+            historyDays = historyDays == 0 ? 30 : historyDays;
+        }
+        public static Policy defaults() { return new Policy(1, false, false, "", "", "", RULES, "", "REVIEW", false, false, "NEW_ONLY", 30); }
     }
     public Policy policy(Long profileId) {
         var rows = jdbc.query("SELECT version,enabled,paused,policy_cipher FROM hr_autopilot_policy WHERE profile_id=?", (rs,n) -> {
             Policy p = decode(rs.getString("policy_cipher"), "autopilot:" + profileId, Policy.class);
-            return new Policy(rs.getInt("version"), rs.getBoolean("enabled"), rs.getBoolean("paused"), p.resumeName(), p.resumeSha256(), p.facts(), RULES, p.pendingFact());
+            return new Policy(rs.getInt("version"), rs.getBoolean("enabled"), rs.getBoolean("paused"), p.resumeName(), p.resumeSha256(), p.facts(), RULES, p.pendingFact(), p.replyMode(), p.sharePhone(), p.shareResume(), p.historyMode(), p.historyDays());
         }, profileId);
         return rows.isEmpty() ? Policy.defaults() : rows.getFirst();
     }
     @Transactional
     public Policy configure(Long profileId, int expectedVersion, boolean enabled, String resumeName, String resumeSha256) {
+        return configure(profileId, expectedVersion, enabled, resumeName, resumeSha256, "AUTO", true, true, "NEW_ONLY", 30);
+    }
+    @Transactional
+    public Policy configure(Long profileId, int expectedVersion, boolean enabled, String resumeName, String resumeSha256,
+                            String replyMode, boolean sharePhone, boolean shareResume, String historyMode, int historyDays) {
         Policy old = policy(profileId);
         if (old.version() != expectedVersion) throw new HrAssistantStore.StaleProposalException("托管规则已变化，请重新加载");
         var settings = hr.loadSettingsSecret(profileId);
-        if (enabled && (!settings.qqEnabled() || settings.qqTargetType() != QqTargetType.GROUP || settings.qqOperator().isBlank()))
+        if (!Set.of("AUTO", "REVIEW").contains(Objects.toString(replyMode,"")) || !Set.of("RECENT", "NEW_ONLY").contains(Objects.toString(historyMode,"")) || historyDays < 1 || historyDays > 30)
+            throw new IllegalArgumentException("回复模式或历史范围无效（最多30天）");
+        if (enabled && replyMode.equals("AUTO") && (!settings.qqEnabled() || settings.qqTargetType() != QqTargetType.GROUP || settings.qqOperator().isBlank()))
             throw new IllegalArgumentException("请先配置 QQ 群和唯一操作人 QQ");
         String name = Objects.toString(resumeName, "").trim();
         String hash = Objects.toString(resumeSha256, "").trim().toLowerCase(Locale.ROOT);
-        if (enabled && (!name.toLowerCase(Locale.ROOT).endsWith(".pdf") || !hash.matches("[a-f0-9]{64}")))
+        if (enabled && shareResume && (!name.toLowerCase(Locale.ROOT).endsWith(".pdf") || !hash.matches("[a-f0-9]{64}")))
             throw new IllegalArgumentException("请先选择并确认允许发送的简历文件");
-        Policy next = new Policy(old.version()+1, enabled, false, name, hash, old.facts(), RULES, "");
+        Policy next = new Policy(old.version()+1, enabled, false, name, hash, old.facts(), RULES, "", replyMode, sharePhone, shareResume, historyMode, historyDays);
         save(profileId, next);
-        jdbc.update("UPDATE hr_autopilot_policy SET settings_hash=? WHERE profile_id=?",settingsHash(profileId),profileId);
+        jdbc.update("UPDATE hr_autopilot_policy SET settings_hash=?,contract_version=2 WHERE profile_id=?",settingsHash(profileId),profileId);
+        jdbc.update("INSERT INTO hr_duty_progress(profile_id) VALUES (?) ON CONFLICT(profile_id) DO UPDATE SET baseline_complete=0,processed=0",profileId);
         // No previously approved automatic command may survive a policy change.
         jdbc.update("UPDATE hr_send_command SET status='STALE',outcome='STALE' WHERE profile_id=? AND status='PENDING' AND proposal_id IN (SELECT proposal_id FROM hr_autopilot_decision WHERE automatic=1)", profileId);
         return next;
     }
     private String settingsHash(Long profileId) {
         var s=hr.loadSettingsSecret(profileId);
-        try { return crypto.blindIndex(json.writeValueAsString(List.of(s.communicationProfile(),s.qqEnabled(),s.qqTargetType(),s.qqTarget(),s.qqOperator())),"hr-policy-settings:"+profileId); }
+        try { return crypto.blindIndex(json.writeValueAsString(List.of(s.communicationProfile(),s.qqEnabled(),s.qqTargetType(),s.qqTarget(),s.qqOperator(),jdbc.queryForList("SELECT COALESCE(resume_text,'') AS text FROM resume_profile WHERE profile_id=? ORDER BY updated_at DESC LIMIT 1",profileId))),"hr-policy-settings:"+profileId); }
         catch(Exception e) { throw new IllegalStateException("托管配置无法核验",e); }
     }
     public boolean authorizationValid(Long profileId) {
-        var rows=jdbc.query("SELECT settings_hash FROM hr_autopilot_policy WHERE profile_id=?",(rs,n)->rs.getString(1),profileId);
+        var rows=jdbc.query("SELECT settings_hash FROM hr_autopilot_policy WHERE profile_id=? AND contract_version=2",(rs,n)->rs.getString(1),profileId);
         return !rows.isEmpty() && settingsHash(profileId).equals(rows.getFirst());
     }
 
@@ -69,7 +84,7 @@ public class HrAutopilotStore {
     public Policy pause(Long profileId, boolean paused) {
         Policy p=policy(profileId);
         if (!p.enabled()) throw new IllegalStateException("请先在工作台核对规则并启用托管");
-        Policy next=new Policy(p.version(),p.enabled(),paused,p.resumeName(),p.resumeSha256(),p.facts(),RULES,p.pendingFact());
+        Policy next=new Policy(p.version(),p.enabled(),paused,p.resumeName(),p.resumeSha256(),p.facts(),RULES,p.pendingFact(),p.replyMode(),p.sharePhone(),p.shareResume(),p.historyMode(),p.historyDays());
         save(profileId,next); return next;
     }
     @Transactional
@@ -81,7 +96,7 @@ public class HrAutopilotStore {
         if (candidate.isBlank() || candidate.length()>1000 || p.facts().length()+candidate.length()>8000)
             throw new IllegalArgumentException("事实为空或过长，请在工作台整理资料");
         Policy next=new Policy(p.version()+1,p.enabled(),p.paused(),p.resumeName(),p.resumeSha256(),
-                confirm ? p.facts()+"\n"+candidate : p.facts(),RULES,confirm ? "" : candidate);
+                confirm ? p.facts()+"\n"+candidate : p.facts(),RULES,confirm ? "" : candidate,p.replyMode(),p.sharePhone(),p.shareResume(),p.historyMode(),p.historyDays());
         save(profileId,next); return next;
     }
     public void context(long conversationId, ChatCapture capture) {
@@ -113,6 +128,31 @@ public class HrAutopilotStore {
         var rows=jdbc.query("SELECT reason_cipher FROM hr_autopilot_decision WHERE proposal_id=?",
                 (rs,n)->decode(rs.getString(1),"hr-decision:"+proposalId,String.class),proposalId);
         return rows.isEmpty()?"需要用户确认回复":rows.getFirst();
+    }
+    public void audit(long proposalId, String evidence, boolean historical) {
+        jdbc.update("UPDATE hr_autopilot_decision SET evidence_cipher=?,capture_origin=? WHERE proposal_id=?",
+                encode(evidence,"hr-evidence:"+proposalId),historical?"BACKLOG":"LIVE",proposalId);
+    }
+    public Map<String,Object> activity(Long profileId) {
+        Map<String,Object> out=new LinkedHashMap<>(progressStatus(profileId));
+        out.put("decisions",jdbc.query("SELECT d.proposal_id,d.reason_cipher,d.capture_origin FROM hr_autopilot_decision d JOIN hr_reply_proposal p ON p.id=d.proposal_id WHERE p.profile_id=? ORDER BY p.updated_at DESC LIMIT 200",
+                (rs,n)->Map.of("proposalId",rs.getLong(1),"reason",decode(rs.getString(2),"hr-decision:"+rs.getLong(1),String.class),"origin",rs.getString(3)),profileId));
+        return out;
+    }
+    public Map<String,Object> progressStatus(Long profileId) {
+        Map<String,Object> out=new LinkedHashMap<>();
+        Map<String,Integer> counts=new LinkedHashMap<>();
+        jdbc.query("SELECT status,COUNT(*) FROM hr_reply_proposal WHERE profile_id=? GROUP BY status",rs->{counts.put(rs.getString(1),rs.getInt(2));},profileId);
+        out.put("counts",counts);
+        var progress=jdbc.queryForList("SELECT processed,baseline_complete,updated_at FROM hr_duty_progress WHERE profile_id=?",profileId);
+        out.put("progress",progress.isEmpty()?Map.of("processed",0,"baseline_complete",0):progress.getFirst());
+        return out;
+    }
+    public void progress(Long profileId, boolean complete) {
+        jdbc.update("INSERT INTO hr_duty_progress(profile_id,processed,baseline_complete) VALUES (?,?,?) ON CONFLICT(profile_id) DO UPDATE SET processed=processed+?,baseline_complete=?,updated_at=CURRENT_TIMESTAMP",profileId,complete?0:1,complete,complete?0:1,complete);
+    }
+    public void scanStarted(Long profileId) {
+        jdbc.update("INSERT INTO hr_duty_progress(profile_id) VALUES (?) ON CONFLICT(profile_id) DO UPDATE SET baseline_complete=0,updated_at=CURRENT_TIMESTAMP",profileId);
     }
     public record Decision(int policyVersion,String action,boolean automatic) { }
     public Decision decision(long proposalId) {

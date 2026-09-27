@@ -58,7 +58,7 @@ export default function HrWatchConnection() {
     setOpening(true)
     try {
       const response = await sendChromeBridgeMessage({ type: 'BOSS_HR_OPEN_CHAT' }, 5000)
-      setMessage(response.success ? '已打开聊天页，请确认档案与 BOSS 账号后点击“开始值守”。' : response.message || '扩展未响应，请使用下方直接打开链接。')
+      setMessage(response.success ? '已打开聊天页，请确认档案与 BOSS 账号后点击“开始自动值班”。' : response.message || '扩展未响应，请使用下方直接打开链接。')
     } catch (error) {
       setMessage(friendlyApiError(error, '打开聊天页失败，请使用下方直接打开链接。'))
     } finally { setOpening(false) }
@@ -68,9 +68,9 @@ export default function HrWatchConnection() {
     <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={opening} onClick={() => void openChat()}>
-          {opening ? '正在打开…' : '打开 BOSS 聊天页'}
+          {opening ? '正在打开…' : '打开 BOSS 专用值班页'}
         </Button>
-        <a className="text-sm text-primary underline" href="https://www.zhipin.com/web/geek/chat" target="_blank" rel="noopener noreferrer">直接在浏览器打开</a>
+        <a className="text-sm text-primary underline" href="https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1" target="_blank" rel="noopener noreferrer">直接在浏览器打开</a>
       </div>
       <div role="status" className="space-y-1 text-sm">
         <p>{backendError || `值守后端可用 · ${watch?.watching ? '值守中' : '已停止'}`}</p>

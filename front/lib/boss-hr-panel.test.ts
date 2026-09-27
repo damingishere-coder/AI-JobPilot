@@ -31,7 +31,7 @@ it('explains manual review and AI failure without enabling an empty draft or ren
   expect(root.textContent).toContain('<img src=x onerror=alert(1)>')
   expect(root.querySelector('img')).toBeNull()
   expect(Array.from(root.querySelectorAll<HTMLButtonElement>('.card .primary')).every(node => node.disabled)).toBe(true)
-  expect(operations).toEqual(['hr-status', 'hr-proposals'])
+  expect(operations).toEqual(['hr-status', 'hr-proposals', 'hr-autopilot'])
 })
 
 
