@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-07-hr-autopilot";
+  const CONTENT_VERSION = "2026-09-27-hr-duty";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -35,7 +35,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.source !== "GET_JOBS_BACKGROUND") return;
     if (message.type === "BOSS_HR_CONTENT_VERSION_V2") {
-      sendResponse({ success: true, version: CONTENT_VERSION, url: location.href });
+      sendResponse({ success: true, version: CONTENT_VERSION, url: location.href, safety:support.pageSafety(document) });
       return;
     }
     if (message.type === "BOSS_HR_SCAN_V2") {
@@ -146,7 +146,8 @@
         continue;
       }
       session.lastMessage = inbound?.text || "";
-      session.lastTime = inbound?.time || currentSnapshot.lastTime;
+      // List dates describe the latest message; a bubble's bare HH:mm may refer to an older day.
+      session.lastTime = currentSnapshot.lastTime || inbound?.time || "";
       delete session.surfaceText;
       const capture = { captureId, unreadCount: currentSnapshot.unreadCount, session, messages,
         historical:managed && message.baseline===true,contextComplete:read.complete };
@@ -154,6 +155,16 @@
       if (message.streamResults) {
         const saved = await backgroundRequest("BOSS_HR_CAPTURE_RESULT", { capture, scanId: message.scanId, watchSessionId: message.watchSessionId });
         if (!saved?.success) return { success: false, pause: true, errorCode: saved?.errorCode || "HR_CAPTURE_SUBMIT_FAILED", message: saved?.message || "生成或保存结果未确认，已暂停，不自动重试" };
+        if(saved.command) {
+          let execution;
+          try { execution=await executeSend(saved.command); }
+          catch(error) { execution={outcome:sendDispatched?"RESULT_UNKNOWN":"FAILED_SAFE",evidence:concise(error)}; }
+          const reported=await backgroundRequest("BOSS_LOCAL_API",{operation:"hr-boundary-result",id:saved.command.commandId,
+            body:{watchSessionId:message.watchSessionId,tabId:saved.tabId,leaseToken:saved.command.leaseToken,
+              outcome:execution.outcome||"RESULT_UNKNOWN",evidence:String(execution.evidence||"").slice(0,500),observedLatestInbound:execution.observedLatestInbound||null}});
+          if(!reported?.success) return {success:false,errorCode:"HR_SEND_REPORT_UNKNOWN",message:"发送结果未保存，已暂停，请核验；不会重发"};
+          executingPolicyVersion=0;
+        }
       } else captures.push(capture);
       summaries[snapshot.uid]=signature(currentSnapshot);
       scannedCount++;
@@ -277,6 +288,8 @@
     }
     const read=await readContext();
     const before=read.messages;
+    if(!read.complete || !before.length || before[before.length-1].from!=="对方")
+      return {success:true,outcome:"STALE",evidence:"上下文未完整读取或本人已经回复"};
     if(command.expectedInboundRound?.length) {
       let start=before.length; while(start>0 && before[start-1].from==="对方") start--;
       const round=before.slice(start);
@@ -306,7 +319,11 @@
     if (Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     await guard();
     const recheck=support.currentSession(document,{uid:command.uid});
-    if(recheck.uid!==command.uid || !support.messagesMatch(support.latestInbound(support.readMessages(document)),command.expectedLatestInbound))
+    const finalMessages=support.readMessages(document);
+    let roundStart=finalMessages.length; while(roundStart>0 && finalMessages[roundStart-1].from==="对方") roundStart--;
+    const finalRound=finalMessages.slice(roundStart);
+    if(recheck.uid!==command.uid || finalMessages.at(-1)?.from!=="对方" || !support.messagesMatch(support.latestInbound(finalMessages),command.expectedLatestInbound)
+      || (command.expectedInboundRound?.length && (finalRound.length!==command.expectedInboundRound.length || finalRound.some((m,i)=>!support.messagesMatch(m,command.expectedInboundRound[i])))))
       return {success:true,outcome:"STALE",evidence:"点击发送前会话或消息发生变化"};
     if(Date.now()>=command.deadlineAt) return {success:true,outcome:"FAILED_SAFE",evidence:"授权复核后租约已过期"};
     let dispatched = false;
@@ -354,7 +371,7 @@
     // Keep the latest round plus a preceding complete exchange; virtual-list gaps remain incomplete.
     const beginning=Array.from(document.querySelectorAll(".chat-conversation .history-tip,.chat-conversation .load-more"))
       .some(node=>/没有更多消息|已加载全部|沟通从这里开始/.test(node.textContent||""));
-    return {messages,complete:!lostBoundary && (hasBoundary(messages) || (beginning && messages.some(m=>m.from==="本人")))};
+    return {messages,complete:!lostBoundary && (hasBoundary(messages) || (beginning && messages.length>0))};
   }
   async function hydrateMedia(messages) {
     let budget=12_000_000;

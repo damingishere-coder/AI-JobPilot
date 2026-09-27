@@ -209,7 +209,10 @@ public final class HrAssistantTypes {
             Long profileId,
             Long currentProfileId,
             String currentProfileName,
-            boolean profileSwitchBlocked
+            boolean profileSwitchBlocked,
+            String replyMode,
+            List<String> blockers,
+            java.util.Map<String,Object> activity
     ) {
     }
 }

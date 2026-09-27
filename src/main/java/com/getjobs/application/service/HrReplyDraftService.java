@@ -108,7 +108,7 @@ public class HrReplyDraftService {
                 1. 薪资、地点、到岗时间、面试时间或联系方式没有明确资料时，classification=NEEDS_USER，列入 missingFacts，不得猜测。
                 2. 图片、语音、附件以经过解析的原文为材料；标明未读或缺失时用 NEEDS_USER。身份/银行卡等敏感资料请求或可疑链接用 SUSPICIOUS。
                 3. 面试邀请用 INTERVIEW_INVITE；Offer 用 OFFER；薪资讨论用 COMPENSATION；到岗时间用 AVAILABILITY；索要联系方式用 CONTACT_REQUEST；索要材料用 DOCUMENT_REQUEST；明确拒绝用 REJECTION；无需回复用 NO_REPLY。
-                4. 个人经历、技能等事实优先沿用已确认资料中的原文短句，避免改写产生含义偏差。必须回答本轮连续多条提问。简洁礼貌，通常不超过120字。允许按已确认资料回答并追问岗位。不得自动拒绝机会、议价让步、接受Offer或确认具体面试时间。
+                4. 个人经历、技能等事实可自然表达但不能改变含义、数字、日期和条件。必须回答本轮连续多条提问。简洁礼貌，通常不超过120字。允许按已确认资料回答并追问岗位。普通面试意向可表达愿意沟通；不得自动拒绝机会、议价让步、接受Offer或确认具体面试时间。结束、无需回应的会话用NO_REPLY，过期邀约或无法判断时效时用NEEDS_USER。
 
                 当前岗位：%s / %s / %s
                 沟通资料：%s
@@ -123,6 +123,9 @@ public class HrReplyDraftService {
 
     public String trustedFacts(Long profileId, CommunicationProfile profile) {
         return truncate(latestResume(profileId), MAX_RESUME_CHARS) + "\n" + writeJson(profile);
+    }
+    public boolean hasResume(Long profileId) {
+        try { return !latestResume(profileId).isBlank(); } catch (IllegalStateException e) { return false; }
     }
 
     public String history(List<ChatMessage> messages) {

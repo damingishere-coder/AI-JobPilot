@@ -37,7 +37,7 @@ function loadBackground({
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
   injectedBossVersion = BOSS_CONTENT_VERSION,
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-07-hr-autopilot",
+  bossHrContentVersion = "2026-09-27-hr-duty",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,
@@ -109,7 +109,7 @@ function loadBackground({
           return { success: true, version: currentZhilianContentVersion };
         }
         if (message.type === "BOSS_HR_CONTENT_VERSION_V2") {
-          return { success: true, version: bossHrContentVersion };
+          return { success: true, version: bossHrContentVersion, safety:{safe:true} };
         }
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
@@ -1229,8 +1229,8 @@ test("HR backend 404 retains HTTP identity while malformed 200 stays a contract 
 test("chat entry focuses the bound tab, reuses an existing chat, or opens the fixed URL", async () => {
   for (const mode of ["bound", "existing", "new"]) {
     const tabs = mode === "new" ? [] : [
-      { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat", lastAccessed: 10 },
-      { id: 8, windowId: 4, url: "https://www.zhipin.com/web/geek/chat", lastAccessed: 20 },
+      { id: 7, windowId: 3, url: "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1", lastAccessed: 10 },
+      { id: 8, windowId: 4, url: "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1", lastAccessed: 20 },
     ];
     const { context, tabList, dispatchRuntimeMessage, windowUpdates } = loadBackground({ tabs });
     if (mode === "bound") await context.writeBossHrWatch({ tabId: 7 });
@@ -1240,7 +1240,7 @@ test("chat entry focuses the bound tab, reuses an existing chat, or opens the fi
     assert.equal(result.tabId, mode === "bound" ? 7 : mode === "existing" ? 8 : 1);
     assert.equal(tabList.length, mode === "new" ? 1 : 2);
     assert.equal(windowUpdates.length, 1);
-    assert.ok(tabList.every(tab => tab.url === "https://www.zhipin.com/web/geek/chat"));
+    assert.ok(tabList.every(tab => tab.url === "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1"));
     const rejected = await dispatchRuntimeMessage({ source: "GET_JOBS_PAGE", type: "BOSS_HR_OPEN_CHAT" },
       { tab: { id: 21, url: "https://evil.example/" } });
     assert.equal(rejected.success, false);
@@ -1546,4 +1546,23 @@ test("refused confirmation snapshot stops before navigation or delivery callback
   assert.equal(result.actionStarted, false); assert.equal(result.persisted, false);
   assert.equal(result.haltBatch, true);
   assert.equal(tabUpdates.length, 0); assert.equal(sentMessages.length, 0);
+});
+
+
+test("capture boundary returns one leased command without re-entering the busy content script", async () => {
+  const calls=[];
+  const {context,sentMessages}=loadBackground({tabs:[{id:7,url:'https://www.zhipin.com/web/geek/chat'}],fetchImpl:async(url,options)=>{
+    calls.push(url);
+    if(url.endsWith('/action-token')) return jsonResponse({success:true,data:{token:'test'}});
+    if(url.endsWith('/scan-results')) return jsonResponse({success:true,data:{acknowledgedCaptureIds:['capture']}});
+    if(url.endsWith('/claim')) return jsonResponse({success:true,data:{commandId:'cmd',leaseToken:'lease',leaseDeadlineEpochMs:Date.now()+60000}});
+    throw new Error(url);
+  }});
+  await context.writeBossHrWatch({watching:true,scanRunning:true,scanId:'scan',watchSessionId:'watch',profileId:1,tabId:7});
+  await context.writeBossHrOutbox({'1:capture':{captureId:'capture',profileId:1,uid:'uid'}});
+  const response=await context.submitBossHrCapture({watchSessionId:'watch',scanId:'scan',capture:{captureId:'capture',session:{uid:'uid'},messages:[{from:'对方',text:'您好'}]}},{tab:{id:7,url:'https://www.zhipin.com/web/geek/chat'}});
+  assert.equal(response.success,true);assert.equal(response.command.commandId,'cmd');
+  assert.equal(calls.filter(u=>u.endsWith('/claim')).length,1);
+  assert.equal(sentMessages.filter(m=>m.message.type==='BOSS_HR_SEND_V2').length,0);
+  assert.equal(Object.keys(await context.readBossHrOutbox()).length,0);
 });

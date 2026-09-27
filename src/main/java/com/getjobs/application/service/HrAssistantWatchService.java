@@ -76,8 +76,12 @@ public class HrAssistantWatchService {
             }
             validateChatTab(tabId, url, contentVersion, browserSessionId);
             if(autopilot!=null && autopilot.policy(expectedProfileId).enabled()
-                    && (!url.contains("getjobs-autopilot=1") || !contentVersion.equals("2026-09-07-hr-autopilot")))
+                    && (!url.contains("getjobs-autopilot=1") || !contentVersion.equals(HrAutopilotStore.PROTOCOL)))
                 throw new IllegalStateException("请打开新版扩展的专用托管聊天标签，再开始值守");
+            if(autopilot!=null && autopilot.policy(expectedProfileId).enabled()) {
+                var blockers=dutyBlockers(expectedProfileId);
+                if(!blockers.isEmpty()) throw new IllegalStateException(String.join("；",blockers));
+            }
             if (watching.get()) {
                 if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)) return status();
                 throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
@@ -86,6 +90,7 @@ public class HrAssistantWatchService {
             Long profileId = profileService.getCurrentProfileId();
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
                     tabId, url.trim(), contentVersion.trim());
+            store.resumePendingCommands(profileId,session.watchSessionId());
             watching.set(true);
             scanIntervalMs = autopilot!=null && autopilot.policy(profileId).enabled() ? 60_000L : intervalMinutes * 60_000L;
             processingScan.set(false);
@@ -132,6 +137,7 @@ public class HrAssistantWatchService {
             session = new WatchSession(session.watchSessionId(), session.browserSessionId(), session.profileId(),
                     tabId, url.trim(), contentVersion.trim());
             lastHeartbeatAt = LocalDateTime.now();
+            if(browserScanRunning && !this.browserScanRunning && autopilot!=null) autopilot.scanStarted(session.profileId());
             this.browserScanRunning = browserScanRunning;
             outboxCount = Math.max(0, browserOutboxCount);
             if (fault != null && !fault.isBlank()) {
@@ -186,12 +192,14 @@ public class HrAssistantWatchService {
                     store.completeCapture(active.watchSessionId(), capture.captureId());
                     acknowledged.add(capture.captureId());
                     processed++;
+                    if(autopilot!=null) autopilot.progress(active.profileId(),false);
                 } catch (RuntimeException failure) {
                     store.failCapture(active.watchSessionId(), capture.captureId(), errorCode(failure));
                     throw failure;
                 }
             }
             lastScanAt = LocalDateTime.now();
+            if(autopilot!=null && safeCaptures.isEmpty() && totalUnread==0) autopilot.progress(active.profileId(),true);
             lastHeartbeatAt = lastScanAt;
             lastError = "";
             outboxCount = Math.max(0, outboxCount - acknowledged.size());
@@ -213,6 +221,12 @@ public class HrAssistantWatchService {
         return profileGuard.locked(this::statusLocked);
     }
 
+    public List<String> dutyBlockers(Long profileId) {
+        var result=new ArrayList<String>(autopilot==null?List.of("托管服务不可用"):autopilot.blockers(profileId));
+        if(autopilot!=null && "AUTO".equals(autopilot.policy(profileId).replyMode()) && !napCatGateway.isConnected()) result.add("QQ 决策通道未连接");
+        return result;
+    }
+
     private WatchStatus statusLocked() {
         var currentProfile = profileService.getCurrentProfile();
         WatchSession active = session;
@@ -222,9 +236,12 @@ public class HrAssistantWatchService {
                 active == null ? "" : active.contentVersion(), lastHeartbeatAt, outboxCount,
                 active == null ? "等待 BOSS 聊天页绑定" : "投递牛马 Chrome 扩展直连");
         return new WatchStatus(watching.get(), browserScanRunning || processingScan.get(), active == null ? "" : active.watchSessionId(), scanIntervalMs,
-                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), autopilot == null || currentProfile == null || !autopilot.policy(currentProfile.getId()).enabled(),
+                lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), autopilot == null || currentProfile == null || !autopilot.policy(currentProfile.getId()).enabled() || !"AUTO".equals(autopilot.policy(currentProfile.getId()).replyMode()) || !autopilot.blockers(currentProfile.getId()).isEmpty(),
                 active == null ? null : active.profileId(), currentProfile == null ? null : currentProfile.getId(),
-                currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked());
+                currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked(),
+                autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
+                autopilot==null || currentProfile==null?List.of():dutyBlockers(currentProfile.getId()),
+                autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()));
     }
 
     public String requireActiveWatchSession(Long profileId) {
@@ -285,15 +302,16 @@ public class HrAssistantWatchService {
         if (source == null) throw new IllegalStateException("最新入站消息与会话列表不一致，已保留 Outbox 并停止处理");
         String sourceFingerprint = store.sourceFingerprint(conversationId, source);
         store.updateLastInbound(conversationId, sourceFingerprint);
-        if (store.hasProposalForSource(conversationId, sourceFingerprint)) return;
+        if (store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return;
 
         if (autopilot != null) {
-            if(!capture.historical()) capture = autopilot.resolve(capture);
+            if(autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
             autopilot.saveContext(conversationId, capture);
         }
         AiDraft draft;
-        if(autopilot!=null && capture.historical()) {
-            draft=new AiDraft(Classification.NO_REPLY,"","历史仅整理，不自动补发",List.of(),List.of(),1);
+        if(autopilot!=null && autopilot.historyAssessment(profileId,capture)!=null) {
+            var assessment=autopilot.historyAssessment(profileId,capture);
+            draft=new AiDraft(assessment.action().equals("HUMAN")?Classification.NEEDS_USER:Classification.NO_REPLY,"",assessment.reason(),List.of(),List.of(),1);
         } else if (autopilot == null && !"文本".equals(source.type())) {
             draft = new AiDraft(Classification.NEEDS_USER, "", "HR 发送了非文本消息，需要人工查看。",
                     List.of("NON_TEXT_MESSAGE"), List.of("请人工查看 " + source.type()), 1);

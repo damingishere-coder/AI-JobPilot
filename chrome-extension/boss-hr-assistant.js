@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-07-hr-autopilot";
+  const PANEL_VERSION = "2026-09-27-hr-duty";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -12,6 +12,7 @@
   let activeRequest = false;
   let latestStatus = null;
   let latestProposals = [];
+  let latestPolicy = null;
   let actionError = "";
   let intervalMinutes = 1;
   const cards=new Map();
@@ -59,11 +60,12 @@
     if (activeRequest || !location.pathname.startsWith("/web/geek/chat")) return;
     activeRequest = true;
     try {
-      const [status, proposals] = await Promise.all([
-        localApi("hr-status"), localApi("hr-proposals",{includeClosed})
+      const [status, proposals, policy] = await Promise.all([
+        localApi("hr-status"), localApi("hr-proposals",{includeClosed}), localApi("hr-autopilot")
       ]);
       latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
+      latestPolicy=policy;
 
     } catch (error) {
       latestStatus = { watching: false, lastError: error.message || String(error), chromeBridge: { ready: true, tabBound: false } };
@@ -87,6 +89,12 @@
       : "正在连接本地 AI-JobPilot…";
     rendered.appendChild(statusBox);
     rendered.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
+    const automatic=latestPolicy?.enabled && latestPolicy.replyMode==="AUTO";
+    rendered.appendChild(element("div","status",`回复方式：${automatic?"按已确认规则自动发送":"逐条确认后发送"}。已有消息：${latestPolicy?.historyMode==="RECENT"?"最近30天待回复会话一并处理":"仅处理新消息"}。普通回复留在记录，关键事项发送QQ。`));
+    if(latestPolicy?.enabled && latestPolicy.blockers?.length) rendered.appendChild(element("div","status error",latestPolicy.blockers.join("；")));
+    if(!latestPolicy?.enabled) {
+      const settings=document.createElement("a"); settings.href="http://127.0.0.1:6866/env-config";settings.target="_blank";settings.rel="noopener noreferrer";settings.textContent="前往工作台确认自动回复规则"; rendered.appendChild(settings);
+    }
     const schedule = document.createElement("select");
     schedule.setAttribute("aria-label", "值守检查范围与间隔");
     schedule.className = "btn";
@@ -101,9 +109,10 @@
     rendered.appendChild(schedule);
 
     const actions = element("div", "actions");
-    const start = button("开始值守", "btn primary");
+    const start = button(automatic ? "开始自动值班" : "开始值守", "btn primary");
     start.disabled = watching;
     start.disabled = watching || !latestStatus?.currentProfileId || latestStatus?.profileSwitchBlocked;
+    if(latestPolicy?.enabled && (latestPolicy.blockers?.length || !/getjobs-autopilot=1/.test(location.search||""))) start.disabled=true;
     start.addEventListener("click", () => mutate("hr-start", null, { expectedProfileId: latestStatus?.currentProfileId, intervalMinutes }));
     const stop = button("停止", "btn danger");
     stop.disabled = !watching;
@@ -156,6 +165,8 @@
         : ({ NEEDS_USER: "待补充信息", REJECTION: "婉拒 / 无需回复", NO_REPLY: "无需回复", INTERVIEW_INVITE: "面试邀请", OFFER: "录用意向" })[proposal.classification];
     if (label || proposal.highValue) meta.appendChild(element("span", "tag", label || "需注意"));
     const source = element("div", "source", `HR：${proposal.sourceMessage || "（非文本消息）"}`);
+    const decision=latestPolicy?.activity?.decisions?.find(d=>d.proposalId===proposal.id);
+    if(decision) source.appendChild(element("div","status",`${decision.origin==="BACKLOG"?"历史待办 · ":""}${decision.reason}`));
     const draft = document.createElement("textarea");
     draft.value = proposal.draft || "";
     const savedDraft = draft.value.trim();

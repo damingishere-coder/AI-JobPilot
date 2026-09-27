@@ -37,7 +37,7 @@ class HrAutopilotTest {
         service=new HrAutopilotService(policies,hr,drafts,ai,json,mock(HrMediaService.class));
         when(drafts.history(anyList())).thenAnswer(call->call.getArgument(0).toString());
         when(drafts.trustedFacts(eq(1L),any())).thenReturn("有三年运营经验，电话13800138000");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"三年运营经验\"],\"reason\":\"事实有依据\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"三年运营经验\"], \"reason\": \"事实有依据\", \"claims\": [{\"text\": \"三年运营经验\", \"quote\": \"三年运营经验\", \"entailed\": true}]}");
         conversation=hr.upsertConversation(1L,new ChatSession("uid","","测试HR","测试公司","运营","测试HR","",""));
         policies.configure(1L,1,true,"测试简历.pdf","a".repeat(64));
     }
@@ -75,11 +75,12 @@ class HrAutopilotTest {
         assertThat(service.assess(1L,conversation,capture("录用意向",false,true),draft(Classification.OFFER,"接受")).action()).isEqualTo("HUMAN");
     }
     @Test void phoneUsesConfiguredNumberOnlyWhenRequested() {
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("", "电话13800138000"));
         var result=service.assess(1L,conversation,capture("请留个电话",false,true),draft(Classification.CONTACT_REQUEST,"其他号码"));
         assertThat(result.action()).isEqualTo("PHONE");assertThat(result.draft()).contains("13800138000").doesNotContain("其他号码");
     }
     @Test void unsupportedEvidenceAndProviderFailureBothNeedHuman() {
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"编造经历\"],\"reason\":\"好\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"编造经历\"], \"reason\": \"好\", \"claims\": [{\"text\": \"编造经历\", \"quote\": \"编造经历\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("经验？",false,true),draft(Classification.REPLY,"我很熟练")).action()).isEqualTo("HUMAN");
         when(ai.sendStructuredRequest(anyString(),anyString())).thenThrow(new IllegalStateException("offline"));
         assertThat(service.assess(1L,conversation,capture("经验？",false,true),draft(Classification.REPLY,"我很熟练")).action()).isEqualTo("HUMAN");
@@ -128,8 +129,8 @@ class HrAutopilotTest {
         assertThat(policies.dispatching(id)).isFalse();
         policies.receipt(id,true,"message-1");assertThat(policies.deliveryCounts(1L)).containsEntry("CONFIRMED",1);
     }
-    @Test void normalizationRemovesContradictoryAvailability() {
-        assertThat(HrAutopilotService.normalized(communication).availability()).isEqualTo("确认Offer后两周内");
+    @Test void normalizationPreservesConfirmedProfile() {
+        assertThat(HrAutopilotService.normalized(communication).availability()).isEqualTo(communication.availability());
     }
     @Test void mixedRequestsAndNegatedSharingNeedHuman() {
         var unresolved=new AiDraft(Classification.DOCUMENT_REQUEST,"发送简历","需补充",List.of("其他资料未知"),List.of(),0.99);
@@ -139,7 +140,7 @@ class HrAutopilotTest {
         verifyNoInteractions(ai);
     }
     @Test void singleCharacterEvidenceCannotAuthorizeAnInventedFact() {
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"有\"],\"reason\":\"事实有依据\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"有\"], \"reason\": \"事实有依据\", \"claims\": [{\"text\": \"有\", \"quote\": \"有\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("工作经历",false,true),draft(Classification.REPLY,"有十年经理经验")).action()).isEqualTo("HUMAN");
     }
     @Test void salaryNegotiationAndReversedContactRequestCannotAutoSend() {
@@ -149,18 +150,18 @@ class HrAutopilotTest {
     }
     @Test void realQuoteCannotAuthorizeAnUnrelatedPersonalClaim() {
         assertThat(service.assess(1L,conversation,capture("经验？",false,true),draft(Classification.REPLY,"我有十年经理经验。")).action()).isEqualTo("HUMAN");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"主动询问岗位职责\"],\"reason\":\"规则\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"主动询问岗位职责\"], \"reason\": \"规则\", \"claims\": [{\"text\": \"主动询问岗位职责\", \"quote\": \"主动询问岗位职责\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("经验？",false,true),draft(Classification.REPLY,"我有三年运营经验。")).action()).isEqualTo("HUMAN");
     }
     @Test void confirmedSalaryAvailabilityAndResumeCanPassWhileNoReplyClosesQuietly() {
         when(drafts.trustedFacts(eq(1L),any())).thenReturn("期望15–20K，结合职责面议。确认Offer后两周内。电话13800138000。");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"期望15–20K，结合职责面议\"],\"reason\":\"固定口径\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"期望15–20K，结合职责面议\"], \"reason\": \"固定口径\", \"claims\": [{\"text\": \"期望15–20K\", \"quote\": \"期望15–20K，结合职责面议\", \"entailed\": true}, {\"text\": \"结合职责面议\", \"quote\": \"期望15–20K，结合职责面议\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("期望薪资多少？",false,true),draft(Classification.COMPENSATION,"期望15–20K，结合职责面议。")).action()).isEqualTo("TEXT");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"确认Offer后两周内\"],\"reason\":\"固定到岗时间\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"确认Offer后两周内\"], \"reason\": \"固定到岗时间\", \"claims\": [{\"text\": \"确认Offer后两周内\", \"quote\": \"确认Offer后两周内\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("什么时候到岗？",false,true),draft(Classification.AVAILABILITY,"确认Offer后两周内。")).action()).isEqualTo("TEXT");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[\"测试简历.pdf\"],\"reason\":\"指定附件\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [\"测试简历.pdf\"], \"reason\": \"指定附件\", \"claims\": [{\"text\": \"测试简历.pdf\", \"quote\": \"测试简历.pdf\", \"entailed\": true}]}");
         assertThat(service.assess(1L,conversation,capture("请发简历",false,true),draft(Classification.DOCUMENT_REQUEST,"好的")).action()).isEqualTo("RESUME");
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[],\"reason\":\"纯确认收件\"}");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\": true, \"evidence\": [], \"reason\": \"纯确认收件\", \"claims\": []}");
         var capture=capture("已收到，评估后联系您",false,true);var reply=draft(Classification.NO_REPLY,"");long id=proposal(capture,reply);
         assertThat(service.apply(1L,id,conversation,capture,reply,"watch")).isFalse();
         assertThat(hr.getProposalView(1L,id).status()).isEqualTo("SKIPPED");
@@ -170,5 +171,96 @@ class HrAutopilotTest {
         var c=capture("请发简历",false,true);
         service.generate(1L,conversation,communication,c);
         verify(drafts).generateWithFacts(eq(1L),eq(conversation),any(),eq(c.messages()),contains("测试简历.pdf"));
+    }
+
+    private String audit(String text,String quote) {
+        try { return new ObjectMapper().writeValueAsString(Map.of("allowed",true,"reason","逐项核验", "evidence", quote.isEmpty()?List.of():List.of(quote), "claims", text.isEmpty()?List.of():List.of(Map.of("text",text,"quote",quote,"entailed",true)))); }
+        catch(Exception e) { throw new RuntimeException(e); }
+    }
+    private void configure(String mode,boolean phone,boolean resume,String history) {
+        policies.configure(1L,policies.policy(1L).version(),true,"测试简历.pdf","a".repeat(64),mode,phone,resume,history,30);
+    }
+    @Test void naturalParaphraseRequiresEveryClaimAndKeepsCriticalValues() {
+        when(drafts.trustedFacts(eq(1L),any())).thenReturn("三年运营经验，负责客户维护");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("我做过三年运营工作","三年运营经验"));
+        assertThat(service.assess(1L,conversation,capture("经历？",false,true),draft(Classification.REPLY,"我做过三年运营工作。")).action()).isEqualTo("TEXT");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("我做过十年运营工作","三年运营经验"));
+        assertThat(service.assess(1L,conversation,capture("经历？",false,true),draft(Classification.REPLY,"我做过十年运营工作。")).action()).isEqualTo("HUMAN");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("我的薪资期望15万","期望15千"));
+        when(drafts.trustedFacts(eq(1L),any())).thenReturn("期望15千");
+        assertThat(service.assess(1L,conversation,capture("期望？",false,true),draft(Classification.REPLY,"我的薪资期望15万。")).action()).isEqualTo("HUMAN");
+    }
+    @Test void negatedEvidenceCannotBecomePositiveExperience() {
+        when(drafts.trustedFacts(eq(1L),any())).thenReturn("没有Java开发经验");
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("我有Java开发经验","没有Java开发经验"));
+        assertThat(service.assess(1L,conversation,capture("会Java吗",false,true),draft(Classification.REPLY,"我有Java开发经验。")).action()).isEqualTo("HUMAN");
+    }
+    @Test void courtesyAndJobQuestionNeedNoInventedEvidence() {
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn(audit("",""));
+        assertThat(service.assess(1L,conversation,capture("您好",false,true),draft(Classification.REPLY,"您好！请问岗位职责？")).action()).isEqualTo("TEXT");
+        assertThat(service.assess(1L,conversation,capture("有意向面试吗",false,true),draft(Classification.INTERVIEW_INVITE,"愿意进一步沟通。")).action()).isEqualTo("TEXT");
+        assertThat(service.assess(1L,conversation,capture("明天下午面试可以吗",false,true),draft(Classification.INTERVIEW_INVITE,"好的")).action()).isEqualTo("HUMAN");
+        assertThat(service.assess(1L,conversation,capture("经历和能力",false,true),draft(Classification.REPLY,"您好，我会Java。")).action()).isEqualTo("HUMAN");
+    }
+    @Test void textDutyDoesNotRequireAnAttachmentAndReviewModeNeverQueues() {
+        policies.configure(1L,policies.policy(1L).version(),true,"","","AUTO",false,false,"RECENT",30);
+        assertThat(policies.authorizationValid(1L)).isTrue();
+        assertThat(service.assess(1L,conversation,capture("请留个电话",false,true),draft(Classification.CONTACT_REQUEST,"号码")).action()).isEqualTo("HUMAN");
+        assertThat(service.assess(1L,conversation,capture("请发简历",false,true),draft(Classification.DOCUMENT_REQUEST,"")).action()).isEqualTo("HUMAN");
+        configure("REVIEW",false,false,"RECENT");
+        var c=capture("经验？",false,true);var d=draft(Classification.REPLY,"三年运营经验");long id=proposal(c,d);
+        assertThat(service.apply(1L,id,conversation,c,d,"watch")).isTrue();
+        assertThat(hr.getProposalView(1L,id).status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
+    @Test void legacyAuthorizationAndResumeChangesCannotAuthorizeAutomaticSending() {
+        jdbc.update("UPDATE hr_autopilot_policy SET contract_version=0");
+        assertThat(policies.authorizationValid(1L)).isFalse();
+        configure("AUTO",false,false,"RECENT");
+        assertThat(policies.authorizationValid(1L)).isTrue();
+        jdbc.update("INSERT INTO resume_profile(profile_id,resume_text) VALUES (1,'新简历')");
+        assertThat(policies.authorizationValid(1L)).isFalse();
+    }
+    @Test void backlogWithinThirtyDaysIsAssessedAndOldOrUnknownDatesAreNotSent() {
+        configure("AUTO",false,false,"RECENT");
+        var base=capture("工作经验？",true,true);
+        var today=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        for(int age:List.of(0,30,31)) {
+            var c=new ChatCapture("age"+age,0,new ChatSession("uid","","HR","公司","岗位","","工作经验？",today.minusDays(age).toString()),base.messages(),true,true);
+            assertThat(service.assess(1L,conversation,c,draft(Classification.REPLY,"三年运营经验")).action()).isEqualTo(age<=30?"TEXT":"HISTORY_OLD");
+        }
+        var unknown=new ChatCapture("unknown",0,new ChatSession("uid","","HR","公司","岗位","","工作经验？","很久以前"),base.messages(),true,true);
+        assertThat(service.assess(1L,conversation,unknown,draft(Classification.REPLY,"三年运营经验")).action()).isEqualTo("HUMAN");
+    }
+    @Test void onlyHistorySkippedSourcesCanBeReconsidered() {
+        var c=capture("您好",true,true);long id=proposal(c,draft(Classification.NO_REPLY,""));
+        policies.decision(id,2,"HISTORY","历史仅整理",false);hr.markFinal(id,ProposalStatus.SKIPPED,"历史");
+        String fingerprint=hr.sourceFingerprint(conversation,c.messages().getLast());
+        assertThat(hr.hasHandledSource(conversation,fingerprint,true)).isFalse();
+        assertThat(hr.hasHandledSource(conversation,fingerprint,false)).isTrue();
+        policies.decision(id,2,"TEXT","人工跳过",false);
+        assertThat(hr.hasHandledSource(conversation,fingerprint,true)).isTrue();
+        hr.markFinal(id,ProposalStatus.SEND_UNKNOWN,"未知");
+        assertThat(hr.hasHandledSource(conversation,fingerprint,true)).isTrue();
+    }
+    @Test void progressAndEvidenceArePersistedWithoutPlaintext() {
+        var c=capture("经验？",false,true);var d=draft(Classification.REPLY,"三年运营经验");long id=proposal(c,d);
+        service.apply(1L,id,conversation,c,d,"watch");policies.progress(1L,false);policies.progress(1L,true);
+        assertThat(jdbc.queryForObject("SELECT evidence_cipher FROM hr_autopilot_decision WHERE proposal_id=?",String.class,id)).doesNotContain("三年");
+        assertThat(jdbc.queryForObject("SELECT processed FROM hr_duty_progress WHERE profile_id=1",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT baseline_complete FROM hr_duty_progress WHERE profile_id=1",Integer.class)).isEqualTo(1);
+    }
+
+    @Test void restartRebindsOnlyUnleasedCommandsAndReevaluatesExpiredUnsentSources() {
+        var c=capture("经验？",false,true);var d=draft(Classification.REPLY,"三年运营经验");long id=proposal(c,d);
+        service.apply(1L,id,conversation,c,d,"old-watch");hr.resumePendingCommands(1L,"new-watch");
+        assertThat(jdbc.queryForObject("SELECT watch_session_id FROM hr_send_command WHERE proposal_id=?",String.class,id)).isEqualTo("new-watch");
+        jdbc.update("UPDATE hr_send_command SET expires_at=datetime('now','-1 hour') WHERE proposal_id=?",id);
+        hr.resumePendingCommands(1L,"restart");
+        assertThat(hr.hasHandledSource(conversation,hr.sourceFingerprint(conversation,c.messages().getLast()),true)).isFalse();
+        assertThat(hr.getProposalView(1L,id).status()).isEqualTo("EXPIRED");
+        jdbc.update("UPDATE hr_send_command SET status='COMPLETE',outcome='RESULT_UNKNOWN' WHERE proposal_id=?",id);
+        hr.markFinal(id,ProposalStatus.SEND_UNKNOWN,"未知");hr.resumePendingCommands(1L,"again");
+        assertThat(hr.hasHandledSource(conversation,hr.sourceFingerprint(conversation,c.messages().getLast()),true)).isTrue();
     }
 }

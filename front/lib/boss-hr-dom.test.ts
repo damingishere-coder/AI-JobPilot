@@ -207,4 +207,52 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result.success).toBe(false)
     expect(order).toEqual(['put:101-0', 'open:101-0', 'save:101-0', 'put:102-0', 'open:102-0', 'save:102-0'])
   })
+  it.each(['confirmed', 'unknown', 'already-answered'])('sends at a capture boundary and reports %s without re-entering the scan lock', async (outcome) => {
+    const { card, props } = addCard()
+    const pane = document.querySelector('.chat-conversation')!
+    card.insertAdjacentHTML('beforeend', '<time>今天</time>')
+    pane.insertAdjacentHTML('beforeend', '<div class="history-tip">沟通从这里开始</div><span>测试公司</span><textarea id="chat-input"></textarea><button>发送</button>')
+    let opened = false
+    card.addEventListener('click', () => {
+      card.classList.add('selected')
+      Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: props } })
+      if (!opened) pane.querySelector('.im-list')!.innerHTML = '<li class="message-item item-friend"><span class="text">方便聊聊吗？</span></li>'
+      opened = true
+      bindMessages()
+    })
+    let clicks = 0
+    pane.querySelector('button')!.addEventListener('click', () => {
+      clicks++
+      if (outcome === 'confirmed') {
+        pane.querySelector('.im-list')!.insertAdjacentHTML('beforeend', '<li class="message-item item-myself"><span class="text">您好！</span></li>')
+        bindMessages()
+      }
+    })
+    let listener!: (message: object, sender: object, reply: (result: { success: boolean }) => void) => void
+    const reports: Record<string, unknown>[] = []
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
+      window: { top: window, self: window, addEventListener: () => {} }, document, location: { pathname: '/web/geek/chat' },
+      GetJobsBossHrSupport: support, Event, InputEvent, HTMLTextAreaElement, HTMLInputElement, getComputedStyle, sessionStorage,
+      setTimeout: (fn: () => void) => setTimeout(fn, 0),
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
+        sendMessage: (message: { type: string; operation?: string; body: Record<string, unknown>; capture: { contextComplete: boolean; messages: unknown[] } }, reply: (result: object) => void) => {
+          if (message.type === 'BOSS_HR_CAPTURE_RESULT') {
+            expect(message.capture.contextComplete).toBe(true)
+            if (outcome === 'already-answered') {
+              pane.querySelector('.im-list')!.insertAdjacentHTML('beforeend', '<li class="message-item item-myself"><span class="text">我已回复</span></li>')
+              bindMessages()
+            }
+            reply({ success: true, tabId: 7, command: { commandId: 'test', leaseToken: 'lease', uid: '101-0', hrName: '王女士', companyName: '测试公司', jobName: '', draft: '您好！', policyVersion: 0, deadlineAt: Date.now() + 30000, expectedInboundRound: message.capture.messages, expectedLatestInbound: message.capture.messages.at(-1) } })
+          } else if (message.operation === 'hr-boundary-result') { reports.push(message.body); reply({ success: true }) }
+          else reply({ success: true })
+        },
+      } },
+    })
+    const result = await new Promise<{ success: boolean }>(resolve => listener({ source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN_V2', scanId: 'boundary', watchSessionId: 'watch', deadlineAt: Date.now() + 30000, scanAll: true, streamResults: true }, {}, resolve))
+    expect(result.success).toBe(true)
+    expect(clicks).toBe(outcome === 'already-answered' ? 0 : 1)
+    expect(reports).toHaveLength(1)
+    expect(reports[0].outcome).toBe(outcome === 'confirmed' ? 'SENT' : outcome === 'unknown' ? 'RESULT_UNKNOWN' : 'STALE')
+  })
+
 })
