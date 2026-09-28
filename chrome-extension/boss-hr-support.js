@@ -177,6 +177,8 @@
       securityId: normalizeText(scope.querySelector("[data-security-id]")?.getAttribute("data-security-id")),
       hrName: fallback?.hrName || title,
       companyName: fallback?.companyName || "",
+      // The current layout shows the company on the selected list card, not necessarily in the message pane.
+      observedCompanyName: modern ? (uid && selected.length === 1 ? itemSnapshot(selected[0]).companyName : "") : undefined,
       jobName: fallback?.jobName || "",
       title,
       lastMessage: fallback?.lastMessage || "",

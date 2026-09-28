@@ -411,7 +411,7 @@
     const finalMessages=support.readMessages(document);
     let roundStart=finalMessages.length; while(roundStart>0 && finalMessages[roundStart-1].from==="对方") roundStart--;
     const finalRound=finalMessages.slice(roundStart);
-    if(recheck.uid!==command.uid || finalMessages.at(-1)?.from!=="对方" || !support.messagesMatch(support.latestInbound(finalMessages),command.expectedLatestInbound)
+    if(!identityMatches(recheck,command) || finalMessages.at(-1)?.from!=="对方" || !support.messagesMatch(support.latestInbound(finalMessages),command.expectedLatestInbound)
       || (command.expectedInboundRound?.length && (finalRound.length!==command.expectedInboundRound.length || finalRound.some((m,i)=>!support.messagesMatch(m,command.expectedInboundRound[i])))))
       return {success:true,outcome:"STALE",evidence:"点击发送前会话或消息发生变化"};
     if(Date.now()>=command.deadlineAt) return {success:true,outcome:"FAILED_SAFE",evidence:"授权复核后租约已过期"};
@@ -566,8 +566,10 @@
     const hrName = support.normalizeText(command.hrName);
     const companyName = support.normalizeText(command.companyName);
     const jobName = support.normalizeText(command.jobName);
+    const companyMatches=typeof session.observedCompanyName==="string"
+      ? support.normalizeText(session.observedCompanyName)===companyName : surface.includes(companyName);
     return session.uid === command.uid && (!hrName || title.includes(hrName))
-      && (!companyName || surface.includes(companyName))
+      && (!companyName || companyMatches)
       && (!jobName || surface.includes(jobName));
   }
 
