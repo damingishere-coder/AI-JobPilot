@@ -203,6 +203,11 @@
 
   async function collectUnreadTargets(deadlineAt, scanAll = false, candidateLimit = 0) {
     const targets = new Map();
+    // No rendered rows cannot prove an empty inbox: BOSS also uses this state
+    // while loading, reconnecting, or when its list markup is unsupported.
+    if (!support.chatItems(document).length) {
+      return { success: false, pause: true, errorCode: "HR_LIST_NOT_READY", message: "BOSS 会话列表尚未读到，无法确认是否有待回复消息；请等待列表加载完成后重试，本轮未生成或发送卡片" };
+    }
     let unchangedRounds = 0;
     let reachedEnd = false;
     let list = findScrollableList(support.chatItems(document)[0]);

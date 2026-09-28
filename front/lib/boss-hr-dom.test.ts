@@ -257,6 +257,22 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(reports[0].outcome).toBe(outcome.endsWith('confirmed') ? 'SENT' : outcome.endsWith('unknown') ? 'RESULT_UNKNOWN' : 'STALE')
   })
 
+  it.each(['loading', 'empty-shell'])('does not report a completed trial for a %s chat page', async (state) => {
+    if (state === 'loading') document.body.innerHTML = '<p>加载中，请稍候</p>'
+    let listener!: (message: object, sender: object, reply: (result: {success:boolean;errorCode:string})=>void)=>void
+    let writes = 0
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'),'utf8'), {
+      window:{top:window,self:window,addEventListener:()=>{}},document,location:{pathname:'/web/geek/chat'},
+      GetJobsBossHrSupport:support,Event,getComputedStyle,sessionStorage,
+      setTimeout:(fn:()=>void)=>setTimeout(fn,0),
+      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:()=>{writes++}}}
+    })
+    const result=await new Promise<{success:boolean;errorCode:string}>(resolve=>listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_SCAN_V2',scanAll:true,reviewLimit:3,streamResults:true,scanId:'trial',watchSessionId:'watch',deadlineAt:Date.now()+30000}, {}, resolve))
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('HR_LIST_NOT_READY')
+    expect(writes).toBe(0)
+  })
+
   it('trial reads at most three unanswered chats and skips an already answered chat', async () => {
     const entries = ['101','102','103','104','105'].map(id => addCard(id))
     const pane = document.querySelector('.chat-conversation')!
