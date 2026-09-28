@@ -6,7 +6,9 @@
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
   const MAX_CAPTURES = 100;
-  const OPEN_WAIT_MS = 450;
+  const OPEN_WAIT_MS = 3000;
+  const READY_POLL_MS = 250;
+  const READY_POLL_LIMIT = 20;
 
   let userPaused=false;
   try {userPaused=sessionStorage.getItem("getjobs-hr-paused")==="1";} catch {userPaused=true;}
@@ -72,7 +74,7 @@
     if (unread && !/active|selected/i.test(String(unread.className || ""))) {
       await guard();
       unread.click();
-      await wait(350);
+      await wait(OPEN_WAIT_MS);
     }
 
     const trial = message.reviewLimit === 3;
@@ -92,10 +94,12 @@
     // Opening an unread conversation clears its badge. Process the saved targets from
     // the full list so a browser interruption can still recover an Outbox entry.
     const all = support.allTab(document);
-    if (all && !/active|selected/i.test(String(all.className || ""))) {
+    if (!scanAll && all && !/active|selected/i.test(String(all.className || ""))) {
       await guard();
       all.click();
-      await wait(350);
+      await wait(OPEN_WAIT_MS);
+      const listReady = await waitForListReady(message.deadlineAt);
+      if (!listReady.success) return listReady;
     }
 
     const captures = [];
@@ -123,11 +127,8 @@
         captureId,
         unreadCount: snapshot.unreadCount || visibleSnapshot.unreadCount || 1
       };
-      await guard();
-    located.unique.click();
-      await wait(scanAll ? 2000 : OPEN_WAIT_MS);
-      const afterSafety = support.pageSafety(document);
-      if (!afterSafety.safe) return { success: false, pause: true, ...afterSafety };
+      const opened = await openConversation(located.unique, currentSnapshot, message.deadlineAt);
+      if (!opened.success) return opened;
       const session = support.currentSession(document, currentSnapshot);
       if (session.uid !== snapshot.uid) {
         errors.push({ captureId, errorCode: "BOSS_CHAT_IDENTITY_AMBIGUOUS" });
@@ -135,6 +136,7 @@
       }
       const read=await readContext();
       const messages=read.messages;
+      if (!captureStillCurrent(currentSnapshot, messages)) return changedDuringRead();
       if(managed && !messages.length) {
         messages.push({from:"对方",type:"读取失败",text:"[未取得聊天内容；列表预览仅供定位] "+(currentSnapshot.lastMessage||"预览也不可读"),
           time:currentSnapshot.lastTime||"",messageId:"",media:[{name:"聊天内容",mimeType:"",sourceUrl:"",dataUrl:"",readStatus:"UNAVAILABLE",extractedText:"消息区域未渲染或读取失败，请人工查看BOSS原会话"}]});
@@ -161,6 +163,8 @@
         if (!savedOutbox?.success) return {success:false,errorCode:"HR_OUTBOX_WRITE_FAILED",message:"试运行采集保存失败，已停止"};
       }
       await hydrateMedia(capture.messages);
+      await guard();
+      if (!captureStillCurrent(currentSnapshot, messages)) return changedDuringRead();
       if (message.streamResults) {
         const saved = await backgroundRequest("BOSS_HR_CAPTURE_RESULT", { capture, scanId: message.scanId, watchSessionId: message.watchSessionId });
         if (!saved?.success) return { success: false, pause: true, errorCode: saved?.errorCode || "HR_CAPTURE_SUBMIT_FAILED", message: saved?.message || "生成或保存结果未确认，已暂停，不自动重试" };
@@ -205,9 +209,8 @@
     const targets = new Map();
     // No rendered rows cannot prove an empty inbox: BOSS also uses this state
     // while loading, reconnecting, or when its list markup is unsupported.
-    if (!support.chatItems(document).length) {
-      return { success: false, pause: true, errorCode: "HR_LIST_NOT_READY", message: "BOSS 会话列表尚未读到，无法确认是否有待回复消息；请等待列表加载完成后重试，本轮未生成或发送卡片" };
-    }
+    const ready = await waitForListReady(deadlineAt);
+    if (!ready.success) return ready;
     let unchangedRounds = 0;
     let reachedEnd = false;
     let list = findScrollableList(support.chatItems(document)[0]);
@@ -247,6 +250,57 @@
     }
     if (scanAll && !candidateLimit && !reachedEnd) return { success: false, pause: true, errorCode: "HR_LIST_INCOMPLETE", message: "未能确认已读到会话列表底部，已暂停，未标记全部完成" };
     return { success: true, targets };
+  }
+
+  async function waitForListReady(deadlineAt) {
+    for (let attempt = 0; attempt < READY_POLL_LIMIT; attempt++) {
+      await guard();
+      const safety = support.pageSafety(document);
+      if (!safety.safe) return { success: false, pause: true, ...safety };
+      if (Date.now() > Number(deadlineAt || 0)) break;
+      if (support.chatItems(document).length) return { success: true };
+      await wait(READY_POLL_MS);
+    }
+    return { success: false, pause: true, errorCode: "HR_LIST_NOT_READY", message: "BOSS 会话列表尚未读到，无法确认是否有待回复消息；请等待列表加载完成后重试，本轮未生成或发送卡片" };
+  }
+
+  async function openConversation(card, expected, deadlineAt) {
+    await guard();
+    if (!Number.isFinite(deadlineAt) || Date.now() >= deadlineAt)
+      return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "读取或发送的授权时限已结束，未切换会话" };
+    card.click();
+    // Opening a row is asynchronous. A non-empty old pane is not proof that the
+    // intended HR is selected; require matching list/pane identity and stable messages.
+    await wait(OPEN_WAIT_MS);
+    let previous = "";
+    let selected = false;
+    for (let attempt = 0; attempt < READY_POLL_LIMIT; attempt++) {
+      await guard();
+      const safety = support.pageSafety(document);
+      if (!safety.safe) return { success: false, pause: true, ...safety };
+      if (Date.now() > Number(deadlineAt || 0)) break;
+      const session = support.currentSession(document, expected);
+      selected = session.uid === expected.uid && Boolean(session.uid);
+      const messages = selected ? support.readMessages(document) : [];
+      const signature = messages.length ? JSON.stringify(messages) : "";
+      if (signature && signature === previous) return { success: true };
+      previous = signature;
+      await wait(READY_POLL_MS);
+    }
+    return { success: false, pause: true, errorCode: selected ? "BOSS_CHAT_MESSAGES_MISSING" : "BOSS_CHAT_NOT_SELECTED",
+      message: selected ? "已选中 HR，但聊天正文未稳定加载，已停止，不会跳过或发送" : "未能确认选中指定 HR 会话，已停止；请检查 BOSS 页面是否重新加载，未执行发送" };
+  }
+
+  function captureStillCurrent(expected, messages) {
+    const session = support.currentSession(document, expected);
+    const current = support.readMessages(document);
+    const last = messages.at(-1);
+    return Boolean(session.uid && session.uid === expected.uid && last && current.length
+      && last.from === current.at(-1).from && support.messagesMatch(last, current.at(-1)));
+  }
+
+  function changedDuringRead() {
+    return { success: false, pause: true, errorCode: "BOSS_CHAT_CHANGED_DURING_READ", message: "读取期间会话身份或最后消息变化，已停止，未提交回复建议或发送" };
   }
 
   function findScrollableList(item) {
@@ -292,9 +346,8 @@
     if (located.matches.length !== 1) {
       return { success: true, outcome: "FAILED_SAFE", evidence: "BOSS_CHAT_IDENTITY_AMBIGUOUS" };
     }
-    await guard();
-    located.unique.click();
-    await wait(OPEN_WAIT_MS);
+    const opened = await openConversation(located.unique, command, command.deadlineAt);
+    if (!opened.success) return { success: true, outcome: "FAILED_SAFE", evidence: opened.errorCode + ": " + opened.message };
 
     const session = support.currentSession(document, { uid: command.uid, hrName: command.hrName,
       companyName: command.companyName, jobName: command.jobName });

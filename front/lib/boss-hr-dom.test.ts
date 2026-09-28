@@ -301,4 +301,72 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result.scannedCount).toBe(3)
   })
 
+  it.each(['delayed', 'not-selected', 'empty-messages', 'changing-messages', 'changed-during-read'])('waits for the actual selected conversation: %s', async (mode) => {
+    const pane = document.querySelector('.chat-conversation')!
+    if (mode === 'changed-during-read') {
+      Object.defineProperties(pane.querySelector('.chat-message')!, { scrollHeight: { value: 900 }, clientHeight: { value: 100 } })
+    }
+    document.body.insertAdjacentHTML('afterbegin', '<button class="filter-all">全部</button>')
+    let phase = 'initial'
+    let elapsed = 0
+    let filterClicks = 0
+    let entry: ReturnType<typeof addCard> | undefined
+    const captured: Array<{ session: { uid: string }; messages: Array<{ text: string }> }> = []
+    document.querySelector('.filter-all')!.addEventListener('click', () => {
+      filterClicks++
+      document.querySelector('.user-list')!.replaceChildren()
+      phase = 'list'
+      elapsed = 0
+    })
+    const advance = (ms: number) => {
+      elapsed += ms
+      if (phase === 'list' && elapsed >= 4000) {
+        entry = addCard()
+        phase = 'listed'
+        entry.card.addEventListener('click', () => { phase = 'conversation'; elapsed = 0 })
+      }
+      if (phase !== 'conversation' || !entry) return
+      const readyAt = mode === 'changing-messages' ? 3000 : 4000
+      if (elapsed < readyAt || mode === 'not-selected') return
+      entry.card.classList.add('selected')
+      Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: entry.props } })
+      if (mode !== 'empty-messages') {
+        pane.querySelector('.im-list')!.innerHTML = `<li class="message-item item-friend"><span class="text">${mode === 'changing-messages' && elapsed < 3250 ? '正在替换的旧正文' : '完整的新消息'}</span></li>`
+        bindMessages()
+      }
+      if (mode === 'changed-during-read' && elapsed >= 4500) {
+        entry.card.classList.remove('selected')
+        Object.assign(pane, { __vue__: undefined })
+        pane.querySelector('.im-list')!.replaceChildren()
+      }
+    }
+    let listener!: (message: object, sender: object, reply: (result: { success: boolean; errorCode?: string }) => void) => void
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
+      window: { top: window, self: window, addEventListener: () => {} }, document, location: { pathname: '/web/geek/chat' },
+      GetJobsBossHrSupport: support, Event, getComputedStyle, sessionStorage,
+      setTimeout: (fn: () => void, ms: number) => setTimeout(() => { advance(ms); fn() }, 0),
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
+        sendMessage: (message: { type: string; capture: typeof captured[number] }, reply: (result: object) => void) => {
+          if (message.type === 'BOSS_HR_CAPTURE_RESULT') captured.push(message.capture)
+          reply({ success: true })
+        },
+      } },
+    })
+    const result = await new Promise<{ success: boolean; errorCode?: string }>(resolve => listener({
+      source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SCAN_V2', scanAll: true, reviewLimit: 3,
+      streamResults: true, scanId: 'loading', watchSessionId: 'watch', deadlineAt: Date.now() + 30000,
+    }, {}, resolve))
+    expect(filterClicks).toBe(1)
+    if (mode === 'not-selected' || mode === 'empty-messages' || mode === 'changed-during-read') {
+      const errorCode = mode === 'changed-during-read' ? 'BOSS_CHAT_CHANGED_DURING_READ' : mode === 'not-selected' ? 'BOSS_CHAT_NOT_SELECTED' : 'BOSS_CHAT_MESSAGES_MISSING'
+      expect(result).toMatchObject({ success: false, errorCode })
+      expect(captured).toHaveLength(0)
+    } else {
+      expect(result.success).toBe(true)
+      expect(captured).toHaveLength(1)
+      expect(captured[0].session.uid).toBe('101-0')
+      expect(captured[0].messages[0].text).toBe('完整的新消息')
+    }
+  })
+
 })
