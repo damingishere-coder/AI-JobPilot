@@ -24,6 +24,7 @@ import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -264,7 +265,7 @@ public class HrAssistantStore {
         // Only commands never leased to a browser can be resumed or re-evaluated.
         jdbcTemplate.update("UPDATE hr_send_command SET status='STALE',outcome='EXPIRED_UNSENT',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING' AND expires_at<=datetime('now','localtime')",profileId);
         jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='APPROVED' AND id IN (SELECT proposal_id FROM hr_send_command WHERE outcome='EXPIRED_UNSENT')",profileId);
-        jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING'",watchSessionId,profileId);
+        jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING' AND NOT EXISTS (SELECT 1 FROM hr_autopilot_decision d WHERE d.proposal_id=hr_send_command.proposal_id AND d.capture_origin='TRIAL')",watchSessionId,profileId);
     }
 
     @Transactional
@@ -455,7 +456,26 @@ public class HrAssistantStore {
 
     @Transactional
     public SendCommandView claimSendCommand(Long profileId, String watchSessionId) {
+        return claimSendCommand(profileId, watchSessionId, null);
+    }
+
+    @Transactional
+    public SendCommandView claimSendCommand(Long profileId, String watchSessionId, Set<Long> allowedProposalIds) {
         expireUnconfirmedLeases();
+        if (allowedProposalIds != null && allowedProposalIds.isEmpty()) return null;
+        // Persisted timestamps keep pacing across service/extension restarts. A
+        // leased action may still be executing, so never issue another alongside it.
+        Integer recent = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM hr_send_command WHERE profile_id=? AND
+                (status='LEASED' OR (status='COMPLETE' AND updated_at>datetime('now','-60 seconds')))
+                """, Integer.class, profileId);
+        if (recent != null && recent > 0) return null;
+        List<Object> parameters = new ArrayList<>(List.of(profileId, safe(watchSessionId)));
+        String scope = " AND NOT EXISTS (SELECT 1 FROM hr_autopilot_decision d WHERE d.proposal_id=c.proposal_id AND d.capture_origin='TRIAL')";
+        if (allowedProposalIds != null) {
+            scope = " AND c.proposal_id IN (" + String.join(",", Collections.nCopies(allowedProposalIds.size(), "?")) + ")";
+            parameters.addAll(allowedProposalIds);
+        }
         List<String> commands = jdbcTemplate.query("""
                 SELECT command_id FROM hr_send_command c
                 JOIN hr_reply_proposal p ON p.id=c.proposal_id
@@ -463,8 +483,7 @@ public class HrAssistantStore {
                  WHERE c.profile_id=? AND (c.watch_session_id='' OR c.watch_session_id=?) AND c.status='PENDING'
                    AND c.expires_at>datetime('now', 'localtime') AND p.status='APPROVED'
                    AND p.source_fingerprint=v.last_inbound_fingerprint
-                 ORDER BY c.created_at LIMIT 1
-                """, (rs, rowNum) -> rs.getString(1), profileId, safe(watchSessionId));
+                """ + scope + " ORDER BY c.created_at LIMIT 1", (rs, rowNum) -> rs.getString(1), parameters.toArray());
         if (commands.isEmpty()) return null;
         String commandId = commands.get(0);
         String leaseToken = UUID.randomUUID().toString();

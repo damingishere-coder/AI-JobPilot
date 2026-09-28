@@ -41,7 +41,17 @@ public class HrAssistantWatchService {
     private final AtomicBoolean processingScan = new AtomicBoolean(false);
     private volatile boolean browserScanRunning;
     private final Set<String> trialUids = new HashSet<>();
+    private final Set<Long> trialProposalIds = new HashSet<>();
+    private volatile boolean reviewReady;
     public boolean isReviewTrial() { return session != null && session.reviewLimit() == 3; }
+    public Set<Long> trialSendScope() { return reviewReady ? Set.copyOf(trialProposalIds) : Set.of(); }
+    public void requireTrialSend(Long profileId, long proposalId) {
+        profileGuard.locked(() -> {
+            if (isReviewTrial() && (!watching.get() || !reviewReady || !session.profileId().equals(profileId) || !trialProposalIds.contains(proposalId)))
+                throw new IllegalStateException("此卡片不属于当前已完成采集的三个会话，或连接已停止；未加入发送队列，请核对本轮卡片");
+            return null;
+        });
+    }
     private volatile WatchSession session;
     private volatile LocalDateTime lastScanAt;
     private volatile LocalDateTime lastHeartbeatAt;
@@ -105,6 +115,8 @@ public class HrAssistantWatchService {
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
                     tabId, url.trim(), contentVersion.trim(), reviewLimit);
             trialUids.clear();
+            trialProposalIds.clear();
+            reviewReady = false;
             if (reviewLimit == 0) store.resumePendingCommands(profileId,session.watchSessionId());
             watching.set(true);
             scanIntervalMs = autopilot!=null && autopilot.policy(profileId).enabled() ? 60_000L : intervalMinutes * 60_000L;
@@ -136,6 +148,18 @@ public class HrAssistantWatchService {
             WatchStatus status = status();
             events.emit("watch-status", status);
             return status;
+        });
+    }
+
+    public WatchStatus finishReview(String watchSessionId, int tabId) {
+        return profileGuard.locked(() -> {
+            requireSession(watchSessionId, tabId);
+            if (!isReviewTrial() || processingScan.get()) throw new IllegalStateException("试运行采集尚未完成");
+            reviewReady = true;
+            browserScanRunning = false;
+            lastError = "";
+            events.emit("watch-status", status());
+            return status();
         });
     }
 
@@ -185,6 +209,7 @@ public class HrAssistantWatchService {
         }
         WatchSession active = profileGuard.locked(() -> {
             WatchSession bound = requireSession(watchSessionId, tabId);
+            if (reviewReady) throw new IllegalStateException("本轮采集已结束，仅等待已确认回复，不再读取其他会话");
             if (!processingScan.compareAndSet(false, true)) throw new IllegalStateException("上一轮 HR 消息仍在处理，本轮已跳过");
             return bound;
         });
@@ -198,7 +223,7 @@ public class HrAssistantWatchService {
                 validateCapture(capture);
                 if (active.reviewLimit() == 3) {
                     if (trialUids.contains(capture.session().uid())) { duplicates++; acknowledged.add(capture.captureId()); continue; }
-                    if (trialUids.size() >= 3) throw new IllegalStateException("三个会话试运行已达到上限，未处理更多会话");
+                    if (trialProposalIds.size() >= 3 || trialUids.size() >= 20) throw new IllegalStateException("三个会话试运行已达到上限，未处理更多会话");
                     trialUids.add(capture.session().uid());
                 }
                 boolean shouldProcess = store.beginCapture(active.profileId(), active.watchSessionId(), normalizedScanId, capture.captureId());
@@ -208,7 +233,8 @@ public class HrAssistantWatchService {
                     continue;
                 }
                 try {
-                    processCapture(active.profileId(), settings, capture);
+                    Long proposalId = processCapture(active.profileId(), settings, capture);
+                    if (active.reviewLimit() == 3 && proposalId != null) trialProposalIds.add(proposalId);
                     store.completeCapture(active.watchSessionId(), capture.captureId());
                     acknowledged.add(capture.captureId());
                     processed++;
@@ -223,7 +249,7 @@ public class HrAssistantWatchService {
             lastHeartbeatAt = lastScanAt;
             lastError = "";
             outboxCount = Math.max(0, outboxCount - acknowledged.size());
-            ScanReceipt receipt = new ScanReceipt(normalizedScanId, safeCaptures.size(), processed, duplicates, acknowledged);
+            ScanReceipt receipt = new ScanReceipt(normalizedScanId, safeCaptures.size(), processed, duplicates, acknowledged, trialProposalIds.size());
             events.emit("scan-complete", java.util.Map.of(
                     "processed", processed, "duplicates", duplicates, "totalUnread", Math.max(0, totalUnread),
                     "lastScanAt", lastScanAt.toString()));
@@ -250,7 +276,7 @@ public class HrAssistantWatchService {
     private WatchStatus statusLocked() {
         var currentProfile = profileService.getCurrentProfile();
         WatchSession active = session;
-        LocalDateTime next = watching.get() && lastScanAt != null ? lastScanAt.plusNanos(scanIntervalMs * 1_000_000) : null;
+        LocalDateTime next = watching.get() && !reviewReady && lastScanAt != null ? lastScanAt.plusNanos(scanIntervalMs * 1_000_000) : null;
         ChromeBridgeStatus bridge = new ChromeBridgeStatus(active != null, watching.get() && active != null,
                 active == null ? null : active.tabId(), active == null ? "" : active.url(),
                 active == null ? "" : active.contentVersion(), lastHeartbeatAt, outboxCount,
@@ -261,7 +287,8 @@ public class HrAssistantWatchService {
                 currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked(),
                 isReviewTrial()?"TRIAL_REVIEW":autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
                 autopilot==null || currentProfile==null?List.of():dutyBlockers(currentProfile.getId()),
-                autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()));
+                autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()),
+                watching.get() && reviewReady, trialProposalIds.size());
     }
 
     public String requireActiveWatchSession(Long profileId) {
@@ -308,7 +335,7 @@ public class HrAssistantWatchService {
         if (deleted > 0) log.info("已清理 {} 条过期 HR 消息正文", deleted);
     }
 
-    private void processCapture(Long profileId, HrAssistantStore.SettingsSecret settings, ChatCapture capture) {
+    private Long processCapture(Long profileId, HrAssistantStore.SettingsSecret settings, ChatCapture capture) {
         ChatSession chat = capture.session();
         long conversationId = store.upsertConversation(profileId, chat);
         for (ChatMessage message : capture.messages()) store.saveMessage(conversationId, message, settings.retentionDays());
@@ -316,13 +343,13 @@ public class HrAssistantWatchService {
         // Never draft a second response to an older inbound message in that case.
         if (!capture.messages().get(capture.messages().size() - 1).inbound()) {
             store.expireAnsweredProposals(conversationId);
-            return;
+            return null;
         }
         ChatMessage source = latestInboundForCurrentLastMessage(capture.messages(), chat.lastMessage());
         if (source == null) throw new IllegalStateException("最新入站消息与会话列表不一致，已保留 Outbox 并停止处理");
         String sourceFingerprint = store.sourceFingerprint(conversationId, source);
         store.updateLastInbound(conversationId, sourceFingerprint);
-        if (isReviewTrial() ? store.prepareTrialSource(conversationId, sourceFingerprint) : store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return;
+        if (isReviewTrial() ? store.prepareTrialSource(conversationId, sourceFingerprint) : store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return null;
 
         if (autopilot != null) {
             if(isReviewTrial() || autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
@@ -348,6 +375,10 @@ public class HrAssistantWatchService {
             }
         }
         long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
+        if (isReviewTrial() && Set.of(Classification.NO_REPLY, Classification.REJECTION).contains(draft.classification())) {
+            store.skip(profileId, proposalId);
+            return null;
+        }
         boolean notify;
         if (isReviewTrial() && autopilot != null) {
             autopilot.reviewTrial(profileId, proposalId, capture, draft);
@@ -358,6 +389,7 @@ public class HrAssistantWatchService {
         if (notify && settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
             events.emit("qq-notification-failed", java.util.Map.of("proposalId", proposal.id(), "message", "NapCat 未连接或 QQ 通知发送失败"));
         }
+        return proposalId;
     }
 
     private ChatMessage latestInboundForCurrentLastMessage(List<ChatMessage> messages, String currentLastMessage) {

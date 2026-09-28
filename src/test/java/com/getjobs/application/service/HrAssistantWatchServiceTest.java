@@ -202,10 +202,20 @@ class HrAssistantWatchServiceTest {
         var status=service.start(77,"https://www.zhipin.com/web/geek/chat",HrAutopilotStore.PROTOCOL,"trial",1L,1,3);
         assertThat(service.isReviewTrial()).isTrue();
         org.mockito.Mockito.verify(store,org.mockito.Mockito.never()).resumePendingCommands(any(),any());
-        when(store.beginCapture(eq(1L),eq(status.watchSessionId()),any(),any())).thenReturn(false);
+        when(store.beginCapture(eq(1L),eq(status.watchSessionId()),any(),any())).thenReturn(true);
+        when(draftService.generate(eq(1L),anyLong(),any(),anyList())).thenReturn(new AiDraft(Classification.REPLY,"您好","问候",List.of(),List.of(),1));
+        when(store.createProposal(eq(1L),anyLong(),any(),any())).thenReturn(101L,102L,103L);
+        when(store.getProposalView(eq(1L),anyLong())).thenReturn(proposal());
         service.ingestScan(status.watchSessionId(),77,"s1",0,List.of(capture(1),capture(2),capture(3)));
+        assertThat(service.trialSendScope()).isEmpty();
         assertThatThrownBy(()->service.ingestScan(status.watchSessionId(),77,"s2",0,List.of(capture(4))))
                 .hasMessageContaining("上限");
+        assertThat(service.finishReview(status.watchSessionId(),77).reviewReady()).isTrue();
+        assertThat(service.trialSendScope()).containsExactlyInAnyOrder(101L,102L,103L);
+        assertThat(service.status().watching()).isTrue();
+        assertThat(service.status().nextScanAt()).isNull();
+        assertThatThrownBy(()->service.ingestScan(status.watchSessionId(),77,"s3",0,List.of(capture(1))))
+                .hasMessageContaining("不再读取");
         service.stop(status.watchSessionId(),"TRIAL_COMPLETED: done");
         org.mockito.Mockito.verify(napCatGateway,org.mockito.Mockito.never()).notifySystemFault(any(),any());
         assertThat(service.status().watching()).isFalse();
@@ -217,6 +227,22 @@ class HrAssistantWatchServiceTest {
                 .hasMessageContaining("更新");
         assertThatThrownBy(()->service.start(77,"https://www.zhipin.com/web/geek/chat",HrAutopilotStore.PROTOCOL,"trial",1L,1,3))
                 .hasMessageContaining("QQ");
+    }
+
+    @Test
+    void rejectedChatsDoNotConsumeTrialReplySlotsOrReceiveNotifications() {
+        when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
+                1L,CommunicationProfile.empty(),true,"ws://127.0.0.1:3001","test",QqTargetType.GROUP,"123456","123457",30));
+        when(napCatGateway.isConnected()).thenReturn(true);
+        var status=service.start(77,"https://www.zhipin.com/web/geek/chat",HrAutopilotStore.PROTOCOL,"trial",1L,1,3);
+        when(store.beginCapture(any(),any(),any(),any())).thenReturn(true);
+        when(draftService.generate(eq(1L),anyLong(),any(),anyList())).thenReturn(new AiDraft(Classification.REJECTION,"","不匹配",List.of(),List.of(),1));
+        when(store.createProposal(eq(1L),anyLong(),any(),any())).thenReturn(101L);
+        assertThat(service.ingestScan(status.watchSessionId(),77,"s1",0,List.of(capture(1))).reviewCount()).isZero();
+        verify(store).skip(1L,101L);
+        org.mockito.Mockito.verify(napCatGateway,org.mockito.Mockito.never()).notifyProposal(any());
+        service.finishReview(status.watchSessionId(),77);
+        assertThat(service.trialSendScope()).isEmpty();
     }
 
     private ChatCapture capture(int index) {
