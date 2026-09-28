@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-28-hr-review-10s";
+  const CONTENT_VERSION = "2026-09-28-hr-review-identity";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -369,7 +369,7 @@
     const session = support.currentSession(document, { uid: command.uid, hrName: command.hrName,
       companyName: command.companyName, jobName: command.jobName });
     if (!identityMatches(session, command)) {
-      return { success: true, outcome: "STALE", evidence: "会话标题、公司或岗位已变化" };
+      return { success: true, outcome: "STALE", evidence: `${CONTENT_VERSION}: 发送前身份不符：${identityFailures(session,command).join("、")}` };
     }
     const read=await readContext();
     const before=read.messages;
@@ -561,6 +561,10 @@
   }
 
   function identityMatches(session, command) {
+    return identityFailures(session,command).length===0;
+  }
+
+  function identityFailures(session, command) {
     const title = support.normalizeText(session.title || session.hrName);
     const surface = support.normalizeText(session.surfaceText);
     const hrName = support.normalizeText(command.hrName);
@@ -568,9 +572,8 @@
     const jobName = support.normalizeText(command.jobName);
     const companyMatches=typeof session.observedCompanyName==="string"
       ? support.normalizeText(session.observedCompanyName)===companyName : surface.includes(companyName);
-    return session.uid === command.uid && (!hrName || title.includes(hrName))
-      && (!companyName || companyMatches)
-      && (!jobName || surface.includes(jobName));
+    return [session.uid!==command.uid?"会话UID":"",hrName&&!title.includes(hrName)?"HR姓名":"",
+      companyName&&!companyMatches?"公司":"",jobName&&!surface.includes(jobName)?"岗位":""].filter(Boolean);
   }
 
   function writeInput(input, value) {

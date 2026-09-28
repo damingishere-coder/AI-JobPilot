@@ -37,7 +37,7 @@ function loadBackground({
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
   injectedBossVersion = BOSS_CONTENT_VERSION,
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-28-hr-review-10s",
+  bossHrContentVersion = "2026-09-28-hr-review-identity",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,
@@ -1573,7 +1573,7 @@ test("workbench trial opens a dedicated tab and binds automatically without sele
   let started;
   context.startBossHrWatch=async(sender,request,profile,interval,limit)=>{started={sender,profile,interval,limit};return {success:true};};
   const caller={tab:{id:99,url:'http://127.0.0.1:6866/env-config'}};
-  const message={source:'GET_JOBS_PAGE',type:'BOSS_HR_TRIAL_START',expectedProfileId:4,hrReviewProtocol:'2026-09-28-hr-review-10s'};
+  const message={source:'GET_JOBS_PAGE',type:'BOSS_HR_TRIAL_START',expectedProfileId:4,hrReviewProtocol:'2026-09-28-hr-review-identity'};
   assert.equal((await dispatchRuntimeMessage({...message,hrReviewProtocol:'old'},caller)).success,false);
   assert.equal(tabList.length,1);
   assert.equal((await dispatchRuntimeMessage(message,{tab:{id:9,url:'https://evil.example/'}})).success,false);

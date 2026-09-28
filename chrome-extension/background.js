@@ -63,7 +63,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.9.4";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.9.5";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -549,7 +549,7 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
-const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-28-hr-review-10s";
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-28-hr-review-identity";
 
 async function startBossHrWatch(sender, requestContext, expectedProfileId, intervalMinutes = 1, reviewLimit = 0) {
   if (![0,3].includes(reviewLimit)) return {success:false,message:"试运行只支持三个会话"};

@@ -72,8 +72,8 @@ export default function HrWatchConnection() {
     setOpening(true); setMessage('')
     try {
       const bridge = await getChromeBridgeStatus()
-      const protocol = '2026-09-28-hr-review-10s'
-      if (!bridge.success || bridge.hrReviewProtocol !== protocol || bridge.version !== REQUIRED_BACKGROUND_VERSION || bridge.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) throw new Error('请重新加载 1.9.4 或更新版 Chrome Bridge，并刷新工作台；当前扩展尚不支持工作台启动。')
+      const protocol = '2026-09-28-hr-review-identity'
+      if (!bridge.success || bridge.hrReviewProtocol !== protocol || bridge.version !== REQUIRED_BACKGROUND_VERSION || bridge.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) throw new Error('请重新加载 1.9.5 或更新版 Chrome Bridge，并刷新工作台；当前扩展尚不支持工作台启动。')
       const response = await sendChromeBridgeMessage({ type: stop ? 'BOSS_HR_TRIAL_STOP' : 'BOSS_HR_TRIAL_START', expectedProfileId: watch?.currentProfileId, hrReviewProtocol: protocol }, 30000)
       if (!response.success) throw new Error(response.message || '启动未确认，请查看当前状态，不要重复点击。')
       setMessage(stop ? '已停止试运行和确认回发。' : '已开始：系统自动打开并读取最近三个待回复会话，建议发到 QQ。采集后保留确认回发连接，无需手动选 HR。')
