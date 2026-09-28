@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-28-hr-review";
+  const CONTENT_VERSION = "2026-09-28-hr-workbench-review";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -14,14 +14,15 @@
   try {userPaused=sessionStorage.getItem("getjobs-hr-paused")==="1";} catch {userPaused=true;}
   let managed=false;
   let trialActive=false;
+  let reviewConnected=false;
   let executingPolicyVersion=0;
   let operationActive=false;
   let sendDispatched=false;
   const pauseForUser=(event)=> {
-    if((!managed && !trialActive) || !event.isTrusted || event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) return;
+    if((!managed && !trialActive && !reviewConnected) || !event.isTrusted || event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) return;
     userPaused=true;
     try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
-    chrome.runtime.sendMessage({source:"GET_JOBS_BOSS_CONTENT",type:"BOSS_LOCAL_API",operation:trialActive?"hr-stop":"hr-pause"},()=>{});
+    chrome.runtime.sendMessage({source:"GET_JOBS_BOSS_CONTENT",type:"BOSS_LOCAL_API",operation:trialActive||reviewConnected?"hr-stop":"hr-pause"},()=>{});
   };
   window.addEventListener("pointerdown",pauseForUser,true);
   window.addEventListener("keydown",pauseForUser,true);
@@ -29,6 +30,10 @@
   window.addEventListener("getjobs:hr:resume",()=>{userPaused=false;try {sessionStorage.removeItem("getjobs-hr-paused");} catch {userPaused=true;}});
   async function guard() {
     if(userPaused) throw new Error("USER_PAUSED：检测到手动操作，请明确恢复托管");
+    if(reviewConnected && !managed) {
+      const response=await backgroundRequest("BOSS_LOCAL_API",{operation:"hr-review-guard"});
+      if(userPaused || !response?.success || !response?.data?.data?.watchActive) throw new Error("USER_PAUSED：确认回发连接已停止或失效");
+    }
     if(!managed) return;
     const response=await backgroundRequest("BOSS_LOCAL_API",{operation:"hr-watch-guard"});
     const p=response?.data?.data || response?.data;
@@ -37,6 +42,14 @@
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.source !== "GET_JOBS_BACKGROUND") return;
+    if (message.type === "BOSS_HR_PREPARE_REVIEW") {
+      if (message.version !== CONTENT_VERSION || operationActive) { sendResponse({success:false}); return; }
+      userPaused=false;
+      reviewConnected=true;
+      try {sessionStorage.removeItem("getjobs-hr-paused");} catch {userPaused=true;}
+      sendResponse({success:!userPaused});
+      return;
+    }
     if (message.type === "BOSS_HR_CONTENT_VERSION_V2") {
       sendResponse({ success: true, version: CONTENT_VERSION, url: location.href, safety:support.pageSafety(document) });
       return;
@@ -60,6 +73,7 @@
   async function scan(message) {
     managed=message.managed===true;
     trialActive=message.reviewLimit===3;
+    reviewConnected=trialActive;
     executingPolicyVersion=0;
     await guard();
     const safety = support.pageSafety(document);
@@ -105,8 +119,9 @@
     const captures = [];
     const errors = [];
     let scannedCount = 0;
+    let reviewCount = 0;
     for (const snapshot of targets.values()) {
-      if (trial && scannedCount >= 3) break;
+      if (trial && reviewCount >= 3) break;
       await guard();
       if (Date.now() > Number(message.deadlineAt || 0)) {
         return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "本轮读取达到安全时限，已暂停；已保存的进度保留" };
@@ -168,6 +183,7 @@
       if (message.streamResults) {
         const saved = await backgroundRequest("BOSS_HR_CAPTURE_RESULT", { capture, scanId: message.scanId, watchSessionId: message.watchSessionId });
         if (!saved?.success) return { success: false, pause: true, errorCode: saved?.errorCode || "HR_CAPTURE_SUBMIT_FAILED", message: saved?.message || "生成或保存结果未确认，已暂停，不自动重试" };
+        if (trial) reviewCount = Number(saved.reviewCount || 0);
         if(!trial && saved.command) {
           let execution;
           try { execution=await executeSend(saved.command); }
@@ -178,7 +194,7 @@
           if(!reported?.success) return {success:false,errorCode:"HR_SEND_REPORT_UNKNOWN",message:"发送结果未保存，已暂停，请核验；不会重发"};
           executingPolicyVersion=0;
         }
-      } else captures.push(capture);
+      } else { captures.push(capture); if (trial) reviewCount++; }
       summaries[snapshot.uid]=signature(currentSnapshot);
       scannedCount++;
     }
@@ -200,7 +216,7 @@
       errors,
       summaries,
       streamed: Boolean(message.streamResults),
-      scannedCount,
+      scannedCount:trial?reviewCount:scannedCount,
       truncated: targets.size >= (scanAll ? 1000 : MAX_CAPTURES)
     };
   }
@@ -333,6 +349,7 @@
 
   async function executeSend(command) {
     sendDispatched=false;
+    if(command?.reviewOnly===true) reviewConnected=true;
     managed=Number(command?.policyVersion||0)>0;
     executingPolicyVersion=Number(command?.policyVersion||0);
     await guard();

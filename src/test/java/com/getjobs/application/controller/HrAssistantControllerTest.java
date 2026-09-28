@@ -132,15 +132,20 @@ class HrAssistantControllerTest {
         return (Map<String, Object>) response.getBody();
     }
     @Test
-    void trialCannotClaimAnySendCommandEvenWhenOneIsPending() {
+    void trialClaimsOnlyTheReadyScopeAndNeverTheGeneralQueue() {
         when(profiles.getCurrentProfileId()).thenReturn(1L);
         when(watcher.isReviewTrial()).thenReturn(true);
+        when(watcher.trialSendScope()).thenReturn(java.util.Set.of());
         when(watcher.withSession(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("trial"),
                 org.mockito.ArgumentMatchers.eq(77),org.mockito.ArgumentMatchers.eq(false),org.mockito.ArgumentMatchers.any()))
                 .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(4)).get());
         var request=new HrAssistantController.SendCommandClaimRequest();request.setWatchSessionId("trial");request.setTabId(77);
         assertThat(controller.claimSendCommand(tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.OK);
-        verifyNoInteractions(actions);
+        verify(actions).claim(1L,"trial",java.util.Set.of());
+        when(watcher.trialSendScope()).thenReturn(java.util.Set.of(101L,102L));
+        controller.claimSendCommand(tokens.issueToken(),request);
+        verify(actions).claim(1L,"trial",java.util.Set.of(101L,102L));
+        org.mockito.Mockito.verify(actions,org.mockito.Mockito.never()).claim(1L,"trial");
     }
 
 }

@@ -238,6 +238,53 @@ class HrAssistantStoreTest {
         return jdbcTemplate.queryForObject(sql, String.class);
     }
 
+    @Test
+    void trialClaimsOnlyItsConfirmedProposalsAndPacesAcrossStoreRestarts() {
+        long first=queuedReply("outside");
+        long second=queuedReply("trial-two");
+        long third=queuedReply("trial-three");
+        assertThat(store.claimSendCommand(1L,"trial",java.util.Set.of())).isNull();
+        var command=store.claimSendCommand(1L,"trial",java.util.Set.of(second,third));
+        assertThat(command.proposalId()).isEqualTo(second);
+        assertThat(store.getProposalView(1L,first).status()).isEqualTo("APPROVED");
+        assertThat(store.claimSendCommand(1L,"trial",java.util.Set.of(third))).isNull();
+        store.completeSendCommand(1L,"trial",command.commandId(),command.leaseToken(),"SENT","已看到新增本人消息",command.expectedLatestInbound());
+        var restarted=new HrAssistantStore(jdbcTemplate,new HrAssistantCryptoService(tempDir.resolve("secrets/hr-chat.key")),new ObjectMapper());
+        assertThat(restarted.claimSendCommand(1L,"trial",java.util.Set.of(third))).isNull();
+        jdbcTemplate.update("UPDATE hr_send_command SET updated_at=datetime('now','-61 seconds') WHERE command_id=?",command.commandId());
+        assertThat(restarted.claimSendCommand(1L,"trial",java.util.Set.of(third)).proposalId()).isEqualTo(third);
+    }
+
+    private long queuedReply(String uid) {
+        long conversation=store.upsertConversation(1L,new ChatSession(uid,"","HR","公司","岗位","HR","您好","今天"));
+        var message=new ChatMessage("对方","文本","您好","今天");
+        store.saveMessage(conversation,message,30);
+        String fingerprint=store.sourceFingerprint(conversation,message);
+        store.updateLastInbound(conversation,fingerprint);
+        long proposal=store.createProposal(1L,conversation,fingerprint,new AiDraft(Classification.REPLY,"您好","问候",List.of(),List.of(),1));
+        store.queueSendCommand(1L,proposal,1,"");
+        return proposal;
+    }
+
+    @Test
+    void ordinaryWatchCannotResumeOrClaimAnOldTrialAfterRestartOrRevision() {
+        long trial = queuedReply("old-trial");
+        var crypto = new HrAssistantCryptoService(tempDir.resolve("secrets/hr-chat.key"));
+        var decisions = new HrAutopilotStore(jdbcTemplate, new ObjectMapper(), crypto, store);
+        decisions.decision(trial, 1, "TEXT", "试运行建议", false);
+        decisions.markTrial(trial);
+        decisions.decision(trial, 1, "TEXT", "用户修改后的建议", false);
+        assertThat(scalar("SELECT capture_origin FROM hr_autopilot_decision WHERE proposal_id=" + trial)).isEqualTo("TRIAL");
+        var restarted = new HrAssistantStore(jdbcTemplate, crypto, new ObjectMapper());
+        restarted.resumePendingCommands(1L, "ordinary-watch");
+        assertThat(scalar("SELECT watch_session_id FROM hr_send_command WHERE proposal_id=" + trial)).isEmpty();
+        assertThat(restarted.claimSendCommand(1L, "ordinary-watch")).isNull();
+        assertThat(restarted.claimSendCommand(1L, "new-trial", java.util.Set.of())).isNull();
+        long ordinary = queuedReply("ordinary");
+        assertThat(restarted.claimSendCommand(1L, "ordinary-watch").proposalId()).isEqualTo(ordinary);
+        assertThat(restarted.getProposalView(1L, trial).status()).isEqualTo("APPROVED");
+    }
+
     private int count(String table) {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
     }

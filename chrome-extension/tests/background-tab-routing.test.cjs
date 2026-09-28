@@ -37,7 +37,7 @@ function loadBackground({
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
   injectedBossVersion = BOSS_CONTENT_VERSION,
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-28-hr-review",
+  bossHrContentVersion = "2026-09-28-hr-workbench-review",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,
@@ -1565,4 +1565,46 @@ test("capture boundary returns one leased command without re-entering the busy c
   assert.equal(calls.filter(u=>u.endsWith('/claim')).length,1);
   assert.equal(sentMessages.filter(m=>m.message.type==='BOSS_HR_SEND_V2').length,0);
   assert.equal(Object.keys(await context.readBossHrOutbox()).length,0);
+});
+
+test("workbench trial opens a dedicated tab and binds automatically without selecting an HR", async () => {
+  const {context,dispatchRuntimeMessage,tabList,tabUpdates,sentMessages}=loadBackground({tabs:[{id:99,url:'http://127.0.0.1:6866/env-config'}]});
+  context.sleep=async()=>{};
+  let started;
+  context.startBossHrWatch=async(sender,request,profile,interval,limit)=>{started={sender,profile,interval,limit};return {success:true};};
+  const caller={tab:{id:99,url:'http://127.0.0.1:6866/env-config'}};
+  const message={source:'GET_JOBS_PAGE',type:'BOSS_HR_TRIAL_START',expectedProfileId:4,hrReviewProtocol:'2026-09-28-hr-workbench-review'};
+  assert.equal((await dispatchRuntimeMessage({...message,hrReviewProtocol:'old'},caller)).success,false);
+  assert.equal(tabList.length,1);
+  assert.equal((await dispatchRuntimeMessage(message,{tab:{id:9,url:'https://evil.example/'}})).success,false);
+  assert.equal((await dispatchRuntimeMessage(message,caller)).success,true);
+  assert.equal(started.profile,4);assert.equal(started.limit,3);
+  assert.match(started.sender.tab.url,/getjobs-autopilot=1/);
+  assert.equal(tabUpdates.filter(u=>u.updates.url).length,0);
+  assert.ok(sentMessages.some(m=>m.message.type==='BOSS_HR_PREPARE_REVIEW'));
+  assert.ok(!sentMessages.some(m=>m.message.type==='BOSS_HR_SEND_V2'));
+});
+
+test("a completed trial keeps its confirmation connection and never rescans other HRs", async () => {
+  const calls=[];
+  const {context,alarmCreates,sentMessages}=loadBackground({tabs:[{id:7,url:'https://www.zhipin.com/web/geek/chat'}],fetchImpl:async(url)=>{
+    calls.push(url);
+    if(url.endsWith('/action-token')) return jsonResponse({success:true,data:{token:'test'}});
+    if(url.endsWith('/autopilot')) return jsonResponse({success:true,data:{enabled:false,paused:false}});
+    if(url.endsWith('/heartbeat') || url.endsWith('/review-ready')) return jsonResponse({success:true,data:{}});
+    if(url.endsWith('/scan-results')) return jsonResponse({success:true,data:{acknowledgedCaptureIds:[]}});
+    throw new Error(url);
+  }});
+  await context.writeBossHrWatch({watching:true,reviewLimit:3,tabId:7,watchSessionId:'watch',profileId:1});
+  assert.equal((await context.runBossHrScan('initial')).success,true);
+  assert.equal((await context.readBossHrWatch()).trialComplete,true);
+  assert.equal((await context.readBossHrWatch()).watching,true);
+  assert.equal(alarmCreates.at(-1).options.periodInMinutes,1);
+  let polls=0;
+  context.pollBossHrSendCommand=async()=>{polls++;return {success:true,data:{data:{status:'SENT_CONFIRMED'}}};};
+  await context.runBossHrTick();
+  assert.equal(polls,1);
+  assert.equal(sentMessages.filter(m=>m.message.type==='BOSS_HR_SCAN_V2').length,1);
+  assert.equal(calls.filter(u=>u.endsWith('/review-ready')).length,1);
+  assert.ok(!calls.some(u=>u.endsWith('/stop')));
 });

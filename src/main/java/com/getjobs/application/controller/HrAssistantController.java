@@ -184,8 +184,19 @@ public class HrAssistantController {
         return execute(() -> {
             Long profileId = profileService.getCurrentProfileId();
             return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), false,
-                    () -> watchService.isReviewTrial() ? null : actionService.claim(profileId, request.getWatchSessionId()));
+                    () -> watchService.isReviewTrial()
+                            ? actionService.claim(profileId, request.getWatchSessionId(), watchService.trialSendScope())
+                            : actionService.claim(profileId, request.getWatchSessionId()));
         });
+    }
+
+    @PostMapping("/watch/review-ready")
+    public ResponseEntity<?> reviewReady(
+            @RequestHeader(value = LocalActionTokenService.HEADER_NAME, required = false) String actionToken,
+            @RequestBody SendCommandClaimRequest request) {
+        if (!localActionTokenService.isValid(actionToken)) return unauthorized();
+        if (request == null) return badRequest("试运行会话不能为空");
+        return execute(() -> watchService.finishReview(request.getWatchSessionId(), request.getTabId()));
     }
 
     @PostMapping("/send-commands/{id}/result")

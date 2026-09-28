@@ -62,7 +62,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
       {settingsDirty && <p className="text-sm text-amber-700">请先保存沟通资料与 QQ 设置，再核对并确认值班规则。</p>}
       <p className="text-xs text-muted-foreground">QQ 通知：待发送 {deliveries.PENDING || 0}，已确认 {deliveries.CONFIRMED || 0}，失败 {deliveries.FAILED || 0}，结果未知 {deliveries.UNKNOWN || 0}。结果未知不会自动重发，请核对群内消息。</p>
       <p className="text-sm">简历直接使用 BOSS 聊天框下方的“发简历”按钮，不上传本地文件。弹窗、附件选择或发送回执不明确时交给你处理。</p>
-      <p className="text-sm">先测试：打开 BOSS 聊天页，点击“试运行：三个会话 → QQ确认”。只读取最近三个待回复会话，发送原话和建议卡片后停止；无需开启持续值守。</p>
+      <p className="text-sm">先测试：点击“开始三个会话测试”，系统自动打开 HR 会话并把原话和建议发到 QQ。采集后等待你确认，再自动选中对应 HR 回发；不会继续读取其他会话。</p>
       {policy.facts && <details><summary className="text-sm">明确记住的个人事实</summary><p className="whitespace-pre-wrap text-sm">{policy.facts}</p></details>}
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对当前档案资料、QQ 群与操作人、分享授权及已有消息范围，同意按所选模式处理和发送回复。</label>
       <div className="flex gap-2">

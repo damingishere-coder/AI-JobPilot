@@ -11,6 +11,9 @@ import org.springframework.stereotype.Service;
 public class HrReplyActionService {
     private HrAutopilotStore autopilotStore;
     private HrAutopilotService autopilot;
+    private HrAssistantWatchService watchService;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWatchService(@org.springframework.context.annotation.Lazy HrAssistantWatchService watchService) { this.watchService=watchService; }
     @org.springframework.beans.factory.annotation.Autowired
     public void setAutopilot(HrAutopilotStore store, HrAutopilotService service) { this.autopilotStore=store; this.autopilot=service; }
     private final HrAssistantStore store;
@@ -41,6 +44,7 @@ public class HrReplyActionService {
     }
 
     public ProposalView send(Long profileId, long proposalId, int expectedVersion) {
+        if (watchService != null) watchService.requireTrialSend(profileId, proposalId);
         String commandId = store.queueSendCommand(profileId, proposalId, expectedVersion, "");
         ProposalView queued = store.getProposalView(profileId, proposalId);
         events.emit("proposal-send-pending", java.util.Map.of("commandId", commandId, "proposal", queued));
@@ -53,8 +57,13 @@ public class HrReplyActionService {
     }
 
     public SendCommandView claim(Long profileId, String watchSessionId) {
+        return claim(profileId, watchSessionId, null);
+    }
+
+    public SendCommandView claim(Long profileId, String watchSessionId, java.util.Set<Long> allowedProposalIds) {
         if (autopilot != null && autopilot.policy(profileId).paused()) return null;
-        SendCommandView command = store.claimSendCommand(profileId, watchSessionId);
+        SendCommandView command = allowedProposalIds == null ? store.claimSendCommand(profileId, watchSessionId)
+                : store.claimSendCommand(profileId, watchSessionId, allowedProposalIds);
         if (command != null && autopilot != null) {
             try { autopilot.verifyClaim(profileId, command.proposalId()); }
             catch (RuntimeException e) {

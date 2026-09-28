@@ -86,10 +86,14 @@ public final class HrAssistantTypes {
             int received,
             int processed,
             int duplicates,
-            List<String> acknowledgedCaptureIds
+            List<String> acknowledgedCaptureIds,
+            int reviewCount
     ) {
         public ScanReceipt {
             acknowledgedCaptureIds = acknowledgedCaptureIds == null ? List.of() : List.copyOf(acknowledgedCaptureIds);
+        }
+        public ScanReceipt(String scanId, int received, int processed, int duplicates, List<String> acknowledgedCaptureIds) {
+            this(scanId, received, processed, duplicates, acknowledgedCaptureIds, 0);
         }
     }
 
@@ -212,7 +216,9 @@ public final class HrAssistantTypes {
             boolean profileSwitchBlocked,
             String replyMode,
             List<String> blockers,
-            java.util.Map<String,Object> activity
+            java.util.Map<String,Object> activity,
+            boolean reviewReady,
+            int reviewCount
     ) {
     }
 }

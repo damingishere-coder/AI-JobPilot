@@ -29,6 +29,7 @@ function bindMessages() {
 // It contains no real HR identifiers, message history or account data.
 describe('BOSS virtual-list identity adapter', () => {
   beforeEach(() => {
+    sessionStorage.clear()
     document.body.innerHTML = '<div class="user-list"></div><div class="chat-conversation"><div class="user-info"><span class="name-text">王女士</span></div><div class="chat-message"><ul class="im-list"></ul></div></div>'
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ width: 100, height: 40 } as DOMRect)
     identity.install(document)
@@ -265,7 +266,9 @@ describe('BOSS virtual-list identity adapter', () => {
       window:{top:window,self:window,addEventListener:()=>{}},document,location:{pathname:'/web/geek/chat'},
       GetJobsBossHrSupport:support,Event,getComputedStyle,sessionStorage,
       setTimeout:(fn:()=>void)=>setTimeout(fn,0),
-      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:()=>{writes++}}}
+      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:(m:{operation?:string},reply:(r:object)=>void)=>{
+        if(m.operation==='hr-review-guard') reply({success:true,data:{data:{watchActive:true}}}); else writes++
+      }}}
     })
     const result=await new Promise<{success:boolean;errorCode:string}>(resolve=>listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_SCAN_V2',scanAll:true,reviewLimit:3,streamResults:true,scanId:'trial',watchSessionId:'watch',deadlineAt:Date.now()+30000}, {}, resolve))
     expect(result.success).toBe(false)
@@ -273,10 +276,12 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(writes).toBe(0)
   })
 
-  it('trial reads at most three unanswered chats and skips an already answered chat', async () => {
-    const entries = ['101','102','103','104','105'].map(id => addCard(id))
+  it('trial finds three pending replies, skips answered/closed chats, and pauses on manual takeover', async () => {
+    const entries = ['101','102','103','104','105','106'].map(id => addCard(id))
     const pane = document.querySelector('.chat-conversation')!
     const saved: string[] = []
+    const listeners: Record<string,(event:{isTrusted:boolean;composedPath:()=>object[]})=>void> = {}
+    let stops=0
     for (const [index, entry] of entries.entries()) entry.card.addEventListener('click', () => {
       document.querySelectorAll('.friend-content').forEach(card => card.classList.remove('selected'))
       entry.card.classList.add('selected')
@@ -286,19 +291,50 @@ describe('BOSS virtual-list identity adapter', () => {
     })
     let listener!: (message: object, sender: object, respond: (result: {success:boolean;scannedCount:number})=>void)=>void
     runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'),'utf8'), {
-      window:{top:window,self:window,addEventListener:()=>{}},document,location:{pathname:'/web/geek/chat'},
+      window:{top:window,self:window,addEventListener:(type:string,handler:typeof listeners[string])=>{listeners[type]=handler}},document,location:{pathname:'/web/geek/chat'},
       GetJobsBossHrSupport:support,Event,getComputedStyle,sessionStorage,
       setTimeout:(fn:()=>void)=>setTimeout(fn,0),
-      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:(m:{type:string;capture:{session:{uid:string}}},reply:(r:object)=>void)=>{
+      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:(m:{type:string;operation?:string;capture:{session:{uid:string}}},reply:(r:object)=>void)=>{
+        if(m.operation==='hr-review-guard') {reply({success:true,data:{data:{watchActive:true}}});return}
+        if(m.operation==='hr-stop') {stops++;reply({success:true});return}
         if(m.type==='BOSS_HR_CAPTURE_RESULT') saved.push(m.capture.session.uid)
         if(m.type==='BOSS_LOCAL_API') throw new Error('Trial attempted a send')
-        reply({success:true,command:{commandId:'must-not-run'}})
+        reply({success:true,reviewCount:saved.filter(uid=>uid!=='103-0').length,command:{commandId:'must-not-run'}})
       }}}
     })
     const result=await new Promise<{success:boolean;scannedCount:number}>(resolve=>listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_SCAN_V2',scanAll:true,reviewLimit:3,streamResults:true,scanId:'trial',watchSessionId:'watch',deadlineAt:Date.now()+30000}, {}, resolve))
     expect(result.success).toBe(true)
-    expect(saved).toEqual(['102-0','103-0','104-0'])
+    expect(saved).toEqual(['102-0','103-0','104-0','105-0'])
     expect(result.scannedCount).toBe(3)
+    await Promise.resolve()
+    listeners.pointerdown({isTrusted:true,composedPath:()=>[]})
+    expect(stops).toBe(1)
+    const send = await new Promise<object>(resolve=>listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_SEND_V2',command:{deadlineAt:Date.now()+30000}}, {}, resolve))
+    expect(send).toMatchObject({outcome:'FAILED_SAFE'})
+  })
+
+  it('rechecks the review connection before any conversation click after a page reload', async () => {
+    const entry = addCard()
+    const clicked = vi.fn()
+    entry.card.addEventListener('click', clicked)
+    let guards = 0
+    let listener!: (message: object, sender: object, reply: (result: object) => void) => void
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
+      window: { top: window, self: window, addEventListener: () => {} }, document,
+      location: { pathname: '/web/geek/chat' }, GetJobsBossHrSupport: support, sessionStorage,
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
+        sendMessage: (message: { operation: string }, reply: (result: object) => void) => {
+          expect(message.operation).toBe('hr-review-guard'); guards++
+          reply({ success: true, data: { data: { watchActive: false } } })
+        },
+      } },
+    })
+    const result = await new Promise<object>(resolve => listener({ source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SEND_V2',
+      command: { commandId: 'review', uid: '101-0', draft: '您好', reviewOnly: true, deadlineAt: Date.now() + 30000 },
+    }, {}, resolve))
+    expect(result).toMatchObject({ outcome: 'FAILED_SAFE' })
+    expect(guards).toBe(1)
+    expect(clicked).not.toHaveBeenCalled()
   })
 
   it.each(['delayed', 'not-selected', 'empty-messages', 'changing-messages', 'changed-during-read'])('waits for the actual selected conversation: %s', async (mode) => {
@@ -346,9 +382,10 @@ describe('BOSS virtual-list identity adapter', () => {
       GetJobsBossHrSupport: support, Event, getComputedStyle, sessionStorage,
       setTimeout: (fn: () => void, ms: number) => setTimeout(() => { advance(ms); fn() }, 0),
       chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
-        sendMessage: (message: { type: string; capture: typeof captured[number] }, reply: (result: object) => void) => {
+        sendMessage: (message: { type: string; operation?:string; capture: typeof captured[number] }, reply: (result: object) => void) => {
+          if(message.operation==='hr-review-guard') {reply({success:true,data:{data:{watchActive:true}}});return}
           if (message.type === 'BOSS_HR_CAPTURE_RESULT') captured.push(message.capture)
-          reply({ success: true })
+          reply({ success: true, reviewCount:captured.length })
         },
       } },
     })

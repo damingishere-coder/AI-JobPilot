@@ -5,6 +5,7 @@ import { getChromeBridgeStatus, sendChromeBridgeMessage } from '@/lib/chromeBrid
 
 vi.mock('@/lib/chromeBridge', () => ({
   getChromeBridgeStatus: vi.fn(), sendChromeBridgeMessage: vi.fn(),
+  REQUIRED_BACKGROUND_VERSION: 'background-test', REQUIRED_RUNTIME_PROTOCOL: 'runtime-test',
 }))
 beforeEach(() => { vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true }) })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
@@ -32,4 +33,26 @@ it('distinguishes a missing backend from an unavailable extension and offers the
   expect(await screen.findByText(/当前后端缺少 BOSS 值守功能/)).toBeInTheDocument()
   expect(screen.getByText(/Chrome 扩展：未连接/)).toBeInTheDocument()
   expect(screen.getByRole('link', { name: '直接在浏览器打开' })).toHaveAttribute('href', 'https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1')
+})
+
+it('starts a bounded review from the workbench without asking the user to select an HR', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true, data: { watching: false, currentProfileId: 4 } }), { headers: { 'Content-Type': 'application/json' } })))
+  vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true, hrReviewProtocol: '2026-09-28-hr-workbench-review', version: 'background-test', runtimeProtocol: 'runtime-test' })
+  vi.mocked(sendChromeBridgeMessage).mockResolvedValue({ success: true })
+  render(<HrWatchConnection />)
+  const start = await screen.findByRole('button', { name: '开始三个会话测试' })
+  await vi.waitFor(() => expect(start).toBeEnabled())
+  fireEvent.click(start)
+  expect(await screen.findByText(/已开始：系统自动打开/)).toBeInTheDocument()
+  expect(sendChromeBridgeMessage).toHaveBeenCalledWith({ type: 'BOSS_HR_TRIAL_START', expectedProfileId: 4, hrReviewProtocol: '2026-09-28-hr-workbench-review' }, 30000)
+})
+
+it('refuses the old extension before starting review work', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true, data: { watching: false, currentProfileId: 4 } }), { headers: { 'Content-Type': 'application/json' } })))
+  render(<HrWatchConnection />)
+  const start = await screen.findByRole('button', { name: '开始三个会话测试' })
+  await vi.waitFor(() => expect(start).toBeEnabled())
+  fireEvent.click(start)
+  expect(await screen.findByText(/当前扩展尚不支持工作台启动/)).toBeInTheDocument()
+  expect(sendChromeBridgeMessage).not.toHaveBeenCalled()
 })
