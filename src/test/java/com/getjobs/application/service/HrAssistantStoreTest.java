@@ -241,4 +241,20 @@ class HrAssistantStoreTest {
     private int count(String table) {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
     }
+    @Test
+    void deliberateTrialReplacesOnlyUnsentReviewsAndPreservesHumanSkipOrUnknown() {
+        long c=store.upsertConversation(1L,new ChatSession("trial-uid","","HR","公司","岗位","HR","您好","今天"));
+        var m=new ChatMessage("对方","文本","您好","今天");store.saveMessage(c,m,30);
+        String f=store.sourceFingerprint(c,m);store.updateLastInbound(c,f);
+        var d=new AiDraft(Classification.REPLY,"您好","问候",List.of(),List.of(),1);
+        long first=store.createProposal(1L,c,f,d);
+        assertThat(store.prepareTrialSource(c,f)).isFalse();
+        assertThat(store.getProposalView(1L,first).status()).isEqualTo("EXPIRED");
+        long second=store.createProposal(1L,c,f,d);store.markFinal(second,ProposalStatus.SEND_UNKNOWN,"未知");
+        assertThat(store.prepareTrialSource(c,f)).isTrue();
+        assertThat(store.getProposalView(1L,second).status()).isEqualTo("SEND_UNKNOWN");
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='SKIPPED' WHERE id=?",second);
+        assertThat(store.prepareTrialSource(c,f)).isTrue();
+    }
+
 }

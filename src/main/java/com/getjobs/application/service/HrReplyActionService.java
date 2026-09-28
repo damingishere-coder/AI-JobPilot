@@ -76,7 +76,7 @@ public class HrReplyActionService {
             while(start>0 && messages.get(start-1).inbound()) start--;
             command=new SendCommandView(command.commandId(),command.leaseToken(),command.proposalId(),command.uid(),command.hrName(),
                     command.companyName(),command.jobName(),command.sourceFingerprint(),command.expectedLatestInbound(),command.draft(),
-                    command.expiresAt(),command.leaseDeadlineEpochMs(),decision.action().equals("RESUME")?"RESUME":decision.action().equals("PHONE")?"PHONE":"TEXT",
+                    command.expiresAt(),command.leaseDeadlineEpochMs(),decision.action().equals("RESUME_NATIVE")?"RESUME_NATIVE":decision.action().equals("RESUME")?"RESUME":decision.action().equals("PHONE")?"PHONE":"TEXT",
                     policy.enabled()?policy.version():0,policy.resumeName(),policy.resumeSha256(),messages.subList(start,messages.size()));
         }
         return command;

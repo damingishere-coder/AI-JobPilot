@@ -317,7 +317,7 @@ export default function HrAssistantSettingsCard() {
                 <input type="checkbox" checked={form.qqEnabled} onChange={(event) => updateForm('qqEnabled', event.target.checked)} />
                 仅将需要人工决策或处理的事项通知到上述 QQ 目标
               </label>
-              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。值班启用前须核对资料并确认规则；仅授权发送简历时需要指定 PDF，普通文字回复不需要附件。</p>
+              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。试运行只发 QQ 回复确认卡，不自动回复 HR；简历使用 BOSS 的“发简历”按钮，无需本地文件。</p>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">

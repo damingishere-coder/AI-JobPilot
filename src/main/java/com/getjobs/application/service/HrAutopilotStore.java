@@ -12,7 +12,8 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class HrAutopilotStore {
-    public static final String PROTOCOL = "2026-09-27-hr-duty";
+    public static final String PROTOCOL = "2026-09-28-hr-review";
+    public static final String BOSS_RESUME = "BOSS_NATIVE";
     public static final String RULES = "基于当前档案中已确认的简历与沟通资料回答，可主动询问岗位职责、地点和待遇；不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -52,8 +53,10 @@ public class HrAutopilotStore {
             throw new IllegalArgumentException("请先配置 QQ 群和唯一操作人 QQ");
         String name = Objects.toString(resumeName, "").trim();
         String hash = Objects.toString(resumeSha256, "").trim().toLowerCase(Locale.ROOT);
-        if (enabled && shareResume && (!name.toLowerCase(Locale.ROOT).endsWith(".pdf") || !hash.matches("[a-f0-9]{64}")))
+        if (enabled && shareResume && !BOSS_RESUME.equals(name) && (!name.toLowerCase(Locale.ROOT).endsWith(".pdf") || !hash.matches("[a-f0-9]{64}")))
             throw new IllegalArgumentException("请先选择并确认允许发送的简历文件");
+        if (enabled && shareResume && BOSS_RESUME.equals(name) && "AUTO".equals(replyMode))
+            throw new IllegalArgumentException("BOSS 发简历按钮目前仅支持逐条确认后执行");
         Policy next = new Policy(old.version()+1, enabled, false, name, hash, old.facts(), RULES, "", replyMode, sharePhone, shareResume, historyMode, historyDays);
         save(profileId, next);
         jdbc.update("UPDATE hr_autopilot_policy SET settings_hash=?,contract_version=2 WHERE profile_id=?",settingsHash(profileId),profileId);
@@ -167,6 +170,10 @@ public class HrAutopilotStore {
         String id=UUID.randomUUID().toString();
         jdbc.update("INSERT OR IGNORE INTO hr_qq_delivery(id,profile_id,dedupe_key,payload_cipher) VALUES (?,?,?,?)",id,profileId,key,encode(payload,"qq-delivery:"+id));
         return id;
+    }
+    public void markTrial(long proposalId) {
+        jdbc.update("UPDATE hr_autopilot_decision SET capture_origin='TRIAL' WHERE proposal_id=?", proposalId);
+        jdbc.update("UPDATE hr_reply_proposal SET expires_at=datetime('now','localtime','+1 day') WHERE id=? AND status='REVIEW_REQUIRED'", proposalId);
     }
     public void notification(Long profileId,String key,String text) {
         var settings=hr.loadSettingsSecret(profileId);

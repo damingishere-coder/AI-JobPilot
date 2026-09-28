@@ -167,10 +167,10 @@ class HrAutopilotTest {
         assertThat(hr.getProposalView(1L,id).status()).isEqualTo("SKIPPED");
         assertThat(policies.pending(1L)).isEmpty();
     }
-    @Test void draftGenerationIncludesTheExplicitlyApprovedResumeVersion() {
+    @Test void draftGenerationExplainsNativeBossResumeAndHumanConfirmation() {
         var c=capture("请发简历",false,true);
         service.generate(1L,conversation,communication,c);
-        verify(drafts).generateWithFacts(eq(1L),eq(conversation),any(),eq(c.messages()),contains("测试简历.pdf"));
+        verify(drafts).generateWithFacts(eq(1L),eq(conversation),any(),eq(c.messages()),argThat(text -> text.contains("BOSS聊天框") && text.contains("本人确认") && text.contains("不要求本地文件")));
     }
 
     private String audit(String text,String quote) {
@@ -263,4 +263,23 @@ class HrAutopilotTest {
         hr.markFinal(id,ProposalStatus.SEND_UNKNOWN,"未知");hr.resumePendingCommands(1L,"again");
         assertThat(hr.hasHandledSource(conversation,hr.sourceFingerprint(conversation,c.messages().getLast()),true)).isTrue();
     }
+    @Test void nativeResumeReviewDoesNotRequireLocalFileAndNeverQueuesAutomatically() {
+        policies.configure(1L,policies.policy(1L).version(),true,HrAutopilotStore.BOSS_RESUME,"","REVIEW",false,true,"RECENT",30);
+        var c=capture("请发一份简历",false,true);var d=draft(Classification.DOCUMENT_REQUEST,"");
+        long id=proposal(c,d);
+        assertThat(service.apply(1L,id,conversation,c,d,"watch")).isTrue();
+        assertThat(policies.decision(id).action()).isEqualTo("RESUME_NATIVE");
+        assertThat(hr.getProposalView(1L,id).draft()).contains("发简历");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
+    @Test void reviewTrialPreservesSuggestionAndSourceWithoutSendCommand() {
+        var c=capture("方便聊聊岗位吗",true,true);var d=draft(Classification.REPLY,"您好，方便的。");long id=proposal(c,d);
+        service.reviewTrial(1L,id,c,d);
+        assertThat(hr.getProposalView(1L,id).draft()).isEqualTo("您好，方便的。");
+        assertThat(policies.decision(id).automatic()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT capture_origin FROM hr_autopilot_decision WHERE proposal_id=?",String.class,id)).isEqualTo("TRIAL");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        verifyNoInteractions(ai);
+    }
+
 }
