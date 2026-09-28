@@ -337,6 +337,52 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(clicked).not.toHaveBeenCalled()
   })
 
+  it.each(['reviewed', 'unreviewed', 'missing-round', 'no-self-boundary', 'new-inbound', 'hidden-gap'])('handles a reviewed short conversation without inventing history completeness: %s', async (mode) => {
+    const { card, props } = addCard()
+    const pane = document.querySelector('.chat-conversation')!
+    pane.insertAdjacentHTML('beforeend', '<span>测试公司</span><textarea id="chat-input"></textarea><button>发送</button>')
+    const list = pane.querySelector('.im-list')!
+    list.innerHTML = `${mode === 'no-self-boundary' ? '' : '<li class="message-item item-myself"><span class="text">您好，想了解岗位。</span></li>'}<li class="message-item item-friend"><span class="text">你好</span></li><li class="message-item item-friend"><span class="text">方便聊聊职责吗？</span></li>`
+    bindMessages()
+    const expectedRound = support.readMessages(document).filter((message: { from: string }) => message.from === '对方')
+    card.addEventListener('click', () => {
+      card.classList.add('selected')
+      Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: props } })
+      if (mode === 'new-inbound') {
+        list.insertAdjacentHTML('beforeend', '<li class="message-item item-friend"><span class="text">还有一个问题</span></li>')
+        bindMessages()
+      }
+      if (mode === 'hidden-gap') {
+        Object.defineProperty(list.querySelector('.item-friend')!, 'getBoundingClientRect', {
+          value: () => ({ width: 0, height: 0 }),
+        })
+      }
+    })
+    let clicks = 0
+    pane.querySelector('button')!.addEventListener('click', () => {
+      clicks++
+      list.insertAdjacentHTML('beforeend', '<li class="message-item item-myself"><span class="text">您好！</span></li>')
+      bindMessages()
+    })
+    let listener!: (message: object, sender: object, reply: (result: object) => void) => void
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'), 'utf8'), {
+      window: { top: window, self: window, addEventListener: () => {} }, document,
+      location: { pathname: '/web/geek/chat' }, GetJobsBossHrSupport: support, sessionStorage,
+      Event, InputEvent, HTMLTextAreaElement, HTMLInputElement, getComputedStyle,
+      setTimeout: (fn: () => void) => setTimeout(fn, 0),
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
+        sendMessage: (_message: object, reply: (result: object) => void) => reply({ success: true, data: { data: { watchActive: true } } }),
+      } },
+    })
+    const result = await new Promise<object>(resolve => listener({ source: 'GET_JOBS_BACKGROUND', type: 'BOSS_HR_SEND_V2',
+      command: { commandId: 'review-short', uid: '101-0', hrName: '王女士', companyName: '测试公司',
+        draft: '您好！', reviewOnly: mode !== 'unreviewed', deadlineAt: Date.now() + 30000,
+        expectedInboundRound: mode === 'missing-round' ? undefined : expectedRound, expectedLatestInbound: expectedRound.at(-1) },
+    }, {}, resolve))
+    expect(result).toMatchObject({ outcome: mode === 'reviewed' ? 'SENT' : 'STALE' })
+    expect(clicks).toBe(mode === 'reviewed' ? 1 : 0)
+  })
+
   it.each(['delayed', 'not-selected', 'empty-messages', 'changing-messages', 'changed-during-read'])('waits for the actual selected conversation: %s', async (mode) => {
     const pane = document.querySelector('.chat-conversation')!
     if (mode === 'changed-during-read') {
