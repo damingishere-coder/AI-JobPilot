@@ -37,18 +37,19 @@ it('distinguishes a missing backend from an unavailable extension and offers the
 
 it('starts a bounded review from the workbench without asking the user to select an HR', async () => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true, data: { watching: false, currentProfileId: 4 } }), { headers: { 'Content-Type': 'application/json' } })))
-  vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true, hrReviewProtocol: '2026-09-28-hr-review-10s', version: 'background-test', runtimeProtocol: 'runtime-test' })
+  vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true, hrReviewProtocol: '2026-09-28-hr-review-identity', version: 'background-test', runtimeProtocol: 'runtime-test' })
   vi.mocked(sendChromeBridgeMessage).mockResolvedValue({ success: true })
   render(<HrWatchConnection />)
   const start = await screen.findByRole('button', { name: '开始三个会话测试' })
   await vi.waitFor(() => expect(start).toBeEnabled())
   fireEvent.click(start)
   expect(await screen.findByText(/已开始：系统自动打开/)).toBeInTheDocument()
-  expect(sendChromeBridgeMessage).toHaveBeenCalledWith({ type: 'BOSS_HR_TRIAL_START', expectedProfileId: 4, hrReviewProtocol: '2026-09-28-hr-review-10s' }, 30000)
+  expect(sendChromeBridgeMessage).toHaveBeenCalledWith({ type: 'BOSS_HR_TRIAL_START', expectedProfileId: 4, hrReviewProtocol: '2026-09-28-hr-review-identity' }, 30000)
 })
 
 it('refuses the old extension before starting review work', async () => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true, data: { watching: false, currentProfileId: 4 } }), { headers: { 'Content-Type': 'application/json' } })))
+  vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true, hrReviewProtocol: '2026-09-28-hr-review-10s', version: 'background-test', runtimeProtocol: 'runtime-test' })
   render(<HrWatchConnection />)
   const start = await screen.findByRole('button', { name: '开始三个会话测试' })
   await vi.waitFor(() => expect(start).toBeEnabled())

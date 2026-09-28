@@ -12,7 +12,7 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class HrAutopilotStore {
-    public static final String PROTOCOL = "2026-09-28-hr-review-10s";
+    public static final String PROTOCOL = "2026-09-28-hr-review-identity";
     public static final String BOSS_RESUME = "BOSS_NATIVE";
     public static final String RULES = "基于当前档案中已确认的简历与沟通资料回答，可主动询问岗位职责、地点和待遇；不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
     private final JdbcTemplate jdbc;

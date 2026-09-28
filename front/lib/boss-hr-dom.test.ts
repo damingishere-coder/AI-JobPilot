@@ -389,6 +389,9 @@ describe('BOSS virtual-list identity adapter', () => {
     }, {}, resolve))
     expect(result).toMatchObject({ outcome: mode === 'reviewed' ? 'SENT' : 'STALE' })
     expect(clicks).toBe(mode === 'reviewed' ? 1 : 0)
+    if (mode === 'changed-company' || mode === 'missing-company') {
+      expect(result).toMatchObject({ evidence: '2026-09-28-hr-review-identity: 发送前身份不符：公司' })
+    }
   })
 
   it.each(['delayed', 'not-selected', 'empty-messages', 'changing-messages', 'changed-during-read'])('waits for the actual selected conversation: %s', async (mode) => {
