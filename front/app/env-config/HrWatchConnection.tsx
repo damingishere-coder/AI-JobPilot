@@ -72,8 +72,8 @@ export default function HrWatchConnection() {
     setOpening(true); setMessage('')
     try {
       const bridge = await getChromeBridgeStatus()
-      const protocol = '2026-09-28-hr-workbench-review'
-      if (!bridge.success || bridge.hrReviewProtocol !== protocol || bridge.version !== REQUIRED_BACKGROUND_VERSION || bridge.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) throw new Error('请重新加载 1.9.3 或更新版 Chrome Bridge，并刷新工作台；当前扩展尚不支持工作台启动。')
+      const protocol = '2026-09-28-hr-review-10s'
+      if (!bridge.success || bridge.hrReviewProtocol !== protocol || bridge.version !== REQUIRED_BACKGROUND_VERSION || bridge.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) throw new Error('请重新加载 1.9.4 或更新版 Chrome Bridge，并刷新工作台；当前扩展尚不支持工作台启动。')
       const response = await sendChromeBridgeMessage({ type: stop ? 'BOSS_HR_TRIAL_STOP' : 'BOSS_HR_TRIAL_START', expectedProfileId: watch?.currentProfileId, hrReviewProtocol: protocol }, 30000)
       if (!response.success) throw new Error(response.message || '启动未确认，请查看当前状态，不要重复点击。')
       setMessage(stop ? '已停止试运行和确认回发。' : '已开始：系统自动打开并读取最近三个待回复会话，建议发到 QQ。采集后保留确认回发连接，无需手动选 HR。')
@@ -99,7 +99,7 @@ export default function HrWatchConnection() {
       <div role="status" className="space-y-1 text-sm">
         <p>{backendError || `值守后端可用 · ${watch?.reviewReady ? `本轮已生成 ${watch.reviewCount || 0}/3 张确认卡；系统已连接，确认后自动选中 HR 回发` : watch?.scanRunning ? '正在自动读取 HR 会话' : watch?.watching ? '值守中' : '已停止'}`}</p>
         {watch?.reviewReady && (watch.reviewCount || 0) < 3 && <p>最近候选中不足三个可处理的待回复会话，已回复、明确结束及已处理的消息不会补发。请核对本轮实际卡片数量。</p>}
-        <p className="text-muted-foreground">先发建议到 QQ，只有你确认的内容才发送。每次发送至少间隔 60 秒；本轮采集完成后不再读取其他会话。</p>
+        <p className="text-muted-foreground">先发建议到 QQ，只有你确认的内容才发送。每次发送至少间隔 10 秒；本轮采集完成后不再读取其他会话。</p>
         <p>Chrome 扩展：{extension ? '已连接' : '未连接，请加载或刷新投递牛马 Chrome Bridge 扩展，再刷新此页面。'}</p>
         <p>当前人物档案：{watch?.currentProfileName || '尚未读取'}{watch?.profileId ? ` · 值守档案 ID：${watch.profileId}` : ''}</p>
         <p>绑定标签页：{watch?.chromeBridge?.tabBound ? `#${watch.chromeBridge.tabId}` : '未绑定'}</p>

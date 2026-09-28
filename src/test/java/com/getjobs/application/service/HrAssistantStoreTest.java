@@ -251,7 +251,9 @@ class HrAssistantStoreTest {
         store.completeSendCommand(1L,"trial",command.commandId(),command.leaseToken(),"SENT","已看到新增本人消息",command.expectedLatestInbound());
         var restarted=new HrAssistantStore(jdbcTemplate,new HrAssistantCryptoService(tempDir.resolve("secrets/hr-chat.key")),new ObjectMapper());
         assertThat(restarted.claimSendCommand(1L,"trial",java.util.Set.of(third))).isNull();
-        jdbcTemplate.update("UPDATE hr_send_command SET updated_at=datetime('now','-61 seconds') WHERE command_id=?",command.commandId());
+        jdbcTemplate.update("UPDATE hr_send_command SET updated_at=datetime('now','-8 seconds') WHERE command_id=?",command.commandId());
+        assertThat(restarted.claimSendCommand(1L,"trial",java.util.Set.of(third))).isNull();
+        jdbcTemplate.update("UPDATE hr_send_command SET updated_at=datetime('now','-11 seconds') WHERE command_id=?",command.commandId());
         assertThat(restarted.claimSendCommand(1L,"trial",java.util.Set.of(third)).proposalId()).isEqualTo(third);
     }
 

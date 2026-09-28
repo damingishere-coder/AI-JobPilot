@@ -63,7 +63,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.9.3";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.9.4";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -549,7 +549,7 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
-const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-28-hr-workbench-review";
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-28-hr-review-10s";
 
 async function startBossHrWatch(sender, requestContext, expectedProfileId, intervalMinutes = 1, reviewLimit = 0) {
   if (![0,3].includes(reviewLimit)) return {success:false,message:"试运行只支持三个会话"};
@@ -615,6 +615,8 @@ async function stopBossHrWatch(reasonCode, reason, requestContext = {}) {
 }
 
 async function stopBossHrWatchLocked(reasonCode, reason, requestContext = {}) {
+  clearTimeout(bossHrReviewTimer);
+  bossHrReviewTimer=null;
   const state = await readBossHrWatch();
   await chrome.alarms?.clear?.(BOSS_HR_ALARM_NAME);
   if (state) await writeBossHrWatch({ ...state, watching: false });
@@ -678,8 +680,11 @@ async function putBossHrOutbox(message, sender) {
 }
 
 let bossHrTickPromise=null;
+let bossHrReviewTimer=null;
 async function runBossHrTick() {
   if(bossHrTickPromise) return bossHrTickPromise;
+  clearTimeout(bossHrReviewTimer);
+  bossHrReviewTimer=null;
   bossHrTickPromise=(async()=> {
     let state=await readBossHrWatch(); if(!state?.watching) return;
     const policy=await requestLocalApi("/api/hr-assistant/autopilot",{method:"GET",platform:"boss",pageTabId:state.tabId});
@@ -699,6 +704,12 @@ async function runBossHrTick() {
       const result=await pollBossHrSendCommand({tab:{id:state.tabId}},{platform:"boss",pageTabId:state.tabId});
       if(!result?.success || !result?.data?.data) break;
       state=await readBossHrWatch();
+    }
+    state=await readBossHrWatch();
+    if(state?.watching && state.trialComplete) {
+      // Keep approved replies responsive without restarting a conversation scan.
+      // The persisted backend gate independently enforces the minimum send gap.
+      bossHrReviewTimer=setTimeout(()=>runBossHrTick().catch(error=>pauseBossHrWatch("HR_REVIEW_POLL_FAILED",friendlyLocalApiError(error))),10000);
     }
   })().finally(()=>{bossHrTickPromise=null;});
   return bossHrTickPromise;

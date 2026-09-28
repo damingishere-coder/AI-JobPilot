@@ -37,7 +37,7 @@ function loadBackground({
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
   injectedBossVersion = BOSS_CONTENT_VERSION,
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-28-hr-workbench-review",
+  bossHrContentVersion = "2026-09-28-hr-review-10s",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,
@@ -1573,7 +1573,7 @@ test("workbench trial opens a dedicated tab and binds automatically without sele
   let started;
   context.startBossHrWatch=async(sender,request,profile,interval,limit)=>{started={sender,profile,interval,limit};return {success:true};};
   const caller={tab:{id:99,url:'http://127.0.0.1:6866/env-config'}};
-  const message={source:'GET_JOBS_PAGE',type:'BOSS_HR_TRIAL_START',expectedProfileId:4,hrReviewProtocol:'2026-09-28-hr-workbench-review'};
+  const message={source:'GET_JOBS_PAGE',type:'BOSS_HR_TRIAL_START',expectedProfileId:4,hrReviewProtocol:'2026-09-28-hr-review-10s'};
   assert.equal((await dispatchRuntimeMessage({...message,hrReviewProtocol:'old'},caller)).success,false);
   assert.equal(tabList.length,1);
   assert.equal((await dispatchRuntimeMessage(message,{tab:{id:9,url:'https://evil.example/'}})).success,false);
@@ -1587,6 +1587,7 @@ test("workbench trial opens a dedicated tab and binds automatically without sele
 
 test("a completed trial keeps its confirmation connection and never rescans other HRs", async () => {
   const calls=[];
+  const reviewTimers=[];
   const {context,alarmCreates,sentMessages}=loadBackground({tabs:[{id:7,url:'https://www.zhipin.com/web/geek/chat'}],fetchImpl:async(url)=>{
     calls.push(url);
     if(url.endsWith('/action-token')) return jsonResponse({success:true,data:{token:'test'}});
@@ -1595,6 +1596,10 @@ test("a completed trial keeps its confirmation connection and never rescans othe
     if(url.endsWith('/scan-results')) return jsonResponse({success:true,data:{acknowledgedCaptureIds:[]}});
     throw new Error(url);
   }});
+  context.setTimeout=(callback,ms)=> {
+    if(ms===10000) {reviewTimers.push({callback,ms});return 12345;}
+    return setTimeout(callback,ms);
+  };
   await context.writeBossHrWatch({watching:true,reviewLimit:3,tabId:7,watchSessionId:'watch',profileId:1});
   assert.equal((await context.runBossHrScan('initial')).success,true);
   assert.equal((await context.readBossHrWatch()).trialComplete,true);
@@ -1607,4 +1612,13 @@ test("a completed trial keeps its confirmation connection and never rescans othe
   assert.equal(sentMessages.filter(m=>m.message.type==='BOSS_HR_SCAN_V2').length,1);
   assert.equal(calls.filter(u=>u.endsWith('/review-ready')).length,1);
   assert.ok(!calls.some(u=>u.endsWith('/stop')));
+  assert.equal(reviewTimers.length,1);
+  assert.equal(reviewTimers[0].ms,10000);
+  await reviewTimers[0].callback();
+  assert.equal(polls,2);
+  assert.equal(sentMessages.filter(m=>m.message.type==='BOSS_HR_SCAN_V2').length,1);
+  await context.writeBossHrWatch({...(await context.readBossHrWatch()),watching:false});
+  await reviewTimers.at(-1).callback();
+  assert.equal(polls,2);
+  assert.equal(reviewTimers.length,2);
 });

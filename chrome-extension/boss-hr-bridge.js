@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-28-hr-workbench-review";
+  const CONTENT_VERSION = "2026-09-28-hr-review-10s";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -373,7 +373,10 @@
     }
     const read=await readContext();
     const before=read.messages;
-    if(!read.complete || !before.length || before[before.length-1].from!=="对方")
+    // A reviewed reply needs the complete current HR round, not two earlier self replies.
+    // Keep the stricter historical-context requirement for unattended sends.
+    const reviewedRound=command.reviewOnly===true && command.expectedInboundRound?.length>0 && read.roundComplete;
+    if((!read.complete && !reviewedRound) || !before.length || before[before.length-1].from!=="对方")
       return {success:true,outcome:"STALE",evidence:"上下文未完整读取或本人已经回复"};
     if(command.expectedInboundRound?.length) {
       let start=before.length; while(start>0 && before[start-1].from==="对方") start--;
@@ -457,7 +460,14 @@
     // Keep the latest round plus a preceding complete exchange; virtual-list gaps remain incomplete.
     const beginning=Array.from(document.querySelectorAll(".chat-conversation .history-tip,.chat-conversation .load-more"))
       .some(node=>/没有更多消息|已加载全部|沟通从这里开始/.test(node.textContent||""));
-    return {messages,complete:!lostBoundary && (hasBoundary(messages) || (beginning && messages.length>0))};
+    const complete=!lostBoundary && (hasBoundary(messages) || (beginning && messages.length>0));
+    const lastSelf=messages.findLastIndex(message=>message.from==="本人");
+    const round=messages.slice(lastSelf+1);
+    const roundIds=round.map(message=>message.messageId);
+    const roundComplete=!lostBoundary && (lastSelf>=0 || beginning) && round.length>0
+      && round.every(message=>message.from==="对方" && message.messageId)
+      && new Set(roundIds).size===roundIds.length;
+    return {messages,complete,roundComplete};
   }
   async function hydrateMedia(messages) {
     let budget=12_000_000;
