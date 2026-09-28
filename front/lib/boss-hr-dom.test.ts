@@ -337,17 +337,25 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(clicked).not.toHaveBeenCalled()
   })
 
-  it.each(['reviewed', 'unreviewed', 'missing-round', 'no-self-boundary', 'new-inbound', 'hidden-gap'])('handles a reviewed short conversation without inventing history completeness: %s', async (mode) => {
+  it.each(['reviewed', 'unreviewed', 'missing-round', 'no-self-boundary', 'new-inbound', 'hidden-gap', 'changed-company', 'missing-company', 'changed-company-before-click'])('handles a reviewed short conversation without inventing history completeness: %s', async (mode) => {
     const { card, props } = addCard()
     const pane = document.querySelector('.chat-conversation')!
-    pane.insertAdjacentHTML('beforeend', '<span>测试公司</span><textarea id="chat-input"></textarea><button>发送</button>')
+    pane.insertAdjacentHTML('beforeend', '<textarea id="chat-input"></textarea><button>发送</button>')
     const list = pane.querySelector('.im-list')!
     list.innerHTML = `${mode === 'no-self-boundary' ? '' : '<li class="message-item item-myself"><span class="text">您好，想了解岗位。</span></li>'}<li class="message-item item-friend"><span class="text">你好</span></li><li class="message-item item-friend"><span class="text">方便聊聊职责吗？</span></li>`
     bindMessages()
     const expectedRound = support.readMessages(document).filter((message: { from: string }) => message.from === '对方')
+    if (mode === 'changed-company-before-click') pane.querySelector('textarea')!.addEventListener('input', () => {
+      props.brandName = '另一家公司'
+      card.querySelector('.name-box > span:nth-child(2)')!.textContent = props.brandName
+    })
     card.addEventListener('click', () => {
       card.classList.add('selected')
       Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: props } })
+      if (mode === 'changed-company' || mode === 'missing-company') {
+        props.brandName = mode === 'changed-company' ? '另一家公司' : ''
+        card.querySelector('.name-box > span:nth-child(2)')!.textContent = props.brandName
+      }
       if (mode === 'new-inbound') {
         list.insertAdjacentHTML('beforeend', '<li class="message-item item-friend"><span class="text">还有一个问题</span></li>')
         bindMessages()
