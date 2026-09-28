@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-28-hr-workbench-review";
+  const CONTENT_VERSION = "2026-09-28-hr-review-10s";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;

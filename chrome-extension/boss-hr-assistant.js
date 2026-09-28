@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-28-hr-workbench-review";
+  const PANEL_VERSION = "2026-09-28-hr-review-10s";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -85,7 +85,7 @@
     const bridge = latestStatus?.chromeBridge;
     const timing = latestStatus?.lastScanAt ? `｜上次扫描 ${formatTime(latestStatus.lastScanAt)}` : "";
     const next = latestStatus?.nextScanAt ? `｜下次 ${formatTime(latestStatus.nextScanAt)}` : "";
-    statusBox.textContent = reviewReady ? `本轮已生成 ${latestStatus.reviewCount||0}/3 张确认卡，等待你确认。确认后系统自动选中 HR 回发，间隔至少 60 秒；不再扫描其他会话。` : latestStatus
+    statusBox.textContent = reviewReady ? `本轮已生成 ${latestStatus.reviewCount||0}/3 张确认卡，等待你确认。确认后系统自动选中 HR 回发，间隔至少 10 秒；不再扫描其他会话。` : latestStatus
       ? `${watching ? (latestStatus.intervalMs === 1800000 ? "值守中：每 30 分钟读取全部会话" : (latestStatus.fullAutoLocked ? "值守中：每 60 秒检查未读" : "托管中：每分钟新消息，半小时补漏")) : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.scanRunning ? `｜正在逐个读取与生成，已处理 ${latestStatus.scannedCount || 0} 个` : timing + next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
       : "正在连接本地 AI-JobPilot…";
     rendered.appendChild(statusBox);

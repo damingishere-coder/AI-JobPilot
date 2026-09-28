@@ -467,7 +467,7 @@ public class HrAssistantStore {
         // leased action may still be executing, so never issue another alongside it.
         Integer recent = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM hr_send_command WHERE profile_id=? AND
-                (status='LEASED' OR (status='COMPLETE' AND updated_at>datetime('now','-60 seconds')))
+                (status='LEASED' OR (status='COMPLETE' AND updated_at>=datetime('now','-10 seconds')))
                 """, Integer.class, profileId);
         if (recent != null && recent > 0) return null;
         List<Object> parameters = new ArrayList<>(List.of(profileId, safe(watchSessionId)));
