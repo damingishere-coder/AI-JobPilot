@@ -50,7 +50,7 @@ class HrAssistantControllerTest {
         assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(responseBody(rejected)).containsKeys("success", "errorCode", "message", "requestId");
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session", 1L, 1);
+        verify(watcher).start(77, "https://www.zhipin.com/web/geek/chat", "direct", "browser-session", 1L, 1, 0);
         verifyNoInteractions(actions, profiles, store, events);
     }
 
@@ -131,4 +131,16 @@ class HrAssistantControllerTest {
     private Map<String, Object> responseBody(org.springframework.http.ResponseEntity<?> response) {
         return (Map<String, Object>) response.getBody();
     }
+    @Test
+    void trialCannotClaimAnySendCommandEvenWhenOneIsPending() {
+        when(profiles.getCurrentProfileId()).thenReturn(1L);
+        when(watcher.isReviewTrial()).thenReturn(true);
+        when(watcher.withSession(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("trial"),
+                org.mockito.ArgumentMatchers.eq(77),org.mockito.ArgumentMatchers.eq(false),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(4)).get());
+        var request=new HrAssistantController.SendCommandClaimRequest();request.setWatchSessionId("trial");request.setTabId(77);
+        assertThat(controller.claimSendCommand(tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.OK);
+        verifyNoInteractions(actions);
+    }
+
 }

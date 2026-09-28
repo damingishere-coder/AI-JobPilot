@@ -112,6 +112,23 @@ class NapCatGatewayTest {
         verifyNoInteractions(outbox);
     }
 
+    @Test
+    void reviewCardContainsEntireHrRoundSuggestionAndConfirmationInstructions() throws Exception {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        var capture=new com.getjobs.application.hr.HrAssistantTypes.ChatCapture("c",1,null,List.of(
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("本人","文本","旧回复","昨天"),
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","文本","第一个问题","今天"),
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","文本","第二个问题","今天")),false,true);
+        when(outbox.context(1L,20L)).thenReturn(capture);
+        assertThat(gateway.notifyProposal(proposal())).isTrue();
+        var payload=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(outbox).enqueue(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("proposal:10:3:0"),payload.capture());
+        String text=objectMapper.readTree(payload.getValue()).path("params").path("message").get(0).path("data").path("text").asText();
+        assertThat(text).contains("回复确认卡","第一个问题","第二个问题","建议回复 / 动作","回复","发送 1234","尚未发送给 HR").doesNotContain("旧回复");
+        verifyNoInteractions(actions);
+    }
+
     private HrAssistantStore.SettingsSecret groupSettings(String operatorQq) {
         return new HrAssistantStore.SettingsSecret(1L, CommunicationProfile.empty(), true,
                 "ws://127.0.0.1:3001", "token", QqTargetType.GROUP, "987654321", operatorQq, 30);

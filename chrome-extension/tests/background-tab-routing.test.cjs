@@ -37,7 +37,7 @@ function loadBackground({
   zhilianContentVersion = ZHILIAN_CONTENT_VERSION,
   injectedBossVersion = BOSS_CONTENT_VERSION,
   injectedZhilianVersion = ZHILIAN_CONTENT_VERSION,
-  bossHrContentVersion = "2026-09-27-hr-duty",
+  bossHrContentVersion = "2026-09-28-hr-review",
   bossDeliveryResponses = [],
   zhilianDeliveryResponses = [],
   dispatchAllowed = true,

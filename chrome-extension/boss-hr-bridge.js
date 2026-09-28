@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-27-hr-duty";
+  const CONTENT_VERSION = "2026-09-28-hr-review";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -11,14 +11,15 @@
   let userPaused=false;
   try {userPaused=sessionStorage.getItem("getjobs-hr-paused")==="1";} catch {userPaused=true;}
   let managed=false;
+  let trialActive=false;
   let executingPolicyVersion=0;
   let operationActive=false;
   let sendDispatched=false;
   const pauseForUser=(event)=> {
-    if(!managed || !event.isTrusted || event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) return;
+    if((!managed && !trialActive) || !event.isTrusted || event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) return;
     userPaused=true;
     try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
-    chrome.runtime.sendMessage({source:"GET_JOBS_BOSS_CONTENT",type:"BOSS_LOCAL_API",operation:"hr-pause"},()=>{});
+    chrome.runtime.sendMessage({source:"GET_JOBS_BOSS_CONTENT",type:"BOSS_LOCAL_API",operation:trialActive?"hr-stop":"hr-pause"},()=>{});
   };
   window.addEventListener("pointerdown",pauseForUser,true);
   window.addEventListener("keydown",pauseForUser,true);
@@ -41,7 +42,7 @@
     if (message.type === "BOSS_HR_SCAN_V2") {
       if(operationActive) {sendResponse({success:false,errorCode:"HR_OPERATION_BUSY",message:"已有读取或发送操作，等待其结果"});return;}
       operationActive=true;
-      scan(message).then(sendResponse).catch((error) => sendResponse(failure("HR_SCAN_FAILED_SAFE", error))).finally(()=>{operationActive=false;});
+      scan(message).then(sendResponse).catch((error) => sendResponse(failure("HR_SCAN_FAILED_SAFE", error))).finally(()=>{operationActive=false;trialActive=false;});
       return true;
     }
     if (message.type === "BOSS_HR_SEND_V2") {
@@ -56,6 +57,7 @@
 
   async function scan(message) {
     managed=message.managed===true;
+    trialActive=message.reviewLimit===3;
     executingPolicyVersion=0;
     await guard();
     const safety = support.pageSafety(document);
@@ -73,7 +75,8 @@
       await wait(350);
     }
 
-    const collected = await collectUnreadTargets(message.deadlineAt, scanAll);
+    const trial = message.reviewLimit === 3;
+    const collected = await collectUnreadTargets(message.deadlineAt, scanAll, trial ? 20 : 0);
     if (!collected.success) return collected;
     const targets = collected.targets;
     const summaries={...(message.summaries||{})};
@@ -99,12 +102,13 @@
     const errors = [];
     let scannedCount = 0;
     for (const snapshot of targets.values()) {
+      if (trial && scannedCount >= 3) break;
       await guard();
       if (Date.now() > Number(message.deadlineAt || 0)) {
         return { success: false, pause: true, errorCode: "BOSS_HR_SCAN_TIMEOUT", message: "本轮读取达到安全时限，已暂停；已保存的进度保留" };
       }
       const captureId = snapshot.captureId || (scanAll ? `${message.scanId}:${snapshot.uid}` : support.captureId(snapshot));
-      const stored = await backgroundRequest("BOSS_HR_OUTBOX_PUT", { capture: { ...snapshot, captureId }, watchSessionId: message.watchSessionId });
+      const stored = trial ? {success:true} : await backgroundRequest("BOSS_HR_OUTBOX_PUT", { capture: { ...snapshot, captureId }, watchSessionId: message.watchSessionId });
       if (!stored?.success) return { success: false, pause: true, errorCode: "HR_OUTBOX_WRITE_FAILED", message: "无法在打开会话前保存 Outbox" };
 
       const located = await locateByUid(snapshot.uid);
@@ -140,6 +144,7 @@
         errors.push({ captureId, errorCode: "BOSS_CHAT_MESSAGES_MISSING" });
         continue;
       }
+      if (trial && (!messages.length || messages[messages.length-1].from !== "对方")) continue;
       const inbound = support.latestInbound(messages);
       if (!inbound && !scanAll) {
         errors.push({ captureId, errorCode: "BOSS_CHAT_INBOUND_MISSING" });
@@ -151,11 +156,15 @@
       delete session.surfaceText;
       const capture = { captureId, unreadCount: currentSnapshot.unreadCount, session, messages,
         historical:managed && message.baseline===true,contextComplete:read.complete };
+      if (trial) {
+        const savedOutbox = await backgroundRequest("BOSS_HR_OUTBOX_PUT", {capture:{...currentSnapshot,captureId},watchSessionId:message.watchSessionId});
+        if (!savedOutbox?.success) return {success:false,errorCode:"HR_OUTBOX_WRITE_FAILED",message:"试运行采集保存失败，已停止"};
+      }
       await hydrateMedia(capture.messages);
       if (message.streamResults) {
         const saved = await backgroundRequest("BOSS_HR_CAPTURE_RESULT", { capture, scanId: message.scanId, watchSessionId: message.watchSessionId });
         if (!saved?.success) return { success: false, pause: true, errorCode: saved?.errorCode || "HR_CAPTURE_SUBMIT_FAILED", message: saved?.message || "生成或保存结果未确认，已暂停，不自动重试" };
-        if(saved.command) {
+        if(!trial && saved.command) {
           let execution;
           try { execution=await executeSend(saved.command); }
           catch(error) { execution={outcome:sendDispatched?"RESULT_UNKNOWN":"FAILED_SAFE",evidence:concise(error)}; }
@@ -192,7 +201,7 @@
     };
   }
 
-  async function collectUnreadTargets(deadlineAt, scanAll = false) {
+  async function collectUnreadTargets(deadlineAt, scanAll = false, candidateLimit = 0) {
     const targets = new Map();
     let unchangedRounds = 0;
     let reachedEnd = false;
@@ -216,6 +225,7 @@
           return { success: false, pause: true, errorCode: "BOSS_CHAT_UID_MISSING", message: "会话缺少稳定 UID，已暂停避免误认 HR" };
         }
         targets.set(snapshot.uid, snapshot);
+        if (candidateLimit && targets.size >= candidateLimit) return {success:true,targets};
         if (targets.size >= (scanAll ? 1000 : MAX_CAPTURES)) break;
       }
       if (targets.size >= (scanAll ? 1000 : MAX_CAPTURES)) {
@@ -230,7 +240,7 @@
       list.dispatchEvent(new Event("scroll", { bubbles: true }));
       await wait(140);
     }
-    if (scanAll && !reachedEnd) return { success: false, pause: true, errorCode: "HR_LIST_INCOMPLETE", message: "未能确认已读到会话列表底部，已暂停，未标记全部完成" };
+    if (scanAll && !candidateLimit && !reachedEnd) return { success: false, pause: true, errorCode: "HR_LIST_INCOMPLETE", message: "未能确认已读到会话列表底部，已暂停，未标记全部完成" };
     return { success: true, targets };
   }
 
@@ -296,6 +306,7 @@
       if(round.length!==command.expectedInboundRound.length || round.some((m,i)=>!support.messagesMatch(m,command.expectedInboundRound[i])))
         return {success:true,outcome:"STALE",evidence:"HR本轮内容已变化"};
     }
+    if(command.actionType==="RESUME_NATIVE") return await sendNativeResume(command,before);
     if(command.actionType==="RESUME") return await sendResume(command,before);
     const latest = support.latestInbound(before);
     if (!support.messagesMatch(latest, command.expectedLatestInbound)) {
@@ -394,6 +405,29 @@
         media.mimeType=mime;media.readStatus="CAPTURED";
       } catch(error) {media.readStatus="UNAVAILABLE";media.extractedText=error.message||"未取得原始媒体";}
     }
+  }
+
+  async function sendNativeResume(command,before) {
+    await guard();
+    const current=support.currentSession(document,{uid:command.uid});
+    const messages=support.readMessages(document);
+    if(!identityMatches(current,command) || messages[messages.length-1]?.from!=="对方"
+        || !support.messagesMatch(support.latestInbound(messages),command.expectedLatestInbound))
+      return {success:true,outcome:"STALE",evidence:"点击发简历前会话或最后消息已变化"};
+    if(Date.now()>=command.deadlineAt) return {success:true,outcome:"FAILED_SAFE",evidence:"简历发送确认已过期"};
+    const buttons=Array.from(document.querySelectorAll("button,[role='button'],.btn-resume"))
+      .filter(node=>visible(node)&&/^(发简历|发送简历)$/.test(support.normalizeText(node.textContent))&&!node.disabled);
+    if(buttons.length!==1) return {success:true,outcome:"FAILED_SAFE",evidence:"未找到唯一可用的BOSS发简历按钮"};
+    sendDispatched=true;
+    buttons[0].click();
+    for(let i=0;i<20;i++) {
+      await wait(250);
+      const rows=support.readMessages(document);
+      const added=rows.slice(before.length).some(m=>m.from==="本人" && /简历|resume/i.test((m.text||"")+" "+(m.media?.map(x=>x.name).join(" ")||""))
+          && (m.type==="附件" || /发送了简历|\[简历\]/.test(m.text||"")));
+      if(added) return {success:true,outcome:"SENT",evidence:"点击BOSS发简历后观察到新增本人简历消息",observedLatestInbound:support.latestInbound(messages)};
+    }
+    return {success:true,outcome:"RESULT_UNKNOWN",evidence:"已点击BOSS发简历，未确认新增简历消息；弹窗交本人处理，不自动重试"};
   }
 
   async function sendResume(command,before) {

@@ -193,6 +193,32 @@ class HrAssistantWatchServiceTest {
         assertThat(service.status().watching()).isFalse();
     }
 
+    @Test
+    void trialCapsThreeConversationsAndNeverResumesPendingSends() {
+        when(store.loadSettingsSecret(1L)).thenReturn(new HrAssistantStore.SettingsSecret(
+                1L, CommunicationProfile.empty(), true, "ws://127.0.0.1:3001", "test",
+                QqTargetType.GROUP, "123456", "123457", 30));
+        when(napCatGateway.isConnected()).thenReturn(true);
+        var status=service.start(77,"https://www.zhipin.com/web/geek/chat",HrAutopilotStore.PROTOCOL,"trial",1L,1,3);
+        assertThat(service.isReviewTrial()).isTrue();
+        org.mockito.Mockito.verify(store,org.mockito.Mockito.never()).resumePendingCommands(any(),any());
+        when(store.beginCapture(eq(1L),eq(status.watchSessionId()),any(),any())).thenReturn(false);
+        service.ingestScan(status.watchSessionId(),77,"s1",0,List.of(capture(1),capture(2),capture(3)));
+        assertThatThrownBy(()->service.ingestScan(status.watchSessionId(),77,"s2",0,List.of(capture(4))))
+                .hasMessageContaining("上限");
+        service.stop(status.watchSessionId(),"TRIAL_COMPLETED: done");
+        org.mockito.Mockito.verify(napCatGateway,org.mockito.Mockito.never()).notifySystemFault(any(),any());
+        assertThat(service.status().watching()).isFalse();
+    }
+
+    @Test
+    void trialRequiresConnectedQqAndNewProtocol() {
+        assertThatThrownBy(()->service.start(77,"https://www.zhipin.com/web/geek/chat","old","trial",1L,1,3))
+                .hasMessageContaining("更新");
+        assertThatThrownBy(()->service.start(77,"https://www.zhipin.com/web/geek/chat",HrAutopilotStore.PROTOCOL,"trial",1L,1,3))
+                .hasMessageContaining("QQ");
+    }
+
     private ChatCapture capture(int index) {
         String text = "消息" + index;
         ChatSession session = new ChatSession("uid-" + index, "security-" + index, "HR" + index,

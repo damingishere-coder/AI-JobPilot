@@ -40,6 +40,8 @@ public class HrAssistantWatchService {
     private final AtomicBoolean watching = new AtomicBoolean(false);
     private final AtomicBoolean processingScan = new AtomicBoolean(false);
     private volatile boolean browserScanRunning;
+    private final Set<String> trialUids = new HashSet<>();
+    public boolean isReviewTrial() { return session != null && session.reviewLimit() == 3; }
     private volatile WatchSession session;
     private volatile LocalDateTime lastScanAt;
     private volatile LocalDateTime lastHeartbeatAt;
@@ -69,28 +71,41 @@ public class HrAssistantWatchService {
     }
 
     public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId, int intervalMinutes) {
+        return start(tabId, url, contentVersion, browserSessionId, expectedProfileId, intervalMinutes, 0);
+    }
+
+    public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId, int intervalMinutes, int reviewLimit) {
+        if (reviewLimit != 0 && reviewLimit != 3) throw new IllegalArgumentException("试运行仅支持三个会话");
         if (intervalMinutes != 1 && intervalMinutes != 30) throw new IllegalArgumentException("值守间隔仅支持 1 分钟或 30 分钟");
         return profileGuard.locked(() -> {
             if (expectedProfileId == null || !expectedProfileId.equals(profileService.getCurrentProfileId())) {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请刷新后重新开始值守");
             }
             validateChatTab(tabId, url, contentVersion, browserSessionId);
-            if(autopilot!=null && autopilot.policy(expectedProfileId).enabled()
+            if (reviewLimit == 3) {
+                if (!HrAutopilotStore.PROTOCOL.equals(contentVersion)) throw new IllegalStateException("请更新 HR 扩展后再试运行");
+                if (autopilot != null && autopilot.policy(expectedProfileId).enabled() && "AUTO".equals(autopilot.policy(expectedProfileId).replyMode()))
+                    throw new IllegalStateException("请先关闭自动托管，再进行三个会话试运行");
+                if (!store.loadSettingsSecret(expectedProfileId).qqEnabled() || !napCatGateway.isConnected())
+                    throw new IllegalStateException("请先连接已配置的 QQ 通知通道");
+            }
+            if(reviewLimit == 0 && autopilot!=null && autopilot.policy(expectedProfileId).enabled()
                     && (!url.contains("getjobs-autopilot=1") || !contentVersion.equals(HrAutopilotStore.PROTOCOL)))
                 throw new IllegalStateException("请打开新版扩展的专用托管聊天标签，再开始值守");
-            if(autopilot!=null && autopilot.policy(expectedProfileId).enabled()) {
+            if(reviewLimit == 0 && autopilot!=null && autopilot.policy(expectedProfileId).enabled()) {
                 var blockers=dutyBlockers(expectedProfileId);
                 if(!blockers.isEmpty()) throw new IllegalStateException(String.join("；",blockers));
             }
             if (watching.get()) {
-                if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)) return status();
+                if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId) && session.reviewLimit() == reviewLimit) return status();
                 throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
             }
             profileGuard.requireChangeAllowed();
             Long profileId = profileService.getCurrentProfileId();
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
-                    tabId, url.trim(), contentVersion.trim());
-            store.resumePendingCommands(profileId,session.watchSessionId());
+                    tabId, url.trim(), contentVersion.trim(), reviewLimit);
+            trialUids.clear();
+            if (reviewLimit == 0) store.resumePendingCommands(profileId,session.watchSessionId());
             watching.set(true);
             scanIntervalMs = autopilot!=null && autopilot.policy(profileId).enabled() ? 60_000L : intervalMinutes * 60_000L;
             processingScan.set(false);
@@ -115,7 +130,7 @@ public class HrAssistantWatchService {
             // A stop cancels future work, but must not release an in-flight ingestion.
             browserScanRunning = false;
             lastError = safe(reason);
-            if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED")) {
+            if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED") && !lastError.startsWith("TRIAL_COMPLETED")) {
                 napCatGateway.notifySystemFault(session.profileId(), lastError);
             }
             WatchStatus status = status();
@@ -135,7 +150,7 @@ public class HrAssistantWatchService {
             requireSession(watchSessionId, tabId);
             validateChatTab(tabId, url, contentVersion, session.browserSessionId());
             session = new WatchSession(session.watchSessionId(), session.browserSessionId(), session.profileId(),
-                    tabId, url.trim(), contentVersion.trim());
+                    tabId, url.trim(), contentVersion.trim(), session.reviewLimit());
             lastHeartbeatAt = LocalDateTime.now();
             if(browserScanRunning && !this.browserScanRunning && autopilot!=null) autopilot.scanStarted(session.profileId());
             this.browserScanRunning = browserScanRunning;
@@ -181,6 +196,11 @@ public class HrAssistantWatchService {
             for (ChatCapture capture : safeCaptures) {
                 requireSession(watchSessionId, tabId);
                 validateCapture(capture);
+                if (active.reviewLimit() == 3) {
+                    if (trialUids.contains(capture.session().uid())) { duplicates++; acknowledged.add(capture.captureId()); continue; }
+                    if (trialUids.size() >= 3) throw new IllegalStateException("三个会话试运行已达到上限，未处理更多会话");
+                    trialUids.add(capture.session().uid());
+                }
                 boolean shouldProcess = store.beginCapture(active.profileId(), active.watchSessionId(), normalizedScanId, capture.captureId());
                 if (!shouldProcess) {
                     duplicates++;
@@ -199,7 +219,7 @@ public class HrAssistantWatchService {
                 }
             }
             lastScanAt = LocalDateTime.now();
-            if(autopilot!=null && safeCaptures.isEmpty() && totalUnread==0) autopilot.progress(active.profileId(),true);
+            if(!isReviewTrial() && autopilot!=null && safeCaptures.isEmpty() && totalUnread==0) autopilot.progress(active.profileId(),true);
             lastHeartbeatAt = lastScanAt;
             lastError = "";
             outboxCount = Math.max(0, outboxCount - acknowledged.size());
@@ -239,7 +259,7 @@ public class HrAssistantWatchService {
                 lastScanAt, next, lastError, bridge, napCatGateway.isConnected(), autopilot == null || currentProfile == null || !autopilot.policy(currentProfile.getId()).enabled() || !"AUTO".equals(autopilot.policy(currentProfile.getId()).replyMode()) || !autopilot.blockers(currentProfile.getId()).isEmpty(),
                 active == null ? null : active.profileId(), currentProfile == null ? null : currentProfile.getId(),
                 currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked(),
-                autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
+                isReviewTrial()?"TRIAL_REVIEW":autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
                 autopilot==null || currentProfile==null?List.of():dutyBlockers(currentProfile.getId()),
                 autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()));
     }
@@ -302,14 +322,14 @@ public class HrAssistantWatchService {
         if (source == null) throw new IllegalStateException("最新入站消息与会话列表不一致，已保留 Outbox 并停止处理");
         String sourceFingerprint = store.sourceFingerprint(conversationId, source);
         store.updateLastInbound(conversationId, sourceFingerprint);
-        if (store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return;
+        if (isReviewTrial() ? store.prepareTrialSource(conversationId, sourceFingerprint) : store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return;
 
         if (autopilot != null) {
-            if(autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
+            if(isReviewTrial() || autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
             autopilot.saveContext(conversationId, capture);
         }
         AiDraft draft;
-        if(autopilot!=null && autopilot.historyAssessment(profileId,capture)!=null) {
+        if(!isReviewTrial() && autopilot!=null && autopilot.historyAssessment(profileId,capture)!=null) {
             var assessment=autopilot.historyAssessment(profileId,capture);
             draft=new AiDraft(assessment.action().equals("HUMAN")?Classification.NEEDS_USER:Classification.NO_REPLY,"",assessment.reason(),List.of(),List.of(),1);
         } else if (autopilot == null && !"文本".equals(source.type())) {
@@ -328,7 +348,11 @@ public class HrAssistantWatchService {
             }
         }
         long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
-        boolean notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, session.watchSessionId());
+        boolean notify;
+        if (isReviewTrial() && autopilot != null) {
+            autopilot.reviewTrial(profileId, proposalId, capture, draft);
+            notify = true;
+        } else notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, session.watchSessionId());
         ProposalView proposal = store.getProposalView(profileId, proposalId);
         events.emit("proposal-created", proposal);
         if (notify && settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
@@ -415,6 +439,6 @@ public class HrAssistantWatchService {
     }
 
     private record WatchSession(String watchSessionId, String browserSessionId, Long profileId,
-                                int tabId, String url, String contentVersion) {
+                                int tabId, String url, String contentVersion, int reviewLimit) {
     }
 }

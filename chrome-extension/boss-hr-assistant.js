@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-27-hr-duty";
+  const PANEL_VERSION = "2026-09-28-hr-review";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -90,7 +90,7 @@
     rendered.appendChild(statusBox);
     rendered.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
     const automatic=latestPolicy?.enabled && latestPolicy.replyMode==="AUTO";
-    rendered.appendChild(element("div","status",`回复方式：${automatic?"按已确认规则自动发送":"逐条确认后发送"}。已有消息：${latestPolicy?.historyMode==="RECENT"?"最近30天待回复会话一并处理":"仅处理新消息"}。普通回复留在记录，关键事项发送QQ。`));
+    rendered.appendChild(element("div","status",`回复方式：${latestStatus?.replyMode==="TRIAL_REVIEW"?"三个会话试运行，仅QQ确认":automatic?"按已确认规则自动发送":"逐条确认后发送"}。已有消息：${latestPolicy?.historyMode==="RECENT"?"最近30天待回复会话一并处理":"仅处理新消息"}。逐条确认模式会把原话与建议发到QQ；试运行最多三个会话，结束后停止。`));
     if(latestPolicy?.enabled && latestPolicy.blockers?.length) rendered.appendChild(element("div","status error",latestPolicy.blockers.join("；")));
     if(!latestPolicy?.enabled) {
       const settings=document.createElement("a"); settings.href="http://127.0.0.1:6866/env-config";settings.target="_blank";settings.rel="noopener noreferrer";settings.textContent="前往工作台确认自动回复规则"; rendered.appendChild(settings);
@@ -123,7 +123,10 @@
       if(!dedicated) mutate("hr-dedicated-open");
       else { window.dispatchEvent(new Event("getjobs:hr:resume")); mutate("hr-resume"); }
     });
-    actions.append(start, stop, locked);
+    const trial = button("试运行：三个会话 → QQ确认", "btn primary");
+    trial.disabled = watching || activeRequest || !latestStatus?.currentProfileId;
+    trial.addEventListener("click",()=>{ window.dispatchEvent(new Event("getjobs:hr:resume")); mutate("hr-start",null,{expectedProfileId:latestStatus?.currentProfileId,intervalMinutes:1,reviewLimit:3}); });
+    actions.append(trial, start, stop, locked);
     rendered.appendChild(actions);
     const readAll = button("立即读取全部并生成草稿", "btn");
     readAll.disabled = !watching || Boolean(latestStatus?.scanRunning);

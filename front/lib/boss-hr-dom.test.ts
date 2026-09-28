@@ -207,11 +207,13 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result.success).toBe(false)
     expect(order).toEqual(['put:101-0', 'open:101-0', 'save:101-0', 'put:102-0', 'open:102-0', 'save:102-0'])
   })
-  it.each(['confirmed', 'unknown', 'already-answered'])('sends at a capture boundary and reports %s without re-entering the scan lock', async (outcome) => {
+  it.each(['confirmed', 'unknown', 'already-answered', 'resume-confirmed', 'resume-unknown'])('sends at a capture boundary and reports %s without re-entering the scan lock', async (outcome) => {
     const { card, props } = addCard()
     const pane = document.querySelector('.chat-conversation')!
     card.insertAdjacentHTML('beforeend', '<time>今天</time>')
     pane.insertAdjacentHTML('beforeend', '<div class="history-tip">沟通从这里开始</div><span>测试公司</span><textarea id="chat-input"></textarea><button>发送</button>')
+    const nativeResume = outcome.startsWith('resume-')
+    if (nativeResume) pane.querySelector('button')!.textContent = '发简历'
     let opened = false
     card.addEventListener('click', () => {
       card.classList.add('selected')
@@ -223,8 +225,8 @@ describe('BOSS virtual-list identity adapter', () => {
     let clicks = 0
     pane.querySelector('button')!.addEventListener('click', () => {
       clicks++
-      if (outcome === 'confirmed') {
-        pane.querySelector('.im-list')!.insertAdjacentHTML('beforeend', '<li class="message-item item-myself"><span class="text">您好！</span></li>')
+      if (outcome === 'confirmed' || outcome === 'resume-confirmed') {
+        pane.querySelector('.im-list')!.insertAdjacentHTML('beforeend', nativeResume ? '<li class="message-item item-myself" data-fixture-type="resume"><span class="file">我的简历.pdf</span></li>' : '<li class="message-item item-myself"><span class="text">您好！</span></li>')
         bindMessages()
       }
     })
@@ -242,7 +244,7 @@ describe('BOSS virtual-list identity adapter', () => {
               pane.querySelector('.im-list')!.insertAdjacentHTML('beforeend', '<li class="message-item item-myself"><span class="text">我已回复</span></li>')
               bindMessages()
             }
-            reply({ success: true, tabId: 7, command: { commandId: 'test', leaseToken: 'lease', uid: '101-0', hrName: '王女士', companyName: '测试公司', jobName: '', draft: '您好！', policyVersion: 0, deadlineAt: Date.now() + 30000, expectedInboundRound: message.capture.messages, expectedLatestInbound: message.capture.messages.at(-1) } })
+            reply({ success: true, tabId: 7, command: { commandId: 'test', actionType: nativeResume ? 'RESUME_NATIVE' : 'TEXT', leaseToken: 'lease', uid: '101-0', hrName: '王女士', companyName: '测试公司', jobName: '', draft: '您好！', policyVersion: 0, deadlineAt: Date.now() + 30000, expectedInboundRound: message.capture.messages, expectedLatestInbound: message.capture.messages.at(-1) } })
           } else if (message.operation === 'hr-boundary-result') { reports.push(message.body); reply({ success: true }) }
           else reply({ success: true })
         },
@@ -252,7 +254,35 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result.success).toBe(true)
     expect(clicks).toBe(outcome === 'already-answered' ? 0 : 1)
     expect(reports).toHaveLength(1)
-    expect(reports[0].outcome).toBe(outcome === 'confirmed' ? 'SENT' : outcome === 'unknown' ? 'RESULT_UNKNOWN' : 'STALE')
+    expect(reports[0].outcome).toBe(outcome.endsWith('confirmed') ? 'SENT' : outcome.endsWith('unknown') ? 'RESULT_UNKNOWN' : 'STALE')
+  })
+
+  it('trial reads at most three unanswered chats and skips an already answered chat', async () => {
+    const entries = ['101','102','103','104','105'].map(id => addCard(id))
+    const pane = document.querySelector('.chat-conversation')!
+    const saved: string[] = []
+    for (const [index, entry] of entries.entries()) entry.card.addEventListener('click', () => {
+      document.querySelectorAll('.friend-content').forEach(card => card.classList.remove('selected'))
+      entry.card.classList.add('selected')
+      Object.assign(pane, { __vue__: { $el: pane, selectedFriend$: entry.props } })
+      pane.querySelector('.im-list')!.innerHTML = `<li class="message-item ${index===0?'item-myself':'item-friend'}"><span class="text">方便聊聊吗？</span></li>`
+      bindMessages()
+    })
+    let listener!: (message: object, sender: object, respond: (result: {success:boolean;scannedCount:number})=>void)=>void
+    runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-bridge.js'),'utf8'), {
+      window:{top:window,self:window,addEventListener:()=>{}},document,location:{pathname:'/web/geek/chat'},
+      GetJobsBossHrSupport:support,Event,getComputedStyle,sessionStorage,
+      setTimeout:(fn:()=>void)=>setTimeout(fn,0),
+      chrome:{runtime:{onMessage:{addListener:(fn:typeof listener)=>{listener=fn}},sendMessage:(m:{type:string;capture:{session:{uid:string}}},reply:(r:object)=>void)=>{
+        if(m.type==='BOSS_HR_CAPTURE_RESULT') saved.push(m.capture.session.uid)
+        if(m.type==='BOSS_LOCAL_API') throw new Error('Trial attempted a send')
+        reply({success:true,command:{commandId:'must-not-run'}})
+      }}}
+    })
+    const result=await new Promise<{success:boolean;scannedCount:number}>(resolve=>listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_SCAN_V2',scanAll:true,reviewLimit:3,streamResults:true,scanId:'trial',watchSessionId:'watch',deadlineAt:Date.now()+30000}, {}, resolve))
+    expect(result.success).toBe(true)
+    expect(saved).toEqual(['102-0','103-0','104-0'])
+    expect(result.scannedCount).toBe(3)
   })
 
 })

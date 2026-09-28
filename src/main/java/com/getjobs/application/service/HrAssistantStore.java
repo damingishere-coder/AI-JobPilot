@@ -240,6 +240,20 @@ public class HrAssistantStore {
         return count != null && count > 0;
     }
 
+    @Transactional
+    public boolean prepareTrialSource(long conversationId, String sourceFingerprint) {
+        Integer held=jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id
+                WHERE p.conversation_id=? AND p.source_fingerprint=? AND
+                  (p.status IN ('APPROVED','SENDING','SENT_CONFIRMED','SEND_UNKNOWN','BLOCKED')
+                   OR (p.status='SKIPPED' AND COALESCE(d.action_type,'') NOT IN ('HISTORY','HISTORY_OLD')))
+                """,Integer.class,conversationId,sourceFingerprint);
+        if (held != null && held > 0) return true;
+        // A deliberate new trial may replace an unsent suggestion, never a sent/unknown/skipped decision.
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND status='REVIEW_REQUIRED'",conversationId);
+        return false;
+    }
+
     public boolean hasHandledSource(long conversationId, String sourceFingerprint, boolean reconsiderHistory) {
         if (!reconsiderHistory) return hasProposalForSource(conversationId,sourceFingerprint);
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id WHERE p.conversation_id=? AND p.source_fingerprint=? AND NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY') AND NOT (p.status='EXPIRED' AND EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT') AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE')))",Integer.class,conversationId,sourceFingerprint)>0;

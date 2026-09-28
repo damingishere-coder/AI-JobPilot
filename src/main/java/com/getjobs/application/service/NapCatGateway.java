@@ -82,11 +82,11 @@ public class NapCatGateway {
             try { capture=autopilot.context(proposal.profileId(),proposal.conversationId()); source=HrAutopilotService.latestRound(capture.messages()); }
             catch(RuntimeException ignored) { source += "\n[上下文未完整采集]"; }
         }
-        String text="【BOSS HR 需要决策】\n"+proposal.companyName()+" / "+proposal.jobName()+" / "+proposal.hrName()
-                +"\nHR本轮："+source+"\nAI建议："+(proposal.draft().isBlank()?"尚无可安全发送的正文":proposal.draft())
-                +"\n转人工原因："+(autopilot==null?"需要用户确认":autopilot.decisionReason(proposal.id()))
-                +"\n待决策："+proposal.summary()+"\n"+String.join("；",proposal.missingFacts())
-                +"\n确认码："+proposal.confirmationCode()+"\n发送/修改/跳过/详情/补充 "+proposal.confirmationCode()
+        String text="【BOSS 回复确认卡 · "+proposal.confirmationCode()+"】\n"+proposal.companyName()+" / "+proposal.jobName()+" / "+proposal.hrName()
+                +"\n\n── HR 原话（本轮）──\n"+source+"\n── 建议回复 / 动作 ──\n"+(proposal.draft().isBlank()?"尚无可安全发送的正文":proposal.draft())
+                +"\n\n审核说明："+(autopilot==null?"需要用户确认":autopilot.decisionReason(proposal.id()))
+                +"\n建议说明："+proposal.summary()+"\n"+String.join("；",proposal.missingFacts())
+                +"\n\n尚未发送给 HR。"+(commandsEnabled(settings)?"\n确认发送：发送 "+proposal.confirmationCode()+"\n调整：修改 "+proposal.confirmationCode()+" 新回复\n也可回复：跳过/详情/补充 "+proposal.confirmationCode():"\n群内操作人尚未配置，当前仅通知。请在工作台填写自己的操作人QQ后再确认或修改。")
                 +"\n记住 内容 → 确认记住 原文（仅明确确认才长期保存）";
         boolean queued=sendConfigured(settings,text,"proposal:"+proposal.id()+":"+proposal.version());
         if(capture!=null) {

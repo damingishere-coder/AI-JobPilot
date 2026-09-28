@@ -26,7 +26,7 @@ public class HrAutopilotService {
     public void saveContext(long conversationId,ChatCapture capture) { policies.context(conversationId,capture); }
     public AiDraft generate(Long profileId,long conversationId,CommunicationProfile profile,ChatCapture capture) {
         return drafts.generateWithFacts(profileId,conversationId,normalized(profile),capture.messages(),
-                policies.policy(profileId).facts()+"\n已确认可在对方明确索要时发送的指定简历："+policies.policy(profileId).resumeName()
+                policies.policy(profileId).facts()+"\n简历建议使用BOSS聊天框下方的发简历按钮，由本人确认后操作；不要求本地文件，也不声称已经发送。"
                 +"\n本次会话用户补充："+policies.facts(conversationId));
     }
     public static CommunicationProfile normalized(CommunicationProfile p) {
@@ -88,6 +88,10 @@ public class HrAutopilotService {
         } else if(draft.classification()==Classification.DOCUMENT_REQUEST && !inbound.matches("(?s).*(我发你|我发您|我给你|我给您).*") && inbound.matches("(?s).*(发|提供|要|给).{0,12}简历.*")) {
             if(!policy.shareResume()) return new Assessment("HUMAN","未授权自动发送简历",candidate);
             if(policy.resumeName().isBlank()) return new Assessment("HUMAN","尚未指定简历","");
+            if (HrAutopilotStore.BOSS_RESUME.equals(policy.resumeName())) {
+                if (!"REVIEW".equals(policy.replyMode())) return new Assessment("HUMAN","BOSS发简历必须本人逐条确认","");
+                return new Assessment("RESUME_NATIVE","本人确认后点击BOSS发简历，不使用本地文件","点击 BOSS 聊天框下方的“发简历”，发送当前 BOSS 账号的简历。");
+            }
             candidate="发送已确认简历："+policy.resumeName();action="RESUME";
         } else if(!draft.missingFacts().isEmpty() || !draft.riskTags().isEmpty() || draft.classification()==Classification.NEEDS_USER || (draft.classification()==Classification.DOCUMENT_REQUEST || draft.classification()==Classification.CONTACT_REQUEST))
             return new Assessment("HUMAN","资料不足或风险待确认",draft.replyText());
@@ -164,11 +168,31 @@ public class HrAutopilotService {
         if(Set.of("HISTORY","HISTORY_OLD","NO_REPLY").contains(assessment.action())) {
             store.markFinal(proposalId,ProposalStatus.SKIPPED,assessment.reason()); return false;
         }
-        if(!automatic) return true;
+        if(!automatic) {
+            if (assessment.action().equals("RESUME_NATIVE")) {
+                var p=store.getProposalView(profileId,proposalId);
+                store.revise(profileId,proposalId,p.version(),assessment.draft());
+            }
+            return true;
+        }
         var proposal=store.getProposalView(profileId,proposalId);
         if(!assessment.draft().equals(proposal.draft())) proposal=store.revise(profileId,proposalId,proposal.version(),assessment.draft());
         store.queueSendCommand(profileId,proposalId,proposal.version(),watchSessionId);
         return false;
+    }
+    public void reviewTrial(Long profileId, long proposalId, ChatCapture capture, AiDraft draft) {
+        String inbound = latestRound(capture.messages());
+        boolean resume = HrMediaService.complete(capture) && draft.classification() == Classification.DOCUMENT_REQUEST
+                && inbound.matches("(?s).*(发|提供|要|给).{0,12}简历.*")
+                && !inbound.matches("(?s).*(不要|不用|无需|别|身份证|银行卡|合同|微信|证件|我发你|我给你).*");
+        if (resume) {
+            var p = store.getProposalView(profileId, proposalId);
+            store.revise(profileId, proposalId, p.version(), "点击 BOSS 聊天框下方的“发简历”，发送当前 BOSS 账号的简历（不发送本地文件）。");
+        }
+        policies.decision(proposalId, policies.policy(profileId).version(), resume ? "RESUME_NATIVE" : "TEXT",
+                "三个会话试运行：只生成建议，等待本人逐条确认；没有向 HR 发送", false);
+        policies.audit(proposalId, "", capture.historical());
+        policies.markTrial(proposalId);
     }
     public void verifyClaim(Long profileId,long proposalId) {
         var decision=policies.decision(proposalId);
