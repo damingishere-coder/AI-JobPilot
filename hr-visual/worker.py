@@ -53,6 +53,11 @@ def serve(request: dict, driver, receive, emit):
                     raise Halt("STALE", "输入期间聊天变化，保留草稿，未发送")
                 driver.require_staged_text(request["draft"])
                 driver.prepare_text_submit(request["draft"])
+                focused = driver.read_chat(request["target"])
+                verify_source(focused, request)
+                if signature(focused) != signature(capture):
+                    raise Halt("STALE", "聚焦输入框后聊天发生变化，未提交")
+                driver.require_staged_text(request["draft"])
             else:
                 driver.prepare_resume()
             driver.guard()

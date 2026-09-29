@@ -132,7 +132,7 @@ public class HrVisualService {
             if(!Set.of(ProposalStatus.BLOCKED,ProposalStatus.SEND_UNKNOWN,ProposalStatus.EXPIRED).contains(old.status()) ||
                     old.version()!=review.expectedVersion() || old.draft().isBlank() || old.draft().length()>2000 || !old.draft().equals(review.draft()))
                 throw new IllegalStateException("只能重新确认当前失败版本的完整原文");
-            if(old.status()==ProposalStatus.SEND_UNKNOWN && !review.possibleDuplicateAccepted())
+            if((old.status()==ProposalStatus.SEND_UNKNOWN || visual.previousUnknownAttempt(target.id())) && !review.possibleDuplicateAccepted())
                 throw new IllegalArgumentException("前次结果未知，必须本人核验并明确重新授权，不能自动重试");
             if(visual.hasOtherLaterAttempt(target.conversationId(),old.id()) || visual.steps(old.id()).stream().anyMatch(s->"SENT_CONFIRMED".equals(s.get("status"))))
                 throw new IllegalStateException("已有其他发送或部分成功步骤，不能重发文字");

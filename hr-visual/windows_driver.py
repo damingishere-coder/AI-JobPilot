@@ -36,6 +36,7 @@ class WindowsDriver:
         self.composer = None
         self.send_button = None
         self.resume_confirm = None
+        self.approved_text = None
         self.target = None
         self.identity = None
         self.selected_job = None
@@ -522,6 +523,10 @@ class WindowsDriver:
             raise Halt("COMPOSER_OCCLUDED", "聊天输入框被其他页面内容遮挡，未提交")
         self._click(rect)
         self.require_staged_text(text)
+        self.require_editor_focus()
+        self.approved_text = text
+
+    def require_editor_focus(self):
         from pywinauto.uia_defines import IUIA
         from pywinauto.uia_element_info import UIAElementInfo
         from pywinauto.controls.uiawrapper import UIAWrapper
@@ -556,6 +561,10 @@ class WindowsDriver:
     def submit(self, action, before=None):
         if action == "TEXT":
             self.guard()
+            if self.approved_text is None:
+                raise Halt("DRAFT_UNVERIFIED", "缺少本次核验过的输入正文")
+            self.require_staged_text(self.approved_text)
+            self.require_editor_focus()
             from pywinauto.keyboard import send_keys
             send_keys("{ENTER}")
             return

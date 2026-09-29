@@ -71,6 +71,14 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.run_driver(d)["outcome"],"STALE")
         self.assertEqual(d.submissions,0)
 
+    def test_chat_change_after_focusing_editor_stops_before_enter(self):
+        d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")))
+        def focus_then_change(text):
+            d.before=capture(msg("你好"),msg("什么时候到岗？"),msg("先不用回复"))
+        d.prepare_text_submit=focus_then_change
+        self.assertEqual(self.run_driver(d)["outcome"],"STALE")
+        self.assertEqual(d.submissions,0)
+
     def test_cancel_and_wrong_identity_cannot_send(self):
         d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")))
         self.assertEqual(self.run_driver(d,"cancel")["outcome"],"BLOCKED")

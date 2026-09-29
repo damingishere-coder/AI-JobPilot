@@ -94,6 +94,10 @@ class HrVisualServiceTest {
         assertThat(visual.steps(old.id()).getFirst().get("status")).isEqualTo("SEND_UNKNOWN");
         assertThat(visual.previousAttempts(target.id())).hasSize(2);
         assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),review)).hasMessageContaining("已被新版本替代");
+        store.markFinal(next.proposalId(),ProposalStatus.BLOCKED,"second attempt blocked before submission");
+        var blocked=store.requireProposal(1L,next.proposalId());
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(blocked.id(),blocked.version(),blocked.draft(),true,false)))
+                .hasMessageContaining("不能自动重试");
     }
 
     @Test void reconfirmationRejectsAnAlreadyObservedReply() {

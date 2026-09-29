@@ -85,6 +85,9 @@ public class HrVisualStore {
     public boolean hasOtherLaterAttempt(long conversation,long proposal) {
         return count("SELECT COUNT(*) FROM hr_reply_proposal WHERE conversation_id=? AND id>? AND status IN ('APPROVED','SENDING','SENT_CONFIRMED','SEND_UNKNOWN','BLOCKED')",conversation,proposal)>0;
     }
+    public boolean previousUnknownAttempt(String target) {
+        return count("SELECT COUNT(*) FROM hr_reply_proposal WHERE status='SEND_UNKNOWN' AND id IN (SELECT old_proposal_id FROM hr_visual_reconfirmation WHERE target_id=?)",target)>0;
+    }
     @Transactional
     public Step claim(Long profile,long proposal) {
         long now=System.currentTimeMillis();
