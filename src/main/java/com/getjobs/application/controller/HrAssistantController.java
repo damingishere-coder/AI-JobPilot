@@ -43,6 +43,28 @@ public class HrAssistantController {
     private final HrAssistantEventService eventService;
     private final LocalActionTokenService localActionTokenService;
 
+    private com.getjobs.application.service.HrVisualService visual;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setVisual(com.getjobs.application.service.HrVisualService visual) { this.visual=visual; }
+
+    @GetMapping("/visual/status")
+    public ResponseEntity<?> visualStatus() { return execute(()->visual.status(profileService.getCurrentProfileId())); }
+
+    @PostMapping("/visual/start")
+    public ResponseEntity<?> visualStart(
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String actionToken,
+            @RequestBody com.getjobs.application.hr.HrVisualTypes.StartRequest request) {
+        if(!localActionTokenService.isValid(actionToken)) return unauthorized();
+        return execute(()->visual.start(request));
+    }
+
+    @PostMapping("/visual/{id}/{operation:pause|resume}")
+    public ResponseEntity<?> visualControl(@PathVariable String id,@PathVariable String operation,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String actionToken) {
+        if(!localActionTokenService.isValid(actionToken)) return unauthorized();
+        return execute(()->visual.control(profileService.getCurrentProfileId(),id,operation.equals("resume")));
+    }
+
     private com.getjobs.application.service.HrProfileGuard profileGuard = new com.getjobs.application.service.HrProfileGuard();
     @org.springframework.beans.factory.annotation.Autowired
     public void setProfileGuard(com.getjobs.application.service.HrProfileGuard guard) { this.profileGuard=guard; }
@@ -86,6 +108,7 @@ public class HrAssistantController {
         return execute(()-> profileGuard.locked(()-> {
             Long id=profileService.getCurrentProfileId();
             if(!id.equals(request.profileId())) throw new HrAssistantStore.StaleProposalException("当前人物档案已变化");
+            profileGuard.requireChangeAllowed();
             if(watchService.status().watching() || watchService.status().scanRunning() || store.hasLeasedSendCommands())
                 throw new IllegalStateException("请先停止值守并等待发送结果后再修改托管授权");
             if(!request.rulesConfirmed()) throw new IllegalArgumentException("请先核对并确认托管规则");
@@ -97,7 +120,11 @@ public class HrAssistantController {
     @PostMapping("/autopilot/{operation:pause|resume}")
     public ResponseEntity<?> pauseAutopilot(@PathVariable String operation,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
         if(!localActionTokenService.isValid(token)) return unauthorized();
-        return execute(()->autopilot.pause(profileService.getCurrentProfileId(),operation.equals("pause")));
+        return execute(()-> {
+            Long profile=profileService.getCurrentProfileId();
+            if(visual!=null && visual.qqControl(profile,operation.equals("resume"))) return visual.status(profile);
+            return autopilot.pause(profile,operation.equals("pause"));
+        });
     }
 
     @GetMapping("/proposals/{id}/context")

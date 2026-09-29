@@ -21,6 +21,9 @@ import java.util.regex.Pattern;
 @Slf4j
 @Service
 public class NapCatGateway {
+    private HrVisualService visual;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setVisual(@org.springframework.context.annotation.Lazy HrVisualService visual) { this.visual=visual; }
     private HrProfileGuard profileGuard = new HrProfileGuard();
     @org.springframework.beans.factory.annotation.Autowired
     public void setProfileGuard(HrProfileGuard guard) { this.profileGuard=guard; }
@@ -275,8 +278,9 @@ public class NapCatGateway {
         if(!special) return false;
         if(!store.rememberQqCommand(messageId,sender,"托管指令")) return true;
         if(text.equals("暂停")||text.equals("恢复")) {
-            autopilot.pause(profileId,text.equals("暂停"));
-            sendConfigured(settings,text.equals("暂停")?"已暂停托管，停止新扫描和发送；已触发动作仍核验结果。":"已允许恢复托管；专用标签的手动暂停需在该标签明确恢复。");
+            boolean handled=visual!=null && visual.qqControl(profileId,text.equals("恢复"));
+            if(!handled) autopilot.pause(profileId,text.equals("暂停"));
+            sendConfigured(settings,text.equals("暂停")?"已暂停，停止新扫描和发送；已触发动作仍核验结果。":handled?"已恢复视觉测试，将重新核对未发送步骤。":"已允许恢复托管；专用标签的手动暂停需在该标签明确恢复。");
         } else if(text.startsWith("记住 ")||text.startsWith("确认记住 ")) {
             boolean confirm=text.startsWith("确认记住 ");
             String fact=text.substring(confirm?5:3).trim();

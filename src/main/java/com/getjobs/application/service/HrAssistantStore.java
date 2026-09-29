@@ -263,9 +263,9 @@ public class HrAssistantStore {
     @Transactional
     public void resumePendingCommands(Long profileId,String watchSessionId) {
         // Only commands never leased to a browser can be resumed or re-evaluated.
-        jdbcTemplate.update("UPDATE hr_send_command SET status='STALE',outcome='EXPIRED_UNSENT',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING' AND expires_at<=datetime('now','localtime')",profileId);
+        jdbcTemplate.update("UPDATE hr_send_command SET status='STALE',outcome='EXPIRED_UNSENT',updated_at=CURRENT_TIMESTAMP WHERE transport='CHROME_BRIDGE' AND profile_id=? AND status='PENDING' AND expires_at<=datetime('now','localtime')",profileId);
         jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='APPROVED' AND id IN (SELECT proposal_id FROM hr_send_command WHERE outcome='EXPIRED_UNSENT')",profileId);
-        jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING' AND NOT EXISTS (SELECT 1 FROM hr_autopilot_decision d WHERE d.proposal_id=hr_send_command.proposal_id AND d.capture_origin='TRIAL')",watchSessionId,profileId);
+        jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE transport='CHROME_BRIDGE' AND profile_id=? AND status='PENDING' AND NOT EXISTS (SELECT 1 FROM hr_autopilot_decision d WHERE d.proposal_id=hr_send_command.proposal_id AND d.capture_origin='TRIAL')",watchSessionId,profileId);
     }
 
     @Transactional
@@ -480,7 +480,7 @@ public class HrAssistantStore {
                 SELECT command_id FROM hr_send_command c
                 JOIN hr_reply_proposal p ON p.id=c.proposal_id
                 JOIN hr_conversation v ON v.id=p.conversation_id
-                 WHERE c.profile_id=? AND (c.watch_session_id='' OR c.watch_session_id=?) AND c.status='PENDING'
+                 WHERE c.profile_id=? AND (c.watch_session_id='' OR c.watch_session_id=?) AND c.status='PENDING' AND c.transport='CHROME_BRIDGE'
                    AND c.expires_at>datetime('now', 'localtime') AND p.status='APPROVED'
                    AND p.source_fingerprint=v.last_inbound_fingerprint
                 """ + scope + " ORDER BY c.created_at LIMIT 1", (rs, rowNum) -> rs.getString(1), parameters.toArray());
@@ -579,7 +579,7 @@ public class HrAssistantStore {
     public void expireUnconfirmedLeases() {
         List<Long> expired = jdbcTemplate.query("""
                 SELECT proposal_id FROM hr_send_command
-                 WHERE status='LEASED' AND lease_expires_at<CURRENT_TIMESTAMP
+                 WHERE status='LEASED' AND transport='CHROME_BRIDGE' AND lease_expires_at<CURRENT_TIMESTAMP
                 """, (rs, rowNum) -> rs.getLong(1));
         for (Long proposalId : expired) {
             jdbcTemplate.update("""
@@ -655,7 +655,7 @@ public class HrAssistantStore {
                 """);
         jdbcTemplate.update("DELETE FROM hr_qq_command WHERE expires_at<CURRENT_TIMESTAMP");
         jdbcTemplate.update("DELETE FROM hr_scan_capture WHERE updated_at<datetime('now', '-30 days')");
-        jdbcTemplate.update("DELETE FROM hr_send_command WHERE updated_at<datetime('now', '-30 days')");
+        jdbcTemplate.update("DELETE FROM hr_send_command WHERE transport='CHROME_BRIDGE' AND updated_at<datetime('now', '-30 days')");
         return messages;
     }
 
@@ -702,7 +702,6 @@ public class HrAssistantStore {
             Long count = jdbcTemplate.queryForObject("""
                     SELECT COUNT(*) FROM hr_reply_proposal
                      WHERE profile_id=? AND confirmation_code_hash=? AND expires_at>datetime('now', 'localtime')
-                       AND status IN ('REVIEW_REQUIRED','APPROVED','SENDING')
                     """, Long.class, profileId, confirmationCodeHash(profileId, code));
             if (count == null || count == 0) return code;
         }

@@ -111,6 +111,16 @@ class NapCatGatewayTest {
         gateway.handleIncoming(1L,event("group","987654321","777777","999999","remember1","记住 不真实经历"));
         verifyNoInteractions(outbox);
     }
+    @Test
+    void authorizedQqCanPauseVisualWhenAutomaticDutyIsDisabled() {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        var visual=mock(HrVisualService.class);gateway.setVisual(visual);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        when(store.rememberQqCommand("visual-pause","123456","托管指令")).thenReturn(true);
+        when(visual.qqControl(1L,false)).thenReturn(true);
+        gateway.handleIncoming(1L,event("group","987654321","123456","999999","visual-pause","暂停"));
+        verify(visual).qqControl(1L,false);verify(outbox,never()).pause(any(),org.mockito.ArgumentMatchers.anyBoolean());
+    }
 
     @Test
     void reviewCardContainsEntireHrRoundSuggestionAndConfirmationInstructions() throws Exception {

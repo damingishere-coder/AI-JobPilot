@@ -9,6 +9,9 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class HrReplyActionService {
+    private HrVisualService visual;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setVisual(@org.springframework.context.annotation.Lazy HrVisualService visual) { this.visual=visual; }
     private HrAutopilotStore autopilotStore;
     private HrAutopilotService autopilot;
     private HrAssistantWatchService watchService;
@@ -20,6 +23,7 @@ public class HrReplyActionService {
     private final HrAssistantEventService events;
 
     public ProposalView revise(Long profileId, long proposalId, int expectedVersion, String newDraft) {
+        if (visual != null) visual.assertEditable(profileId, proposalId);
         ProposalView updated = store.revise(profileId, proposalId, expectedVersion, newDraft);
         if(autopilotStore!=null) autopilotStore.decision(proposalId,autopilotStore.policy(profileId).version(),"TEXT","用户修改后的文字回复",false);
         events.emit("proposal-updated", updated);
@@ -32,7 +36,9 @@ public class HrReplyActionService {
     }
 
     public ProposalView skip(Long profileId, long proposalId) {
+        if (visual != null) visual.assertEditable(profileId, proposalId);
         store.skip(profileId, proposalId);
+        if (visual != null) visual.skipped(profileId, proposalId);
         ProposalView updated = store.getProposalView(profileId, proposalId);
         events.emit("proposal-updated", updated);
         return updated;
@@ -44,6 +50,7 @@ public class HrReplyActionService {
     }
 
     public ProposalView send(Long profileId, long proposalId, int expectedVersion) {
+        if (visual != null && visual.owns(profileId, proposalId)) return visual.queue(profileId, proposalId, expectedVersion);
         if (watchService != null) watchService.requireTrialSend(profileId, proposalId);
         String commandId = store.queueSendCommand(profileId, proposalId, expectedVersion, "");
         ProposalView queued = store.getProposalView(profileId, proposalId);
