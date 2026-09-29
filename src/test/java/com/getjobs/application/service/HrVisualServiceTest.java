@@ -112,6 +112,48 @@ class HrVisualServiceTest {
                 .hasMessageContaining("出现本人回复");
         assertThat(visual.explicitlyReconfirmed(old.id())).isFalse();
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={0,1})
+    void readonlyReconciliationPreservesUnknownAuditAndCannotQueueOrRepeat(int targetIndex) {
+        service.start(startRequest(targets,true));
+        for(var c:captures){nextCapture(c);advance();}
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).get(targetIndex);
+        var step=visual.claim(1L,target.proposalId());visual.submitting(step);
+        var before=captures.get(targetIndex);
+        var baseline=Map.of("hrName",before.session().hrName(),"companyName",before.session().companyName(),"jobName",before.session().jobName(),"messages",before.messages(),"contextComplete",true);
+        visual.finish(step,"SEND_UNKNOWN",Map.of("submitted",true,"before",baseline,"detail","selection reordered"));
+        visual.completeParent(step.commandId(),"SEND_UNKNOWN");store.markFinal(target.proposalId(),ProposalStatus.SEND_UNKNOWN,"selection reordered");
+        visual.target(target.id(),null,"SEND_UNKNOWN","");visual.state(run.id(),"PAUSED","");
+        var original=visual.stepEvidence(step.id());
+        var after=new ArrayList<>(before.messages());after.add(new ChatMessage("本人","文本","您好","12:03"));
+        var reply=Map.of("ok",true,"outcome","SENT_CONFIRMED","capture",Map.of("hrName",before.session().hrName(),"companyName",before.session().companyName(),"jobName",before.session().jobName(),"messages",after,"contextComplete",true));
+        var mismatch=json.valueToTree(reply);
+        ((com.fasterxml.jackson.databind.node.ObjectNode)mismatch.path("capture").path("messages").get(2)).put("text","相似但不同的回复");
+        when(worker.exchange(anyMap(),isNull())).thenReturn(mismatch);
+        assertThatThrownBy(()->service.reconcile(1L,run.id(),target.id())).hasMessageContaining("不匹配");
+        assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_visual_receipt_review",Integer.class)).isZero();
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(reply));
+        service.reconcile(1L,run.id(),target.id());
+        assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(targetIndex==0?ProposalStatus.APPROVED:ProposalStatus.SENT_CONFIRMED);
+        assertThat(visual.steps(target.proposalId()).getFirst().get("reviewed_at")).isNotNull();
+        assertThat(db.queryForObject("SELECT previous_status FROM hr_visual_receipt_review WHERE step_id=?",String.class,step.id())).isEqualTo("SEND_UNKNOWN");
+        assertThat(db.queryForObject("SELECT original_evidence_cipher FROM hr_visual_receipt_review WHERE step_id=?",String.class,step.id())).isNotBlank();
+        assertThat(original.path("detail").asText()).isEqualTo("selection reordered");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isEqualTo(3);
+        assertThat(visual.run(1L,run.id()).status()).isEqualTo("PAUSED");
+        verify(worker,times(2)).exchange(argThat(m->"reconcile".equals(m.get("operation"))),isNull());
+        assertThatThrownBy(()->service.reconcile(1L,run.id(),target.id())).hasMessageContaining("没有待核验");
+        if(targetIndex==0) {
+            assertThat(visual.targets(run.id()).getFirst().status()).isEqualTo("PARTIAL");
+            assertThat(visual.steps(target.proposalId()).get(1).get("status")).isEqualTo("PENDING");
+            service.control(1L,run.id(),true);
+            db.update("UPDATE hr_send_step SET finished_at=0 WHERE id=?",step.id());
+            var remaining=visual.claim(1L,target.proposalId());
+            assertThat(remaining.actionType()).isEqualTo("RESUME_NATIVE");
+            assertThat(remaining.ordinal()).isEqualTo(1);
+        }
+    }
     @Test void manualReplyInvalidatesOriginalConfirmationCode() {
         service.start(startRequest(targets,true));var old=captures.getFirst();var messages=new ArrayList<>(old.messages());messages.add(new ChatMessage("本人","文本","本人已处理","今天"));
         nextCapture(new ChatCapture("new",0,old.session(),messages,false,true));advance();

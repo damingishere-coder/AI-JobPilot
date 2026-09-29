@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { API_BASE, friendlyApiError, localActionFetch, readApiResponse } from '@/lib/api'
 
 type Proposal = { id: number; conversationId: number; version: number; status: string; hrName: string; companyName: string; draft: string }
-type Step = { id: string; action_type: string; status: string }
+type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
 type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[] }
 const labels: Record<string, string> = {
@@ -65,6 +65,14 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '视觉操作未完成')) }
     finally { setBusy(false) }
   }
+  const reconcile = async (targetId: string) => {
+    setBusy(true); setError('')
+    try {
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/${status?.runId}/targets/${targetId}/reconcile`, { method: 'POST' })
+      await readApiResponse(response, '回执仍未确认；没有重发'); await refresh()
+    } catch (e) { setError(friendlyApiError(e, '回执仍未确认；没有重发')) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-3 rounded-lg border p-4" aria-label="BOSS视觉聊天测试">
     <p className="font-medium">本机 Chrome 视觉聊天 · QQ 逐条确认</p>
     <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文，确认后回发。每个动作至少间隔 5 秒；只处理本轮选定的三个会话。</p>
@@ -89,7 +97,8 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     {(status?.targets || []).map(t => <div key={t.id} className="rounded border p-2 text-sm">
       <p>{t.hrName} · {t.companyName}：{labels[t.status] || t.status}</p>
       <p>{t.reason}</p>
-      {t.steps.map(s => <p key={s.id}>{s.action_type === 'TEXT' ? '文字回复' : 'BOSS 原生简历'}：{labels[s.status] || s.status}</p>)}
+      {t.steps.map(s => <p key={s.id}>{s.action_type === 'TEXT' ? '文字回复' : 'BOSS 原生简历'}：{labels[s.status] || s.status}{s.reviewed_at ? '（原结果未知；只读复核已确认，未重发）' : ''}</p>)}
+      {t.status === 'SEND_UNKNOWN' && !status?.running && <Button type="button" variant="outline" disabled={busy || status?.executing} onClick={() => void reconcile(t.id)}>只读核验发送回执</Button>}
       {!!t.previousAttempts?.length && <details><summary>之前的尝试记录（保留原结果）</summary>{t.previousAttempts.map((s, i) => <p key={i}>#{s.old_proposal_id} · {s.action_type === 'TEXT' ? '文字回复' : 'BOSS 原生简历'}：{labels[s.status] || s.status}</p>)}</details>}
     </div>)}
     {error && <p role="alert">{error}</p>}

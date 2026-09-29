@@ -72,6 +72,8 @@ class HrAssistantControllerTest {
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/run/targets/target/reconfirm")
                         .contentType("application/json").content("{}"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/run/targets/target/reconcile"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
         verify(visual).status(4L);
         org.mockito.Mockito.verifyNoMoreInteractions(visual);
         verifyNoInteractions(store, watcher, actions, events);

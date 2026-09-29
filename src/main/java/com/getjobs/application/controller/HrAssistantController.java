@@ -82,6 +82,13 @@ public class HrAssistantController {
         return execute(()->visual.reconfirm(profileService.getCurrentProfileId(),runId,targetId,request));
     }
 
+    @PostMapping("/visual/{runId}/targets/{targetId}/reconcile")
+    public ResponseEntity<?> reconcileVisual(@PathVariable String runId,@PathVariable String targetId,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.reconcile(profileService.getCurrentProfileId(),runId,targetId));
+    }
+
     private com.getjobs.application.service.HrProfileGuard profileGuard = new com.getjobs.application.service.HrProfileGuard();
     @org.springframework.beans.factory.annotation.Autowired
     public void setProfileGuard(com.getjobs.application.service.HrProfileGuard guard) { this.profileGuard=guard; }
