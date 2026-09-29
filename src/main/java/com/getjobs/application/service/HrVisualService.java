@@ -513,7 +513,7 @@ public class HrVisualService {
             Target t=Objects.requireNonNull(visual.owner(profile,proposal),"视觉任务不存在");
             if(!batches.allows(profile,t.runId()))throw new IllegalStateException("本轮已暂停，请先明确恢复");
             if(batches.owner(t.runId())!=null && "WAITING_REVIEW".equals(visual.run(profile,t.runId()).status()))visual.state(t.runId(),"RUNNING","本人已确认本条，未重新启动扫描");
-            if(!visual.run(profile,t.runId()).status().equals("RUNNING") || policies.policy(profile).paused()) throw new IllegalStateException("视觉测试已暂停，请先恢复");
+            if(!visual.run(profile,t.runId()).status().equals("RUNNING") || legacyPaused(profile,t.runId())) throw new IllegalStateException("视觉测试已暂停，请先恢复");
             if(!t.status().equals("REVIEW_REQUIRED")) throw new IllegalStateException("该任务已排队或已处理，未重复发送");
             String command=store.queueSendCommand(profile,proposal,version,"visual:"+t.runId());
             visual.attach(command,t.seed().sendResume());visual.target(t.id(),proposal,"QUEUED","本人已确认，等待本机桌面");
@@ -544,7 +544,7 @@ public class HrVisualService {
             if(visual.isResumeRuleRun(run.id()) && !visual.resumeRuleAuthorized(profile,run.id())) {
                 visual.state(run.id(),"PAUSED","简历规则已暂停、关闭或授权版本变化");continue;
             }
-            if(policies.policy(profile).paused())return;
+            if(legacyPaused(profile,run.id()))return;
             try {
                 visual.expire(run.id());
                 var targets=visual.targets(run.id());
@@ -624,7 +624,7 @@ public class HrVisualService {
         JsonNode result;
         try {
             result=exchange(run.profileId(),request,prepared->guard.locked(()->{
-                if(!visual.run(run.profileId(),run.id()).status().equals("RUNNING") || policies.policy(run.profileId()).paused())return false;
+                if(!visual.run(run.profileId(),run.id()).status().equals("RUNNING") || legacyPaused(run.profileId(),run.id()))return false;
                 if(!batches.allows(run.profileId(),run.id()))return false;
                 if(batchResume!=null && !step.actionType().equals("RESUME_NATIVE"))return false;
                 if(resumeRule && (!step.actionType().equals("RESUME_NATIVE") || !visual.resumeRuleAuthorized(run.profileId(),run.id())))return false;
@@ -653,6 +653,9 @@ public class HrVisualService {
         if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","CANCELLED").contains(result.path("code").asText()))
             {visual.state(run.id(),"PAUSED",result.path("detail").asText());if(resumeRule)visual.resumeRuleState(run.profileId(),"PAUSED",result.path("detail").asText());
                 String batchId=batches.owner(run.id());if(batchId!=null){var batch=batches.get(run.profileId(),batchId);batches.state(batchId,"PAUSED",batch.stage(),result.path("detail").asText());}}
+    }
+    private boolean legacyPaused(Long profile,String run) {
+        return batches.owner(run)==null && policies.policy(profile).paused();
     }
     private void finish(Run run,Target target,Step step,String outcome,Object evidence) {
         transaction.executeWithoutResult(tx->finishTransaction(run,target,step,outcome,evidence));

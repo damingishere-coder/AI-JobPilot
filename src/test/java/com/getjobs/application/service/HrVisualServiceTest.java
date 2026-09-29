@@ -198,6 +198,8 @@ class HrVisualServiceTest {
         assertThat(view.path("lastSuccess").path("observedAt").asInt()).isEqualTo(1000);
     }
     @Test void batchQueuesTextOnlyAfterQqConfirmationEvenAfterScanningFinishes() {
+        policies.configure(1L,1,false,"","");
+        db.update("UPDATE hr_autopilot_policy SET paused=1 WHERE profile_id=1");
         service.startBatch(batchRequest());
         discoverBatch(List.of(Map.of("hrName","新HR","companyName","新公司","identityComplete",true)),true);
         String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
@@ -214,6 +216,7 @@ class HrVisualServiceTest {
         assertThat(visual.steps(t.proposalId())).hasSize(1).allMatch(s->"TEXT".equals(s.get("action_type")));
         assertThatThrownBy(()->service.queue(1L,t.proposalId(),1)).hasMessageContaining("已排队");
         assertThat(batches.latest(1L).status()).isEqualTo("FINISHED");
+        assertThat(policies.policy(1L).paused()).isTrue();
     }
     @Test void pageGapCannotBeOverwrittenByLaterEndMarkerAndRestartRequiresResume() {
         service.startBatch(batchRequest());String id=batches.latest(1L).id();
