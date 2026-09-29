@@ -96,6 +96,19 @@ class LayoutTests(unittest.TestCase):
             with self.assertRaises(Halt) as result:d._list_to_top()
         self.assertEqual(result.exception.code,'LIST_TOP_SEEKING')
 
+    def test_scroll_pattern_top_requires_readback_and_stable_contacts(self):
+        d=WindowsDriver(threading.Event());row=Mock();parent=row.parent.return_value;scroll=parent.iface_scroll
+        scroll.CurrentVerticallyScrollable=True;scroll.CurrentVerticalScrollPercent=50
+        search=Mock();search.get_value.return_value=''
+        nodes=[{**node('','Edit','boss-search-input',(0,0,300,30)),'control':search},{**node('HR 公司','Group','friend-content',(0,50,300,100)),'control':row}]
+        contact={'hrName':'HR','companyName':'公司'}
+        with patch('windows_driver.time.sleep'),patch('windows_driver.box',return_value=(0,0,300,500)),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',return_value=[contact]):
+            with self.assertRaises(Halt):d.discover_page({'seekingTop':True})
+            scroll.CurrentVerticalScrollPercent=0
+            self.assertTrue(d.discover_page({'seekingTop':True})['listTopVerified'])
+        with patch('windows_driver.time.sleep'),patch('windows_driver.box',return_value=(0,0,300,500)),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',side_effect=[[contact],[{**contact,'hrName':'另一个'}]]):
+            with self.assertRaises(Halt):d.discover_page({'seekingTop':True})
+
     def test_top_checkpoint_is_resumable_without_exposing_middle_as_first_page(self):
         d=WindowsDriver(threading.Event());row=Mock();row.parent.return_value=None
         search=Mock();search.get_value.return_value=''

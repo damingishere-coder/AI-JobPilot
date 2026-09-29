@@ -626,6 +626,14 @@ class WindowsDriver:
         time.sleep(3)
         self.guard()
         contacts = self.list_contacts(True)
+        if scroller is not None and (not cursor or seeking_top):
+            if scroller.CurrentVerticallyScrollable and scroller.CurrentVerticalScrollPercent > .01:
+                raise Halt("LIST_TOP_UNVERIFIED", "系统滚动接口未返回列表顶部，未开始核验")
+            time.sleep(1)
+            self.guard()
+            stable_top = self.list_contacts(True)
+            if stable_top != contacts or (scroller.CurrentVerticallyScrollable and scroller.CurrentVerticalScrollPercent > .01):
+                raise Halt("LIST_TOP_UNVERIFIED", "列表顶部位置或联系人尚未稳定，未开始核验")
         nodes = self._nodes()
         end_marker = self._list_end_marker(nodes)
         keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in contacts]
