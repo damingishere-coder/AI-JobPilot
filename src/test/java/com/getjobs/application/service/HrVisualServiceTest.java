@@ -407,6 +407,39 @@ class HrVisualServiceTest {
                 .hasMessageContaining("出现本人回复");
         assertThat(visual.explicitlyReconfirmed(old.id())).isFalse();
     }
+    @Test void resumeOnlyReconfirmationNeverCreatesATextStepOrRepeatsUnknownAutomatically() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();
+        priorityObservation(true);advanceBatch();
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        var step=visual.claim(1L,target.proposalId());visual.submitting(step);
+        ReflectionTestUtils.invokeMethod(service,"finish",run,target,step,"SEND_UNKNOWN",Map.of("detail","回执缺失"));advance();
+        var old=store.requireProposal(1L,target.proposalId());
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,false)))
+                .hasMessageContaining("不能自动重试");
+        priorityObservation(false);
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true)))
+                .hasMessageContaining("本轮消息已变化");
+        assertThat(visual.steps(old.id())).hasSize(1);
+        var fresh=target.seed().expected();
+        var capture=Map.of("hrName",target.seed().hrName(),"companyName",target.seed().companyName(),"jobName",target.seed().jobName(),"contextComplete",true,"messages",fresh.messages());
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"capture",capture,"composer","")));
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true)))
+                .hasMessageContaining("简历请求已失效");
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"capture",capture,"composer",old.draft(),"resumeRequest",batches.resumeRequest(run.id()))));
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true)))
+                .hasMessageContaining("人工草稿");
+        priorityObservation(true);
+        service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true));
+        var next=visual.targets(run.id()).getFirst();
+        assertThat(next.proposalId()).isNotEqualTo(old.id());
+        assertThat(visual.steps(next.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("RESUME_NATIVE"));
+        assertThat(visual.steps(old.id()).getFirst().get("status")).isEqualTo("SEND_UNKNOWN");
+        assertThat(visual.run(1L,run.id()).status()).isEqualTo("PAUSED");
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+        assertThat(visual.resumeRuleActive(1L)).isFalse();
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true)))
+                .hasMessageContaining("已被新版本替代");
+    }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(ints={0,1})
     void readonlyReconciliationPreservesUnknownAuditAndCannotQueueOrRepeat(int targetIndex) {

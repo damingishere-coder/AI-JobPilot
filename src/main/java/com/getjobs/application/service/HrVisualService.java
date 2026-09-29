@@ -471,6 +471,8 @@ public class HrVisualService {
             Target target=visual.targets(runId).stream().filter(t->t.id().equals(targetId)).findFirst().orElseThrow();
             if(!Objects.equals(target.proposalId(),review.proposalId())) throw new IllegalStateException("该次确认已处理或已被新版本替代");
             var old=store.requireProposal(profile,review.proposalId());
+            var previousSteps=visual.steps(old.id());
+            boolean resumeOnly=previousSteps.size()==1 && "RESUME_NATIVE".equals(previousSteps.getFirst().get("action_type"));
             if(!Set.of(ProposalStatus.BLOCKED,ProposalStatus.SEND_UNKNOWN,ProposalStatus.EXPIRED).contains(old.status()) ||
                     old.version()!=review.expectedVersion() || old.draft().isBlank() || old.draft().length()>2000 || !old.draft().equals(review.draft()))
                 throw new IllegalStateException("只能重新确认当前失败版本的完整原文");
@@ -483,19 +485,28 @@ public class HrVisualService {
                 JsonNode observed=observe(profile,request(run,target,"inspect"));
                 if(!observed.path("ok").asBoolean()) throw new IllegalStateException(observed.path("detail").asText("复核失败"));
                 var fresh=decode(target,observed.path("capture"));
-                if(!fresh.contextComplete() || !safeRound(fresh.messages(),target.seed().expected().messages(),List.of()))
+                var expectedMessages=target.seed().expected().messages();
+                var existingOwn=resumeOnly?expectedMessages.subList(expectedMessages.size()-trailingOwnCount(expectedMessages),expectedMessages.size()).stream().map(ChatMessage::text).toList():List.<String>of();
+                if(!fresh.contextComplete() || !safeRound(fresh.messages(),expectedMessages,existingOwn))
                     throw new IllegalStateException("本轮消息已变化或出现本人回复，不能按原文重新发送");
+                if(resumeOnly) {
+                    JsonNode expectedRequest=batches.resumeRequest(runId);
+                    if(expectedRequest==null && visual.isResumeRuleRun(runId))expectedRequest=visual.resumeRequest(runId);
+                    if(expectedRequest==null || !expectedRequest.equals(observed.path("resumeRequest")))
+                        throw new IllegalStateException("原生简历请求已失效或发生变化，未重新排队");
+                }
                 String composer=observed.path("composer").asText();
-                if(!composer.isBlank() && !normalize(composer).equals(normalize(old.draft())))
+                if(!composer.isBlank() && (resumeOnly || !normalize(composer).equals(normalize(old.draft()))))
                     throw new IllegalStateException("输入框有不同的人工草稿，未覆盖");
                 return transaction.execute(tx->{
                     autopilot.saveContext(target.conversationId(),fresh);
                     long next=store.createProposal(profile,target.conversationId(),old.sourceFingerprint(),
-                            new AiDraft(Classification.REPLY,old.draft(),"本人复核后重新确认；前次 #"+old.id()+" 的结果与证据保留",List.of(),List.of(),1));
-                    policies.decision(next,policies.policy(profile).version(),"TEXT","人工重新确认，保留原始记录",false);policies.markTrial(next);
+                            new AiDraft(resumeOnly?Classification.DOCUMENT_REQUEST:Classification.REPLY,old.draft(),"本人复核后重新确认；前次 #"+old.id()+" 的结果与证据保留",List.of(),List.of(),1));
+                    policies.decision(next,policies.policy(profile).version(),resumeOnly?"RESUME_NATIVE":"TEXT","人工重新确认，保留原始记录",false);policies.markTrial(next);
                     visual.recordReconfirmation(target.id(),old.id(),next);
                     var s=target.seed();visual.seed(target.id(),new Seed(s.uid(),s.hrName(),s.companyName(),s.jobName(),old.draft(),s.sendResume(),true,fresh));
-                    String command=store.queueSendCommand(profile,next,1,"visual:"+run.id());visual.attach(command,s.sendResume());
+                    String command=store.queueSendCommand(profile,next,1,"visual:"+run.id());
+                    if(resumeOnly)visual.attachResumeOnly(command);else visual.attach(command,s.sendResume());
                     visual.target(target.id(),next,"QUEUED","本人重新确认，原记录保留；等待恢复测试");
                     visual.state(run.id(),"PAUSED","复核完成，等待恢复测试");
                     return status(profile);
