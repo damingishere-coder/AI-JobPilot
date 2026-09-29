@@ -208,6 +208,27 @@ public class HrVisualService {
             return status(profile);
         });
     }
+    /** Reorder one discovered item within the existing authorization; never creates a new batch. */
+    public Object prioritizeBatchItem(Long profile,String id,String itemId) {
+        return guard.locked(()->transaction.execute(tx->{
+            var batch=batches.get(profile,id);
+            if(!Objects.equals(profile,profiles.getCurrentProfileId()))throw new IllegalStateException("当前档案已变化");
+            var item=batches.items(id).stream().filter(i->i.id().equals(itemId) && i.kind().equals("CONTACT")).findFirst()
+                    .orElseThrow(()->new IllegalArgumentException("联系人不属于本轮"));
+            // Repeated requests, including after completion, cannot requeue the same contact.
+            if(!item.status().equals("PENDING"))return status(profile);
+            if(!"PAUSED".equals(batch.status()) || !"DISCOVER".equals(batch.stage()) || executing.get() || visual.busy() || batches.busy())
+                throw new IllegalStateException("请先暂停列表扫描并等待当前操作结束");
+            if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守已启用，请先停止");
+            if(!item.contact().path("identityComplete").asBoolean() || batches.items(id).stream().anyMatch(i->i.kind().equals("EXCLUDED") && sameContact(i.contact(),item.contact())))
+                throw new IllegalStateException("联系人身份不完整或属于本轮排除范围");
+            for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
+            batches.outcome(itemId,"PRIORITY_PENDING","优先核对本条；文字仍需 QQ 确认，之后继续本轮扫描");
+            batches.resetAnchors(id,"PROCESS_PRIORITY");
+            batches.state(id,"RUNNING","ANCHORS","优先处理已发现会话；重新核验未知会话身份，沿用已有标签");
+            return status(profile);
+        }));
+    }
     private JsonNode observe(Long profile,Map<String,Object> request) {
         return exchange(profile,request,null);
     }
@@ -239,6 +260,21 @@ public class HrVisualService {
                 if(anchor.isPresent()) {inspectBatchItem(batch,anchor.get());return;}
                 batches.state(batch.id(),"RUNNING",batches.afterAnchors(batch.id()),"");
                 for(var item:batches.items(batch.id()))if(item.run()!=null && "PAUSED".equals(visual.run(profile,item.run()).status()) && batches.allows(profile,item.run()))visual.state(item.run(),"RUNNING","");
+                return;
+            }
+            if(batch.stage().equals("PROCESS_PRIORITY")) {
+                var priority=batches.items(batch.id()).stream().filter(i->i.kind().equals("CONTACT") && i.status().equals("PRIORITY_PENDING")).findFirst();
+                if(priority.isPresent()){inspectBatchItem(batch,priority.get());return;}
+                // The scheduler drains queued sends before coming here. Sending can reorder the list.
+                guard.locked(()->transaction.execute(tx->{
+                    var current=batches.get(profile,batch.id());
+                    if("RUNNING".equals(current.status()) && "PROCESS_PRIORITY".equals(current.stage()) && !visual.busy() &&
+                            batches.items(batch.id()).stream().noneMatch(i->i.status().equals("PRIORITY_PENDING"))) {
+                        batches.resetCursor(batch.id());
+                        batches.state(batch.id(),"RUNNING","DISCOVER","优先会话已处理；重新收集列表以核验发送后的排序，保留逐项结果");
+                    }
+                    return null;
+                }));
                 return;
             }
             if(batch.stage().equals("DISCOVER")) {

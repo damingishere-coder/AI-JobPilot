@@ -64,6 +64,8 @@ V33 新增规则、联系人巡检进度、请求与执行记录的关联表。�
 
 ## 测试、部署和回滚
 
+单轮名单较多时，可暂停列表扫描，在“本轮逐项结果”中优先处理一名已发现的联系人。该操作沿用本轮授权、重新核验旧未知会话身份，只对明确索要简历的消息排队原生简历；普通文字仍生成 QQ 待确认卡。重复点击不重复排队。优先项处理后重新枚举名单以核验发送导致的排序变化，保留已处理结果；不会重新打开或刷新标签。接口为 `POST /api/hr-assistant/visual/batches/{id}/items/{itemId}/prioritize`，须本机操作令牌。没有数据库结构变化。
+
 ```powershell
 hr-visual/.venv/Scripts/python.exe -m unittest discover -s hr-visual/tests -v
 ./gradlew.bat test bootJar

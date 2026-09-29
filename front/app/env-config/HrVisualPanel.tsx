@@ -15,7 +15,7 @@ const labels: Record<string, string> = {
   IDLE: '尚未开始', RUNNING: '正在处理', STOPPING: '正在停止并核验回执', PAUSED: '已暂停', COMPLETED: '本轮处理结束', ARCHIVED: '正文已按保留期清理',
   PENDING_CAPTURE: '正在定位和读取', REVIEW_REQUIRED: '等你确认', QUEUED: '等待桌面', PREPARED: '已核对，准备发送',
   SUBMITTING: '正在发送', SENT_CONFIRMED: '已确认发送', PARTIAL: '部分完成', SEND_UNKNOWN: '发送结果未知',
-  BLOCKED: '已阻塞', STALE: '原回复已失效', SKIPPED: '已跳过', PENDING: '尚未发送',
+  BLOCKED: '已阻塞', STALE: '原回复已失效', SKIPPED: '已跳过', PENDING: '尚未发送', PRIORITY_PENDING: '优先核验',
   WAITING_CHROME: '等待 Chrome', OPENED_ONCE: '本轮已打开一次', WAITING_LIST: '等待联系人列表', LIST_READY: '联系人列表已加载',
   LIST_READY_NO_SELECTION: '列表已加载，尚未选择 HR', SELECTING_HR: '正在选择 HR', WAITING_BODY: '等待聊天正文', BODY_VERIFIED: '正文已核验',
   DISCOVERING: '正在逐屏读取联系人', OBSERVATION_FAILED: '本次读取失败', EXECUTOR_ERROR: '视觉执行器异常',
@@ -114,6 +114,15 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '单轮操作未完成')) }
     finally { setBusy(false) }
   }
+  const prioritize = async (itemId: string) => {
+    setBusy(true); setError('')
+    try {
+      if (!compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/batches/${status?.batch?.id}/items/${itemId}/prioritize`, { method: 'POST' })
+      await readApiResponse(response, '优先处理未启动'); await refresh()
+    } catch (e) { setError(friendlyApiError(e, '优先处理未启动')) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-3 rounded-lg border p-4" aria-label="BOSS视觉聊天测试">
     <p className="font-medium">本机 Chrome 视觉聊天 · QQ 逐条确认</p>
     <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文。普通文字须 QQ 确认；发送动作至少间隔 5 秒。可检查一轮其他 HR，或使用原三会话测试入口。</p>
@@ -129,7 +138,11 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
         <p>{labels[status.batch.status || ''] || status.batch.status}：{status.batch.reason}</p>
         <p>发现 {status.batch.discovered || 0} 人 · 检查 {status.batch.checked || 0} 人 · 待确认 {status.batch.pendingReview || 0} 条 · 已确认发送 {status.batch.sent || 0} 条</p>
         <p>列表范围：{status.batch.coverageComplete ? '已确认到达末尾' : '尚未确认完整覆盖'}</p>
-        <details><summary>本轮逐项结果</summary>{status.batch.items?.map(item => <p key={item.id}>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>)}</details>
+        <details><summary>本轮逐项结果</summary>{status.batch.items?.map(item => <div key={item.id} className="my-2">
+          <p>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>
+          {status.batch?.status === 'PAUSED' && status.batch.stage === 'DISCOVER' && item.kind === 'CONTACT' && item.status === 'PENDING' &&
+            <Button type="button" variant="outline" disabled={busy || !compatible || status.executing || status.running} onClick={() => void prioritize(item.id)}>优先处理此会话，随后继续扫描</Button>}
+        </div>)}</details>
       </>}
     </div>
     {status?.observation?.current && <div className="rounded border p-3 text-sm" aria-label="最近页面观察">

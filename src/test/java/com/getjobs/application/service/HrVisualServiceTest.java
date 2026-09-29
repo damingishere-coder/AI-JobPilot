@@ -163,6 +163,75 @@ class HrVisualServiceTest {
         assertThat(batches.latest(1L).status()).isEqualTo("INCOMPLETE");
         assertThat(batches.items(batches.latest(1L).id()).stream().filter(i->i.kind().equals("CONTACT")).map(HrVisualBatchStore.Item::status)).containsExactly("EXCLUDED","BLOCKED");
     }
+    HrVisualBatchStore.Item preparePriority() {
+        service.startBatch(batchRequest());
+        discoverBatch(List.of(Map.of("hrName","新HR","companyName","新公司","identityComplete",true),
+                Map.of("hrName","另一HR","companyName","另一公司","identityComplete",true)),false);
+        var b=batches.latest(1L);batches.reserveOpen(b.id());service.controlBatch(1L,b.id(),false);
+        return batches.items(b.id()).stream().filter(i->i.kind().equals("CONTACT")).findFirst().orElseThrow();
+    }
+    void priorityObservation(boolean resume) {
+        String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
+        var descriptor=Map.of("text",resume?"方便发一份附件简历吗":"你好","time",now,"type","文本");
+        var capture=Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,
+                "messages",List.of(new ChatMessage("本人","文本","上轮",now),new ChatMessage("对方","文本",descriptor.get("text"),now)));
+        var response=new LinkedHashMap<String,Object>(Map.of("ok",true,"capture",capture,"composer",""));
+        if(resume)response.put("resumeRequest",descriptor);
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(response));
+    }
+    @Test void priorityResumeIsBatchOwnedIdempotentAndRestartsDiscoveryWithoutReopening() {
+        var item=preparePriority();String id=item.batch();
+        service.prioritizeBatchItem(1L,id,item.id());service.prioritizeBatchItem(1L,id,item.id());
+        assertThat(batches.latest(1L).stage()).isEqualTo("ANCHORS");
+        advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS_PRIORITY");
+        priorityObservation(true);advanceBatch();
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        assertThat(batches.owner(run.id())).isEqualTo(id);
+        assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("RESUME_NATIVE"));
+        assertThat(batches.allows(1L,run.id())).isTrue();
+        assertThat(visual.resumeRuleActive(1L)).isFalse();
+        service.prioritizeBatchItem(1L,id,item.id());assertThat(visual.runs(1L)).hasSize(1);
+        visual.state(run.id(),"COMPLETED","测试模拟发送已结束");advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("DISCOVER");
+        assertThat(batches.latest(1L).cursor()).isNull();assertThat(batches.latest(1L).coverage()).isFalse();
+        assertThat(batches.items(id).get(1).status()).isEqualTo("PENDING");
+        assertThat(db.queryForObject("SELECT open_reserved FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+        verify(worker,never()).exchange(argThat(m->m.containsKey("allowOpenOnce")),isNull());
+    }
+    @Test void priorityTextStillWaitsForQqAndResumeSurvivesRestart() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());advanceBatch();
+        batches.recover();service.controlBatch(1L,item.batch(),true);advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS_PRIORITY");
+        priorityObservation(false);
+        when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"您好","",List.of(),List.of(),1));
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("TEXT","已审核","您好"));
+        advanceBatch();var run=visual.runs(1L).getFirst();
+        assertThat(run.status()).isEqualTo("WAITING_REVIEW");assertThat(visual.steps(visual.targets(run.id()).getFirst().proposalId())).isEmpty();
+        verify(qq).notifyProposal(any());advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("DISCOVER");
+    }
+    @Test void priorityCannotBypassUnknownIdentityOrRequeueBlockedRead() {
+        store.markFinal(targets.getFirst().proposalId(),ProposalStatus.SEND_UNKNOWN,"旧未知");
+        var item=preparePriority();String id=item.batch();
+        service.prioritizeBatchItem(1L,id,item.id());
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","BODY_INCOMPLETE","detail","旧未知正文未核验")));
+        advanceBatch();advanceBatch();priorityObservation(true);advanceBatch();
+        assertThat(batches.items(id).stream().filter(i->i.id().equals(item.id())).findFirst().orElseThrow().status()).isEqualTo("BLOCKED");
+        assertThat(visual.runs(1L)).isEmpty();assertThat(store.requireProposal(1L,targets.getFirst().proposalId()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
+        service.prioritizeBatchItem(1L,id,item.id());assertThat(visual.runs(1L)).isEmpty();
+    }
+    @Test void priorityRejectsActiveScanWrongProfileAndExcludedContacts() {
+        var item=preparePriority();String id=item.batch();
+        assertThatThrownBy(()->service.prioritizeBatchItem(1L,id,"not-in-batch")).hasMessageContaining("不属于");
+        when(profiles.getCurrentProfileId()).thenReturn(2L);
+        assertThatThrownBy(()->service.prioritizeBatchItem(1L,id,item.id())).hasMessageContaining("档案");
+        when(profiles.getCurrentProfileId()).thenReturn(1L);
+        batches.state(id,"RUNNING","DISCOVER","");
+        assertThatThrownBy(()->service.prioritizeBatchItem(1L,id,item.id())).hasMessageContaining("暂停");
+        batches.state(id,"PAUSED","DISCOVER","");batches.add(id,"EXCLUDED",item.contact(),null);
+        assertThatThrownBy(()->service.prioritizeBatchItem(1L,id,item.id())).hasMessageContaining("排除");
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+    }
     @Test void batchResumeOnlyUsesScopedConsentAndDoesNotEnableContinuousRule() {
         service.startBatch(batchRequest());
         discoverBatch(List.of(Map.of("hrName","新HR","companyName","新公司","identityComplete",true)),true);

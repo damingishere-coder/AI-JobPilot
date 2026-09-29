@@ -88,6 +88,13 @@ public class HrAssistantController {
         return execute(()->visual.controlBatch(profileService.getCurrentProfileId(),id,operation.equals("resume")));
     }
 
+    @PostMapping("/visual/batches/{id}/items/{itemId}/prioritize")
+    public ResponseEntity<?> prioritizeVisualBatchItem(@PathVariable String id,@PathVariable String itemId,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.prioritizeBatchItem(profileService.getCurrentProfileId(),id,itemId));
+    }
+
     @PostMapping("/visual/{id}/{operation:pause|resume}")
     public ResponseEntity<?> visualControl(@PathVariable String id,@PathVariable String operation,
             @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String actionToken) {

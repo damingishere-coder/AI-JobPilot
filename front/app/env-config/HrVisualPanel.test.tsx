@@ -7,6 +7,23 @@ vi.mock('@/lib/api', async () => ({ ...await vi.importActual('@/lib/api'), local
 const response = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 
+it('prioritizes only an existing paused batch contact without creating a new batch or text authorization', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
+    batch: { id: 'batch', status: 'PAUSED', stage: 'DISCOVER', items: [
+      { id: 'contact', kind: 'CONTACT', hrName: 'HR', companyName: '公司', status: 'PENDING', reason: '' },
+      { id: 'unknown', kind: 'ANCHOR', hrName: '旧HR', companyName: '旧公司', status: 'PENDING', reason: '' },
+      { id: 'sent', kind: 'CONTACT', hrName: '已发HR', companyName: '公司', status: 'SENT_CONFIRMED', reason: '' },
+    ] } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  vi.mocked(localActionFetch).mockImplementation(async () => response(status))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  fireEvent.click(await screen.findByText('本轮逐项结果'))
+  const buttons = screen.getAllByRole('button', { name: '优先处理此会话，随后继续扫描' })
+  expect(buttons).toHaveLength(1); fireEvent.click(buttons[0])
+  await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
+  expect(vi.mocked(localActionFetch).mock.calls[0]).toEqual([expect.stringContaining('/visual/batches/batch/items/contact/prioritize'), { method: 'POST' }])
+})
+
 it('shows loaded list without selection separately from stale successful observations and coverage', async () => {
   const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [],
     batch: { id: 'b', status: 'INCOMPLETE', discovered: 12, checked: 9, pendingReview: 2, sent: 1, coverageComplete: false, reason: '列表未确认到底' },
