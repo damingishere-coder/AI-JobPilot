@@ -469,8 +469,10 @@ class WindowsDriver:
                 raise Halt("MEDIA_UNREAD", "HR 消息包含尚未完整识别的图片")
             resume_card = any(re.search(r"(?:^|[\s_-])(?:resume|attachment|file-card)(?:$|[\s_-])", n["class"], re.I) for n in children)
             kind = "简历" if direction == "本人" and resume_card and "简历" in text else "其他" if titles else "文本"
+            flags = " ".join([klass]+[n["class"] for n in children])
             result.append({"from": direction, "type": kind, "text": text, "time": timestamp,
-                           "failed": "发送失败" in text, "pending": "发送中" in text})
+                           "failed": "发送失败" in text or bool(re.search(r"(?:^|[\s_-])(?:failed|fail|error)(?:$|[\s_-])",flags)),
+                           "pending": "发送中" in text or bool(re.search(r"(?:^|[\s_-])(?:sending|pending|loading)(?:$|[\s_-])",flags))})
         if not result:
             raise Halt("BODY_UNVERIFIED", "聊天正文未形成可核验的消息列表")
         return result

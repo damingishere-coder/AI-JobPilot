@@ -52,7 +52,13 @@ def serve(request: dict, driver, receive, emit):
             driver.submit(action, capture)
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                after = driver.read_chat(request["target"], receipt=True)
+                try:
+                    after = driver.read_chat(request["target"], receipt=True)
+                except Halt as error:
+                    if error.code not in ("BODY_NOT_READY","BODY_UNVERIFIED","CONTEXT_INCOMPLETE","OCR_MISMATCH","COMPOSER_UNVERIFIED"):
+                        raise
+                    time.sleep(1)
+                    continue
                 if confirmed_new_message(capture, after, action, request.get("draft", "")):
                     evidence = driver.save_receipt(request["stepId"], capture, after)
                     emit({**base, "phase": "result", "ok": True, "outcome": "SENT_CONFIRMED",

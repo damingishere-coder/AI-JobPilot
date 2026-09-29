@@ -44,4 +44,11 @@ class LayoutTests(unittest.TestCase):
         self.assertFalse(ocr_supports("你好","好"))
         self.assertFalse(ocr_supports("您好，请介绍这个岗位的完整职责以及日常工作安排","您好，请介绍这个岗位"))
 
+    def test_failure_and_sending_icons_are_not_success_without_status_text(self):
+        for cls,flag in (("send-failed","failed"),("message-failed","failed"),("status error","failed"),("sending","pending")):
+            nodes=[node("您好","ListItem","message-item item-myself",(0,0,600,200)),
+                   node("您好","Text","",(400,50,460,80)),node("","Group",cls,(360,50,390,80))]
+            result=WindowsDriver(threading.Event())._messages(nodes,(0,0,800,600))
+            self.assertTrue(result[0][flag])
+
 if __name__=='__main__': unittest.main()
