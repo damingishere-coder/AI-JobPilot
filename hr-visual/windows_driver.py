@@ -282,9 +282,9 @@ class WindowsDriver:
         raise Halt("LIST_NOT_READY" if account_seen else "ACCOUNT_UNVERIFIED",
                    "30 秒内联系人列表未形成可核验内容" if account_seen else "30 秒内未核验当前登录账号")
 
-    def _nodes(self):
+    def _nodes(self, root=None):
         nodes = []
-        for c in self.window.descendants():
+        for c in (self.window if root is None else root).descendants():
             try:
                 b = box(c)
                 if (not inside(b, box(self.window)) and c.element_info.class_name != "im-list") or not c.is_visible():
@@ -453,9 +453,12 @@ class WindowsDriver:
             current = (matched[0]["text"],matched[0]["box"]) if matched else None
             if current and current == previous:
                 selected = matched[0]
-                labels = [n for n in nodes if n["type"] == "Text" and normalized(n["text"]) == "职位:"
+                # Geometry alone also includes contact rows behind the popup.
+                # Job evidence must belong to the chosen search result's UIA subtree.
+                search_nodes = self._nodes(selected["control"])
+                labels = [n for n in search_nodes if n["type"] == "Text" and normalized(n["text"]) == "职位:"
                           and inside(n["box"],selected["box"])]
-                jobs = [n for n in nodes if n["type"] == "Text" and len(labels) == 1
+                jobs = [n for n in search_nodes if n["type"] == "Text" and len(labels) == 1
                         and inside(n["box"],selected["box"]) and n["box"][0] >= labels[0]["box"][2]-4
                         and abs(n["box"][1]-labels[0]["box"][1]) < max(12,labels[0]["box"][3]-labels[0]["box"][1])]
                 if len(jobs) != 1 or not jobs[0]["text"].strip() or any(s in jobs[0]["text"] for s in ("…","...")):

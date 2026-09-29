@@ -8,9 +8,23 @@ from windows_driver import WindowsDriver
 from core import Halt, ocr_supports
 
 def node(text,kind,cls,rect):
-    return {"text":text,"type":kind,"class":cls,"box":rect}
+    return {"text":text,"type":kind,"class":cls,"box":rect,"control":Mock()}
 
 class LayoutTests(unittest.TestCase):
+    def test_search_job_excludes_contact_rows_behind_popup(self):
+        d=WindowsDriver(threading.Event());d.window=Mock()
+        popup=node('HR公司职位:产品经理','ListItem','search-list',(0,35,300,130))
+        label=node('职位:','Text','',(20,80,75,100));job=node('产品经理','Text','',(75,80,200,100))
+        scope=[node('公司','Text','',(100,50,170,70)),label,job]
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),popup,*scope,
+               node('背景公司','Text','',(180,85,260,105))]
+        capture={'hrName':'HR','companyName':'公司','jobName':'产品经理','contextComplete':True,'messages':[{'from':'对方','text':'你好'}]}
+        def read_nodes(root=None):return scope if root is popup['control'] else nodes
+        with patch.dict(sys.modules,{'pywinauto.keyboard':Mock()}),patch('windows_driver.box',return_value=(0,0,1000,800)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_click'),patch.object(d,'_nodes',side_effect=read_nodes) as read,patch.object(d,'read_chat',return_value=capture):
+            self.assertEqual(d.select_and_read({'hrName':'HR','companyName':'公司'}),capture)
+        self.assertEqual(d.selected_job,'产品经理')
+        self.assertIn(((popup['control'],),{}),[(c.args,c.kwargs) for c in read.call_args_list])
+
     def resume_popup(self, kind='Group'):
         control=Mock();control.iface_selection_item.CurrentIsSelected=True
         return [node('',kind,'choose-resume-dialog',(300,200,900,650)),
