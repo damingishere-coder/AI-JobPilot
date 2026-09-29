@@ -5,7 +5,7 @@ import java.util.List;
 
 public final class HrVisualTypes {
     private HrVisualTypes() { }
-    public static final String PROTOCOL = "2026-09-29-hr-visual-v1";
+    public static final String PROTOCOL = "2026-09-29-hr-visual-v2";
     public record TargetRequest(long proposalId, int expectedVersion, String draft, boolean sendResume, boolean approved,
                                 String approvalSource, boolean resumeSharingConfirmed, String expectedJobName) { }
     public record StartRequest(Long profileId, String protocol, List<TargetRequest> targets,
@@ -17,4 +17,6 @@ public final class HrVisualTypes {
     public record Step(String id, String commandId, int ordinal, String actionType, String leaseToken) { }
     public record ReconfirmRequest(long proposalId, int expectedVersion, String draft,
                                    boolean confirmed, boolean possibleDuplicateAccepted) { }
+    public record ResumeRuleRequest(Long profileId, String protocol, boolean enabled, boolean confirmed,
+                                    String accountName, boolean accountBindingConfirmed) { }
 }

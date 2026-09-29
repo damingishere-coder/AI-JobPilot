@@ -5,7 +5,7 @@ from unittest.mock import patch
 from contextlib import nullcontext
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core import PROTOCOL, Halt, confirmed_new_message, require_chat_url, verify_source, stable_pair, source_round
+from core import PROTOCOL, Halt, confirmed_new_message, require_chat_url, verify_source, stable_pair, source_round, resume_request
 from worker import serve
 
 
@@ -32,7 +32,7 @@ class FakeDriver:
     def composer_text(self): return ""
     def require_staged_text(self, text): pass
     def stage_text(self, text): self.staged=True
-    def prepare_resume(self): pass
+    def prepare_resume(self, request=None): pass
     def prepare_text_submit(self, text): pass
     def guard(self): pass
     def submit(self, action, before=None):
@@ -44,6 +44,28 @@ class FakeDriver:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_resume_rule_is_independent_of_a_prior_text_reply_and_never_repeats_resume(self):
+        request=msg('我想要一份您的附件简历，您是否同意',kind='其他',resumeRequestPending=True)
+        before=capture(request,msg('可以先了解一下','本人'))
+        self.assertIsNotNone(resume_request(before))
+        sent=capture(*before['messages'],msg('附件简历.pdf','本人','简历'))
+        self.assertIsNone(resume_request(sent))
+        resolved=capture({**request,'resumeRequestPending':False})
+        self.assertIsNone(resume_request(resolved))
+
+    def test_resume_rule_rejects_negation_nonrequests_and_sensitive_destination(self):
+        for text in ['不用发简历了','已收到你的简历','简历不错','我发你一份简历','简历已收到','需要优化简历','我们需要简历归档','岗位要简历模板','要一份简历模板','岗位需要简历解析经验','能提供简历解析方案吗','开发过简历系统吗','发身份证和简历','简历发到微信','请发简历到这个邮箱']:
+            self.assertIsNone(resume_request(capture(msg(text))))
+        for text in ['方便发一份附件简历吗','能提供简历吗','简历发给我看看','我想要一份您的附件简历，您是否同意']:
+            self.assertIsNotNone(resume_request(capture(msg(text))))
+
+    def test_resume_rule_cannot_authorize_text_or_changed_request(self):
+        before=capture(msg('发一份简历'))
+        for action,descriptor in [('TEXT',resume_request(before)),('RESUME_NATIVE',{'text':'different'})]:
+            d=FakeDriver(before)
+            result=self.run_driver(d,expectedRound=['发一份简历'],resumeRule=True,resumeRequest=descriptor,actionType=action)
+            self.assertEqual(result['outcome'],'STALE')
+            self.assertEqual(d.submissions,0)
     def request(self, **extra):
         return {"protocol": PROTOCOL, "requestId": "r1", "operation": "prepare", "account": "本人",
                 "target": {"hrName": "王女士", "companyName": "甲公司"}, "expectedRound": ["你好", "什么时候到岗？"],

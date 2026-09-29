@@ -167,6 +167,34 @@ public class HrAssistantStore {
         return changed == 1;
     }
 
+    /** Match observed identity first; a new local visual identity is not a platform UID. */
+    @Transactional
+    public ChatSession resolveVisualSession(Long profileId, ChatSession observed) {
+        var found=jdbcTemplate.query("SELECT * FROM hr_conversation WHERE profile_id=? AND platform IN ('boss','boss_visual') AND external_uid_cipher IS NOT NULL",(rs,n)->{
+            String aad=conversationAad(profileId,rs.getString("external_uid_hash"));
+            return new ChatSession(crypto.decrypt(rs.getString("external_uid_cipher"),aad),"",crypto.decrypt(rs.getString("hr_name_cipher"),aad+":hr"),
+                    crypto.decrypt(rs.getString("company_name_cipher"),aad+":company"),crypto.decrypt(rs.getString("job_name_cipher"),aad+":job"),"","","");
+        },profileId).stream().filter(s->HrVisualService.normalize(s.hrName()).equals(HrVisualService.normalize(observed.hrName())) &&
+                HrVisualService.normalize(s.companyName()).equals(HrVisualService.normalize(observed.companyName()))).toList();
+        if(found.size()>1)throw new IllegalStateException("同名同公司会话不唯一，未关联简历请求");
+        if(!found.isEmpty() && !found.getFirst().jobName().isBlank() && !HrVisualService.normalize(found.getFirst().jobName()).equals(HrVisualService.normalize(observed.jobName())))
+            throw new IllegalStateException("原联系人岗位已变化，未新建身份或绕过原发送记录");
+        if(found.isEmpty() && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE profile_id=? AND status='SEND_UNKNOWN'",Integer.class,profileId)>0)
+            throw new IllegalStateException("存在未核验发送，无法排除联系人更名；新视觉身份暂不自动分享简历");
+        String uid=found.isEmpty()?"visual:"+crypto.blindIndex(HrVisualService.normalize(observed.hrName())+"|"+HrVisualService.normalize(observed.companyName()),"visual-identity:"+profileId):found.getFirst().uid();
+        return new ChatSession(uid,"",observed.hrName(),observed.companyName(),observed.jobName(),"",observed.lastMessage(),observed.lastTime());
+    }
+    @Transactional
+    public long upsertVisualConversation(Long profileId,ChatSession session) {
+        if(!session.uid().startsWith("visual:"))return upsertConversation(profileId,session);
+        String hash=crypto.blindIndex(session.uid(),"conversation:"+profileId),aad=conversationAad(profileId,hash);
+        jdbcTemplate.update("""
+            INSERT INTO hr_conversation(profile_id,platform,external_uid_hash,external_uid_cipher,hr_name_cipher,company_name_cipher,job_name_cipher,last_observed_at)
+            VALUES (?,'boss_visual',?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(profile_id,platform,external_uid_hash) DO UPDATE SET last_observed_at=CURRENT_TIMESTAMP
+            """,profileId,hash,crypto.encrypt(session.uid(),aad),crypto.encrypt(session.hrName(),aad+":hr"),crypto.encrypt(session.companyName(),aad+":company"),crypto.encrypt(session.jobName(),aad+":job"));
+        return jdbcTemplate.queryForObject("SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss_visual' AND external_uid_hash=?",Long.class,profileId,hash);
+    }
+
     @Transactional
     public boolean beginCapture(Long profileId, String watchSessionId, String scanId, String captureId) {
         List<CaptureRecord> existing = jdbcTemplate.query("""

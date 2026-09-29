@@ -7,7 +7,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
-PROTOCOL = "2026-09-29-hr-visual-v1"
+PROTOCOL = "2026-09-29-hr-visual-v2"
 
 
 class Halt(RuntimeError):
@@ -71,6 +71,34 @@ def source_round(messages: list[dict]) -> list[str]:
     while start and messages[start-1]["from"] == "对方":
         start-=1
     return [normalized(m.get("type","文本"))+"|"+normalized(m.get("time",""))+"|"+normalized(m["text"]) for m in messages[start:end]]
+
+
+def explicit_resume_request(text: str) -> bool:
+    text = normalized(text)
+    if re.search(r"不要|不用|无需|不需要|暂不|别发|已收到|收到.*简历|看过.*简历|我发|我给|我提供|我的简历|你发过|您发过|简历已|身份证|银行卡|证件|链接|邮箱|微信", text):
+        return False
+    if re.search(r"(?:简历|履历)(?:解析|分析|优化|修改|制作|生成|功能|系统|筛选|匹配|模板|归档|要求)|(?:开发|研发).{0,12}(?:简历|履历)", text):
+        return False
+    return bool(re.search(r"(?:发|提供|给|传).{0,12}(?:简历|履历)|(?:想要|要(?:一|个|份)|需要(?:一|你|您)|看(?:看|一下|下)).{0,10}(?:简历|履历)|(?:简历|履历).{0,12}(?:发我|发给|给我|提供|发送|看看)", text))
+
+
+def resume_request(capture: dict) -> dict | None:
+    """Only an observed recruiter request authorizes a native resume action."""
+    if not capture.get("contextComplete"):
+        return None
+    messages = capture.get("messages", [])
+    candidates = [(i,m) for i,m in enumerate(messages) if m.get("from") == "对方" and explicit_resume_request(m.get("text", ""))]
+    if not candidates:
+        return None
+    index, message = candidates[-1]
+    later = messages[index+1:]
+    if any(m.get("from") == "本人" and m.get("type") == "简历" for m in later):
+        return None
+    if any(m.get("from") == "对方" and re.search(r"不用|无需|不要|暂不|不需要|已收到", m.get("text", "")) for m in later):
+        return None
+    if message.get("type") == "其他" and not message.get("resumeRequestPending"):
+        return None  # A resolved/rejected request card must not become a toolbar fallback.
+    return {"text": message["text"], "time": message.get("time", ""), "type": message.get("type", "文本")}
 
 
 def verify_source(capture: dict, request: dict) -> None:

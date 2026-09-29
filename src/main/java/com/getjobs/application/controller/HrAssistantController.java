@@ -67,6 +67,14 @@ public class HrAssistantController {
         return execute(()->visual.start(request));
     }
 
+    @PutMapping("/visual/resume-rule")
+    public ResponseEntity<?> configureVisualResumeRule(
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+            @RequestBody com.getjobs.application.hr.HrVisualTypes.ResumeRuleRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.configureResumeRule(request));
+    }
+
     @PostMapping("/visual/{id}/{operation:pause|resume}")
     public ResponseEntity<?> visualControl(@PathVariable String id,@PathVariable String operation,
             @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String actionToken) {

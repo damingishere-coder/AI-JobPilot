@@ -7,6 +7,22 @@ vi.mock('@/lib/api', async () => ({ ...await vi.importActual('@/lib/api'), local
 const response = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 
+it('requires separate resume consent and sends no automatic text policy setting', async () => {
+  const status = { installed: true, protocol: 'p', running: false, status: 'IDLE', targets: [], resumeRule: { enabled: false, state: 'STOPPED' } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  vi.mocked(localActionFetch).mockResolvedValue(response(status))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  const button = await screen.findByRole('button', { name: '启用自动简历规则' })
+  expect(button).toBeDisabled()
+  fireEvent.click(screen.getByLabelText('允许向明确索要简历的 HR 直接分享当前 BOSS 简历'))
+  await waitFor(() => expect(button).toBeEnabled())
+  fireEvent.click(button)
+  await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
+  const request = JSON.parse(String(vi.mocked(localActionFetch).mock.calls[0][1]?.body))
+  expect(request).toMatchObject({ enabled: true, confirmed: true, profileId: 4 })
+  expect(request.replyMode).toBeUndefined()
+})
+
 it('starts exactly three chosen conversations in QQ review mode without an extension', async () => {
   const status = { installed: true, protocol: 'visual-test', running: false, status: 'IDLE', targets: [] }
   vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes('/proposals') ? [1, 2, 3, 4].map(id => ({ id, conversationId: id, version: 2, status: 'EXPIRED', hrName: `HR${id}`, companyName: `公司${id}`, draft: '原建议' })) : status)))

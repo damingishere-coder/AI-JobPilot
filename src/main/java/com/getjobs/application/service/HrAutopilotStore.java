@@ -114,6 +114,13 @@ public class HrAutopilotStore {
         if(rows.isEmpty()) throw new IllegalStateException("尚未采集完整上下文，请等待补漏，未展示内容不代表没有消息");
         return rows.getFirst();
     }
+    public ChatCapture visualBaseline(Long profile,String hr,String company) {
+        var matches=jdbc.query("SELECT a.conversation_id,a.snapshot_cipher FROM hr_autopilot_context a JOIN hr_conversation c ON c.id=a.conversation_id WHERE c.profile_id=? AND a.snapshot_cipher IS NOT NULL",
+                (rs,n)->decode(rs.getString(2),"hr-context:"+rs.getLong(1),ChatCapture.class),profile).stream()
+                .filter(c->c.contextComplete() && c.session()!=null && HrVisualService.normalize(c.session().hrName()).equals(HrVisualService.normalize(hr)) &&
+                        HrVisualService.normalize(c.session().companyName()).equals(HrVisualService.normalize(company))).toList();
+        return matches.size()==1?matches.getFirst():null;
+    }
     public void supplement(Long profileId,long conversationId,String fact) {
         context(profileId,conversationId);
         if (fact==null || fact.isBlank() || fact.length()>2000 || facts(conversationId).length()+fact.length()>8000) throw new IllegalArgumentException("补充内容应为1–2000字");

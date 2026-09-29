@@ -49,6 +49,8 @@ public class HrVisualService {
         var result=new LinkedHashMap<String,Object>(worker.availability());
         result.put("running",visual.busy());result.put("executing",executing.get());result.put("replyMode","REVIEW");
         result.put("intervalSeconds",5);result.put("napcatConnected",qq.isConnected());
+        result.put("resumeRule",visual.resumeRule(profile));
+        result.put("resumeResults",visual.resumeResults(profile));
         if(!runs.isEmpty()) {
             Run run=runs.getFirst();result.put("runId",run.id());result.put("status",run.status());result.put("reason",run.reason());
             result.put("accountName",run.account());
@@ -60,6 +62,97 @@ public class HrVisualService {
             }).toList());
         } else { result.put("status","IDLE");result.put("targets",List.of()); }
         return result;
+    }
+    public Object configureResumeRule(ResumeRuleRequest request) {
+        return guard.locked(()->{
+            if(request==null || !HrVisualTypes.PROTOCOL.equals(request.protocol()))throw new IllegalArgumentException("视觉协议不匹配");
+            Long profile=profiles.getCurrentProfileId();
+            if(!Objects.equals(profile,request.profileId()))throw new IllegalStateException("人物档案已变化");
+            String account=Objects.requireNonNullElse(request.accountName(),"").strip();
+            if(request.enabled()) {
+                guard.requireChangeAllowed();
+                if(!request.confirmed())throw new IllegalArgumentException("请明确授权仅在 HR 索要时自动分享 BOSS 简历");
+                if(!Boolean.TRUE.equals(worker.availability().get("installed")))throw new IllegalStateException("视觉执行环境未安装");
+                if(account.isBlank() || account.length()>60)throw new IllegalArgumentException("请填写 BOSS 登录姓名");
+                if(!account.equals(profiles.getCurrentProfile().getName()) && !request.accountBindingConfirmed())throw new IllegalStateException("请确认 BOSS 账号与当前档案的绑定");
+                if(policies.policy(profile).enabled() && "AUTO".equals(policies.policy(profile).replyMode()))throw new IllegalStateException("请先停止全自动文字托管");
+            } else {
+                if(account.isBlank() && Boolean.TRUE.equals(visual.resumeRule(profile).get("enabled")))account=visual.resumeAccount(profile);
+                if(executing.get())worker.cancel();
+            }
+            visual.configureResumeRule(profile,request.enabled(),account);
+            return status(profile);
+        });
+    }
+
+    /** The independent rule only discovers/queues native resumes; it never approves a text. */
+    private void scanResumeRule(Long profile) {
+        if(!visual.resumeRuleActive(profile) || policies.policy(profile).paused())return;
+        try {
+            var rule=visual.resumeRule(profile);
+            String account=visual.resumeAccount(profile);
+            if(System.currentTimeMillis()-((Number)rule.get("last_scan")).longValue()>=60000) {
+                var found=worker.exchange(new LinkedHashMap<>(Map.of("operation","discover","account",account)),null);
+                if(!found.path("ok").asBoolean())throw new IllegalStateException(found.path("detail").asText("联系人读取失败"));
+                if(!found.path("contacts").isArray() || found.path("contacts").size()>100)throw new IllegalStateException("联系人列表不完整");
+                visual.discoveredResumeContacts(profile,found.path("contacts"));return;
+            }
+            var candidate=visual.nextResumeContact(profile);if(candidate==null)return;
+            String hr=candidate.path("hrName").asText(),company=candidate.path("companyName").asText();
+            if(hr.isBlank() || company.isBlank())throw new IllegalStateException("联系人身份不完整");
+            var inspect=new LinkedHashMap<String,Object>(Map.of("operation","inspect","account",account,"target",Map.of("hrName",hr,"companyName",company)));
+            var baseline=policies.visualBaseline(profile,hr,company);
+            if(baseline!=null)inspect.put("contextBaseline",Map.of("hrName",hr,"companyName",company,"contextComplete",true,"messages",baseline.messages()));
+            var observed=worker.exchange(inspect,null);
+            if(!observed.path("ok").asBoolean()) {
+                String code=observed.path("code").asText();
+                if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","PLATFORM_CHECK","CANCELLED","ACCOUNT_UNVERIFIED").contains(code))
+                    throw new IllegalStateException(observed.path("detail").asText("桌面已暂停"));
+                visual.checkedResumeContact(profile,candidate);
+                visual.resumeRuleState(profile,"WATCHING",hr+"："+observed.path("detail").asText("正文未完整读取，未发送"));return;
+            }
+            var descriptor=observed.path("resumeRequest");
+            if(!descriptor.isObject() || !explicitResumeRequest(descriptor.path("text").asText())) {visual.checkedResumeContact(profile,candidate);return;}
+            var temporary=new Target("","",0,null,new Seed("",hr,company,"","",true,true,null),"","");
+            var fresh=decode(temporary,observed.path("capture"));
+            if(!fresh.contextComplete() || fresh.messages().stream().noneMatch(m->m.inbound() && m.text().equals(descriptor.path("text").asText()) && m.time().equals(descriptor.path("time").asText())))
+                throw new IllegalStateException("简历请求缺少完整可核验来源");
+            guard.locked(()->transaction.execute(tx->{
+                if(!visual.resumeRuleActive(profile) || !Objects.equals(profiles.getCurrentProfileId(),profile) || !Objects.equals(visual.resumeRule(profile).get("version"),rule.get("version")))return null;
+                var session=store.resolveVisualSession(profile,fresh.session());
+                long conversation=store.upsertVisualConversation(profile,session);
+                String hash=visual.resumeRequestHash(profile,descriptor);
+                if(policies.conversationHeld(conversation) || visual.resumeAttempted(profile,conversation,hash)) {
+                    visual.checkedResumeContact(profile,candidate);visual.resumeRuleState(profile,"WATCHING",hr+"：已有处理或待核验记录，未重复发送");return null;
+                }
+                if(!observed.path("composer").asText().isBlank()) {
+                    visual.checkedResumeContact(profile,candidate);visual.resumeRuleState(profile,"WATCHING",hr+"：保留现有草稿，简历未发送");return null;
+                }
+                var capture=new ChatCapture(fresh.captureId(),0,session,fresh.messages(),false,true);
+                for(var m:fresh.messages())store.saveMessage(conversation,m,store.loadSettingsSecret(profile).retentionDays());
+                var last=fresh.messages().stream().filter(ChatMessage::inbound).reduce((a,b)->b).orElseThrow();
+                String fingerprint=store.sourceFingerprint(conversation,last);store.updateLastInbound(conversation,fingerprint);
+                policies.context(conversation,capture);
+                long proposal=store.createProposal(profile,conversation,fingerprint,new AiDraft(Classification.DOCUMENT_REQUEST,
+                        "使用 BOSS 原生简历；优先同意 HR 的简历请求卡片", "本人已授权：HR 明确索要简历时直接发送；不附带文字回复",List.of(),List.of(),1));
+                policies.decision(proposal,policies.policy(profile).version(),"RESUME_NATIVE","独立简历规则授权，文字仍逐条确认",false);policies.markTrial(proposal);
+                String run=visual.create(profile,account,List.of(proposal),List.of(conversation),List.of(new Seed(session.uid(),hr,company,session.jobName(),"",true,true,capture)));
+                visual.recordResumeAttempt(profile,conversation,hash,run,descriptor);
+                var target=visual.targets(run).getFirst();
+                String command=store.queueSendCommand(profile,proposal,1,"visual:"+run);visual.attachResumeOnly(command);
+                visual.target(target.id(),proposal,"QUEUED","HR 明确索要简历；已按独立授权排队，尚未确认发送");
+                visual.checkedResumeContact(profile,candidate);return null;
+            }));
+        } catch(RuntimeException e) {
+            visual.resumeRuleState(profile,"PAUSED",safeError(e));
+            qq.notifySystemFault(profile,"自动简历规则已暂停："+safeError(e));
+        }
+    }
+    static boolean explicitResumeRequest(String value) {
+        String s=normalize(value);
+        return !s.matches("(?s).*(不要|不用|无需|不需要|暂不|别发|已收到|收到.*简历|看过.*简历|我发|我给|我提供|我的简历|你发过|您发过|简历已|身份证|银行卡|证件|链接|邮箱|微信).*") &&
+                !s.matches("(?s).*((简历|履历)(解析|分析|优化|修改|制作|生成|功能|系统|筛选|匹配|模板|归档|要求)|(开发|研发).{0,12}(简历|履历)).*") &&
+                s.matches("(?s).*((发|提供|给|传).{0,12}(简历|履历)|(想要|要(一|个|份)|需要(一|你|您)|看(看|一下|下)).{0,10}(简历|履历)|(简历|履历).{0,12}(发我|发给|给我|提供|发送|看看)).*");
     }
     public Object start(StartRequest request) {
         return guard.locked(()->transaction.execute(tx->{
@@ -112,6 +205,7 @@ public class HrVisualService {
                 if(policies.policy(profile).enabled()) policies.pause(profile,false);
                 visual.state(id,"RUNNING","");
             } else {
+                if(visual.resumeRuleActive(profile))visual.resumeRuleState(profile,"PAUSED","本人暂停视觉操作");
                 visual.state(id,executing.get()?"STOPPING":"PAUSED","本人暂停，正在执行的动作仍核验回执");worker.cancel();
             }
             return status(profile);
@@ -216,6 +310,7 @@ public class HrVisualService {
     }
     public boolean owns(Long profile,long proposal) {return visual.owner(profile,proposal)!=null;}
     public boolean qqControl(Long profile,boolean resume) {
+        if(!resume && visual.resumeRuleActive(profile)) {visual.resumeRuleState(profile,"PAUSED","本人通过 QQ 暂停");if(executing.get())worker.cancel();}
         var runs=visual.runs(profile);
         if(!runs.isEmpty() && (Set.of("RUNNING","STOPPING").contains(runs.getFirst().status()) ||
                 (resume && Set.of("PAUSED","BLOCKED").contains(runs.getFirst().status())))) {
@@ -241,9 +336,10 @@ public class HrVisualService {
 
     @Scheduled(fixedDelay=1000)
     public void tick() {
-        if(!visual.busy() || !executing.compareAndSet(false,true)) return;
+        Long profile=profiles.getCurrentProfileIdOrNull();
+        if(profile==null || (!visual.busy() && !visual.resumeRuleActive(profile)) || !executing.compareAndSet(false,true)) return;
         executor.submit(()->{
-            try { advance(); }
+            try { if(visual.busy())advance(); else scanResumeRule(profile); }
             finally { executing.set(false); }
         });
     }
@@ -252,6 +348,9 @@ public class HrVisualService {
         for(Run run:visual.runs(profile)) {
             if(run.status().equals("STOPPING")) {visual.state(run.id(),"PAUSED",run.reason());continue;}
             if(!run.status().equals("RUNNING"))continue;
+            if(visual.isResumeRuleRun(run.id()) && !visual.resumeRuleAuthorized(profile,run.id())) {
+                visual.state(run.id(),"PAUSED","简历规则已暂停、关闭或授权版本变化");continue;
+            }
             if(policies.policy(profile).paused())return;
             try {
                 visual.expire(run.id());
@@ -314,17 +413,21 @@ public class HrVisualService {
         var proposal=store.requireProposal(run.profileId(),target.proposalId());
         var expected=policies.context(run.profileId(),target.conversationId());
         var sent=visual.steps(target.proposalId()).stream().filter(s->"SENT_CONFIRMED".equals(s.get("status"))).toList();
-        var ownTexts=sent.stream().filter(s->"TEXT".equals(s.get("action_type"))).map(s->proposal.draft()).toList();
+        boolean resumeRule=visual.isResumeRuleRun(run.id());
+        var ownTexts=resumeRule ? expected.messages().subList(expected.messages().size()-trailingOwnCount(expected.messages()),expected.messages().size()).stream().map(ChatMessage::text).toList()
+                : sent.stream().filter(s->"TEXT".equals(s.get("action_type"))).map(s->proposal.draft()).toList();
         var request=request(run,target,"prepare");request.put("actionType",step.actionType());request.put("draft",proposal.draft());
         request.put("contextBaseline",Map.of("hrName",target.seed().hrName(),"companyName",target.seed().companyName(),"contextComplete",expected.contextComplete(),"messages",expected.messages()));
         request.put("adoptApprovedDraft",visual.explicitlyReconfirmed(proposal.id()));
         request.put("expectedRound",round(expected.messages()));request.put("expectedSourceRound",sourceRound(expected.messages()));
         request.put("ownTexts",ownTexts);request.put("stepId",step.id());
+        if(resumeRule) {request.put("resumeRule",true);request.put("resumeRequest",visual.resumeRequest(run.id()));}
         var committed=new AtomicBoolean(false);
         JsonNode result;
         try {
             result=worker.exchange(request,prepared->guard.locked(()->{
                 if(!visual.run(run.profileId(),run.id()).status().equals("RUNNING") || policies.policy(run.profileId()).paused())return false;
+                if(resumeRule && (!step.actionType().equals("RESUME_NATIVE") || !visual.resumeRuleAuthorized(run.profileId(),run.id())))return false;
                 if(!Objects.equals(profiles.getCurrentProfileId(),run.profileId()))return false;
                 var current=store.requireProposal(run.profileId(),target.proposalId());
                 if(current.version()!=proposal.version() || !current.draft().equals(proposal.draft()))return false;
@@ -348,7 +451,7 @@ public class HrVisualService {
         }
         finish(run,target,step,outcome,result);
         if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","CANCELLED").contains(result.path("code").asText()))
-            visual.state(run.id(),"PAUSED",result.path("detail").asText());
+            {visual.state(run.id(),"PAUSED",result.path("detail").asText());if(resumeRule)visual.resumeRuleState(run.profileId(),"PAUSED",result.path("detail").asText());}
     }
     private void finish(Run run,Target target,Step step,String outcome,Object evidence) {
         transaction.executeWithoutResult(tx->finishTransaction(run,target,step,outcome,evidence));
@@ -361,7 +464,8 @@ public class HrVisualService {
         ProposalStatus status=switch(outcome){case "SENT_CONFIRMED"->ProposalStatus.SENT_CONFIRMED;case "STALE"->ProposalStatus.EXPIRED;case "BLOCKED"->ProposalStatus.BLOCKED;default->ProposalStatus.SEND_UNKNOWN;};
         store.markFinal(target.proposalId(),status,json.valueToTree(evidence).path("detail").asText(outcome));
         visual.target(target.id(),null,outcome,json.valueToTree(evidence).path("detail").asText(outcome));
-        if(outcome.equals("STALE") && visual.steps(target.proposalId()).stream().noneMatch(s->"SENT_CONFIRMED".equals(s.get("status")))) {
+        if(outcome.equals("SENT_CONFIRMED"))for(var m:decode(target,json.valueToTree(evidence).path("capture")).messages())store.saveMessage(target.conversationId(),m,store.loadSettingsSecret(run.profileId()).retentionDays());
+        if(!visual.isResumeRuleRun(run.id()) && outcome.equals("STALE") && visual.steps(target.proposalId()).stream().noneMatch(s->"SENT_CONFIRMED".equals(s.get("status")))) {
             var s=target.seed();visual.seed(target.id(),new Seed(s.uid(),s.hrName(),s.companyName(),s.jobName(),"",false,false,s.expected()));
             visual.target(target.id(),null,"PENDING_CAPTURE","消息已变化，重新读取并生成待确认卡片");
         }

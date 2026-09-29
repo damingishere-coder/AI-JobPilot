@@ -2,6 +2,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from windows_driver import WindowsDriver
 from core import Halt, ocr_supports
@@ -10,6 +11,21 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_resume_prefers_specific_card_and_ignores_phone_agree(self):
+        d=WindowsDriver(threading.Event());d.chat_box=(400,0,1600,1000)
+        nodes=[node('','ListItem','message-item item-friend',(450,50,1500,300)),
+               node('我想要一份您的附件简历，您是否同意','Text','message-card-top-title',(550,60,950,130)),
+               node('','Group','card-btn',(750,150,900,210)),node('同意','Text','',(790,160,850,200)),
+               node('','ListItem','message-item item-friend',(450,320,1500,600)),
+               node('我想要您的电话，您是否同意','Text','message-card-top-title',(550,340,950,420)),
+               node('','Group','card-btn',(750,450,900,510)),node('同意','Text','',(790,460,850,500)),
+               node('发简历','Text','',(700,900,800,930))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):
+            d.prepare_resume()
+        self.assertEqual(d.resume_confirm,(790,160,850,200))
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):
+            d.prepare_resume({'text':'请发一份简历','type':'文本','time':'今天'})
+        self.assertEqual(d.resume_confirm,(700,900,800,930))
     def test_selected_company_is_reread_and_duplicate_selection_stops(self):
         driver=WindowsDriver(threading.Event())
         nodes=[node("","Group","friend-content selected",(0,0,400,100)),
