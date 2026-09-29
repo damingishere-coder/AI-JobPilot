@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from core import Halt, normalized, require_chat_url, stable_pair, signature, ocr_supports
+from core import Halt, normalized, require_chat_url, stable_pair, signature, ocr_supports, explicit_resume_request
 
 
 def box(control):
@@ -36,6 +36,7 @@ class WindowsDriver:
         self.composer = None
         self.send_button = None
         self.resume_confirm = None
+        self.approved_resume_request = None
         self.approved_text = None
         self.target = None
         self.identity = None
@@ -330,6 +331,28 @@ class WindowsDriver:
             time.sleep(1)
         raise last_error or Halt("BODY_NOT_READY", "20 秒内未读到连续稳定且完整的聊天正文，没有刷新页面")
 
+    def list_contacts(self):
+        self.guard()
+        nodes = self._nodes()
+        self._check_page(nodes)
+        contacts = []
+        for row in [n for n in nodes if "friend-content" in n["class"].split()]:
+            texts = [n for n in nodes if n["type"] == "Text" and n["text"] and inside(n["box"], row["box"])]
+            names = [n for n in texts if not re.fullmatch(r"\d+|\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日|今天|昨天|前天", n["text"])]
+            if len(names) < 2:
+                continue
+            first = min(names, key=lambda n:(n["box"][1],n["box"][0]))
+            heading = sorted([n for n in names if abs(n["box"][1]-first["box"][1]) < max(12, first["box"][3]-first["box"][1])],key=lambda n:n["box"][0])
+            if len(heading) < 2 or any("…" in n["text"] or "..." in n["text"] for n in heading[:2]):
+                continue
+            hr,company = heading[:2]
+            material = "|".join(n["text"] for n in texts)
+            contacts.append({"hrName":hr["text"],"companyName":company["text"], "previewKey":hashlib.sha256(material.encode()).hexdigest()})
+        unique = {(c["hrName"],c["companyName"]):c for c in contacts}
+        if len(unique) != len(contacts):
+            raise Halt("IDENTITY_AMBIGUOUS", "联系人存在同名同公司重复项，未开始简历巡检")
+        return contacts
+
     def restore_receipt_boundary(self, before):
         # Resume only a previously verified complete HR round, never inferred hidden text.
         messages = before["messages"]
@@ -484,6 +507,8 @@ class WindowsDriver:
             kind = "简历" if direction == "本人" and resume_card and "简历" in text else "其他" if titles else "文本"
             flags = " ".join([klass]+[n["class"] for n in children])
             result.append({"from": direction, "type": kind, "text": text, "time": timestamp,
+                           "resumeRequestPending": direction == "对方" and bool(titles) and explicit_resume_request(text)
+                               and any(n["text"] == "同意" and any(inside(n["box"],b) for b in buttons) for n in children),
                            "failed": "发送失败" in text or bool(re.search(r"(?:^|[\s_-])(?:failed|fail|error)(?:$|[\s_-])",flags)),
                            "pending": "发送中" in text or bool(re.search(r"(?:^|[\s_-])(?:sending|pending|loading)(?:$|[\s_-])",flags))})
         if not result:
@@ -559,9 +584,31 @@ class WindowsDriver:
                 break
         return False
 
-    def prepare_resume(self):
+    def prepare_resume(self, request=None):
+        self.approved_resume_request = request
         self.guard()
         nodes = self._nodes()
+        # Bind consent to the recruiter's resume card, never to a generic Agree button.
+        cards = [n for n in nodes if n["type"] == "ListItem" and "item-friend" in n["class"] and inside(n["box"],self.chat_box)]
+        agree = []
+        for card in cards:
+            children = [n for n in nodes if inside(n["box"],card["box"])]
+            titles = [n for n in children if "message-card-top-title" in n["class"].split() and explicit_resume_request(n["text"])]
+            if len(titles) != 1:
+                continue
+            if request is not None:
+                if request.get("type") != "其他" or normalized(titles[0]["text"]) != normalized(request.get("text", "")):
+                    continue
+                parsed = self._messages(children, self.chat_box)
+                if len(parsed) != 1 or parsed[0]["time"] != request.get("time", ""):
+                    continue
+            buttons = [n["box"] for n in children if "card-btn" in n["class"].split()]
+            agree.extend(n for n in children if n["type"] in ("Text", "Button") and n["text"] == "同意" and any(inside(n["box"],b) for b in buttons))
+        if agree:
+            if len(agree) != 1:
+                raise Halt("RESUME_AMBIGUOUS", "简历请求卡片不唯一，未点击")
+            self.resume_confirm = agree[0]["box"]
+            return
         choices = [n for n in nodes if n["text"] == "发简历" and n["type"] in ("Text","Button","Hyperlink") and inside(n["box"],self.chat_box)]
         choices = list({n["box"]: n for n in choices}.values())
         if len(choices) != 1:
@@ -580,7 +627,13 @@ class WindowsDriver:
             from pywinauto.keyboard import send_keys
             send_keys("{ENTER}")
             return
-        self._click(self.resume_confirm)
+        self.prepare_resume(self.approved_resume_request)
+        from pywinauto import Desktop
+        rect = self.resume_confirm
+        hit = Desktop(backend="uia").from_point((rect[0]+rect[2])//2,(rect[1]+rect[3])//2)
+        if hit.window_text() not in ("同意", "发简历"):
+            raise Halt("RESUME_OCCLUDED", "简历操作位置被遮挡，未点击")
+        self._click(rect)
         time.sleep(1)
         nodes = self._nodes()
         dialogs = [n for n in nodes if n["type"] == "Dialog" and "简历" in n["text"]]

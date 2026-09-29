@@ -65,6 +65,76 @@ public class HrVisualStore {
         db.update("INSERT INTO hr_send_step(id,command_id,ordinal,action_type) VALUES (?,?,0,'TEXT')",UUID.randomUUID().toString(),command);
         if(resume) db.update("INSERT INTO hr_send_step(id,command_id,ordinal,action_type) VALUES (?,?,1,'RESUME_NATIVE')",UUID.randomUUID().toString(),command);
     }
+    public void attachResumeOnly(String command) {
+        db.update("UPDATE hr_send_command SET transport='WINDOWS_VISUAL' WHERE command_id=?",command);
+        db.update("INSERT INTO hr_send_step(id,command_id,ordinal,action_type) VALUES (?,?,0,'RESUME_NATIVE')",UUID.randomUUID().toString(),command);
+    }
+    public Map<String,Object> resumeRule(Long profile) {
+        var rows=db.queryForList("SELECT enabled,version,state,reason,last_scan FROM hr_resume_rule WHERE profile_id=?",profile);
+        if(rows.isEmpty()) return Map.of("enabled",false,"version",0,"state","STOPPED","reason","尚未授权","last_scan",0L);
+        var row=rows.getFirst();row.put("enabled",((Number)row.get("enabled")).intValue()==1);return row;
+    }
+    public String resumeAccount(Long profile) {
+        return crypto.decrypt(db.queryForObject("SELECT account_cipher FROM hr_resume_rule WHERE profile_id=?",String.class,profile),"resume-rule:"+profile);
+    }
+    public void configureResumeRule(Long profile,boolean enabled,String account) {
+        db.update("""
+            INSERT INTO hr_resume_rule(profile_id,enabled,account_cipher,state) VALUES (?,?,?,?)
+            ON CONFLICT(profile_id) DO UPDATE SET enabled=excluded.enabled,account_cipher=excluded.account_cipher,
+              state=excluded.state,reason='',last_scan=0,version=hr_resume_rule.version+1,updated_at=CURRENT_TIMESTAMP
+            """,profile,enabled?1:0,crypto.encrypt(account,"resume-rule:"+profile),enabled?"WATCHING":"STOPPED");
+    }
+    public void resumeRuleState(Long profile,String state,String reason) {
+        db.update("UPDATE hr_resume_rule SET state=?,reason=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=?",state,reason,profile);
+    }
+    public boolean resumeRuleActive(Long profile) {
+        var r=resumeRule(profile);return Boolean.TRUE.equals(r.get("enabled")) && "WATCHING".equals(r.get("state"));
+    }
+    public void discoveredResumeContacts(Long profile,com.fasterxml.jackson.databind.JsonNode contacts) {
+        long now=System.currentTimeMillis();
+        for(var c:contacts) {
+            String key=crypto.blindIndex(HrVisualService.normalize(c.path("hrName").asText())+"|"+HrVisualService.normalize(c.path("companyName").asText()),"resume-contact:"+profile);
+            db.update("""
+                INSERT INTO hr_resume_contact_scan(profile_id,identity_hash,contact_cipher,preview_hash,seen_at) VALUES (?,?,?,?,?)
+                ON CONFLICT(profile_id,identity_hash) DO UPDATE SET contact_cipher=excluded.contact_cipher,preview_hash=excluded.preview_hash,seen_at=excluded.seen_at
+                """,profile,key,encrypt(c,"resume-contact:"+profile+":"+key),c.path("previewKey").asText(),now);
+        }
+        db.update("UPDATE hr_resume_rule SET last_scan=? WHERE profile_id=?",now,profile);
+    }
+    public com.fasterxml.jackson.databind.JsonNode nextResumeContact(Long profile) {
+        var rows=db.queryForList("""
+            SELECT identity_hash,contact_cipher FROM hr_resume_contact_scan WHERE profile_id=?
+              AND seen_at=(SELECT last_scan FROM hr_resume_rule WHERE profile_id=?)
+              AND (checked_preview_hash IS NULL OR checked_preview_hash<>preview_hash) ORDER BY rowid LIMIT 1
+            """,profile,profile);
+        if(rows.isEmpty())return null;
+        var row=rows.getFirst();String key=(String)row.get("identity_hash");
+        try {var result=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(crypto.decrypt((String)row.get("contact_cipher"),"resume-contact:"+profile+":"+key));result.put("identityKey",key);return result;}
+        catch(Exception e){throw new IllegalStateException("简历巡检联系人不可读取",e);}
+    }
+    public void checkedResumeContact(Long profile,com.fasterxml.jackson.databind.JsonNode contact) {
+        db.update("UPDATE hr_resume_contact_scan SET checked_preview_hash=? WHERE profile_id=? AND identity_hash=?",
+                contact.path("previewKey").asText(),profile,contact.path("identityKey").asText());
+    }
+    public boolean resumeAttempted(Long profile,long conversation,String hash) {
+        return count("SELECT COUNT(*) FROM hr_resume_rule_attempt WHERE profile_id=? AND conversation_id=? AND request_hash=?",profile,conversation,hash)>0;
+    }
+    public String resumeRequestHash(Long profile,Object request) {return crypto.blindIndex(json.valueToTree(request).toString(),"resume-request:"+profile);}
+    public void recordResumeAttempt(Long profile,long conversation,String hash,String run,Object request) {
+        db.update("INSERT INTO hr_resume_rule_attempt(profile_id,conversation_id,request_hash,rule_version,run_id,request_cipher) VALUES (?,?,?,?,?,?)",
+                profile,conversation,hash,resumeRule(profile).get("version"),run,encrypt(request,"resume-request:"+run));
+    }
+    public boolean isResumeRuleRun(String run) {return count("SELECT COUNT(*) FROM hr_resume_rule_attempt WHERE run_id=?",run)>0;}
+    public boolean resumeRuleAuthorized(Long profile,String run) {
+        return resumeRuleActive(profile) && count("SELECT COUNT(*) FROM hr_resume_rule_attempt a JOIN hr_resume_rule r ON r.profile_id=a.profile_id AND r.version=a.rule_version WHERE a.run_id=? AND a.profile_id=?",run,profile)==1;
+    }
+    public com.fasterxml.jackson.databind.JsonNode resumeRequest(String run) {
+        try {return json.readTree(crypto.decrypt(db.queryForObject("SELECT request_cipher FROM hr_resume_rule_attempt WHERE run_id=?",String.class,run),"resume-request:"+run));}
+        catch(Exception e){throw new IllegalStateException("简历规则来源不可核验",e);}
+    }
+    public List<Map<String,Object>> resumeResults(Long profile) {
+        return db.queryForList("SELECT a.run_id,t.proposal_id,t.status,t.reason FROM hr_resume_rule_attempt a JOIN hr_visual_target t ON t.run_id=a.run_id WHERE a.profile_id=? ORDER BY a.rowid DESC LIMIT 20",profile);
+    }
     public List<Map<String,Object>> steps(long proposal) {
         return db.queryForList("SELECT s.id,s.ordinal,s.action_type,s.status,s.submitted_at,s.finished_at,r.reviewed_at FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id LEFT JOIN hr_visual_receipt_review r ON r.step_id=s.id WHERE c.proposal_id=? ORDER BY s.ordinal",proposal);
     }
@@ -194,6 +264,7 @@ public class HrVisualStore {
     }
     @Transactional
     public List<String> purgeSensitiveCopies() {
+        db.update("DELETE FROM hr_resume_contact_scan WHERE seen_at<?",System.currentTimeMillis()-30L*24*60*60*1000);
         var runs=db.queryForList("""
             SELECT r.id FROM hr_visual_run r LEFT JOIN hr_assistant_settings a ON a.profile_id=r.profile_id
             WHERE r.status NOT IN ('RUNNING','STOPPING','ARCHIVED')
@@ -212,6 +283,7 @@ public class HrVisualStore {
                 seed(target.id(),new Seed("","已清理","已清理","","",false,false,empty));
             }
             db.update("UPDATE hr_visual_run SET status='ARCHIVED',account_cipher=?,reason='正文按保留期清理；步骤结果与未知状态保留' WHERE id=?",crypto.encrypt("已清理","visual-account:"+run),run);
+            db.update("UPDATE hr_resume_rule_attempt SET request_cipher=? WHERE run_id=?",crypto.encrypt("{}","resume-request:"+run),run);
         }
         return files;
     }

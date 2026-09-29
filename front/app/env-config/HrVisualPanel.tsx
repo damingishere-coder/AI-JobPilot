@@ -7,7 +7,7 @@ import { API_BASE, friendlyApiError, localActionFetch, readApiResponse } from '@
 type Proposal = { id: number; conversationId: number; version: number; status: string; hrName: string; companyName: string; draft: string }
 type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
-type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[] }
+type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string } }
 const labels: Record<string, string> = {
   IDLE: '尚未开始', RUNNING: '正在处理', STOPPING: '正在停止并核验回执', PAUSED: '已暂停', COMPLETED: '本轮处理结束', ARCHIVED: '正文已按保留期清理',
   PENDING_CAPTURE: '正在定位和读取', REVIEW_REQUIRED: '等你确认', QUEUED: '等待桌面', PREPARED: '已核对，准备发送',
@@ -23,6 +23,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
   const [error, setError] = useState('')
   const [accountName, setAccountName] = useState(profileName)
   const [bindingConfirmed, setBindingConfirmed] = useState(false)
+  const [resumeConfirmed, setResumeConfirmed] = useState(false)
   const refresh = useCallback(async () => {
     const response = await fetch(`${API_BASE}/api/hr-assistant/visual/status`, { cache: 'no-store' })
     const result = await readApiResponse<Status>(response, '视觉执行器状态读取失败')
@@ -73,9 +74,31 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '回执仍未确认；没有重发')) }
     finally { setBusy(false) }
   }
+  const setResumeRule = async (enabled: boolean) => {
+    setBusy(true); setError('')
+    try {
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/resume-rule`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileId, protocol: status?.protocol, enabled, confirmed: resumeConfirmed, accountName, accountBindingConfirmed: bindingConfirmed }),
+      })
+      await readApiResponse(response, '简历规则保存失败'); await refresh()
+    } catch (e) { setError(friendlyApiError(e, '简历规则保存失败')) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-3 rounded-lg border p-4" aria-label="BOSS视觉聊天测试">
     <p className="font-medium">本机 Chrome 视觉聊天 · QQ 逐条确认</p>
     <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文，确认后回发。每个动作至少间隔 5 秒；只处理本轮选定的三个会话。</p>
+    <div className="space-y-2 rounded border p-3 text-sm">
+      <p className="font-medium">独立规则：HR 索要简历时直接发送</p>
+      <p>优先点击简历请求卡片的“同意”，否则使用 BOSS“发简历”。普通文字仍须 QQ 确认。每分钟检查当前已加载的联系人列表，预览变化后核对正文；未加载的历史联系人不视为已检查。</p>
+      <p>规则状态：{status?.resumeRule?.enabled ? (status.resumeRule.state === 'WATCHING' ? '已启用' : '已暂停') : '未启用'}{status?.resumeRule?.reason ? ` · ${status.resumeRule.reason}` : ''}</p>
+      <label className="block">BOSS 登录姓名<input className="ml-2 rounded border px-2 py-1" value={accountName} onChange={e => { setAccountName(e.target.value); setBindingConfirmed(false) }} /></label>
+      {accountName !== profileName && <label className="flex items-center gap-2"><input type="checkbox" checked={bindingConfirmed} onChange={e => setBindingConfirmed(e.target.checked)} />确认这个 BOSS 账号属于当前档案“{profileName}”</label>}
+      <label className="flex items-center gap-2"><input type="checkbox" checked={resumeConfirmed} onChange={e => setResumeConfirmed(e.target.checked)} />允许向明确索要简历的 HR 直接分享当前 BOSS 简历</label>
+      {status?.resumeRule?.enabled && status.resumeRule.state === 'WATCHING'
+        ? <Button type="button" variant="outline" disabled={busy} onClick={() => void setResumeRule(false)}>关闭自动简历规则</Button>
+        : <Button type="button" disabled={busy || status?.running || status?.executing || !status?.installed || !resumeConfirmed || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void setResumeRule(true)}>启用自动简历规则</Button>}
+    </div>
     <p role="status">{status ? `${labels[status.status] || status.status}${status.reason ? `：${status.reason}` : ''}` : '正在检查视觉执行器…'}</p>
     {status && !status.installed && <p>视觉环境尚未安装，请运行项目 hr-visual/setup.ps1 后重试。</p>}
     <div className="flex flex-wrap gap-2">
@@ -85,10 +108,6 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
       {status?.runId && ['PAUSED', 'BLOCKED'].includes(status.status) && <Button type="button" disabled={busy || status.executing} onClick={() => void act('resume')}>恢复并重新核对</Button>}
     </div>
     {proposals.length > 0 && !status?.running && <div className="space-y-2">
-      <label className="block text-sm">BOSS 登录姓名
-        <input className="ml-2 rounded border px-2 py-1" value={accountName} onChange={e => { setAccountName(e.target.value); setBindingConfirmed(false) }} />
-      </label>
-      {accountName !== profileName && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bindingConfirmed} onChange={e => setBindingConfirmed(e.target.checked)} />确认这个 BOSS 账号属于当前档案“{profileName}”</label>}
       {proposals.map(p => <label key={p.id} className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={selected.includes(p.id)} disabled={busy || (!selected.includes(p.id) && selected.length >= 3)} onChange={e => setSelected(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))} />
         {p.hrName} · {p.companyName}

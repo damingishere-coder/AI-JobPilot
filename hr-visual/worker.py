@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import uuid
-from core import PROTOCOL, Halt, confirmed_new_message, signature, verify_source
+from core import PROTOCOL, Halt, confirmed_new_message, signature, verify_source, resume_request
 
 
 def serve(request: dict, driver, receive, emit):
@@ -16,10 +16,13 @@ def serve(request: dict, driver, receive, emit):
     try:
         if request.get("protocol") != PROTOCOL:
             raise Halt("PROTOCOL_MISMATCH", "视觉执行协议不匹配")
-        if request.get("operation") not in ("inspect", "prepare", "reconcile"):
+        if request.get("operation") not in ("inspect", "prepare", "reconcile", "discover"):
             raise Halt("INVALID_OPERATION", "不支持的视觉操作")
         with driver.session():
             driver.open_chat(request["account"])
+            if request["operation"] == "discover":
+                emit({**base, "phase": "result", "ok": True, "contacts": driver.list_contacts(), "coverage": "VISIBLE_LOADED_CONTACTS"})
+                return
             baseline = request.get("receiptBefore") if request["operation"] == "reconcile" else request.get("contextBaseline")
             if baseline is not None:
                 verify_source(baseline, {"target": request["target"]})
@@ -35,11 +38,13 @@ def serve(request: dict, driver, receive, emit):
             verify_source(capture, request)
             if request["operation"] == "inspect":
                 emit({**base, "phase": "result", "ok": True, "capture": capture,
-                      "composer": driver.composer_text()})
+                      "composer": driver.composer_text(), "resumeRequest": resume_request(capture)})
                 return
             action = request.get("actionType")
             if action not in ("TEXT", "RESUME_NATIVE"):
                 raise Halt("INVALID_ACTION", "仅支持批准文字和原生简历")
+            if request.get("resumeRule") and (action != "RESUME_NATIVE" or resume_request(capture) != request.get("resumeRequest")):
+                raise Halt("STALE", "简历请求已变化或不再有效，未发送")
             adopt = action == "TEXT" and bool(request.get("adoptApprovedDraft")) and bool(driver.composer_text().strip())
             if adopt:
                 driver.require_staged_text(request["draft"])
@@ -70,7 +75,13 @@ def serve(request: dict, driver, receive, emit):
                     raise Halt("STALE", "聚焦输入框后聊天发生变化，未提交")
                 driver.require_staged_text(request["draft"])
             else:
-                driver.prepare_resume()
+                driver.prepare_resume(request.get("resumeRequest") if request.get("resumeRule") else None)
+                final = driver.read_chat(request["target"])
+                verify_source(final, request)
+                if signature(final) != signature(capture):
+                    raise Halt("STALE", "准备简历期间聊天变化，未点击")
+                if request.get("resumeRule") and resume_request(final) != request.get("resumeRequest"):
+                    raise Halt("STALE", "简历请求已失效，未点击")
             driver.guard()
             # Persisted backend SUBMITTING precedes this boundary. Never repeat it.
             submitted = True
