@@ -71,6 +71,32 @@ class HrVisualStoreTest {
         visual.state(run,"RUNNING","");db.update("UPDATE hr_send_command SET expires_at='2000-01-01 00:00:00'");
         assertThat(visual.claim(1L,proposal)).isNull();
     }
+    @Test void submissionCheckpointSurvivesProcessLossAndFailureWithoutWorkerSnapshot() {
+        var step=visual.claim(1L,proposal);
+        var before=Map.of("contextComplete",true,"messages",capture.messages());
+        visual.submitting(step,before);
+        assertThat(visual.stepEvidence(step.id()).path("submissionAuthorized").asBoolean()).isTrue();
+        assertThat(visual.stepEvidence(step.id()).path("before").path("messages").size()).isEqualTo(1);
+        visual.finish(step,"SEND_UNKNOWN",Map.of("detail","pipe interrupted"));
+        assertThat(visual.stepEvidence(step.id()).path("before").path("contextComplete").asBoolean()).isTrue();
+        assertThat(visual.stepEvidence(step.id()).path("submissionAuthorized").asBoolean()).isTrue();
+    }
+    @Test void failureBeforeSubmissionDoesNotNeedACheckpointOrLeaveTheLeaseActive() {
+        var step=visual.claim(1L,proposal);
+        assertThat(visual.stepEvidence(step.id())).isNull();
+        visual.finish(step,"BLOCKED",Map.of("detail","identity not ready","submitted",false));
+        assertThat(visual.steps(proposal).getFirst().get("status")).isEqualTo("BLOCKED");
+        assertThat(visual.stepEvidence(step.id()).path("detail").asText()).isEqualTo("identity not ready");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_step WHERE status IN ('PREPARED','SUBMITTING')",Integer.class)).isZero();
+    }
+    @Test void recoveryRetainsDurableBeforeSnapshotWithoutResubmitting() {
+        var step=visual.claim(1L,proposal);
+        visual.submitting(step,Map.of("contextComplete",true,"messages",capture.messages()));
+        visual.recover();
+        assertThat(visual.steps(proposal).getFirst().get("status")).isEqualTo("SEND_UNKNOWN");
+        assertThat(visual.stepEvidence(step.id()).path("before").path("contextComplete").asBoolean()).isTrue();
+        assertThat(visual.claim(1L,proposal)).isNull();
+    }
     @Test void receiptsRequireWholeRoundAndExactNewOwnTail() {
         var expected=List.of(new ChatMessage("对方","文本","你好",""),new ChatMessage("对方","文本","工作地点？",""));
         var after=new ArrayList<>(expected);after.add(new ChatMessage("本人","文本","深圳",""));

@@ -161,6 +161,59 @@ public class HrVisualService {
             } finally {executing.set(false);}
         });
     }
+    /** Read-only browser reconciliation: never authorizes or queues another submission. */
+    public Object reconcile(Long profile,String runId,String targetId) {
+        return guard.locked(()->{
+            if(!Objects.equals(profile,profiles.getCurrentProfileId()))throw new IllegalStateException("当前档案已变化");
+            Run run=visual.run(profile,runId);
+            if(!Set.of("PAUSED","BLOCKED","COMPLETED").contains(run.status()) || executing.get() || visual.busy())
+                throw new IllegalStateException("请先暂停并等待执行器退出");
+            guard.requireChangeAllowed();
+            Target target=visual.targets(runId).stream().filter(t->t.id().equals(targetId)).findFirst().orElseThrow();
+            var proposal=store.requireProposal(profile,target.proposalId());
+            if(proposal.status()!=ProposalStatus.SEND_UNKNOWN || !target.status().equals("SEND_UNKNOWN"))throw new IllegalStateException("当前没有待核验的未知步骤");
+            var steps=visual.steps(proposal.id());
+            var unknown=steps.stream().filter(s->"SEND_UNKNOWN".equals(s.get("status"))).toList();
+            if(unknown.size()!=1)throw new IllegalStateException("未知步骤不能唯一确认");
+            var step=unknown.getFirst();String stepId=(String)step.get("id"),action=(String)step.get("action_type");
+            JsonNode original=visual.stepEvidence(stepId);
+            if(original==null || !(original.path("submitted").asBoolean() || original.path("submissionAuthorized").asBoolean()) || !original.path("before").path("contextComplete").asBoolean())
+                throw new IllegalStateException("缺少可比对的完整发送前证据；保持未知，未重发");
+            var before=decode(target,original.path("before"));
+            var own=before.messages().subList(before.messages().size()-trailingOwnCount(before.messages()),before.messages().size()).stream().map(ChatMessage::text).toList();
+            var expectedOwn=new ArrayList<>(own);if(action.equals("TEXT"))expectedOwn.add(proposal.draft());
+            var req=request(run,target,"reconcile");req.put("receiptBefore",original.path("before"));req.put("stepId",stepId);req.put("actionType",action);req.put("draft",proposal.draft());
+            if(!executing.compareAndSet(false,true))throw new IllegalStateException("桌面仍在执行");
+            try {
+                JsonNode result=worker.exchange(req,null);
+                if(!result.path("ok").asBoolean() || !"SENT_CONFIRMED".equals(result.path("outcome").asText()))throw new IllegalStateException(result.path("detail").asText("回执仍未确认，未重发"));
+                var after=decode(target,result.path("capture"));
+                if(!after.contextComplete() || !receipt(after.messages(),before.messages(),expectedOwn,action))throw new IllegalStateException("新增本人消息与批准内容不匹配，保持未知");
+                for(JsonNode m:result.path("capture").path("messages"))if(m.path("failed").asBoolean() || m.path("pending").asBoolean())throw new IllegalStateException("消息仍在发送或显示失败，保持未知");
+                return transaction.execute(tx->{
+                    visual.reconcileStep(stepId,result);
+                    boolean complete=visual.steps(proposal.id()).stream().allMatch(s->"SENT_CONFIRMED".equals(s.get("status")));
+                    if(complete) {
+                        visual.completeParent(visual.commandId(stepId),"SENT_CONFIRMED");
+                        store.markFinal(proposal.id(),ProposalStatus.SENT_CONFIRMED,"只读复核已确认新增本人消息；原未知记录保留；没有再次提交");
+                    } else {
+                        visual.resumeRemaining(visual.commandId(stepId));
+                        store.transition(proposal.id(),ProposalStatus.SEND_UNKNOWN,ProposalStatus.APPROVED);
+                        visual.state(runId,"PAUSED","文字回执已确认；恢复时仅处理剩余未提交的已批准步骤");
+                    }
+                    visual.target(targetId,null,complete?"SENT_CONFIRMED":"PARTIAL",complete?"只读复核已确认发送，没有再次提交":"文字已确认；等待恢复其余未提交步骤，不重发文字");
+                    for(var message:after.messages())store.saveMessage(target.conversationId(),message,store.loadSettingsSecret(profile).retentionDays());
+                    policies.notification(profile,"visual-reconciled:"+stepId,target.seed().companyName()+" / "+target.seed().hrName()+"\n"+
+                            (action.equals("TEXT")?"文字":"原生简历")+"回执已由只读复核确认，没有再次提交；原未知记录已保留。\n"+
+                            (complete?"全部批准步骤已完成。":"本轮保持暂停，恢复后仅处理剩余已批准的未提交步骤。"));
+                    return status(profile);
+                });
+            } finally {executing.set(false);}
+        });
+    }
+    private static int trailingOwnCount(List<ChatMessage> messages) {
+        int n=0;for(int i=messages.size()-1;i>=0 && !messages.get(i).inbound();i--)n++;return n;
+    }
     public boolean owns(Long profile,long proposal) {return visual.owner(profile,proposal)!=null;}
     public boolean qqControl(Long profile,boolean resume) {
         var runs=visual.runs(profile);
@@ -263,6 +316,7 @@ public class HrVisualService {
         var sent=visual.steps(target.proposalId()).stream().filter(s->"SENT_CONFIRMED".equals(s.get("status"))).toList();
         var ownTexts=sent.stream().filter(s->"TEXT".equals(s.get("action_type"))).map(s->proposal.draft()).toList();
         var request=request(run,target,"prepare");request.put("actionType",step.actionType());request.put("draft",proposal.draft());
+        request.put("contextBaseline",Map.of("hrName",target.seed().hrName(),"companyName",target.seed().companyName(),"contextComplete",expected.contextComplete(),"messages",expected.messages()));
         request.put("adoptApprovedDraft",visual.explicitlyReconfirmed(proposal.id()));
         request.put("expectedRound",round(expected.messages()));request.put("expectedSourceRound",sourceRound(expected.messages()));
         request.put("ownTexts",ownTexts);request.put("stepId",step.id());
@@ -276,7 +330,7 @@ public class HrVisualService {
                 if(current.version()!=proposal.version() || !current.draft().equals(proposal.draft()))return false;
                 ChatCapture fresh=decode(target,prepared.path("capture"));
                 if(!fresh.contextComplete() || !safeRound(fresh.messages(),expected.messages(),ownTexts))return false;
-                visual.submitting(step);committed.set(true);return true;
+                visual.submitting(step,prepared.path("capture"));committed.set(true);return true;
             }));
         }catch(RuntimeException error){
             finish(run,target,step,committed.get()?"SEND_UNKNOWN":"BLOCKED",Map.of("detail",safeError(error)));return;

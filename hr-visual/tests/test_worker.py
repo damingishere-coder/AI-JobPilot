@@ -1,6 +1,7 @@
 import copy
 import sys
 import unittest
+from unittest.mock import patch
 from contextlib import nullcontext
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,8 +20,10 @@ def capture(*messages):
 class FakeDriver:
     def __init__(self, before, after=None, stage_change=False, fail_submit=False):
         self.before=before; self.after=after or before; self.submissions=0; self.stage_change=stage_change; self.staged=False; self.fail_submit=fail_submit
+        self.receipts=[]
     def session(self): return nullcontext()
     def open_chat(self, account): pass
+    def restore_receipt_boundary(self, before): pass
     def select_and_read(self, target): return self.before
     def read_chat(self, target, receipt=False):
         return self.after if receipt or (self.staged and self.stage_change) else self.before
@@ -35,7 +38,9 @@ class FakeDriver:
     def submit(self, action, before=None):
         self.submissions+=1
         if self.fail_submit: raise RuntimeError("submission interrupted")
-    def save_receipt(self, *args): return {"before": "encrypted", "after": "encrypted"}
+    def save_receipt(self, *args):
+        self.receipts.append(args)
+        return {"before": "encrypted", "after": "encrypted"}
 
 
 class WorkerTests(unittest.TestCase):
@@ -89,6 +94,45 @@ class WorkerTests(unittest.TestCase):
     def test_crash_after_submit_is_unknown_and_not_retried(self):
         d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")),fail_submit=True)
         self.assertEqual(self.run_driver(d)["outcome"],"SEND_UNKNOWN")
+        self.assertEqual(d.submissions,1)
+
+    def test_receipt_waits_for_list_reorder_without_submitting_twice(self):
+        before=capture(msg("你好"),msg("什么时候到岗？"))
+        after=capture(*before['messages'],msg("两周后可以到岗。","本人"))
+        d=FakeDriver(before,after);read=d.read_chat;remaining=[True]
+        def reordered(target,receipt=False):
+            if receipt and remaining:
+                remaining.pop()
+                raise Halt('IDENTITY_AMBIGUOUS','列表正在置顶')
+            return read(target,receipt)
+        d.read_chat=reordered
+        with patch('worker.time.sleep'):
+            self.assertEqual(self.run_driver(d)['outcome'],'SENT_CONFIRMED')
+        self.assertEqual(d.submissions,1)
+
+    def test_readonly_reconciliation_never_stages_or_submits(self):
+        before=capture(msg("你好"),msg("什么时候到岗？"))
+        after=capture(*before['messages'],msg("两周后可以到岗。","本人"))
+        d=FakeDriver(after)
+        result=self.run_driver(d,operation='reconcile',receiptBefore=before)
+        self.assertEqual(result['outcome'],'SENT_CONFIRMED')
+        self.assertEqual(d.submissions,0);self.assertFalse(d.staged)
+        self.assertEqual(len(d.receipts),1);self.assertIsNone(d.receipts[0][1])
+        d.before=before
+        self.assertEqual(self.run_driver(d,operation='reconcile',receiptBefore=before)['code'],'RECEIPT_UNCONFIRMED')
+        self.assertEqual(d.submissions,0)
+        self.assertEqual(len(d.receipts),1)  # A failed review must not replace the original before image.
+
+    def test_persistent_ambiguous_receipt_times_out_without_retrying_submit(self):
+        d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")));read=d.read_chat
+        def ambiguous(target,receipt=False):
+            if receipt: raise Halt('IDENTITY_AMBIGUOUS','列表未稳定')
+            return read(target)
+        d.read_chat=ambiguous
+        with patch('worker.time.sleep'),patch('worker.time.monotonic',side_effect=[0,0,16]):
+            result=self.run_driver(d)
+        self.assertEqual(result['outcome'],'SEND_UNKNOWN')
+        self.assertEqual(result['code'],'RECEIPT_TIMEOUT')
         self.assertEqual(d.submissions,1)
 
     def test_obscured_editor_stops_before_submission(self):

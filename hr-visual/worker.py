@@ -16,11 +16,22 @@ def serve(request: dict, driver, receive, emit):
     try:
         if request.get("protocol") != PROTOCOL:
             raise Halt("PROTOCOL_MISMATCH", "视觉执行协议不匹配")
-        if request.get("operation") not in ("inspect", "prepare"):
+        if request.get("operation") not in ("inspect", "prepare", "reconcile"):
             raise Halt("INVALID_OPERATION", "不支持的视觉操作")
         with driver.session():
             driver.open_chat(request["account"])
+            baseline = request.get("receiptBefore") if request["operation"] == "reconcile" else request.get("contextBaseline")
+            if baseline is not None:
+                verify_source(baseline, {"target": request["target"]})
+                driver.restore_receipt_boundary(baseline)
             capture = driver.select_and_read(request["target"])
+            if request["operation"] == "reconcile":
+                if not confirmed_new_message(request["receiptBefore"], capture, request["actionType"], request.get("draft", "")):
+                    raise Halt("RECEIPT_UNCONFIRMED", "只读复核未发现完整匹配的新增本人消息；未再次发送")
+                evidence = driver.save_receipt(request["stepId"], None, capture)
+                emit({**base, "phase": "result", "ok": True, "outcome": "SENT_CONFIRMED", "capture": capture,
+                      "evidence": evidence, "detail": "只读复核已确认新增本人消息，没有再次提交"})
+                return
             verify_source(capture, request)
             if request["operation"] == "inspect":
                 emit({**base, "phase": "result", "ok": True, "capture": capture,
@@ -69,7 +80,7 @@ def serve(request: dict, driver, receive, emit):
                 try:
                     after = driver.read_chat(request["target"], receipt=True)
                 except Halt as error:
-                    if error.code not in ("BODY_NOT_READY","BODY_UNVERIFIED","CONTEXT_INCOMPLETE","OCR_MISMATCH","COMPOSER_UNVERIFIED"):
+                    if error.code not in ("BODY_NOT_READY","BODY_UNVERIFIED","CONTEXT_INCOMPLETE","OCR_MISMATCH","COMPOSER_UNVERIFIED","IDENTITY_AMBIGUOUS"):
                         raise
                     time.sleep(1)
                     continue
@@ -83,7 +94,7 @@ def serve(request: dict, driver, receive, emit):
     except Exception as error:
         code = getattr(error, "code", "DRIVER_ERROR")
         evidence = {}
-        if capture is not None and request.get("stepId"):
+        if request.get("operation") != "reconcile" and capture is not None and request.get("stepId"):
             try:
                 evidence = driver.save_receipt(request["stepId"], capture, None)
             except Exception:

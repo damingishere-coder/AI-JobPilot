@@ -66,7 +66,24 @@ public class HrVisualStore {
         if(resume) db.update("INSERT INTO hr_send_step(id,command_id,ordinal,action_type) VALUES (?,?,1,'RESUME_NATIVE')",UUID.randomUUID().toString(),command);
     }
     public List<Map<String,Object>> steps(long proposal) {
-        return db.queryForList("SELECT s.id,s.ordinal,s.action_type,s.status,s.submitted_at,s.finished_at FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id WHERE c.proposal_id=? ORDER BY s.ordinal",proposal);
+        return db.queryForList("SELECT s.id,s.ordinal,s.action_type,s.status,s.submitted_at,s.finished_at,r.reviewed_at FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id LEFT JOIN hr_visual_receipt_review r ON r.step_id=s.id WHERE c.proposal_id=? ORDER BY s.ordinal",proposal);
+    }
+    public com.fasterxml.jackson.databind.JsonNode stepEvidence(String step) {
+        String encoded=db.queryForObject("SELECT evidence_cipher FROM hr_send_step WHERE id=?",String.class,step);
+        if(encoded==null || encoded.isBlank())return null;
+        try {return json.readTree(crypto.decrypt(encoded,"visual-evidence:"+step));}
+        catch(Exception e){throw new IllegalStateException("原发送前证据不可核验",e);}
+    }
+    public String commandId(String step) {return db.queryForObject("SELECT command_id FROM hr_send_step WHERE id=?",String.class,step);}
+    public void resumeRemaining(String command) {
+        if(db.update("UPDATE hr_send_command SET status='PENDING',outcome=NULL WHERE command_id=? AND EXISTS (SELECT 1 FROM hr_send_step WHERE command_id=? AND status='PENDING') AND NOT EXISTS (SELECT 1 FROM hr_send_step WHERE command_id=? AND status NOT IN ('PENDING','SENT_CONFIRMED'))",command,command,command)!=1)
+            throw new IllegalStateException("剩余步骤并非全部未提交，不能继续");
+    }
+    @Transactional
+    public void reconcileStep(String step,Object evidence) {
+        if(db.update("INSERT INTO hr_visual_receipt_review(step_id,previous_status,original_evidence_cipher) SELECT id,status,evidence_cipher FROM hr_send_step WHERE id=? AND status='SEND_UNKNOWN'",step)!=1)
+            throw new IllegalStateException("原步骤已处理，未修改回执");
+        db.update("UPDATE hr_send_step SET status='SENT_CONFIRMED',evidence_cipher=? WHERE id=? AND status='SEND_UNKNOWN'",encrypt(evidence,"visual-evidence:"+step),step);
     }
     public boolean explicitlyReconfirmed(long proposal) {
         return count("SELECT COUNT(*) FROM hr_visual_reconfirmation WHERE new_proposal_id=?",proposal)>0;
@@ -113,15 +130,23 @@ public class HrVisualStore {
         db.update("UPDATE hr_reply_proposal SET status='SENDING' WHERE id=?",proposal);
         return new Step(id,(String)step.get("command_id"),((Number)step.get("ordinal")).intValue(),(String)step.get("action_type"),token);
     }
-    public void submitting(Step step) {
-        if(db.update("UPDATE hr_send_step SET status='SUBMITTING',submitted_at=? WHERE id=? AND status='PREPARED' AND lease_hash=? AND lease_expires_at>?",
-                System.currentTimeMillis(),step.id(),crypto.blindIndex(step.leaseToken(),"visual-lease:"+step.id()),System.currentTimeMillis())!=1)
+    public void submitting(Step step) {submitting(step,null);}
+    public void submitting(Step step,Object before) {
+        String checkpoint=before==null?null:encrypt(Map.of("submissionAuthorized",true,"before",before,"detail","提交授权已记录，尚不能视为发送成功"),"visual-evidence:"+step.id());
+        if(db.update("UPDATE hr_send_step SET status='SUBMITTING',submitted_at=?,evidence_cipher=COALESCE(?,evidence_cipher) WHERE id=? AND status='PREPARED' AND lease_hash=? AND lease_expires_at>?",
+                System.currentTimeMillis(),checkpoint,step.id(),crypto.blindIndex(step.leaseToken(),"visual-lease:"+step.id()),System.currentTimeMillis())!=1)
             throw new IllegalStateException("视觉步骤租约已失效，未允许提交");
     }
     public void finish(Step step,String outcome,Object evidence) {
         if(!Set.of("SENT_CONFIRMED","SEND_UNKNOWN","BLOCKED","STALE").contains(outcome)) throw new IllegalArgumentException("非法发送结果");
+        var combined=json.valueToTree(evidence);
+        var checkpoint=stepEvidence(step.id());
+        if(combined instanceof com.fasterxml.jackson.databind.node.ObjectNode object && checkpoint!=null && checkpoint.has("before") && !object.hasNonNull("before")) {
+            object.set("before",checkpoint.path("before"));
+            object.put("submissionAuthorized",checkpoint.path("submissionAuthorized").asBoolean());
+        }
         if(db.update("UPDATE hr_send_step SET status=?,finished_at=?,evidence_cipher=?,lease_hash=NULL WHERE id=? AND status IN ('PREPARED','SUBMITTING') AND lease_hash=?",
-                outcome,System.currentTimeMillis(),encrypt(evidence,"visual-evidence:"+step.id()),step.id(),crypto.blindIndex(step.leaseToken(),"visual-lease:"+step.id()))!=1)
+                outcome,System.currentTimeMillis(),encrypt(combined,"visual-evidence:"+step.id()),step.id(),crypto.blindIndex(step.leaseToken(),"visual-lease:"+step.id()))!=1)
             throw new IllegalStateException("步骤已完成或回执不属于当前租约");
     }
     public void completeParent(String command,String outcome) {
@@ -178,7 +203,10 @@ public class HrVisualStore {
         for(String run:runs) {
             var ids=db.queryForList("SELECT s.id FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id JOIN hr_visual_target t ON t.proposal_id=c.proposal_id OR c.proposal_id IN (SELECT old_proposal_id FROM hr_visual_reconfirmation WHERE target_id=t.id) WHERE t.run_id=?",String.class,run);
             files.addAll(ids);
-            for(String id:ids)db.update("UPDATE hr_send_step SET evidence_cipher=NULL WHERE id=?",id);
+            for(String id:ids){
+                db.update("UPDATE hr_send_step SET evidence_cipher=NULL WHERE id=?",id);
+                db.update("UPDATE hr_visual_receipt_review SET original_evidence_cipher=NULL WHERE step_id=?",id);
+            }
             for(Target target:targets(run)) {
                 var empty=new com.getjobs.application.hr.HrAssistantTypes.ChatCapture("",0,null,List.of(),false,false);
                 seed(target.id(),new Seed("","已清理","已清理","","",false,false,empty));

@@ -39,6 +39,16 @@ class LayoutTests(unittest.TestCase):
                node("图片","Text","",(10,10,40,30)),node("","Image","",(20,50,350,250))]
         with self.assertRaises(Halt):d._messages(nodes,(0,0,800,600))
 
+    def test_delivery_badge_is_excluded_but_same_words_in_message_are_preserved(self):
+        nodes=[node("送达送达","ListItem","message-item item-myself",(0,0,600,200)),
+               node("送达","Text","",(400,50,460,80)),
+               node("","Group","message-status status-delivery",(300,100,350,140)),
+               node("送达","Text","",(305,105,345,135))]
+        result=WindowsDriver(threading.Event())._messages(nodes,(0,0,800,600))
+        self.assertEqual(result[0]['text'],'送达')
+        self.assertFalse(result[0]['failed'])
+        self.assertFalse(result[0]['pending'])
+
     def test_ocr_visibility_check_rejects_prefix_and_short_glyph_loss(self):
         self.assertTrue(ocr_supports("你好","你 好"))
         self.assertFalse(ocr_supports("你好","好"))

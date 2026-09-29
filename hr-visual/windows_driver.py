@@ -330,6 +330,17 @@ class WindowsDriver:
             time.sleep(1)
         raise last_error or Halt("BODY_NOT_READY", "20 秒内未读到连续稳定且完整的聊天正文，没有刷新页面")
 
+    def restore_receipt_boundary(self, before):
+        # Resume only a previously verified complete HR round, never inferred hidden text.
+        messages = before["messages"]
+        end = len(messages)
+        while end and messages[end-1]["from"] == "本人":
+            end -= 1
+        start = end
+        while start and messages[start-1]["from"] == "对方":
+            start -= 1
+        self.round_boundary = [(m["from"],m["text"],m["time"]) for m in messages[start:end]]
+
     def read_chat(self, target, receipt=False, modal_recheck=False):
         self.guard(receipt=receipt)
         nodes = self._nodes()
@@ -435,6 +446,7 @@ class WindowsDriver:
             if any(n["text"] == "你与该职位竞争者PK情况" for n in titles):
                 continue  # Platform promotion, not a message authored by the recruiter.
             buttons = [n["box"] for n in children if "card-btn" in n["class"].split()]
+            statuses = [n["box"] for n in children if "message-status" in n["class"].split()]
             klass = item["class"]
             direction = "本人" if ("item-self" in klass or "item-myself" in klass) else "对方" if "item-friend" in klass else ""
             if not direction:
@@ -451,7 +463,7 @@ class WindowsDriver:
             for n in sorted(children,key=lambda n:(n["box"][1],n["box"][0])):
                 if n["type"] != "Text" or not n["text"] or (n["text"],n["box"]) in seen:
                     continue
-                if any(inside(n["box"],button) for button in buttons):
+                if any(inside(n["box"],excluded) for excluded in buttons + statuses):
                     continue
                 seen.add((n["text"],n["box"]))
                 if re.fullmatch(r"(?:\d{4}年)?(?:\d{1,2}[月/-]\d{1,2}日?\s*)?\d{1,2}:\d{2}|已读|未读",n["text"]):
