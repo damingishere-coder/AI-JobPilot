@@ -24,10 +24,13 @@ class FakeDriver:
     def select_and_read(self, target): return self.before
     def read_chat(self, target, receipt=False):
         return self.after if receipt or (self.staged and self.stage_change) else self.before
-    def require_empty_composer(self): pass
+    def require_empty_composer(self):
+        if self.composer_text().strip(): raise Halt('HUMAN_DRAFT','已有人工草稿')
+    def composer_text(self): return ""
     def require_staged_text(self, text): pass
     def stage_text(self, text): self.staged=True
     def prepare_resume(self): pass
+    def prepare_text_submit(self, text): pass
     def guard(self): pass
     def submit(self, action, before=None):
         self.submissions+=1
@@ -68,6 +71,14 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.run_driver(d)["outcome"],"STALE")
         self.assertEqual(d.submissions,0)
 
+    def test_chat_change_after_focusing_editor_stops_before_enter(self):
+        d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")))
+        def focus_then_change(text):
+            d.before=capture(msg("你好"),msg("什么时候到岗？"),msg("先不用回复"))
+        d.prepare_text_submit=focus_then_change
+        self.assertEqual(self.run_driver(d)["outcome"],"STALE")
+        self.assertEqual(d.submissions,0)
+
     def test_cancel_and_wrong_identity_cannot_send(self):
         d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")))
         self.assertEqual(self.run_driver(d,"cancel")["outcome"],"BLOCKED")
@@ -79,6 +90,30 @@ class WorkerTests(unittest.TestCase):
         d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")),fail_submit=True)
         self.assertEqual(self.run_driver(d)["outcome"],"SEND_UNKNOWN")
         self.assertEqual(d.submissions,1)
+
+    def test_obscured_editor_stops_before_submission(self):
+        d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")))
+        def obstructed(text): raise Halt("COMPOSER_OCCLUDED","编辑框被遮挡")
+        d.prepare_text_submit=obstructed
+        result=self.run_driver(d)
+        self.assertEqual(result['outcome'],'BLOCKED')
+        self.assertFalse(result['submitted'])
+        self.assertEqual(d.submissions,0)
+
+    def test_explicit_reconfirmation_uses_exact_approved_staged_draft(self):
+        before=capture(msg("你好"),msg("什么时候到岗？"))
+        after=capture(*before['messages'],msg("两周后可以到岗。","本人"))
+        d=FakeDriver(before,after)
+        d.composer_text=lambda:"两周后可以到岗。"
+        self.assertEqual(self.run_driver(d)['outcome'],'BLOCKED')
+        self.assertEqual(d.submissions,0)
+        self.assertEqual(self.run_driver(d,adoptApprovedDraft=True)['outcome'],'SENT_CONFIRMED')
+        self.assertFalse(d.staged)
+        self.assertEqual(d.submissions,1)
+        def wrong(text): raise Halt('DRAFT_MISMATCH','人工草稿不同')
+        d=FakeDriver(before,after);d.composer_text=lambda:'别的草稿';d.require_staged_text=wrong
+        self.assertEqual(self.run_driver(d,adoptApprovedDraft=True)['outcome'],'BLOCKED')
+        self.assertEqual(d.submissions,0)
 
     def test_old_prefix_match_and_cleared_composer_are_not_receipts(self):
         before=capture(msg("你好"),msg("相同内容","本人"))
