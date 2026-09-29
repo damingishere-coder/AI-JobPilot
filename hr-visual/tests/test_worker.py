@@ -2,7 +2,7 @@ import copy
 import sys
 import unittest
 from unittest.mock import patch
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import PROTOCOL, Halt, confirmed_new_message, require_chat_url, verify_source, stable_pair, source_round, resume_request
@@ -139,6 +139,36 @@ class WorkerTests(unittest.TestCase):
     def test_crash_after_submit_is_unknown_and_not_retried(self):
         d=FakeDriver(capture(msg("你好"),msg("什么时候到岗？")),fail_submit=True)
         self.assertEqual(self.run_driver(d)["outcome"],"SEND_UNKNOWN")
+        self.assertEqual(d.submissions,1)
+
+    def test_failure_scene_is_saved_before_desktop_lock_release(self):
+        d=FakeDriver(capture(msg('你好'),msg('什么时候到岗？')),fail_submit=True)
+        order=[]
+        @contextmanager
+        def session():
+            order.append('locked')
+            try: yield
+            finally: order.append('released')
+        def failure(step):
+            order.append('failure')
+            return {'failure':'encrypted failure scene'}
+        d.session=session;d.save_failure=failure
+        result=self.run_driver(d)
+        self.assertEqual(order,['locked','failure','released'])
+        self.assertEqual(result['outcome'],'SEND_UNKNOWN')
+        self.assertEqual(result['evidence']['failure'],'encrypted failure scene')
+        self.assertEqual(d.submissions,1)
+
+    def test_receipt_timeout_keeps_last_read_error_and_failure_scene(self):
+        d=FakeDriver(capture(msg('你好'),msg('什么时候到岗？')));read=d.read_chat
+        def blocked(target,receipt=False):
+            if receipt:raise Halt('OCR_MISMATCH','正文被弹层遮挡')
+            return read(target,receipt)
+        d.read_chat=blocked;d.save_failure=lambda step:{'failure':'encrypted'}
+        with patch('worker.time.monotonic',side_effect=[0,0,16]),patch('worker.time.sleep'):
+            result=self.run_driver(d)
+        self.assertEqual(result['outcome'],'SEND_UNKNOWN')
+        self.assertIn('OCR_MISMATCH',result['detail'])
         self.assertEqual(d.submissions,1)
 
     def test_receipt_waits_for_list_reorder_without_submitting_twice(self):

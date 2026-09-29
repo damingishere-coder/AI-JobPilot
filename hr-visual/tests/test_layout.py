@@ -11,6 +11,49 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def resume_popup(self, kind='Group'):
+        control=Mock();control.iface_selection_item.CurrentIsSelected=True
+        return [node('',kind,'choose-resume-dialog',(300,200,900,650)),
+                node('简历.pdf','Text','',(350,300,650,330)),
+                node('发送','Hyperlink','btn-sure-v2 btn-confirm',(650,550,850,610)),
+                node('发送','Button','',(1000,800,1100,850)),
+                {**node('','RadioButton','',(320,270,800,380)),'control':control}]
+
+    def test_web_resume_chooser_is_scoped_and_requires_unique_file(self):
+        for kind in ('Group','Pane','Dialog'):
+            nodes=self.resume_popup(kind)
+            self.assertEqual(WindowsDriver._resume_choice(nodes),('简历.pdf',(350,300,650,330),(650,550,850,610)))
+            with self.assertRaises(Halt):
+                WindowsDriver._resume_choice(nodes+[node('第二份.pdf','Text','',(350,350,650,380))])
+            with self.assertRaises(Halt):WindowsDriver._resume_choice(nodes[:2]+nodes[3:])
+        self.assertIsNone(WindowsDriver._resume_choice(self.resume_popup()[1:]))
+        with self.assertRaises(Halt):WindowsDriver._resume_choice(self.resume_popup()[:-1])
+        nodes=self.resume_popup();nodes[-1]['control'].iface_selection_item.CurrentIsSelected=False
+        with self.assertRaises(Halt):WindowsDriver._resume_choice(nodes)
+        nodes=self.resume_popup();nodes[1]['box']=(350,400,650,430)
+        with self.assertRaises(Halt):WindowsDriver._resume_choice(nodes)
+
+    def test_delayed_web_chooser_confirms_once_after_five_seconds(self):
+        d=WindowsDriver(threading.Event());d.resume_confirm=(100,700,200,730)
+        before={'hrName':'王女士','companyName':'甲公司','messages':[]}
+        popup=self.resume_popup();toolbar=Mock();toolbar.window_text.return_value='发简历'
+        button=Mock();button.window_text.return_value='发送'
+        desktop=Mock();desktop.Desktop.return_value.from_point.side_effect=[toolbar,button]
+        with patch.dict(sys.modules,{'pywinauto':desktop}),patch.object(d,'prepare_resume'),patch.object(d,'_click') as click,patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[[],popup,popup]),patch.object(d,'read_chat',return_value=before),patch('windows_driver.box',return_value=(650,550,850,610)),patch('windows_driver.time.monotonic',side_effect=[0,0,1,2]),patch('windows_driver.time.sleep') as sleep:
+            d.submit('RESUME_NATIVE',before)
+        self.assertEqual([x.args[0] for x in click.call_args_list],[(100,700,200,730),(650,550,850,610)])
+        self.assertEqual(sleep.call_args_list[-1].args[0],3)
+
+    def test_chooser_change_or_source_change_never_clicks_confirmation(self):
+        d=WindowsDriver(threading.Event());d.resume_confirm=(100,700,200,730)
+        before={'hrName':'王女士','companyName':'甲公司','messages':[]}
+        popup=self.resume_popup();changed=self.resume_popup();changed[1]['text']='另一份.pdf'
+        desktop=Mock();desktop.Desktop.return_value.from_point.return_value.window_text.return_value='发简历'
+        for source,nodes in (({**before,'messages':[{'text':'新消息'}]},popup),(before,changed)):
+            with patch.dict(sys.modules,{'pywinauto':desktop}),patch.object(d,'prepare_resume'),patch.object(d,'_click') as click,patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[popup,nodes]),patch.object(d,'read_chat',return_value=source),patch('windows_driver.time.sleep'):
+                with self.assertRaises(Halt):d.submit('RESUME_NATIVE',before)
+            self.assertEqual(click.call_count,1)
+
     def test_offscreen_contact_requires_current_header_name_and_company(self):
         d=WindowsDriver(threading.Event());d.chat_box=(400,0,1200,800)
         target={'hrName':'张女士','companyName':'甲公司'}

@@ -728,6 +728,13 @@ public class HrVisualService {
         ProposalStatus status=switch(outcome){case "SENT_CONFIRMED"->ProposalStatus.SENT_CONFIRMED;case "STALE"->ProposalStatus.EXPIRED;case "BLOCKED"->ProposalStatus.BLOCKED;default->ProposalStatus.SEND_UNKNOWN;};
         store.markFinal(target.proposalId(),status,json.valueToTree(evidence).path("detail").asText(outcome));
         visual.target(target.id(),null,outcome,json.valueToTree(evidence).path("detail").asText(outcome));
+        if(outcome.equals("SEND_UNKNOWN")) {
+            String batchId=batches.owner(run.id());
+            if(batchId!=null) {
+                var batch=batches.get(run.profileId(),batchId);
+                batches.state(batchId,"PAUSED",batch.stage(),"发送结果未知，已保留现场并暂停；该会话禁止自动重试");
+            }
+        }
         if(outcome.equals("SENT_CONFIRMED"))for(var m:decode(target,json.valueToTree(evidence).path("capture")).messages())store.saveMessage(target.conversationId(),m,store.loadSettingsSecret(run.profileId()).retentionDays());
         if(!visual.isResumeRuleRun(run.id()) && batches.resumeRequest(run.id())==null && outcome.equals("STALE") && visual.steps(target.proposalId()).stream().noneMatch(s->"SENT_CONFIRMED".equals(s.get("status")))) {
             var s=target.seed();visual.seed(target.id(),new Seed(s.uid(),s.hrName(),s.companyName(),s.jobName(),"",false,false,s.expected()));
