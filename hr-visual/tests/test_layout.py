@@ -47,7 +47,7 @@ class LayoutTests(unittest.TestCase):
         def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
         with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('甲'),rows('甲'),rows('甲')]),patch.object(d,'_wheel_contacts') as wheel:
             d._list_to_top()
-        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,10,10,10])
+        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,300,300,300])
 
     def test_end_marker_must_be_in_list_not_chat_body(self):
         search=node('','Edit','boss-search-input',(0,0,300,30))

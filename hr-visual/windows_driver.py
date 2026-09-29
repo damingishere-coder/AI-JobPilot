@@ -366,7 +366,9 @@ class WindowsDriver:
         stable = 0
         deadline = time.monotonic()+18
         while time.monotonic() < deadline:
-            self._wheel_contacts(10)
+            # Returning upward does not enumerate candidates. A bounded large wheel
+            # delta reaches the start of long lists without navigation or refresh.
+            self._wheel_contacts(300)
             time.sleep(1)
             self.guard()
             current = snapshot()
