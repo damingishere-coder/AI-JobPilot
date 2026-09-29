@@ -382,6 +382,21 @@ class WindowsDriver:
             if stable >= 2:
                 if not moved_up:
                     raise Halt("LIST_TOP_UNVERIFIED", "向上滚轮未产生可核验的变化，不能把静止视口当作顶部")
+                # A stopped large wheel may be ignored rather than at the boundary.
+                # Prove a reversible small movement and then the upper boundary.
+                self._wheel_contacts(-1)
+                time.sleep(1)
+                below = snapshot()
+                if not below or below == current:
+                    raise Halt("LIST_TOP_UNVERIFIED", "顶部回检无法向下移动，滚轮响应不可核验")
+                self._wheel_contacts(1)
+                time.sleep(1)
+                if snapshot() != current:
+                    raise Halt("LIST_TOP_UNVERIFIED", "顶部回检未返回原列表位置，不能确认覆盖起点")
+                self._wheel_contacts(1)
+                time.sleep(1)
+                if snapshot() != current:
+                    raise Halt("LIST_TOP_UNVERIFIED", "列表仍可向上移动，尚未到达顶部")
                 return
             previous = current
         raise Halt("LIST_TOP_UNVERIFIED", "向上滚动后未核验列表顶部，保留现场等待恢复")

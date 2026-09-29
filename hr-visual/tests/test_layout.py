@@ -45,9 +45,26 @@ class LayoutTests(unittest.TestCase):
     def test_virtualized_top_detection_compares_text_not_only_rectangles(self):
         d=WindowsDriver(threading.Event())
         def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
-        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('甲'),rows('甲'),rows('甲')]),patch.object(d,'_wheel_contacts') as wheel:
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('甲'),rows('甲'),rows('甲'),rows('乙'),rows('甲'),rows('甲')]),patch.object(d,'_wheel_contacts') as wheel:
             d._list_to_top()
-        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,200,200,200])
+        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,200,200,200,-1,1,1])
+
+    def test_small_up_from_bottom_with_ignored_large_up_cannot_prove_top(self):
+        d=WindowsDriver(threading.Event())
+        def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
+        snapshots=[rows(s) for s in ('底','底','中','中','中','底','中','上')]
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=snapshots),patch.object(d,'_wheel_contacts'):
+            with self.assertRaises(Halt) as result:d._list_to_top()
+        self.assertEqual(result.exception.code,'LIST_TOP_UNVERIFIED')
+
+    def test_top_challenge_requires_reversible_small_movement(self):
+        d=WindowsDriver(threading.Event())
+        def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
+        for ending in [('甲',),('乙','错位')]:
+            snapshots=[rows(s) for s in ('甲','乙','甲','甲','甲',*ending)]
+            with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=snapshots),patch.object(d,'_wheel_contacts'):
+                with self.assertRaises(Halt) as result:d._list_to_top()
+            self.assertEqual(result.exception.code,'LIST_TOP_UNVERIFIED')
 
     def test_downward_movement_without_upward_movement_cannot_prove_top(self):
         d=WindowsDriver(threading.Event())
