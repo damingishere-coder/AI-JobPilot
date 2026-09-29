@@ -11,6 +11,53 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_offscreen_contact_requires_current_header_name_and_company(self):
+        d=WindowsDriver(threading.Event());d.chat_box=(400,0,1200,800)
+        target={'hrName':'张女士','companyName':'甲公司'}
+        header=[node('张女士','Text','',(430,10,500,40)),node('甲公司','Text','',(520,12,650,42))]
+        self.assertEqual(d._selected_identity(header,target),target)
+        for nodes in (header[:1],[header[0],node('乙公司','Text','',(520,12,650,42))],
+                      [header[0],node('甲公司','Text','',(520,90,650,110))],header+[header[1]]):
+            with self.assertRaises(Halt):d._selected_identity(nodes,target)
+        conflict=[node('','Group','friend-content selected',(0,0,350,100)),node('张女士','Text','',(10,10,80,40)),node('乙公司','Text','',(100,10,200,40))]
+        with self.assertRaises(Halt):d._selected_identity(header+conflict,target)
+
+    def test_highlighted_search_name_uses_popup_not_background_row(self):
+        search=(20,0,300,30);target={'hrName':'张女士','companyName':'甲公司','visualJob':'产品经理'}
+        popup=node('张女士甲公司招聘职位: 产品经理','ListItem','search-list',(10,35,320,145))
+        nodes=[popup,node('甲公司','Text','',(90,45,170,65)),node('产品经理','Text','',(90,100,200,125)),
+               node('张女士','Text','',(40,160,100,180)),node('甲公司','Text','',(110,160,200,180))]
+        self.assertEqual(WindowsDriver._search_matches(nodes,target,search),[popup])
+        self.assertEqual(WindowsDriver._search_matches(nodes[1:],target,search),[])
+        self.assertEqual(WindowsDriver._search_matches(nodes,{**target,'hrName':'张'},search),[])
+        self.assertEqual(WindowsDriver._search_matches(nodes,{**target,'companyName':'乙公司'},search),[])
+        self.assertEqual(WindowsDriver._search_matches(nodes,{**target,'visualJob':'运营'},search),[])
+
+    def test_search_popup_keeps_duplicate_full_identities_ambiguous(self):
+        search=(20,0,300,30);target={'hrName':'张女士','companyName':'甲公司'}
+        nodes=[node('张女士甲公司职位: 产品','ListItem','search-list',(10,35,320,120)),node('甲公司','Text','',(90,45,170,65)),
+               node('张女士甲公司职位: 运营','ListItem','search-list',(10,125,320,220)),node('甲公司','Text','',(90,135,170,155))]
+        self.assertEqual(len(WindowsDriver._search_matches(nodes,target,search)),2)
+
+    def test_search_result_without_complete_job_is_not_clicked(self):
+        d=WindowsDriver(threading.Event());d.window=Mock()
+        popup=node('HR公司','ListItem','search-list',(0,35,300,110))
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),popup,node('公司','Text','',(100,50,170,70))]
+        with patch.dict(sys.modules,{'pywinauto.keyboard':Mock()}),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_click') as click,patch.object(d,'_nodes',return_value=nodes):
+            with self.assertRaises(Halt) as result:d.select_and_read({'hrName':'HR','companyName':'公司'})
+        self.assertEqual(result.exception.code,'JOB_UNVERIFIED')
+        self.assertEqual(click.call_count,1)
+
+    def test_search_job_rejects_old_body_for_same_hr_and_company(self):
+        d=WindowsDriver(threading.Event());d.chat_box=(400,0,1200,900);d.selected_job='新岗位'
+        target={'hrName':'张女士','companyName':'甲公司'}
+        nodes=[node('张女士','Text','',(430,10,500,40)),node('甲公司','Text','',(520,12,650,42)),
+               {**node('','Edit','chat-input',(400,600,1200,850)),'control':Mock()},
+               node('','Group','left-content',(430,70,850,120)),node('旧岗位','Text','',(450,80,550,105))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):
+            with self.assertRaises(Halt) as result:d.read_chat(target)
+        self.assertEqual(result.exception.code,'IDENTITY_MISMATCH')
+
     def test_selected_chat_scrolled_out_of_list_is_not_reported_unselected(self):
         d=WindowsDriver(threading.Event());events=[];d.report=lambda **e:events.append(e)
         nodes=[node('本人','Text','nav-figure',(0,0,100,30)),node('','Edit','boss-search-input',(0,40,300,70)),
@@ -95,11 +142,22 @@ class LayoutTests(unittest.TestCase):
 
     def test_failed_middle_read_resets_stability(self):
         d=WindowsDriver(threading.Event());d.window=Mock()
-        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),node('HR','Text','',(20,50,90,70)),node('公司','Text','',(100,50,170,70))]
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),node('HR公司职位','ListItem','search-list',(0,35,300,110)),node('HR','Text','',(20,50,90,70)),node('公司','Text','',(100,50,170,70)),node('职位:','Text','',(20,80,75,100)),node('岗位','Text','',(75,80,200,100))]
         capture={'hrName':'HR','companyName':'公司','jobName':'岗位','contextComplete':True,'messages':[{'from':'对方','text':'你好'}]}
         with patch.dict(sys.modules,{'pywinauto.keyboard':Mock()}),patch('windows_driver.box',return_value=(0,0,1000,800)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_click'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'read_chat',side_effect=[capture,Halt('BODY_UNVERIFIED','空白'),capture,capture]) as read:
             self.assertEqual(d.select_and_read({'hrName':'HR','companyName':'公司'}),capture)
         self.assertEqual(read.call_count,4)
+
+    def test_search_empty_middle_snapshot_resets_stability(self):
+        d=WindowsDriver(threading.Event());d.window=Mock()
+        popup=node('HR公司职位','ListItem','search-list',(0,35,300,110))
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),popup,node('公司','Text','',(100,50,170,70)),node('职位:','Text','',(20,80,75,100)),node('岗位','Text','',(75,80,200,100))]
+        capture={'hrName':'HR','companyName':'公司','jobName':'岗位','contextComplete':True,'messages':[{'from':'对方','text':'你好'}]}
+        with patch.dict(sys.modules,{'pywinauto.keyboard':Mock()}),patch('windows_driver.box',return_value=(0,0,1000,800)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_click') as click,patch.object(d,'_nodes',return_value=nodes),patch.object(d,'_search_matches',side_effect=[[popup],[],[popup],[popup]]) as matches,patch.object(d,'read_chat',return_value=capture):
+            self.assertEqual(d.select_and_read({'hrName':'HR','companyName':'公司'}),capture)
+        self.assertEqual(matches.call_count,4)
+        self.assertEqual(click.call_args_list[-1].args[0],popup['box'])
+        self.assertEqual(d.selected_job,'岗位')
 
     def test_scroll_bottom_without_end_marker_does_not_prove_coverage(self):
         d=WindowsDriver(threading.Event());parent=Mock();scroll=parent.iface_scroll
