@@ -48,7 +48,16 @@ public class HrAssistantController {
     public void setVisual(com.getjobs.application.service.HrVisualService visual) { this.visual=visual; }
 
     @GetMapping("/visual/status")
-    public ResponseEntity<?> visualStatus() { return execute(()->visual.status(profileService.getCurrentProfileId())); }
+    public ResponseEntity<?> visualStatus() {
+        String requestId = UUID.randomUUID().toString();
+        try {
+            // Keep this GET on a direct read path, separate from the mutation dispatcher.
+            return ResponseEntity.ok(envelope(true, "", "", requestId,
+                    visual.status(profileService.getCurrentProfileId())));
+        } catch (Throwable error) {
+            return requestFailure(error, requestId);
+        }
+    }
 
     @PostMapping("/visual/start")
     public ResponseEntity<?> visualStart(
@@ -284,15 +293,21 @@ public class HrAssistantController {
         String requestId = UUID.randomUUID().toString();
         try {
             return ResponseEntity.ok(envelope(true, "", "", requestId, action.run()));
-        } catch (com.getjobs.application.service.HrProfileGuard.WatchActiveException e) {
-            return failure(HttpStatus.CONFLICT, "HR_WATCH_ACTIVE", e.getMessage(), requestId);
-        } catch (HrAssistantStore.StaleProposalException e) {
-            return failure(HttpStatus.CONFLICT, "STALE_STATE", e.getMessage(), requestId);
-        } catch (IllegalArgumentException e) {
-            return failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", e.getMessage(), requestId);
-        } catch (IllegalStateException e) {
-            return failure(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", e.getMessage(), requestId);
         } catch (Throwable error) {
+            return requestFailure(error, requestId);
+        }
+    }
+
+    private ResponseEntity<?> requestFailure(Throwable error, String requestId) {
+        if (error instanceof com.getjobs.application.service.HrProfileGuard.WatchActiveException e) {
+            return failure(HttpStatus.CONFLICT, "HR_WATCH_ACTIVE", e.getMessage(), requestId);
+        } else if (error instanceof HrAssistantStore.StaleProposalException e) {
+            return failure(HttpStatus.CONFLICT, "STALE_STATE", e.getMessage(), requestId);
+        } else if (error instanceof IllegalArgumentException e) {
+            return failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", e.getMessage(), requestId);
+        } else if (error instanceof IllegalStateException e) {
+            return failure(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", e.getMessage(), requestId);
+        } else {
             log.error("HR assistant request failed requestId={} type={}", requestId, error.getClass().getSimpleName());
             return failure(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "本地服务处理失败，请根据错误编号检查日志", requestId);
         }
