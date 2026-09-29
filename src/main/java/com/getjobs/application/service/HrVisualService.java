@@ -202,7 +202,9 @@ public class HrVisualService {
             if(!batch.status().equals("PAUSED") || executing.get() || visual.busy())throw new IllegalStateException("请先暂停本轮并等待当前操作结束");
             if(batch.stage().equals("BOOTSTRAP") || batches.items(id).stream().noneMatch(i->i.kind().equals("CONTACT")))throw new IllegalStateException("尚未收集联系人");
             if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守仍在运行");
-            batches.processDiscovered(id,request.replyMode(),request.replyMode().equals("AUTO")?policies.visualAuthorizationHash(profile):"");
+            // Both modes bind a current snapshot; only explicit AUTO consent enables text sending.
+            String authorization=policies.visualAuthorizationHash(profile);
+            batches.processDiscovered(id,request.replyMode(),authorization);
             for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
             batches.resetAnchors(id,"PROCESS");
             batches.state(id,"RUNNING","POSITION_LIST","处理本轮已收集的全部会话；保留未完成列表范围，不重新枚举或开页");
