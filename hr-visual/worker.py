@@ -6,20 +6,35 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from core import PROTOCOL, Halt, confirmed_new_message, signature, verify_source, resume_request
+
+
+@contextmanager
+def failure_scene(driver, request, evidence):
+    try:
+        yield
+    except Exception:
+        if request.get("operation") != "reconcile" and request.get("stepId"):
+            try:
+                evidence.update(driver.save_failure(request["stepId"]))
+            except Exception:
+                pass  # Evidence failure must never change the send outcome.
+        raise
 
 
 def serve(request: dict, driver, receive, emit):
     base = {"protocol": PROTOCOL, "requestId": request.get("requestId", "")}
     submitted = False
     capture = None
+    evidence = {}
     try:
         if request.get("protocol") != PROTOCOL:
             raise Halt("PROTOCOL_MISMATCH", "视觉执行协议不匹配")
         if request.get("operation") not in ("inspect", "prepare", "reconcile", "discover", "discover_page", "bootstrap"):
             raise Halt("INVALID_OPERATION", "不支持的视觉操作")
         driver.report = lambda **event: emit({**base, **event, "phase": "progress", "source": "WINDOWS_VISUAL"})
-        with driver.session():
+        with driver.session(), failure_scene(driver, request, evidence):
             driver.open_chat(request["account"], existing_only=not bool(request.get("allowOpenOnce")
                              and request["operation"] in ("bootstrap", "inspect") and not request.get("resumeRule")))
             if request["operation"] == "bootstrap":
@@ -95,12 +110,14 @@ def serve(request: dict, driver, receive, emit):
             submitted = True
             driver.submit(action, capture)
             deadline = time.monotonic() + 15
+            last_read_error = ""
             while time.monotonic() < deadline:
                 try:
                     after = driver.read_chat(request["target"], receipt=True)
                 except Halt as error:
                     if error.code not in ("BODY_NOT_READY","BODY_UNVERIFIED","CONTEXT_INCOMPLETE","OCR_MISMATCH","COMPOSER_UNVERIFIED","IDENTITY_AMBIGUOUS"):
                         raise
+                    last_read_error = f"{error.code}: {error}"
                     time.sleep(1)
                     continue
                 if confirmed_new_message(capture, after, action, request.get("draft", "")):
@@ -108,14 +125,15 @@ def serve(request: dict, driver, receive, emit):
                     emit({**base, "phase": "result", "ok": True, "outcome": "SENT_CONFIRMED",
                           "detail": "已观察到完整匹配的新增本人消息", "capture": after, "evidence": evidence})
                     return
+                last_read_error = ""
                 time.sleep(1)
-            raise Halt("RECEIPT_TIMEOUT", "15 秒内未观察到匹配的新增本人消息，禁止自动重试")
+            raise Halt("RECEIPT_TIMEOUT", "15 秒内未观察到匹配的新增本人消息，禁止自动重试"
+                       + (f"；最后读取失败：{last_read_error}" if last_read_error else ""))
     except Exception as error:
         code = getattr(error, "code", "DRIVER_ERROR")
-        evidence = {}
         if request.get("operation") != "reconcile" and capture is not None and request.get("stepId"):
             try:
-                evidence = driver.save_receipt(request["stepId"], capture, None)
+                evidence.update(driver.save_receipt(request["stepId"], capture, None))
             except Exception:
                 pass
         emit({**base, "phase": "result", "ok": False, "code": code,

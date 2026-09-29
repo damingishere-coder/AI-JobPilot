@@ -203,6 +203,19 @@ class HrVisualServiceTest {
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_visual_batch",Integer.class)).isEqualTo(1);
         verify(worker,never()).exchange(argThat(m->m.containsKey("allowOpenOnce")),isNull());
     }
+    @Test void unknownPrioritySendPausesBeforeAnotherDesktopOperation() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();
+        priorityObservation(true);advanceBatch();
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        var step=visual.claim(1L,target.proposalId());
+        ReflectionTestUtils.invokeMethod(service,"finish",run,target,step,"SEND_UNKNOWN",Map.of("detail","没有新增回执"));
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+        assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
+        clearInvocations(worker);advance();advanceBatch();
+        verify(worker,never()).exchange(anyMap(),any());
+        verify(worker,never()).exchange(anyMap(),any(),any());
+        assertThat(visual.steps(target.proposalId())).hasSize(1);
+    }
     @Test void priorityTextStillWaitsForQqAndResumeSurvivesRestart() {
         var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();
         batches.recover();service.controlBatch(1L,item.batch(),true);advanceBatch();

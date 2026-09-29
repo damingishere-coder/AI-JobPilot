@@ -937,33 +937,88 @@ class WindowsDriver:
         if hit.window_text() not in ("同意", "发简历"):
             raise Halt("RESUME_OCCLUDED", "简历操作位置被遮挡，未点击")
         self._click(rect)
-        time.sleep(1)
-        nodes = self._nodes()
-        dialogs = [n for n in nodes if n["type"] == "Dialog" and "简历" in n["text"]]
-        if not dialogs:
+        clicked_at = time.monotonic()
+        choice = None
+        # Web modals need not expose the UIA Dialog role. Wait for the actual
+        # chooser without clicking the toolbar again or treating its absence as success.
+        while time.monotonic() - clicked_at < 5:
+            time.sleep(.5)
+            self.guard()
+            nodes = self._nodes()
+            self._check_page(nodes)
+            choice = self._resume_choice(nodes)
+            if choice is not None:
+                break
+        if choice is None:
             return  # Only a new resume message can establish success.
-        if len(dialogs) != 1:
-            raise Halt("RESUME_AMBIGUOUS", "简历选择弹窗不唯一，需本人选择")
-        dialog = dialogs[0]
-        choices = [n for n in nodes if inside(n["box"],dialog["box"]) and n["type"] in ("RadioButton","ListItem")]
-        if len(choices) != 1:
-            raise Halt("RESUME_AMBIGUOUS", "无法确定唯一简历，未点击弹窗发送")
-        files = [n for n in nodes if n["type"] == "Text" and inside(n["box"],choices[0]["box"])
-                 and re.search(r"\.(?:pdf|docx?)$", n["text"], re.I)]
-        if len(files) != 1:
-            raise Halt("RESUME_SELECTION_REQUIRED", "无法核验唯一简历的文件名，未确认弹窗")
-        buttons = [n for n in nodes if inside(n["box"],dialog["box"]) and n["type"] == "Button" and n["text"] == "发送"]
-        if len(buttons) != 1 or before is None:
-            raise Halt("RESUME_CONFIRM", "无法确认简历弹窗的发送按钮或原始依据")
+        if before is None:
+            raise Halt("RESUME_CONFIRM", "缺少简历弹窗发送的原始依据")
         # No second submission if the recruiter changes the request while the chooser loads.
-        time.sleep(4)  # At least five seconds since the toolbar action.
+        time.sleep(max(0, 5 - (time.monotonic() - clicked_at)))
         fresh = self.read_chat(self.target, modal_recheck=True)
         if signature(fresh) != signature(before):
             raise Halt("STALE", "简历确认前聊天已变化，未点击弹窗发送")
-        current = self._nodes()
-        if not any(n["text"] == files[0]["text"] and n["box"] == files[0]["box"] for n in current):
-            raise Halt("RESUME_CHANGED", "简历选项已变化，未确认发送")
-        self._click(buttons[0]["box"])
+        current = self._resume_choice(self._nodes())
+        if current != choice:
+            raise Halt("RESUME_CHANGED", "简历选项或确认按钮已变化，未确认发送")
+        rect = current[2]
+        hit = Desktop(backend="uia").from_point((rect[0]+rect[2])//2,(rect[1]+rect[3])//2)
+        if hit.window_text() != "发送" or not inside(box(hit), rect):
+            raise Halt("RESUME_OCCLUDED", "简历确认按钮被遮挡，未点击")
+        self.guard()
+        self._click(rect)
+
+    @staticmethod
+    def _resume_choice(nodes):
+        # Read native BOSS chooser classes through UIA, not a generic Send
+        # button elsewhere in the chat or the assistant panel.
+        dialogs = [n for n in nodes if "choose-resume-dialog" in n["class"].split()
+                   or (n["type"] == "Dialog" and "简历" in n["text"])]
+        dialogs = list({n["box"]: n for n in dialogs}.values())
+        # Nested UIA wrappers for the same chooser do not create two choices.
+        dialogs = [n for n in dialogs if not any(n is not other and inside(other["box"], n["box"])
+                   and other["box"] != n["box"] for other in dialogs)]
+        if not dialogs:
+            return None
+        if len(dialogs) != 1:
+            raise Halt("RESUME_AMBIGUOUS", "简历选择弹窗不唯一，需本人选择")
+        children = [n for n in nodes if inside(n["box"], dialogs[0]["box"])]
+        choices = {n["box"]: n for n in children if n["type"] in ("RadioButton", "ListItem")}
+        files = {(n["text"], n["box"]) for n in children if n["type"] == "Text"
+                 and re.search(r"\.(?:pdf|docx?)$", n["text"].strip(), re.I)}
+        if len(choices) != 1 or len(files) != 1:
+            raise Halt("RESUME_SELECTION_REQUIRED", "无法核验唯一简历的文件名，未确认弹窗")
+        selected = next(iter(choices.values()))
+        filename, file_box = next(iter(files))
+        if not inside(file_box, selected["box"]):
+            raise Halt("RESUME_SELECTION_REQUIRED", "简历文件不属于唯一选项，未确认弹窗")
+        try:
+            is_selected = bool(selected["control"].iface_selection_item.CurrentIsSelected)
+        except Exception:
+            is_selected = False
+        if not is_selected:
+            raise Halt("RESUME_SELECTION_REQUIRED", "无法核验唯一简历已选中，未确认弹窗")
+        buttons = {n["box"] for n in children if n["text"] == "发送"
+                   and (n["type"] in ("Button", "Hyperlink") or "btn-confirm" in n["class"].split())}
+        if len(buttons) != 1:
+            raise Halt("RESUME_CONFIRM", "无法唯一核验简历弹窗发送按钮")
+        return filename, file_box, next(iter(buttons))
+
+    def save_failure(self, step):
+        """Keep the visible failure scene encrypted while the desktop lock is held."""
+        import win32crypt
+        if self.window is None or not re.fullmatch(r"[a-f0-9-]{36}", step):
+            return {}
+        import win32gui
+        if win32gui.GetForegroundWindow() != self.hwnd:
+            return {}  # Do not capture another application after human takeover.
+        raw = io.BytesIO()
+        self._screenshot(box(self.window)).save(raw, format="PNG")
+        root = Path(os.environ.get("APP_DATA_DIR", "data"))/"hr-visual-evidence"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root/f"{step}-failure.png.dpapi"
+        path.write_bytes(win32crypt.CryptProtectData(raw.getvalue(), "BOSS HR failure scene", None, None, None, 0))
+        return {"failure": {"file": str(path.resolve()), "sha256": hashlib.sha256(raw.getvalue()).hexdigest()}}
 
     @staticmethod
     def _screenshot(rect):
