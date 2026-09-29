@@ -30,6 +30,19 @@ public class HrVisualBatchStore {
     }
     public boolean active(Long profile) {var b=latest(profile);return b!=null && Set.of("STARTING","RUNNING").contains(b.status());}
     public boolean busy() {return count("SELECT COUNT(*) FROM hr_visual_batch WHERE status IN ('STARTING','RUNNING')")>0;}
+    public boolean processingDiscovered(String id){return count("SELECT COUNT(*) FROM hr_visual_batch WHERE id=? AND process_discovered=1",id)>0;}
+    public boolean direct(String id){return count("SELECT COUNT(*) FROM hr_visual_batch WHERE id=? AND reply_mode='AUTO' AND text_authorized_at IS NOT NULL",id)>0;}
+    public boolean directAuthorized(String id,String hash){return direct(id) && count("SELECT COUNT(*) FROM hr_visual_batch WHERE id=? AND text_authorization_hash=?",id,hash)>0;}
+    public void processDiscovered(String id,String mode,String hash) {
+        db.update("UPDATE hr_visual_batch SET process_discovered=1,reply_mode=?,text_authorization_hash=?,text_authorized_at=?,cursor_cipher=NULL WHERE id=?",
+                mode,hash,mode.equals("AUTO")?System.currentTimeMillis():null,id);
+    }
+    public void clearNavigationCursor(String id){db.update("UPDATE hr_visual_batch SET cursor_cipher=NULL WHERE id=?",id);}
+    public void autoReviewed(String item){db.update("UPDATE hr_visual_batch_item SET auto_reviewed=1 WHERE id=?",item);}
+    public boolean needsAutoReview(String item){return count("SELECT COUNT(*) FROM hr_visual_batch_item WHERE id=? AND auto_reviewed=0",item)>0;}
+    public void automaticText(String item,String hash){db.update("UPDATE hr_visual_batch_item SET auto_reviewed=1,text_facts_hash=? WHERE id=?",hash,item);}
+    public boolean automaticText(String run){return count("SELECT COUNT(*) FROM hr_visual_batch_item WHERE run_id=? AND text_facts_hash<>''",run)>0;}
+    public boolean textFactsMatch(String run,String hash){return count("SELECT COUNT(*) FROM hr_visual_batch_item WHERE run_id=? AND text_facts_hash=? AND text_facts_hash<>''",run,hash)>0;}
     public String existing(Long profile,String key,String hash) {
         var rows=db.queryForList("SELECT id,request_hash FROM hr_visual_batch WHERE profile_id=? AND request_key=?",profile,key);
         if(rows.isEmpty())return null;
@@ -164,6 +177,7 @@ public class HrVisualBatchStore {
         Batch b=get(profile,id);
         var result=new LinkedHashMap<String,Object>();result.put("id",b.id());result.put("status",b.status());result.put("stage",b.stage());result.put("coverageComplete",b.coverage());
         result.put("reason",db.queryForObject("SELECT reason FROM hr_visual_batch WHERE id=?",String.class,b.id()));
+        result.put("replyMode",direct(id)?"AUTO":"REVIEW");result.put("processingDiscovered",processingDiscovered(id));
         var list=new ArrayList<Map<String,Object>>();
         for(var item:items(b.id())) {
             var r=new LinkedHashMap<String,Object>();r.put("id",item.id());r.put("kind",item.kind());r.put("hrName",item.contact().path("hrName").asText());r.put("companyName",item.contact().path("companyName").asText());

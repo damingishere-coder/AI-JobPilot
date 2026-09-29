@@ -7,6 +7,19 @@ vi.mock('@/lib/api', async () => ({ ...await vi.importActual('@/lib/api'), local
 const response = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 
+it('processes the entire existing batch with explicit direct-text consent without starting continuous duty', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [], batch: { id: 'batch', status: 'PAUSED', stage: 'DISCOVER', discovered: 333 } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  vi.mocked(localActionFetch).mockResolvedValue(response(status))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  const button = await screen.findByRole('button', { name: '处理已发现的全部会话（333 人）' })
+  fireEvent.click(screen.getByLabelText('本轮普通文字经审核后直接回复，无需 QQ 确认')); fireEvent.click(button)
+  await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
+  const [url, init] = vi.mocked(localActionFetch).mock.calls[0]
+  expect(url).toContain('/visual/batches/batch/process')
+  expect(JSON.parse(String(init?.body))).toEqual({ protocol: status.protocol, replyMode: 'AUTO', directRepliesConfirmed: true })
+})
+
 it('prioritizes only an existing paused batch contact without creating a new batch or text authorization', async () => {
   const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
     batch: { id: 'batch', status: 'PAUSED', stage: 'DISCOVER', items: [

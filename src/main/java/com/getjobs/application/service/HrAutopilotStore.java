@@ -75,6 +75,14 @@ public class HrAutopilotStore {
         return !rows.isEmpty() && settingsHash(profileId).equals(rows.getFirst());
     }
 
+    /** Facts and permissions bound to one visual batch, without enabling continuous duty. */
+    public String visualAuthorizationHash(Long profileId) {
+        return crypto.blindIndex(settingsHash(profileId)+json.valueToTree(policy(profileId)),"visual-batch-authorization:"+profileId);
+    }
+    public String visualFactsHash(Long profileId,long conversationId) {
+        return crypto.blindIndex(visualAuthorizationHash(profileId)+facts(conversationId),"visual-batch-facts:"+conversationId);
+    }
+
     private void save(Long profileId, Policy p) {
         jdbc.update("""
             INSERT INTO hr_autopilot_policy(profile_id,version,enabled,paused,policy_cipher,enabled_at)

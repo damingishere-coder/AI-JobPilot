@@ -49,7 +49,8 @@ public class HrVisualService {
     public Map<String,Object> status(Long profile) {
         var runs=visual.runs(profile);
         var result=new LinkedHashMap<String,Object>(worker.availability());
-        result.put("running",visual.busy());result.put("executing",executing.get());result.put("replyMode","REVIEW");
+        result.put("running",visual.busy());result.put("executing",executing.get());
+        var currentBatch=batches.latest(profile);result.put("replyMode",currentBatch!=null && batches.direct(currentBatch.id())?"AUTO":"REVIEW");
         result.put("intervalSeconds",5);result.put("napcatConnected",qq.isConnected());
         result.put("resumeRule",visual.resumeRule(profile));
         result.put("resumeResults",visual.resumeResults(profile));
@@ -187,6 +188,29 @@ public class HrVisualService {
         var context=policies.context(profile,conversation);
         batches.add(batch,kind,json.valueToTree(Map.of("hrName",context.session().hrName(),"companyName",context.session().companyName(),"visualJob",context.session().jobName())),conversation);
     }
+    public Object processDiscoveredBatch(Long profile,String id,BatchProcessRequest request) {
+        return guard.locked(()->transaction.execute(tx->{
+            // Evaluate the current snapshot before all request-dependent and idempotent returns.
+            String authorization=policies.visualAuthorizationHash(profile);
+            if(request==null || !HrVisualTypes.PROTOCOL.equals(request.protocol()) || !Set.of("REVIEW","AUTO").contains(Objects.toString(request.replyMode(),"")))
+                throw new IllegalArgumentException("本轮回复模式或协议无效");
+            if(request.replyMode().equals("AUTO") && !request.directRepliesConfirmed())throw new IllegalArgumentException("请明确确认本轮直接回复");
+            var batch=batches.get(profile,id);
+            if(!Objects.equals(profile,profiles.getCurrentProfileId()))throw new IllegalStateException("当前档案已变化");
+            if(batches.processingDiscovered(id) && batches.active(profile)) {
+                if(batches.direct(id)!=request.replyMode().equals("AUTO"))throw new IllegalStateException("请先暂停再修改本轮模式");
+                return status(profile);
+            }
+            if(!batch.status().equals("PAUSED") || executing.get() || visual.busy())throw new IllegalStateException("请先暂停本轮并等待当前操作结束");
+            if(batch.stage().equals("BOOTSTRAP") || batches.items(id).stream().noneMatch(i->i.kind().equals("CONTACT")))throw new IllegalStateException("尚未收集联系人");
+            if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守仍在运行");
+            batches.processDiscovered(id,request.replyMode(),authorization);
+            for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
+            batches.resetAnchors(id,"PROCESS");
+            batches.state(id,"RUNNING","POSITION_LIST","处理本轮已收集的全部会话；保留未完成列表范围，不重新枚举或开页");
+            return status(profile);
+        }));
+    }
     public Object controlBatch(Long profile,String id,boolean resume) {
         return guard.locked(()->{
             var batch=batches.get(profile,id);
@@ -194,7 +218,9 @@ public class HrVisualService {
                 if(executing.get() || visual.busy() || batches.busy())throw new IllegalStateException("请等待当前操作停止后恢复");
                 if(!"PAUSED".equals(batch.status()))throw new IllegalStateException("批次并未暂停，不能重复恢复");
                 if(!Objects.equals(profile,profiles.getCurrentProfileId()) || policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("档案或其他值守状态已变化");
-                if(Set.of("DISCOVER","POSITION_LIST").contains(batch.stage()))batches.resetCursor(id);
+                if(Set.of("DISCOVER","POSITION_LIST").contains(batch.stage())) {
+                    if(batches.processingDiscovered(id))batches.clearNavigationCursor(id);else batches.resetCursor(id);
+                }
                 if(!Set.of("BOOTSTRAP","ANCHORS","POSITION_LIST").contains(batch.stage())){
                     for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
                     batches.resetAnchors(id,batch.stage());
@@ -256,6 +282,8 @@ public class HrVisualService {
     private void advanceBatch(Long profile) {
         var batch=batches.latest(profile);if(batch==null || !batches.active(profile))return;
         try {
+            if(batches.direct(batch.id()) && !batches.directAuthorized(batch.id(),policies.visualAuthorizationHash(profile)))
+                throw new IllegalStateException("本轮直接回复授权所依据的档案资料已变化，请重新核对");
             var request=new LinkedHashMap<String,Object>();request.put("account",batch.account());request.put("existingChatOnly",true);
             if(batch.stage().equals("BOOTSTRAP")) {
                 request.put("operation","bootstrap");request.put("allowOpenOnce",batches.reserveOpen(batch.id()));
@@ -272,7 +300,8 @@ public class HrVisualService {
                     if(!response.path("listTopVerified").asBoolean() && !"SEEKING_TOP".equals(response.path("coverage").asText()))
                         throw new IllegalStateException("列表顶部未核验，未开始身份检查");
                     if(response.path("listTopVerified").asBoolean()) {
-                        batches.resetCursor(batch.id());batches.state(batch.id(),"RUNNING","ANCHORS","");
+                        if(batches.processingDiscovered(batch.id()))batches.clearNavigationCursor(batch.id());else batches.resetCursor(batch.id());
+                        batches.state(batch.id(),"RUNNING","ANCHORS","");
                     } else batches.checkpointTop(batch.id(),response);
                     return null;
                 }));
@@ -313,7 +342,12 @@ public class HrVisualService {
                 } else if(batches.discoveryLimit(batch.id()))batches.state(batch.id(),"RUNNING","PROCESS","列表覆盖未完成：滚动无进展或达到本轮页数上限");
                 return;
             }
-            var pending=batches.items(batch.id()).stream().filter(i->i.kind().equals("CONTACT") && i.status().equals("PENDING")).findFirst();
+            if(batches.direct(batch.id())) {
+                var waiting=batches.items(batch.id()).stream().filter(i->i.run()!=null && batches.needsAutoReview(i.id()) &&
+                        "WAITING_REVIEW".equals(visual.run(profile,i.run()).status())).findFirst();
+                if(waiting.isPresent()){reviewExistingBatchReply(batch,waiting.get());return;}
+            }
+            var pending=batches.items(batch.id()).stream().filter(i->i.kind().equals("CONTACT") && Set.of("PENDING","PRIORITY_PENDING").contains(i.status())).findFirst();
             if(pending.isPresent()){inspectBatchItem(batch,pending.get());return;}
             boolean complete=batch.coverage() && batches.items(batch.id()).stream().noneMatch(i->Set.of("BLOCKED","DATE_UNKNOWN","READ_FAILED").contains(i.status()));
             batches.state(batch.id(),complete?"FINISHED":"INCOMPLETE","DONE",complete?"本轮扫描完成，待确认卡片继续保留；未开启持续巡检":"本轮停止；存在未核验会话或未完成的列表范围，请查看明细");
@@ -325,6 +359,47 @@ public class HrVisualService {
                     "source","WINDOWS_VISUAL","detail",safeError(error),"observedAt",System.currentTimeMillis())));
             policies.notification(profile,"visual-batch-blocked:"+batch.id()+":"+batch.stage(),"BOSS 单轮检查已暂停："+safeError(error)+"。没有刷新或重新开页。");
         }
+    }
+    private boolean batchTextAuthorized(Long profile,String run,long conversation) {
+        String id=batches.owner(run);
+        return id!=null && batches.directAuthorized(id,policies.visualAuthorizationHash(profile)) &&
+                batches.textFactsMatch(run,policies.visualFactsHash(profile,conversation));
+    }
+    /** Existing review cards are re-read and independently audited once; never blindly approved. */
+    private void reviewExistingBatchReply(HrVisualBatchStore.Batch batch,HrVisualBatchStore.Item item) {
+        var run=visual.run(batch.profile(),item.run());var target=visual.targets(run.id()).getFirst();
+        var proposal=store.getProposalView(batch.profile(),target.proposalId());
+        if(!target.status().equals("REVIEW_REQUIRED") || !proposal.status().equals("REVIEW_REQUIRED")){batches.autoReviewed(item.id());return;}
+        var response=observe(batch.profile(),request(run,target,"inspect"));
+        if(!response.path("ok").asBoolean()) {
+            if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","PLATFORM_CHECK","CANCELLED","CHAT_TAB_MISSING","ACCOUNT_UNVERIFIED","LIST_NOT_READY").contains(response.path("code").asText()))throw new ObservationFailure(response);
+            batches.autoReviewed(item.id());visual.target(target.id(),null,"REVIEW_REQUIRED",response.path("detail").asText("正文未核验")+"；继续其他会话");return;
+        }
+        var fresh=decode(target,response.path("capture"));
+        if(!fresh.contextComplete() || !response.path("composer").asText().isBlank() ||
+                !safeRound(fresh.messages(),target.seed().expected().messages(),List.of())) {
+            batches.autoReviewed(item.id());visual.target(target.id(),null,"REVIEW_REQUIRED","原卡上下文变化或存在人工草稿，未自动发送");return;
+        }
+        String facts=policies.visualFactsHash(batch.profile(),target.conversationId());
+        var draft=new AiDraft(Classification.valueOf(proposal.classification()),proposal.draft(),proposal.summary(),proposal.riskTags(),proposal.missingFacts(),proposal.confidence());
+        var audit=autopilot.assess(batch.profile(),target.conversationId(),fresh,draft);
+        guard.locked(()->transaction.execute(tx->{
+            if(!batches.active(batch.profile()))return null;
+            batches.autoReviewed(item.id());
+            if(!batches.directAuthorized(batch.id(),policies.visualAuthorizationHash(batch.profile())) || !facts.equals(policies.visualFactsHash(batch.profile(),target.conversationId())))return null;
+            var current=store.requireProposal(batch.profile(),proposal.id());
+            if(current.version()!=proposal.version() || current.status()!=ProposalStatus.REVIEW_REQUIRED)return null;
+            boolean allowed=audit.action().equals("TEXT") && !audit.draft().isBlank() && draft.classification()!=Classification.REJECTION;
+            policies.decision(proposal.id(),policies.policy(batch.profile()).version(),audit.action(),audit.reason(),allowed);
+            policies.audit(proposal.id(),audit.evidence(),false);policies.markTrial(proposal.id());
+            if(allowed) {
+                if(!audit.draft().equals(proposal.draft()))store.revise(batch.profile(),proposal.id(),proposal.version(),audit.draft());
+                String command=store.queueSendCommand(batch.profile(),proposal.id(),store.getProposalView(batch.profile(),proposal.id()).version(),"visual:"+run.id());
+                visual.attach(command,false);batches.automaticText(item.id(),facts);
+                visual.target(target.id(),null,"QUEUED","本轮直接回复：完整正文和独立审核通过");visual.state(run.id(),"RUNNING","");
+            } else visual.target(target.id(),null,"REVIEW_REQUIRED",audit.reason()+"；本轮跳过，不阻塞其他会话");
+            return null;
+        }));
     }
     private void inspectBatchItem(HrVisualBatchStore.Batch batch,HrVisualBatchStore.Item item) {
         Long profile=batch.profile();var contact=item.contact();
@@ -372,33 +447,48 @@ public class HrVisualService {
         String fingerprint=store.sourceFingerprint(conversation,last);
         if(store.hasHandledSource(conversation,fingerprint,true)){batches.outcome(item.id(),"SKIPPED","相同来源已有记录，未生成重复卡片或发送");return;}
         var capture=new ChatCapture(fresh.captureId(),0,session,fresh.messages(),false,true);
+        String facts=policies.visualFactsHash(profile,conversation);
+        HrAutopilotService.Assessment assessment=null;
         AiDraft draft;
         if(isResume)draft=new AiDraft(Classification.DOCUMENT_REQUEST,"使用 BOSS 原生简历","本轮授权：HR 明确索要简历；不附带文字",List.of(),List.of(),1);
         else {
             try {draft=autopilot.generate(profile,conversation,store.loadSettingsSecret(profile).communicationProfile(),capture);
-                var audit=autopilot.assess(profile,conversation,capture,draft);
-                draft=new AiDraft(draft.classification(),draft.replyText(),audit.reason(),draft.riskTags(),draft.missingFacts(),draft.confidence());
+                assessment=autopilot.assess(profile,conversation,capture,draft);
+                draft=new AiDraft(draft.classification(),assessment.draft(),assessment.reason(),draft.riskTags(),draft.missingFacts(),draft.confidence());
             }catch(RuntimeException error){draft=new AiDraft(Classification.NEEDS_USER,"","AI 生成或审核失败，需要本人填写",List.of("AI_FAILURE"),List.of(),0);}
         }
         if(draft.classification()==Classification.NO_REPLY || draft.classification()==Classification.REJECTION){batches.outcome(item.id(),"SKIPPED","已结束或无需回复");return;}
         AiDraft finalDraft=draft;
+        var audit=assessment;
         guard.locked(()->transaction.execute(tx->{
             if(!batches.active(profile) || visual.busy() || !Objects.equals(profile,profiles.getCurrentProfileId()))return null;
             if(store.hasHandledSource(conversation,fingerprint,true))return null;
+            boolean direct=batches.direct(batch.id());
+            boolean autoText=direct && !isResume && audit!=null && audit.action().equals("TEXT") && !audit.draft().isBlank() &&
+                    facts.equals(policies.visualFactsHash(profile,conversation)) && batches.directAuthorized(batch.id(),policies.visualAuthorizationHash(profile));
             for(var message:capture.messages())store.saveMessage(conversation,message,store.loadSettingsSecret(profile).retentionDays());
             store.updateLastInbound(conversation,fingerprint);policies.context(conversation,capture);
             long proposal=store.createProposal(profile,conversation,fingerprint,finalDraft);
-            policies.decision(proposal,policies.policy(profile).version(),isResume?"RESUME_NATIVE":"TEXT","单轮托管：简历独立授权，文字逐条 QQ 确认",false);policies.markTrial(proposal);
+            policies.decision(proposal,policies.policy(profile).version(),isResume?"RESUME_NATIVE":audit==null?"HUMAN":audit.action(),
+                    isResume?"本轮原生简历授权":audit==null?"生成或审核失败":audit.reason(),autoText);
+            policies.audit(proposal,audit==null?"":audit.evidence(),false);policies.markTrial(proposal);
             String run=visual.create(profile,batch.account(),List.of(proposal),List.of(conversation),List.of(new Seed(session.uid(),session.hrName(),session.companyName(),session.jobName(),"",false,false,capture)));
             visual.reserveOpen(run);batches.link(item.id(),conversation,run,isResume?resume:null);
             var target=visual.targets(run).getFirst();
             if(isResume) {
                 String command=store.queueSendCommand(profile,proposal,1,"visual:"+run);visual.attachResumeOnly(command);
                 visual.target(target.id(),proposal,"QUEUED","本轮明确索要简历，已排队；尚未确认发送");
-            } else {visual.target(target.id(),proposal,"REVIEW_REQUIRED","建议已保存，等待 QQ 确认");visual.state(run,"WAITING_REVIEW","等待本条确认；不阻塞扫描其他联系人");}
+            } else if(autoText) {
+                String command=store.queueSendCommand(profile,proposal,1,"visual:"+run);visual.attach(command,false);batches.automaticText(item.id(),facts);
+                visual.target(target.id(),proposal,"QUEUED","本轮直接回复，独立审核已通过");
+            } else {
+                if(direct)batches.autoReviewed(item.id());
+                visual.target(target.id(),proposal,"REVIEW_REQUIRED",direct?finalDraft.summary()+"；本轮跳过，继续其他会话":"建议已保存，等待 QQ 确认");
+                visual.state(run,"WAITING_REVIEW",direct?"需要本人处理；不阻塞其他会话":"等待本条确认；不阻塞扫描其他联系人");
+            }
             return proposal;
         }));
-        if(!isResume)for(var linked:batches.items(batch.id()))if(linked.id().equals(item.id()) && linked.run()!=null)qq.notifyProposal(store.getProposalView(profile,visual.targets(linked.run()).getFirst().proposalId()));
+        if(!isResume && !batches.direct(batch.id()))for(var linked:batches.items(batch.id()))if(linked.id().equals(item.id()) && linked.run()!=null)qq.notifyProposal(store.getProposalView(profile,visual.targets(linked.run()).getFirst().proposalId()));
     }
     private static boolean sameContact(JsonNode a,JsonNode b){return normalize(a.path("hrName").asText()).equals(normalize(b.path("hrName").asText())) && normalize(a.path("companyName").asText()).equals(normalize(b.path("companyName").asText()));}
 
@@ -675,6 +765,7 @@ public class HrVisualService {
         else {qq.notifyProposal(store.getProposalView(run.profileId(),id));if(batches.owner(run.id())!=null)visual.state(run.id(),"WAITING_REVIEW","等待本条 QQ 确认");}
     }
     private void send(Run run,Target target) {
+        if(batches.automaticText(run.id()) && !batchTextAuthorized(run.profileId(),run.id(),target.conversationId()))throw new IllegalStateException("本轮直接回复授权或资料已变化，未提交");
         Step step=guard.locked(()->visual.claim(run.profileId(),target.proposalId()));if(step==null)return;
         var proposal=store.requireProposal(run.profileId(),target.proposalId());
         var expected=policies.context(run.profileId(),target.conversationId());
@@ -697,6 +788,7 @@ public class HrVisualService {
             result=exchange(run.profileId(),request,prepared->guard.locked(()->{
                 if(!visual.run(run.profileId(),run.id()).status().equals("RUNNING") || legacyPaused(run.profileId(),run.id()))return false;
                 if(!batches.allows(run.profileId(),run.id()))return false;
+                if(batches.automaticText(run.id()) && !batchTextAuthorized(run.profileId(),run.id(),target.conversationId()))return false;
                 if(batchResume!=null && !step.actionType().equals("RESUME_NATIVE"))return false;
                 if(resumeRule && (!step.actionType().equals("RESUME_NATIVE") || !visual.resumeRuleAuthorized(run.profileId(),run.id())))return false;
                 if(!Objects.equals(profiles.getCurrentProfileId(),run.profileId()))return false;
@@ -721,7 +813,7 @@ public class HrVisualService {
             }catch(RuntimeException e){outcome="SEND_UNKNOWN";}
         }
         finish(run,target,step,outcome,result);
-        if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","CANCELLED").contains(result.path("code").asText()))
+        if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","CANCELLED","PLATFORM_CHECK").contains(result.path("code").asText()))
             {visual.state(run.id(),"PAUSED",result.path("detail").asText());if(resumeRule)visual.resumeRuleState(run.profileId(),"PAUSED",result.path("detail").asText());
                 String batchId=batches.owner(run.id());if(batchId!=null){var batch=batches.get(run.profileId(),batchId);batches.state(batchId,"PAUSED",batch.stage(),result.path("detail").asText());}}
     }
@@ -743,11 +835,17 @@ public class HrVisualService {
             String batchId=batches.owner(run.id());
             if(batchId!=null) {
                 var batch=batches.get(run.profileId(),batchId);
-                batches.state(batchId,"PAUSED",batch.stage(),"发送结果未知，已保留现场并暂停；该会话禁止自动重试");
+                if(batches.processingDiscovered(batchId) && batches.active(run.profileId())) {
+                    addBatchIdentity(batchId,run.profileId(),target.conversationId(),"ANCHOR");
+                    // Preserve the unknown step; re-lock its identity before moving on to other contacts.
+                    batches.resetAnchors(batchId,"PROCESS");
+                    batches.state(batchId,"RUNNING","ANCHORS","该会话结果未知且不重试；只读核验身份后继续本轮其他会话");
+                    visual.state(run.id(),"PAUSED","本会话结果未知，保留现场与记录，禁止重试");
+                } else batches.state(batchId,"PAUSED",batch.stage(),"发送结果未知，已保留现场并暂停；该会话禁止自动重试");
             }
         }
         if(outcome.equals("SENT_CONFIRMED"))for(var m:decode(target,json.valueToTree(evidence).path("capture")).messages())store.saveMessage(target.conversationId(),m,store.loadSettingsSecret(run.profileId()).retentionDays());
-        if(!visual.isResumeRuleRun(run.id()) && batches.resumeRequest(run.id())==null && outcome.equals("STALE") && visual.steps(target.proposalId()).stream().noneMatch(s->"SENT_CONFIRMED".equals(s.get("status")))) {
+        if(!visual.isResumeRuleRun(run.id()) && batches.resumeRequest(run.id())==null && !batches.automaticText(run.id()) && outcome.equals("STALE") && visual.steps(target.proposalId()).stream().noneMatch(s->"SENT_CONFIRMED".equals(s.get("status")))) {
             var s=target.seed();visual.seed(target.id(),new Seed(s.uid(),s.hrName(),s.companyName(),s.jobName(),"",false,false,s.expected()));
             visual.target(target.id(),null,"PENDING_CAPTURE","消息已变化，重新读取并生成待确认卡片");
         }
