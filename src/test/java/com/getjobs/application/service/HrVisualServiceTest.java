@@ -77,6 +77,7 @@ class HrVisualServiceTest {
         var capture=Map.of("hrName","HR0","companyName","公司0","jobName","岗位0","contextComplete",true,"messages",messages);
         when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"capture",capture,"resumeRequest",request,"composer","")));
         ReflectionTestUtils.invokeMethod(service,"scanResumeRule",1L);
+        verify(worker).exchange(argThat(m->"inspect".equals(m.get("operation")) && Boolean.TRUE.equals(m.get("existingChatOnly"))),isNull());
         var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
         assertThat(visual.isResumeRuleRun(run.id())).isTrue();
         assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("RESUME_NATIVE"));

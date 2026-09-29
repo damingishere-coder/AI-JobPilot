@@ -15,7 +15,7 @@ hr-visual/.venv/Scripts/python.exe -u hr-visual/worker.py --health
 
 工作台“本机 Chrome 视觉聊天”选择三个已有会话，核对登录姓名后点击“读取并发送 QQ 建议卡”。档案名与 BOSS 登录姓名不同时需明确勾选本人绑定。普通入口只生成待确认卡；QQ 的详情、修改、发送、跳过、补充、暂停、恢复沿用原操作人及群校验。
 
-`POST /api/hr-assistant/visual/start` 使用现有本机操作令牌，协议为 `2026-09-29-hr-visual-v1`。仅接受三个不同的已有提案及匹配版本。普通请求的 `approved=false`。明确批准的受控测试可传 `approved=true, approvalSource="USER_CONFIRMED_TEST"` 及本次批准的完整正文；原卡缺岗位时还需 `expectedJobName`，原生简历还需 `sendResume=true, resumeSharingConfirmed=true`。这些值作为本次目标的加密授权种子保存，不修改长期授权，消息正文、类型或时间变化即失效。
+`POST /api/hr-assistant/visual/start` 使用现有本机操作令牌，协议为 `2026-09-29-hr-visual-v2`。仅接受三个不同的已有提案及匹配版本。普通请求的 `approved=false`。明确批准的受控测试可传 `approved=true, approvalSource="USER_CONFIRMED_TEST"` 及本次批准的完整正文；原卡缺岗位时还需 `expectedJobName`，原生简历还需 `sendResume=true, resumeSharingConfirmed=true`。这些值作为本次目标的加密授权种子保存，不修改长期授权，消息正文、类型或时间变化即失效。
 
 `GET /api/hr-assistant/visual/status` 返回安装状态、模式、当前运行、阻塞原因和文字/原生简历各自状态。暂停/恢复使用带本机令牌的 `POST /visual/{runId}/pause|resume`。未启用自动托管也可独立暂停视觉测试。
 
@@ -29,7 +29,7 @@ hr-visual/.venv/Scripts/python.exe -u hr-visual/worker.py --health
 
 ### HR 索要简历时直接发送
 
-工作台提供独立的自动简历授权。开启后普通文字仍保持 QQ 逐条确认；每分钟读取当前 Chrome 已加载联系人列表，仅对新出现或预览变化的联系人核对正文。未加载的历史列表不算已检查，不自动刷新页面。姓名、公司、岗位、账号和完整请求须核验；新视觉联系人使用 `boss_visual / visual:<稳定本地标识>`，不冒充平台 UID。已知联系人的岗位变化时停止，不创建新身份绕过去重。
+工作台提供独立的自动简历授权。开启后普通文字仍保持 QQ 逐条确认；每分钟读取当前 Chrome 已加载联系人列表，仅对新出现或预览变化的联系人核对正文。未加载的历史列表不算已检查，不自动刷新页面。后台巡检、自动简历及只读回执核验只使用已有 BOSS 标签；标签丢失时停止，不自动新开或重新导航。姓名、公司、岗位、账号和完整请求须核验；新视觉联系人使用 `boss_visual / visual:<稳定本地标识>`，不冒充平台 UID。已知联系人的岗位变化时停止，不创建新身份绕过去重。
 
 明确的索要请求才生成单独的 `RESUME_NATIVE` 步骤。优先点击该 HR 简历请求卡片内的“同意”，无请求卡片时使用工具栏“发简历”；绝不点击电话或微信请求的同意，也不附带文字。拒绝、撤回、已发简历、已有未知结果、非空人工草稿会停止该会话。每份请求按会话和来源去重，普通扫描和服务重启不重发。停用或修改规则版本后，原排队任务不能沿用旧授权提交。
 

@@ -19,7 +19,8 @@ def serve(request: dict, driver, receive, emit):
         if request.get("operation") not in ("inspect", "prepare", "reconcile", "discover"):
             raise Halt("INVALID_OPERATION", "不支持的视觉操作")
         with driver.session():
-            driver.open_chat(request["account"])
+            driver.open_chat(request["account"], existing_only=bool(request.get("existingChatOnly")
+                             or request.get("resumeRule") or request["operation"] in ("discover", "reconcile")))
             if request["operation"] == "discover":
                 emit({**base, "phase": "result", "ok": True, "contacts": driver.list_contacts(), "coverage": "VISIBLE_LOADED_CONTACTS"})
                 return

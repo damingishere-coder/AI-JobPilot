@@ -100,13 +100,13 @@ public class HrVisualService {
             var candidate=visual.nextResumeContact(profile);if(candidate==null)return;
             String hr=candidate.path("hrName").asText(),company=candidate.path("companyName").asText();
             if(hr.isBlank() || company.isBlank())throw new IllegalStateException("联系人身份不完整");
-            var inspect=new LinkedHashMap<String,Object>(Map.of("operation","inspect","account",account,"target",Map.of("hrName",hr,"companyName",company)));
+            var inspect=new LinkedHashMap<String,Object>(Map.of("operation","inspect","account",account,"existingChatOnly",true,"target",Map.of("hrName",hr,"companyName",company)));
             var baseline=policies.visualBaseline(profile,hr,company);
             if(baseline!=null)inspect.put("contextBaseline",Map.of("hrName",hr,"companyName",company,"contextComplete",true,"messages",baseline.messages()));
             var observed=worker.exchange(inspect,null);
             if(!observed.path("ok").asBoolean()) {
                 String code=observed.path("code").asText();
-                if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","PLATFORM_CHECK","CANCELLED","ACCOUNT_UNVERIFIED").contains(code))
+                if(Set.of("HUMAN_TAKEOVER","FOCUS_CHANGED","DESKTOP_LOCKED","PLATFORM_CHECK","CANCELLED","ACCOUNT_UNVERIFIED","CHAT_TAB_MISSING").contains(code))
                     throw new IllegalStateException(observed.path("detail").asText("桌面已暂停"));
                 visual.checkedResumeContact(profile,candidate);
                 visual.resumeRuleState(profile,"WATCHING",hr+"："+observed.path("detail").asText("正文未完整读取，未发送"));return;

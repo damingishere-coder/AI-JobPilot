@@ -2,7 +2,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from windows_driver import WindowsDriver
 from core import Halt, ocr_supports
@@ -11,6 +11,14 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_existing_only_missing_tab_stops_without_any_navigation(self):
+        d=WindowsDriver(threading.Event())
+        window=Mock();window.window_text.return_value='工作台 - Google Chrome';window.descendants.return_value=[]
+        with patch.dict(sys.modules,{'win32gui':Mock(),'pywinauto':Mock()}), patch.object(d,'_chrome_windows',return_value=[window]), patch.object(d,'_activate') as activate:
+            with self.assertRaises(Halt) as result: d.open_chat('本人',existing_only=True)
+            self.assertEqual(result.exception.code,'CHAT_TAB_MISSING')
+            activate.assert_not_called()
+
     def test_resume_prefers_specific_card_and_ignores_phone_agree(self):
         d=WindowsDriver(threading.Event());d.chat_box=(400,0,1600,1000)
         nodes=[node('','ListItem','message-item item-friend',(450,50,1500,300)),

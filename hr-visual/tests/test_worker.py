@@ -22,7 +22,7 @@ class FakeDriver:
         self.before=before; self.after=after or before; self.submissions=0; self.stage_change=stage_change; self.staged=False; self.fail_submit=fail_submit
         self.receipts=[]
     def session(self): return nullcontext()
-    def open_chat(self, account): pass
+    def open_chat(self, account, existing_only=False): self.existing_only=existing_only
     def restore_receipt_boundary(self, before): pass
     def select_and_read(self, target): return self.before
     def read_chat(self, target, receipt=False):
@@ -44,6 +44,14 @@ class FakeDriver:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_background_rule_and_readonly_receipt_never_open_a_new_page(self):
+        before=capture(msg('发一份简历'))
+        for extra in [dict(operation='discover'),dict(operation='reconcile'),
+                      dict(operation='inspect',existingChatOnly=True),dict(resumeRule=True)]:
+            d=FakeDriver(before)
+            self.run_driver(d,**extra)
+            self.assertTrue(d.existing_only)
+
     def test_resume_rule_is_independent_of_a_prior_text_reply_and_never_repeats_resume(self):
         request=msg('我想要一份您的附件简历，您是否同意',kind='其他',resumeRequestPending=True)
         before=capture(request,msg('可以先了解一下','本人'))
