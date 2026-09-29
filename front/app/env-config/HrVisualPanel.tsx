@@ -6,7 +6,7 @@ import { API_BASE, friendlyApiError, localActionFetch, readApiResponse } from '@
 
 type Proposal = { id: number; conversationId: number; version: number; status: string; hrName: string; companyName: string; draft: string }
 type Step = { id: string; action_type: string; status: string }
-type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[] }
+type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
 type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[] }
 const labels: Record<string, string> = {
   IDLE: '尚未开始', RUNNING: '正在处理', STOPPING: '正在停止并核验回执', PAUSED: '已暂停', COMPLETED: '本轮处理结束', ARCHIVED: '正文已按保留期清理',
@@ -90,6 +90,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
       <p>{t.hrName} · {t.companyName}：{labels[t.status] || t.status}</p>
       <p>{t.reason}</p>
       {t.steps.map(s => <p key={s.id}>{s.action_type === 'TEXT' ? '文字回复' : 'BOSS 原生简历'}：{labels[s.status] || s.status}</p>)}
+      {!!t.previousAttempts?.length && <details><summary>之前的尝试记录（保留原结果）</summary>{t.previousAttempts.map((s, i) => <p key={i}>#{s.old_proposal_id} · {s.action_type === 'TEXT' ? '文字回复' : 'BOSS 原生简历'}：{labels[s.status] || s.status}</p>)}</details>}
     </div>)}
     {error && <p role="alert">{error}</p>}
   </section>

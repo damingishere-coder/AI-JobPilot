@@ -55,6 +55,7 @@ public class HrVisualService {
             result.put("targets",visual.targets(run.id()).stream().map(t->{
                 var m=new LinkedHashMap<String,Object>();m.put("id",t.id());m.put("hrName",t.seed().hrName());m.put("companyName",t.seed().companyName());
                 m.put("status",t.status());m.put("reason",t.reason());m.put("proposalId",t.proposalId());
+                m.put("previousAttempts",visual.previousAttempts(t.id()));
                 m.put("steps",t.proposalId()==null?List.of():visual.steps(t.proposalId()));return m;
             }).toList());
         } else { result.put("status","IDLE");result.put("targets",List.of()); }
@@ -114,6 +115,50 @@ public class HrVisualService {
                 visual.state(id,executing.get()?"STOPPING":"PAUSED","本人暂停，正在执行的动作仍核验回执");worker.cancel();
             }
             return status(profile);
+        });
+    }
+    /** Explicit human review only. Old unknown/blocked receipts are never reset or deleted. */
+    public Object reconfirm(Long profile,String runId,String targetId,ReconfirmRequest review) {
+        return guard.locked(()->{
+            if(review==null || !review.confirmed()) throw new IllegalArgumentException("必须由本人重新确认原文");
+            if(!Objects.equals(profile,profiles.getCurrentProfileId())) throw new IllegalStateException("当前档案已变化");
+            Run run=visual.run(profile,runId);
+            if(!Set.of("PAUSED","BLOCKED","COMPLETED").contains(run.status()) || executing.get() || visual.busy())
+                throw new IllegalStateException("请先暂停测试并等待执行器退出");
+            guard.requireChangeAllowed();
+            Target target=visual.targets(runId).stream().filter(t->t.id().equals(targetId)).findFirst().orElseThrow();
+            if(!Objects.equals(target.proposalId(),review.proposalId())) throw new IllegalStateException("该次确认已处理或已被新版本替代");
+            var old=store.requireProposal(profile,review.proposalId());
+            if(!Set.of(ProposalStatus.BLOCKED,ProposalStatus.SEND_UNKNOWN,ProposalStatus.EXPIRED).contains(old.status()) ||
+                    old.version()!=review.expectedVersion() || old.draft().isBlank() || old.draft().length()>2000 || !old.draft().equals(review.draft()))
+                throw new IllegalStateException("只能重新确认当前失败版本的完整原文");
+            if(old.status()==ProposalStatus.SEND_UNKNOWN && !review.possibleDuplicateAccepted())
+                throw new IllegalArgumentException("前次结果未知，必须本人核验并明确重新授权，不能自动重试");
+            if(visual.hasOtherLaterAttempt(target.conversationId(),old.id()) || visual.steps(old.id()).stream().anyMatch(s->"SENT_CONFIRMED".equals(s.get("status"))))
+                throw new IllegalStateException("已有其他发送或部分成功步骤，不能重发文字");
+            if(!executing.compareAndSet(false,true)) throw new IllegalStateException("桌面仍在执行");
+            try {
+                JsonNode observed=worker.exchange(request(run,target,"inspect"),null);
+                if(!observed.path("ok").asBoolean()) throw new IllegalStateException(observed.path("detail").asText("复核失败"));
+                var fresh=decode(target,observed.path("capture"));
+                if(!fresh.contextComplete() || !safeRound(fresh.messages(),target.seed().expected().messages(),List.of()))
+                    throw new IllegalStateException("本轮消息已变化或出现本人回复，不能按原文重新发送");
+                String composer=observed.path("composer").asText();
+                if(!composer.isBlank() && !normalize(composer).equals(normalize(old.draft())))
+                    throw new IllegalStateException("输入框有不同的人工草稿，未覆盖");
+                return transaction.execute(tx->{
+                    autopilot.saveContext(target.conversationId(),fresh);
+                    long next=store.createProposal(profile,target.conversationId(),old.sourceFingerprint(),
+                            new AiDraft(Classification.REPLY,old.draft(),"本人复核后重新确认；前次 #"+old.id()+" 的结果与证据保留",List.of(),List.of(),1));
+                    policies.decision(next,policies.policy(profile).version(),"TEXT","人工重新确认，保留原始记录",false);policies.markTrial(next);
+                    visual.recordReconfirmation(target.id(),old.id(),next);
+                    var s=target.seed();visual.seed(target.id(),new Seed(s.uid(),s.hrName(),s.companyName(),s.jobName(),old.draft(),s.sendResume(),true,fresh));
+                    String command=store.queueSendCommand(profile,next,1,"visual:"+run.id());visual.attach(command,s.sendResume());
+                    visual.target(target.id(),next,"QUEUED","本人重新确认，原记录保留；等待恢复测试");
+                    visual.state(run.id(),"PAUSED","复核完成，等待恢复测试");
+                    return status(profile);
+                });
+            } finally {executing.set(false);}
         });
     }
     public boolean owns(Long profile,long proposal) {return visual.owner(profile,proposal)!=null;}
@@ -218,6 +263,7 @@ public class HrVisualService {
         var sent=visual.steps(target.proposalId()).stream().filter(s->"SENT_CONFIRMED".equals(s.get("status"))).toList();
         var ownTexts=sent.stream().filter(s->"TEXT".equals(s.get("action_type"))).map(s->proposal.draft()).toList();
         var request=request(run,target,"prepare");request.put("actionType",step.actionType());request.put("draft",proposal.draft());
+        request.put("adoptApprovedDraft",visual.explicitlyReconfirmed(proposal.id()));
         request.put("expectedRound",round(expected.messages()));request.put("expectedSourceRound",sourceRound(expected.messages()));
         request.put("ownTexts",ownTexts);request.put("stepId",step.id());
         var committed=new AtomicBoolean(false);

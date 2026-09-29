@@ -68,6 +68,23 @@ public class HrVisualStore {
     public List<Map<String,Object>> steps(long proposal) {
         return db.queryForList("SELECT s.id,s.ordinal,s.action_type,s.status,s.submitted_at,s.finished_at FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id WHERE c.proposal_id=? ORDER BY s.ordinal",proposal);
     }
+    public boolean explicitlyReconfirmed(long proposal) {
+        return count("SELECT COUNT(*) FROM hr_visual_reconfirmation WHERE new_proposal_id=?",proposal)>0;
+    }
+    public List<Map<String,Object>> previousAttempts(String target) {
+        return db.queryForList("""
+            SELECT r.old_proposal_id,r.new_proposal_id,r.reason,r.created_at,s.action_type,s.status,s.submitted_at,s.finished_at
+            FROM hr_visual_reconfirmation r JOIN hr_send_command c ON c.proposal_id=r.old_proposal_id
+            JOIN hr_send_step s ON s.command_id=c.command_id WHERE r.target_id=? ORDER BY r.created_at,s.ordinal
+            """,target);
+    }
+    public void recordReconfirmation(String target,long oldProposal,long newProposal) {
+        db.update("INSERT INTO hr_visual_reconfirmation(old_proposal_id,new_proposal_id,target_id,reason) VALUES (?,?,?,?)",
+                oldProposal,newProposal,target,"本人在核对未发送现场后再次确认；原始失败或未知记录保持不变");
+    }
+    public boolean hasOtherLaterAttempt(long conversation,long proposal) {
+        return count("SELECT COUNT(*) FROM hr_reply_proposal WHERE conversation_id=? AND id>? AND status IN ('APPROVED','SENDING','SENT_CONFIRMED','SEND_UNKNOWN','BLOCKED')",conversation,proposal)>0;
+    }
     @Transactional
     public Step claim(Long profile,long proposal) {
         long now=System.currentTimeMillis();
@@ -154,9 +171,9 @@ public class HrVisualStore {
             WHERE r.status NOT IN ('RUNNING','STOPPING','ARCHIVED')
             AND r.created_at<datetime('now','-'||COALESCE(a.retention_days,30)||' days')
             """,String.class);
-        var files=new ArrayList<>(db.queryForList("SELECT s.id FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id JOIN hr_visual_target t ON t.proposal_id=c.proposal_id JOIN hr_visual_run r ON r.id=t.run_id WHERE r.status='ARCHIVED'",String.class));
+        var files=new ArrayList<>(db.queryForList("SELECT s.id FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id JOIN hr_visual_target t ON t.proposal_id=c.proposal_id OR c.proposal_id IN (SELECT old_proposal_id FROM hr_visual_reconfirmation WHERE target_id=t.id) JOIN hr_visual_run r ON r.id=t.run_id WHERE r.status='ARCHIVED'",String.class));
         for(String run:runs) {
-            var ids=db.queryForList("SELECT s.id FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id JOIN hr_visual_target t ON t.proposal_id=c.proposal_id WHERE t.run_id=?",String.class,run);
+            var ids=db.queryForList("SELECT s.id FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id JOIN hr_visual_target t ON t.proposal_id=c.proposal_id OR c.proposal_id IN (SELECT old_proposal_id FROM hr_visual_reconfirmation WHERE target_id=t.id) WHERE t.run_id=?",String.class,run);
             files.addAll(ids);
             for(String id:ids)db.update("UPDATE hr_send_step SET evidence_cipher=NULL WHERE id=?",id);
             for(Target target:targets(run)) {

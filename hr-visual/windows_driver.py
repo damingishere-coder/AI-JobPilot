@@ -511,6 +511,37 @@ class WindowsDriver:
         if normalized(self.composer_text()) != normalized(text):
             raise Halt("DRAFT_MISMATCH", "输入后的完整正文不匹配，未点击发送")
 
+    def prepare_text_submit(self, text):
+        # An old extension panel may cover the Send button even while UIA exposes it.
+        # Use the chat's native Enter action with verified editor focus instead.
+        self.require_staged_text(text)
+        rect = box(self.composer)
+        from pywinauto import Desktop
+        hit = Desktop(backend="uia").from_point((rect[0]+rect[2])//2,(rect[1]+rect[3])//2)
+        if not self._within_control(hit, self.composer):
+            raise Halt("COMPOSER_OCCLUDED", "聊天输入框被其他页面内容遮挡，未提交")
+        self._click(rect)
+        self.require_staged_text(text)
+        from pywinauto.uia_defines import IUIA
+        from pywinauto.uia_element_info import UIAElementInfo
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        focused = UIAWrapper(UIAElementInfo(IUIA().get_focused_element()))
+        if not self._within_control(focused, self.composer):
+            raise Halt("COMPOSER_FOCUS", "键盘焦点不在已核验的聊天输入框，未提交")
+
+    @staticmethod
+    def _within_control(control, expected):
+        expected_id = expected.element_info.runtime_id
+        if not expected_id:
+            return False
+        for _ in range(8):
+            if control.element_info.runtime_id and control.element_info.runtime_id == expected_id:
+                return True
+            control = control.parent()
+            if control is None:
+                break
+        return False
+
     def prepare_resume(self):
         self.guard()
         nodes = self._nodes()
@@ -524,9 +555,9 @@ class WindowsDriver:
 
     def submit(self, action, before=None):
         if action == "TEXT":
-            if not self.send_button:
-                raise Halt("SEND_BUTTON", "发送按钮不可唯一定位")
-            self._click(self.send_button)
+            self.guard()
+            from pywinauto.keyboard import send_keys
+            send_keys("{ENTER}")
             return
         self._click(self.resume_confirm)
         time.sleep(1)
@@ -588,6 +619,8 @@ class WindowsDriver:
         root.mkdir(parents=True,exist_ok=True)
         result = {}
         for kind,capture in (("before",before),("after",after)):
+            if capture is None:
+                continue
             raw = self.baseline_images[signature(capture)]
             protected = win32crypt.CryptProtectData(raw,"BOSS HR visual receipt",None,None,None,0)
             path = root/f"{step}-{kind}.png.dpapi"

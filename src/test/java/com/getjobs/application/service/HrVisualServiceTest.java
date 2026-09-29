@@ -72,6 +72,42 @@ class HrVisualServiceTest {
         assertThat(visual.runs(1L)).isEmpty();
         service.start(startRequest(targets,true));assertThat(visual.runs(1L).getFirst().account()).isEqualTo("登录姓名");
     }
+
+    @Test void reconfirmationRequiresFreshHumanConsentAndKeepsUnknownReceipt() {
+        service.start(startRequest(targets,true));
+        for(var c:captures){nextCapture(c);advance();}
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        var step=visual.claim(1L,target.proposalId());visual.submitting(step);
+        visual.finish(step,"SEND_UNKNOWN",Map.of("detail","fixture uncertainty"));
+        visual.completeParent(step.commandId(),"SEND_UNKNOWN");store.markFinal(target.proposalId(),ProposalStatus.SEND_UNKNOWN,"fixture uncertainty");
+        visual.target(target.id(),null,"SEND_UNKNOWN","");visual.state(run.id(),"PAUSED","");
+        var old=store.requireProposal(1L,target.proposalId());nextCapture(captures.getFirst());
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,false)))
+                .hasMessageContaining("不能自动重试");
+        var review=new ReconfirmRequest(old.id(),old.version(),old.draft(),true,true);
+        service.reconfirm(1L,run.id(),target.id(),review);
+        var next=visual.targets(run.id()).getFirst();
+        assertThat(next.proposalId()).isNotEqualTo(old.id());
+        assertThat(visual.explicitlyReconfirmed(next.proposalId())).isTrue();
+        assertThat(visual.run(1L,run.id()).status()).isEqualTo("PAUSED");
+        assertThat(store.requireProposal(1L,old.id()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
+        assertThat(visual.steps(old.id()).getFirst().get("status")).isEqualTo("SEND_UNKNOWN");
+        assertThat(visual.previousAttempts(target.id())).hasSize(2);
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),review)).hasMessageContaining("已被新版本替代");
+    }
+
+    @Test void reconfirmationRejectsAnAlreadyObservedReply() {
+        service.start(startRequest(targets,true));
+        for(var c:captures){nextCapture(c);advance();}
+        var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        store.markFinal(target.proposalId(),ProposalStatus.BLOCKED,"fixture");visual.state(run.id(),"PAUSED","");
+        var old=store.requireProposal(1L,target.proposalId());var before=captures.getFirst();
+        var messages=new ArrayList<>(before.messages());messages.add(new ChatMessage("本人","文本",old.draft(),"今天"));
+        nextCapture(new ChatCapture("new",0,before.session(),messages,false,true));
+        assertThatThrownBy(()->service.reconfirm(1L,run.id(),target.id(),new ReconfirmRequest(old.id(),old.version(),old.draft(),true,false)))
+                .hasMessageContaining("出现本人回复");
+        assertThat(visual.explicitlyReconfirmed(old.id())).isFalse();
+    }
     @Test void manualReplyInvalidatesOriginalConfirmationCode() {
         service.start(startRequest(targets,true));var old=captures.getFirst();var messages=new ArrayList<>(old.messages());messages.add(new ChatMessage("本人","文本","本人已处理","今天"));
         nextCapture(new ChatCapture("new",0,old.session(),messages,false,true));advance();

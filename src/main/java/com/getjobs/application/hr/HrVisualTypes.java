@@ -15,4 +15,6 @@ public final class HrVisualTypes {
     public record Run(String id, Long profileId, String status, String account, String reason) { }
     public record Target(String id, String runId, long conversationId, Long proposalId, Seed seed, String status, String reason) { }
     public record Step(String id, String commandId, int ordinal, String actionType, String leaseToken) { }
+    public record ReconfirmRequest(long proposalId, int expectedVersion, String draft,
+                                   boolean confirmed, boolean possibleDuplicateAccepted) { }
 }

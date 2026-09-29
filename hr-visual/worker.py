@@ -12,6 +12,7 @@ from core import PROTOCOL, Halt, confirmed_new_message, signature, verify_source
 def serve(request: dict, driver, receive, emit):
     base = {"protocol": PROTOCOL, "requestId": request.get("requestId", "")}
     submitted = False
+    capture = None
     try:
         if request.get("protocol") != PROTOCOL:
             raise Halt("PROTOCOL_MISMATCH", "视觉执行协议不匹配")
@@ -22,13 +23,19 @@ def serve(request: dict, driver, receive, emit):
             capture = driver.select_and_read(request["target"])
             verify_source(capture, request)
             if request["operation"] == "inspect":
-                emit({**base, "phase": "result", "ok": True, "capture": capture})
+                emit({**base, "phase": "result", "ok": True, "capture": capture,
+                      "composer": driver.composer_text()})
                 return
             action = request.get("actionType")
             if action not in ("TEXT", "RESUME_NATIVE"):
                 raise Halt("INVALID_ACTION", "仅支持批准文字和原生简历")
-            driver.require_empty_composer()
+            adopt = action == "TEXT" and bool(request.get("adoptApprovedDraft")) and bool(driver.composer_text().strip())
+            if adopt:
+                driver.require_staged_text(request["draft"])
+            else:
+                driver.require_empty_composer()
             nonce = uuid.uuid4().hex
+            driver.save_receipt(request["stepId"], capture, None)
             emit({**base, "phase": "prepared", "ok": True, "nonce": nonce, "capture": capture})
             decision = receive(15)
             if decision.get("operation") != "commit" or decision.get("nonce") != nonce or decision.get("requestId") != base["requestId"]:
@@ -38,12 +45,14 @@ def serve(request: dict, driver, receive, emit):
             if signature(capture) != signature(fresh):
                 raise Halt("STALE", "确认期间聊天变化，未发送")
             if action == "TEXT":
-                driver.stage_text(request["draft"])
+                if not adopt:
+                    driver.stage_text(request["draft"])
                 final = driver.read_chat(request["target"])
                 verify_source(final, request)
                 if signature(final) != signature(capture):
                     raise Halt("STALE", "输入期间聊天变化，保留草稿，未发送")
                 driver.require_staged_text(request["draft"])
+                driver.prepare_text_submit(request["draft"])
             else:
                 driver.prepare_resume()
             driver.guard()
@@ -68,8 +77,15 @@ def serve(request: dict, driver, receive, emit):
             raise Halt("RECEIPT_TIMEOUT", "15 秒内未观察到匹配的新增本人消息，禁止自动重试")
     except Exception as error:
         code = getattr(error, "code", "DRIVER_ERROR")
+        evidence = {}
+        if capture is not None and request.get("stepId"):
+            try:
+                evidence = driver.save_receipt(request["stepId"], capture, None)
+            except Exception:
+                pass
         emit({**base, "phase": "result", "ok": False, "code": code,
               "outcome": "SEND_UNKNOWN" if submitted else "STALE" if code == "STALE" else "BLOCKED",
+              "submitted": submitted, "before": capture, "evidence": evidence,
               "detail": str(error)[:240]})
 
 
