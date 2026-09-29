@@ -81,6 +81,14 @@ class HrVisualStoreTest {
         assertThat(visual.stepEvidence(step.id()).path("before").path("contextComplete").asBoolean()).isTrue();
         assertThat(visual.stepEvidence(step.id()).path("submissionAuthorized").asBoolean()).isTrue();
     }
+    @Test void failureBeforeSubmissionDoesNotNeedACheckpointOrLeaveTheLeaseActive() {
+        var step=visual.claim(1L,proposal);
+        assertThat(visual.stepEvidence(step.id())).isNull();
+        visual.finish(step,"BLOCKED",Map.of("detail","identity not ready","submitted",false));
+        assertThat(visual.steps(proposal).getFirst().get("status")).isEqualTo("BLOCKED");
+        assertThat(visual.stepEvidence(step.id()).path("detail").asText()).isEqualTo("identity not ready");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_step WHERE status IN ('PREPARED','SUBMITTING')",Integer.class)).isZero();
+    }
     @Test void recoveryRetainsDurableBeforeSnapshotWithoutResubmitting() {
         var step=visual.claim(1L,proposal);
         visual.submitting(step,Map.of("contextComplete",true,"messages",capture.messages()));

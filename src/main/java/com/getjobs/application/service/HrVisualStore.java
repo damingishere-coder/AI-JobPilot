@@ -69,7 +69,9 @@ public class HrVisualStore {
         return db.queryForList("SELECT s.id,s.ordinal,s.action_type,s.status,s.submitted_at,s.finished_at,r.reviewed_at FROM hr_send_step s JOIN hr_send_command c ON c.command_id=s.command_id LEFT JOIN hr_visual_receipt_review r ON r.step_id=s.id WHERE c.proposal_id=? ORDER BY s.ordinal",proposal);
     }
     public com.fasterxml.jackson.databind.JsonNode stepEvidence(String step) {
-        try {return json.readTree(crypto.decrypt(db.queryForObject("SELECT evidence_cipher FROM hr_send_step WHERE id=?",String.class,step),"visual-evidence:"+step));}
+        String encoded=db.queryForObject("SELECT evidence_cipher FROM hr_send_step WHERE id=?",String.class,step);
+        if(encoded==null || encoded.isBlank())return null;
+        try {return json.readTree(crypto.decrypt(encoded,"visual-evidence:"+step));}
         catch(Exception e){throw new IllegalStateException("原发送前证据不可核验",e);}
     }
     public String commandId(String step) {return db.queryForObject("SELECT command_id FROM hr_send_step WHERE id=?",String.class,step);}
