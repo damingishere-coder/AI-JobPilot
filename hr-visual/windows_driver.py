@@ -332,6 +332,8 @@ class WindowsDriver:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
 
     def _wheel_contacts(self, ticks):
+        if not isinstance(ticks, int) or not 0 < abs(ticks) <= 200:
+            raise Halt("LIST_SCROLL_UNVERIFIED", "滚轮步长超过有界范围，未滚动")
         self.guard()
         nodes = self._nodes()
         self._check_page(nodes)
@@ -357,23 +359,29 @@ class WindowsDriver:
         self._wheel_contacts(-1)
         time.sleep(1)
         after = snapshot()
+        moved_up = False
         if before == after:
             self._wheel_contacts(1)
             time.sleep(1)
-            if snapshot() == before:
+            after = snapshot()
+            if after == before:
                 raise Halt("LIST_TOP_UNVERIFIED", "滚轮未产生可核验的列表变化，不能确认顶部")
-        previous = None
+            moved_up = True
+        previous = after
         stable = 0
         deadline = time.monotonic()+18
         while time.monotonic() < deadline:
             # Returning upward does not enumerate candidates. A bounded large wheel
-            # delta reaches the start of long lists without navigation or refresh.
-            self._wheel_contacts(300)
+            # delta stays inside the signed 16-bit WM_MOUSEWHEEL range.
+            self._wheel_contacts(200)
             time.sleep(1)
             self.guard()
             current = snapshot()
+            moved_up = moved_up or bool(current and current != previous)
             stable = stable+1 if current and current == previous else 0
             if stable >= 2:
+                if not moved_up:
+                    raise Halt("LIST_TOP_UNVERIFIED", "向上滚轮未产生可核验的变化，不能把静止视口当作顶部")
                 return
             previous = current
         raise Halt("LIST_TOP_UNVERIFIED", "向上滚动后未核验列表顶部，保留现场等待恢复")

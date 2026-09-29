@@ -47,7 +47,21 @@ class LayoutTests(unittest.TestCase):
         def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
         with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('甲'),rows('甲'),rows('甲')]),patch.object(d,'_wheel_contacts') as wheel:
             d._list_to_top()
-        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,300,300,300])
+        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,200,200,200])
+
+    def test_downward_movement_without_upward_movement_cannot_prove_top(self):
+        d=WindowsDriver(threading.Event())
+        def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('乙'),rows('乙')]),patch.object(d,'_wheel_contacts'):
+            with self.assertRaises(Halt) as result:d._list_to_top()
+        self.assertEqual(result.exception.code,'LIST_TOP_UNVERIFIED')
+
+    def test_wheel_delta_cannot_overflow_signed_message_range(self):
+        d=WindowsDriver(threading.Event())
+        with patch.object(d,'guard') as guard:
+            with self.assertRaises(Halt) as result:d._wheel_contacts(300)
+        self.assertEqual(result.exception.code,'LIST_SCROLL_UNVERIFIED')
+        guard.assert_not_called()
 
     def test_end_marker_must_be_in_list_not_chat_body(self):
         search=node('','Edit','boss-search-input',(0,0,300,30))
