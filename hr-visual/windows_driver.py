@@ -297,6 +297,19 @@ class WindowsDriver:
 
     def _selected_identity(self, nodes, target):
         selected = [n for n in nodes if "friend-content" in n["class"].split() and "selected" in n["class"].split()]
+        if not selected and self.chat_box:
+            # Search can open an off-screen contact without scrolling the list.
+            # Use only the current visible chat header, never the cached search hit.
+            header = [n for n in nodes if n["type"] == "Text" and inside(n["box"],self.chat_box)
+                      and n["box"][1] < self.chat_box[1]+140]
+            names = [n for n in header if normalized(n["text"]) == normalized(target["hrName"])]
+            if len(names) == 1:
+                companies = [n for n in header if normalized(n["text"]) == normalized(target["companyName"])
+                             and n["box"][0] > names[0]["box"][2]
+                             and abs(n["box"][1]-names[0]["box"][1]) < max(20,names[0]["box"][3]-names[0]["box"][1])]
+                if len(companies) == 1:
+                    return {"hrName":names[0]["text"],"companyName":companies[0]["text"]}
+            raise Halt("IDENTITY_MISMATCH", "联系人不在当前列表视口，正文标题的姓名和公司未完整核验")
         if len(selected) != 1:
             raise Halt("IDENTITY_AMBIGUOUS", "当前选中的联系人不唯一")
         children = [n for n in nodes if n["type"] == "Text" and inside(n["box"], selected[0]["box"])]
@@ -426,23 +439,34 @@ class WindowsDriver:
         escaped = "".join("{"+c+"}" if c in "+^%~(){}" else c for c in target["hrName"])
         send_keys("^a"); send_keys(escaped, with_spaces=True, vk_packet=True, pause=.02)
         time.sleep(3)
-        self.guard()
-        nodes = self._nodes()
-        self._check_page(nodes)
-        names = [n for n in nodes if n["type"] == "Text" and normalized(n["text"]) == normalized(target["hrName"])
-                 and search[0]-30 <= n["box"][0] < search[2] and n["box"][1] > search[3]]
-        matched = []
-        for name in names:
-            companies = [n for n in nodes if n["type"] == "Text" and normalized(n["text"]) == normalized(target["companyName"])
-                         and abs(n["box"][1]-name["box"][1]) < max(20, name["box"][3]-name["box"][1])
-                         and search[0] <= n["box"][0] < search[2]]
-            if len(companies) == 1:
-                matched.append((name, companies[0]))
-        if len(matched) != 1:
-            raise Halt("IDENTITY_AMBIGUOUS", "列表中未找到姓名和完整公司均唯一匹配的会话")
-        name, company = matched[0]
+        deadline = time.monotonic()+12
+        previous = None
+        while True:
+            self.guard()
+            nodes = self._nodes()
+            self._check_page(nodes)
+            matched = self._search_matches(nodes, target, search)
+            if len(matched) > 1:
+                raise Halt("IDENTITY_AMBIGUOUS", "搜索结果存在同名同公司会话，未点击")
+            current = (matched[0]["text"],matched[0]["box"]) if matched else None
+            if current and current == previous:
+                selected = matched[0]
+                labels = [n for n in nodes if n["type"] == "Text" and normalized(n["text"]) == "职位:"
+                          and inside(n["box"],selected["box"])]
+                jobs = [n for n in nodes if n["type"] == "Text" and len(labels) == 1
+                        and inside(n["box"],selected["box"]) and n["box"][0] >= labels[0]["box"][2]-4
+                        and abs(n["box"][1]-labels[0]["box"][1]) < max(12,labels[0]["box"][3]-labels[0]["box"][1])]
+                if len(jobs) != 1 or not jobs[0]["text"].strip() or any(s in jobs[0]["text"] for s in ("…","...")):
+                    raise Halt("JOB_UNVERIFIED", "搜索结果岗位无法完整读取，未点击")
+                self.selected_job = jobs[0]["text"]
+                break
+            previous = current
+            if time.monotonic() >= deadline:
+                raise Halt("SEARCH_NOT_READY", "搜索结果未稳定显示完整姓名和公司，未点击底层联系人")
+            self.progress("SELECTING_HR", "等待搜索结果中的完整姓名和公司稳定显示", hrName=target["hrName"], companyName=target["companyName"])
+            time.sleep(1)
         self.chat_box = (search[2]+4, search[1], box(self.window)[2], box(self.window)[3])
-        self._click(name["box"])
+        self._click(selected["box"])
         self.progress("WAITING_BODY", "已点击目标联系人，等待正文核验", hrName=target["hrName"], companyName=target["companyName"])
         time.sleep(3)
         deadline = time.monotonic()+17
@@ -465,6 +489,30 @@ class WindowsDriver:
                 self.progress("WAITING_BODY", str(error), errorCode=error.code)
             time.sleep(1)
         raise last_error or Halt("BODY_NOT_READY", "20 秒内未读到连续稳定且完整的聊天正文，没有刷新页面")
+
+    @staticmethod
+    def _search_matches(nodes, target, search):
+        # Highlighted names are omitted from individual Text nodes by Chrome UIA,
+        # but remain in the native search-list item's accessible name. Match that
+        # exact prefix plus an independent company label; never use rows behind it.
+        prefix = normalized(target["hrName"])+normalized(target["companyName"])
+        matches = []
+        for n in nodes:
+            if n["type"] != "ListItem" or "search-list" not in n["class"].split():
+                continue
+            if not (search[0]-40 <= n["box"][0] < search[2] and n["box"][1] >= search[3]):
+                continue
+            if not normalized(n["text"]).startswith(prefix):
+                continue
+            if not any(t["type"] == "Text" and normalized(t["text"]) == normalized(target["companyName"])
+                       and inside(t["box"],n["box"]) for t in nodes):
+                continue
+            job = target.get("visualJob") or target.get("jobName")
+            if job and not any(t["type"] == "Text" and normalized(t["text"]) == normalized(job)
+                               and inside(t["box"],n["box"]) for t in nodes):
+                continue
+            matches.append(n)
+        return matches
 
     def list_contacts(self, include_unverified=False):
         self.guard()
