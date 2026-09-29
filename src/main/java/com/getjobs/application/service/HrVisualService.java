@@ -190,6 +190,8 @@ public class HrVisualService {
     }
     public Object processDiscoveredBatch(Long profile,String id,BatchProcessRequest request) {
         return guard.locked(()->transaction.execute(tx->{
+            // Evaluate the current snapshot before all request-dependent and idempotent returns.
+            String authorization=policies.visualAuthorizationHash(profile);
             if(request==null || !HrVisualTypes.PROTOCOL.equals(request.protocol()) || !Set.of("REVIEW","AUTO").contains(Objects.toString(request.replyMode(),"")))
                 throw new IllegalArgumentException("本轮回复模式或协议无效");
             if(request.replyMode().equals("AUTO") && !request.directRepliesConfirmed())throw new IllegalArgumentException("请明确确认本轮直接回复");
@@ -202,8 +204,6 @@ public class HrVisualService {
             if(!batch.status().equals("PAUSED") || executing.get() || visual.busy())throw new IllegalStateException("请先暂停本轮并等待当前操作结束");
             if(batch.stage().equals("BOOTSTRAP") || batches.items(id).stream().noneMatch(i->i.kind().equals("CONTACT")))throw new IllegalStateException("尚未收集联系人");
             if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守仍在运行");
-            // Both modes bind a current snapshot; only explicit AUTO consent enables text sending.
-            String authorization=policies.visualAuthorizationHash(profile);
             batches.processDiscovered(id,request.replyMode(),authorization);
             for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
             batches.resetAnchors(id,"PROCESS");
