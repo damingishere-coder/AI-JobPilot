@@ -81,6 +81,12 @@ class HrAssistantControllerTest {
                         .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
         verify(visual).prioritizeBatchItem(4L,"b","i");
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/batches/b/items/i/recheck"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/batches/b/items/i/recheck")
+                        .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(visual).recheckBatchItem(4L,"b","i");
         org.mockito.Mockito.verifyNoMoreInteractions(visual);
         verifyNoInteractions(store, watcher, actions, events);
     }
