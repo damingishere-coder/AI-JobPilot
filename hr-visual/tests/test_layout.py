@@ -11,6 +11,42 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_clipped_row_behind_fixed_filter_is_not_an_hr(self):
+        d=WindowsDriver(threading.Event())
+        nodes=[node('','Edit','boss-search-input',(20,0,300,30)),node('','List','',(20,45,300,70)),
+               node('','Group','friend-content',(0,40,320,140)),node('未读','Text','',(40,50,90,65)),node('(34)','Text','',(95,50,140,65)),
+               node('','Group','friend-content',(0,150,320,240)),node('HR','Text','',(40,160,90,180)),node('公司','Text','',(100,160,170,180))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):contacts=d.list_contacts(True)
+        self.assertEqual([(c['hrName'],c['companyName']) for c in contacts],[('HR','公司')])
+
+    def test_wheel_fallback_does_not_call_missing_scroll_pattern_or_claim_end(self):
+        d=WindowsDriver(threading.Event());row=Mock();row.parent.return_value=None
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),{**node('HR 公司','Group','friend-content',(0,50,300,100)),'control':row}]
+        contact={'hrName':'HR','companyName':'公司','previewKey':'p'}
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',return_value=[contact]),patch.object(d,'_wheel_contacts') as wheel:
+            result=d.discover_page({'anchor':'HR|公司','keys':['HR|公司']})
+        wheel.assert_called_once_with(-3)
+        self.assertFalse(result['coverageComplete']);self.assertEqual(result['cursor']['scrollMode'],'WHEEL')
+
+    def test_unresponsive_wheel_cannot_prove_list_top(self):
+        d=WindowsDriver(threading.Event())
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),node('HR 公司','Group','friend-content',(0,50,300,100))]
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'_wheel_contacts'):
+            with self.assertRaises(Halt) as result:d._list_to_top()
+        self.assertEqual(result.exception.code,'LIST_TOP_UNVERIFIED')
+
+    def test_virtualized_top_detection_compares_text_not_only_rectangles(self):
+        d=WindowsDriver(threading.Event())
+        def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('甲'),rows('乙'),rows('甲'),rows('甲'),rows('甲')]),patch.object(d,'_wheel_contacts') as wheel:
+            d._list_to_top()
+        self.assertEqual([call.args[0] for call in wheel.call_args_list],[-1,10,10,10])
+
+    def test_end_marker_must_be_in_list_not_chat_body(self):
+        search=node('','Edit','boss-search-input',(0,0,300,30))
+        self.assertFalse(WindowsDriver._list_end_marker([search,node('没有更多了','Text','',(500,500,600,520))]))
+        self.assertTrue(WindowsDriver._list_end_marker([search,node('没有更多了','Text','',(100,500,200,520))]))
+
     def test_loaded_contacts_without_selection_are_not_body_loading(self):
         d=WindowsDriver(threading.Event());events=[];d.report=lambda **e:events.append(e)
         rows=[node('本人','Text','nav-figure',(0,0,100,30)),node('','Edit','boss-search-input',(0,40,300,70)),node('HR 公司','Group','friend-content',(0,80,300,130))]

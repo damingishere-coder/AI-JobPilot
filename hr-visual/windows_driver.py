@@ -314,7 +314,7 @@ class WindowsDriver:
             if n["type"] in ("Text", "Dialog") and len(n["text"]) < 160 and any(x in n["text"] for x in ("异常访问", "安全验证", "滑动验证", "操作太频繁", "账号异常", "扫码登录", "短信登录")):
                 raise Halt("PLATFORM_CHECK", "页面要求登录或安全验证，停止操作")
 
-    def _click(self, rect):
+    def _move_to(self, rect):
         self.guard()
         import win32api, win32con, win32gui
         x, y = (rect[0]+rect[2])//2, (rect[1]+rect[3])//2
@@ -324,8 +324,66 @@ class WindowsDriver:
         left, top = win32api.GetSystemMetrics(76), win32api.GetSystemMetrics(77)
         width, height = win32api.GetSystemMetrics(78), win32api.GetSystemMetrics(79)
         win32api.mouse_event(0x0001 | 0x8000 | 0x4000, round((x-left)*65535/max(width-1,1)), round((y-top)*65535/max(height-1,1)))
+
+    def _click(self, rect):
+        self._move_to(rect)
+        import win32api, win32con
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+
+    def _wheel_contacts(self, ticks):
+        self.guard()
+        nodes = self._nodes()
+        self._check_page(nodes)
+        searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
+        if len(searches) != 1:
+            raise Halt("LIST_UNVERIFIED", "联系人列表范围已变化，未滚动")
+        rows = self._contact_rows(nodes)
+        if not rows:
+            raise Halt("LIST_UNVERIFIED", "没有可核验的联系人行，未移动鼠标")
+        rows.sort(key=lambda n:n["box"][1])
+        self._move_to(rows[len(rows)//2]["box"])
+        self.guard()
+        import win32api, win32con
+        win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, 120*ticks, 0)
+
+    def _list_to_top(self):
+        def snapshot():
+            nodes = self._nodes()
+            return [(tuple(n["text"] for n in nodes if n["type"] == "Text" and inside(n["box"],row["box"])),row["box"])
+                    for row in self._contact_rows(nodes)]
+        self.progress("DISCOVERING", "核验列表滚轮有效性与顶部位置")
+        before = snapshot()
+        self._wheel_contacts(-1)
+        time.sleep(1)
+        after = snapshot()
+        if before == after:
+            self._wheel_contacts(1)
+            time.sleep(1)
+            if snapshot() == before:
+                raise Halt("LIST_TOP_UNVERIFIED", "滚轮未产生可核验的列表变化，不能确认顶部")
+        previous = None
+        stable = 0
+        deadline = time.monotonic()+18
+        while time.monotonic() < deadline:
+            self._wheel_contacts(10)
+            time.sleep(1)
+            self.guard()
+            current = snapshot()
+            stable = stable+1 if current and current == previous else 0
+            if stable >= 2:
+                return
+            previous = current
+        raise Halt("LIST_TOP_UNVERIFIED", "向上滚动后未核验列表顶部，保留现场等待恢复")
+
+    @staticmethod
+    def _list_end_marker(nodes):
+        searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
+        if len(searches) != 1:
+            return False
+        left = searches[0]["box"]
+        return any(n["type"] == "Text" and left[0]-30 <= n["box"][0] < left[2]+30 and n["box"][1] > left[3]
+                   and re.fullmatch(r"(?:没有更多(?:联系人)?(?:了)?|暂无更多|已经到底|到底了|全部加载完)[！!。.]?", n["text"].strip()) for n in nodes)
 
     def select_and_read(self, target):
         self.target = target
@@ -388,7 +446,7 @@ class WindowsDriver:
         nodes = self._nodes()
         self._check_page(nodes)
         contacts = []
-        for row in [n for n in nodes if "friend-content" in n["class"].split()]:
+        for row in self._contact_rows(nodes):
             texts = [n for n in nodes if n["type"] == "Text" and n["text"] and inside(n["box"], row["box"])]
             names = [n for n in texts if not re.fullmatch(r"\d+|\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日|今天|昨天|前天", n["text"])]
             if len(names) < 2:
@@ -412,6 +470,23 @@ class WindowsDriver:
             raise Halt("IDENTITY_AMBIGUOUS", "联系人存在同名同公司重复项，未开始简历巡检")
         return contacts
 
+    @staticmethod
+    def _contact_rows(nodes):
+        searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
+        if len(searches) != 1:
+            raise Halt("LIST_UNVERIFIED", "联系人列表范围不可唯一核验")
+        left = searches[0]["box"]
+        cutoff = left[3]
+        # Chrome exposes clipped rows behind the fixed filter bar as visible UIA nodes.
+        # Exclude them before geometric text grouping, or '未读(34)' becomes a fake HR.
+        for n in nodes:
+            if n["type"] == "List" and left[0]-40 <= n["box"][0] and n["box"][2] <= left[2]+40 \
+                    and left[3] <= n["box"][1] < left[3]+3*(left[3]-left[1]) \
+                    and n["box"][3]-n["box"][1] <= 2*(left[3]-left[1]):
+                cutoff = max(cutoff, n["box"][3])
+        return [n for n in nodes if "friend-content" in n["class"].split() and n["box"][1] >= cutoff
+                and left[0]-40 <= n["box"][0] < left[2] and n["box"][2] <= left[2]+40]
+
     def discover_page(self, cursor=None):
         """One viewport per operation. A stable bottom plus an explicit end marker proves coverage."""
         self.guard()
@@ -425,7 +500,7 @@ class WindowsDriver:
             send_keys("^a{BACKSPACE}")
             time.sleep(3)
             nodes = self._nodes()
-        rows = [n for n in nodes if "friend-content" in n["class"].split()]
+        rows = self._contact_rows(nodes)
         if not rows:
             raise Halt("LIST_NOT_READY", "未读到联系人行，不能认定列表为空或已完成")
         scroller = None
@@ -442,17 +517,19 @@ class WindowsDriver:
                 break
             except Exception:
                 continue
-        if scroller is None:
-            raise Halt("LIST_SCROLL_UNVERIFIED", "无法核验联系人列表滚动容器；未把可见列表算作全部")
         if cursor:
             current = self.list_contacts(True)
             keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in current]
             if cursor.get("anchor") not in keys:
                 raise Halt("LIST_POSITION_CHANGED", "列表位置已变化，需明确恢复后重新枚举；已保存的记录保留")
-            if scroller.CurrentVerticallyScrollable:
+            if scroller is None:
+                self._wheel_contacts(-3)
+            elif scroller.CurrentVerticallyScrollable:
                 view = scroller.CurrentVerticalViewSize
                 step = 65*view/max(1, 100-view)  # Keep 35% overlap so clipped rows become fully visible.
                 scroller.SetScrollPercent(-1, min(100, scroller.CurrentVerticalScrollPercent+step))
+        elif scroller is None:
+            self._list_to_top()
         elif scroller.CurrentVerticallyScrollable:
             scroller.SetScrollPercent(-1, 0)
         self.progress("DISCOVERING", "逐屏读取联系人；尚未确认列表末尾")
@@ -460,22 +537,26 @@ class WindowsDriver:
         self.guard()
         contacts = self.list_contacts(True)
         nodes = self._nodes()
-        left = searches[0]["box"]
-        end_marker = any(n["type"] == "Text" and left[0]-30 <= n["box"][0] < left[2]+30 and n["box"][1] > left[3]
-                         and re.fullmatch(r"(?:没有更多|暂无更多|已经到底|到底了|全部加载完|没有更多联系人)[！!。.]?", n["text"].strip()) for n in nodes)
-        at_bottom = not scroller.CurrentVerticallyScrollable or scroller.CurrentVerticalScrollPercent >= 99.9
+        end_marker = self._list_end_marker(nodes)
         keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in contacts]
         unchanged = bool(cursor) and keys == cursor.get("keys")
+        at_bottom = (not scroller.CurrentVerticallyScrollable or scroller.CurrentVerticalScrollPercent >= 99.9) if scroller is not None else unchanged
         gap = bool(cursor and cursor.get("keys") and not set(keys).intersection(cursor["keys"]))
+        if scroller is None and end_marker:
+            self._wheel_contacts(-3)
+            time.sleep(1)
+            self.guard()
+            probe = self.list_contacts(True)
+            at_bottom = keys == [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in probe]
         if end_marker and at_bottom:
             time.sleep(1)
             self.guard()
             stable = self.list_contacts(True)
-            end_marker = keys == [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in stable]
+            end_marker = self._list_end_marker(self._nodes()) and keys == [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in stable]
         return {"contacts": contacts, "coverageComplete": bool(end_marker and at_bottom),
                 "coverageGap": gap,
                 "coverage": "END_CONFIRMED" if end_marker and at_bottom else "NO_PROGRESS" if unchanged else "MORE",
-                "cursor": {"anchor": keys[-1] if keys else "", "keys": keys}}
+                "cursor": {"anchor": keys[-1] if keys else "", "keys": keys, "scrollMode": "WHEEL" if scroller is None else "UIA"}}
 
     def restore_receipt_boundary(self, before):
         # Resume only a previously verified complete HR round, never inferred hidden text.
