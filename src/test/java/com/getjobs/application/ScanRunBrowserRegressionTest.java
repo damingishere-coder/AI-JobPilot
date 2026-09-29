@@ -105,7 +105,19 @@ class ScanRunBrowserRegressionTest {
                     }
                     """);
                 assertThat(((Number)page.evaluate("async()=>(await api(base)).accepted")).intValue()).isEqualTo(1);
-                page.evaluate("async()=>{await api(endpoint('/commands'),{kind:'STOP',id:task.platform+'-stop'});await new Promise(r=>setTimeout(r,2100));await control.checkpoint()}");
+                page.evaluate("""
+                    async()=>{
+                      await api(endpoint('/commands'),{kind:'STOP',id:task.platform+'-stop'});
+                      // The control's background sync can refresh its throttle while this test waits.
+                      // Wait for the observed STOP checkpoint, not a wall-clock guess of one sync cycle.
+                      const deadline=Date.now()+10000;
+                      while(Date.now()<deadline){
+                        if(await control.checkpoint())return;
+                        await new Promise(r=>setTimeout(r,100));
+                      }
+                      throw new Error('STOP was not observed at a checkpoint');
+                    }
+                    """);
                 assertThat(jdbc.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-stop")).isEqualTo("PENDING");
                 assertThat(page.evaluate("async()=>{try{await api('/api/'+task.platform+'/chrome/jobs',batch);return false}catch(e){return String(e).includes('409')}}")).isEqualTo(true);
                 page.evaluate("async()=>await control.leave()");
