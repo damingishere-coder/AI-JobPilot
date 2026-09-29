@@ -12,6 +12,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Function;
+import java.util.function.Consumer;
 
 /** Private child-process protocol. No socket, browser extension or arbitrary executable in requests. */
 @Service
@@ -42,6 +43,9 @@ public class HrVisualWorker {
         }
     }
     public JsonNode exchange(Map<String,Object> request, Function<JsonNode,Boolean> authorize) {
+        return exchange(request,authorize,event->{});
+    }
+    public JsonNode exchange(Map<String,Object> request, Function<JsonNode,Boolean> authorize, Consumer<JsonNode> progress) {
         if(!Boolean.TRUE.equals(availability().get("installed"))) throw new IllegalStateException("视觉环境未安装，请运行 hr-visual/setup.ps1");
         Process process=null;
         var readerPool=Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
@@ -57,12 +61,11 @@ public class HrVisualWorker {
                 var payload=new LinkedHashMap<>(request);
                 payload.put("protocol",HrVisualTypes.PROTOCOL);payload.put("requestId",requestId);
                 write(writer,payload);
-                JsonNode prepared=read(readerPool,reader,60);
-                validate(prepared,requestId);
+                JsonNode prepared=readResult(readerPool,reader,requestId,60,progress);
                 if(!prepared.path("phase").asText().equals("prepared")) return prepared;
                 boolean approved=authorize!=null && authorize.apply(prepared);
                 write(writer,Map.of("operation",approved?"commit":"cancel","nonce",prepared.path("nonce").asText(),"requestId",requestId));
-                var result=read(readerPool,reader,30);validate(result,requestId);return result;
+                return readResult(readerPool,reader,requestId,30,progress);
                 } finally {
                     // Kill before BufferedReader.close: a timed-out reader owns its monitor.
                     if(child.isAlive()) child.destroyForcibly();
@@ -77,9 +80,19 @@ public class HrVisualWorker {
             readerPool.shutdownNow();
         }
     }
+    private JsonNode readResult(ExecutorService pool,BufferedReader reader,String requestId,int seconds,Consumer<JsonNode> progress)throws Exception {
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(seconds);
+        while(true) {
+            long remaining=deadline-System.nanoTime();
+            if(remaining<=0)throw new TimeoutException("视觉操作总等待超时");
+            JsonNode event=read(pool,reader,remaining);validate(event,requestId);
+            if(!event.path("phase").asText().equals("progress"))return event;
+            progress.accept(event);
+        }
+    }
     private synchronized void write(BufferedWriter w,Object data)throws IOException {w.write(json.writeValueAsString(data));w.newLine();w.flush();}
-    private JsonNode read(ExecutorService pool,BufferedReader r,int seconds)throws Exception {
-        String line=pool.submit(r::readLine).get(seconds,TimeUnit.SECONDS);
+    private JsonNode read(ExecutorService pool,BufferedReader r,long nanos)throws Exception {
+        String line=pool.submit(r::readLine).get(nanos,TimeUnit.NANOSECONDS);
         if(line==null || line.length()>4_000_000) throw new IllegalStateException("视觉执行器响应缺失或过大");
         return json.readTree(line);
     }

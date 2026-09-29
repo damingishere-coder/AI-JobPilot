@@ -7,8 +7,37 @@ vi.mock('@/lib/api', async () => ({ ...await vi.importActual('@/lib/api'), local
 const response = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 
+it('shows loaded list without selection separately from stale successful observations and coverage', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [],
+    batch: { id: 'b', status: 'INCOMPLETE', discovered: 12, checked: 9, pendingReview: 2, sent: 1, coverageComplete: false, reason: '列表未确认到底' },
+    observation: { current: { stage: 'LIST_READY_NO_SELECTION', detail: '联系人可见，尚未选中 HR', observedAt: 2000 }, lastSuccess: { observedAt: 1000 } } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  expect(await screen.findByText(/列表已加载，尚未选择 HR/)).toBeInTheDocument()
+  expect(screen.getByText(/尚未确认完整覆盖/)).toBeInTheDocument()
+  expect(screen.getByText(/历史观察，不代表当前页面仍然就绪/)).toBeInTheDocument()
+  expect(screen.getByText(/发现 12 人 · 检查 9 人 · 待确认 2 条 · 已确认发送 1 条/)).toBeInTheDocument()
+})
+
+it('starts a finite batch with separate resume consent and no automatic text setting', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [] }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  vi.mocked(localActionFetch).mockImplementation(async () => response(status))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  const button = await screen.findByRole('button', { name: '检查一轮其他 HR' })
+  expect(button).toBeDisabled()
+  fireEvent.click(screen.getByLabelText('允许向明确索要简历的 HR 直接分享当前 BOSS 简历'))
+  await waitFor(() => expect(button).toBeEnabled())
+  fireEvent.click(button)
+  await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
+  const [url, init] = vi.mocked(localActionFetch).mock.calls[0]
+  expect(url).toContain('/visual/batches')
+  expect(JSON.parse(String(init?.body))).toMatchObject({ profileId: 4, resumeSharingConfirmed: true, protocol: status.protocol, requestKey: expect.any(String) })
+  expect(String(init?.body)).not.toContain('replyMode')
+})
+
 it('requires separate resume consent and sends no automatic text policy setting', async () => {
-  const status = { installed: true, protocol: 'p', running: false, status: 'IDLE', targets: [], resumeRule: { enabled: false, state: 'STOPPED' } }
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [], resumeRule: { enabled: false, state: 'STOPPED' } }
   vi.stubGlobal('fetch', vi.fn(async () => response(status)))
   vi.mocked(localActionFetch).mockResolvedValue(response(status))
   render(<HrVisualPanel profileId={4} profileName="本人" />)
@@ -24,7 +53,7 @@ it('requires separate resume consent and sends no automatic text policy setting'
 })
 
 it('starts exactly three chosen conversations in QQ review mode without an extension', async () => {
-  const status = { installed: true, protocol: 'visual-test', running: false, status: 'IDLE', targets: [] }
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [] }
   vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes('/proposals') ? [1, 2, 3, 4].map(id => ({ id, conversationId: id, version: 2, status: 'EXPIRED', hrName: `HR${id}`, companyName: `公司${id}`, draft: '原建议' })) : status)))
   vi.mocked(localActionFetch).mockResolvedValue(response(status))
   render(<HrVisualPanel profileId={4} profileName="测试本人" />)
@@ -37,13 +66,13 @@ it('starts exactly three chosen conversations in QQ review mode without an exten
   fireEvent.click(screen.getByRole('button', { name: '读取并发送 QQ 建议卡（3/3）' }))
   await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
   const request = JSON.parse(String(vi.mocked(localActionFetch).mock.calls[0][1]?.body))
-  expect(request).toMatchObject({ profileId: 4, accountName: '测试本人', protocol: 'visual-test' })
+  expect(request).toMatchObject({ profileId: 4, accountName: '测试本人', protocol: '2026-09-29-hr-visual-v3' })
   expect(request.targets).toHaveLength(3)
   expect(request.targets.every((t: { approved: boolean; sendResume: boolean }) => !t.approved && !t.sendResume)).toBe(true)
 })
 
 it('keeps successful text distinct from unknown resume and permits no resend', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => response({ installed: true, protocol: 'p', running: false, status: 'COMPLETED', targets: [{ id: 't', hrName: 'HR', companyName: '公司', status: 'SEND_UNKNOWN', reason: '不得重试', steps: [{ id: 'a', action_type: 'TEXT', status: 'SENT_CONFIRMED' }, { id: 'b', action_type: 'RESUME_NATIVE', status: 'SEND_UNKNOWN' }] }] })))
+  vi.stubGlobal('fetch', vi.fn(async () => response({ installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'COMPLETED', targets: [{ id: 't', hrName: 'HR', companyName: '公司', status: 'SEND_UNKNOWN', reason: '不得重试', steps: [{ id: 'a', action_type: 'TEXT', status: 'SENT_CONFIRMED' }, { id: 'b', action_type: 'RESUME_NATIVE', status: 'SEND_UNKNOWN' }] }] })))
   render(<HrVisualPanel profileId={4} profileName="本人" />)
   expect(await screen.findByText('文字回复：已确认发送')).toBeInTheDocument()
   expect(screen.getByText('BOSS 原生简历：发送结果未知')).toBeInTheDocument()
@@ -51,7 +80,7 @@ it('keeps successful text distinct from unknown resume and permits no resend', a
 })
 
 it('reports incompatible status and cannot start without installed worker', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => response({ installed: false, protocol: 'p', running: false, status: 'IDLE', targets: [] })))
+  vi.stubGlobal('fetch', vi.fn(async () => response({ installed: false, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [] })))
   render(<HrVisualPanel profileId={4} profileName="本人" />)
   expect(await screen.findByText(/视觉环境尚未安装/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '选择三个已有会话' })).toBeDisabled()

@@ -23,6 +23,7 @@ class HrVisualServiceTest {
     JdbcTemplate db;
     HrAssistantStore store;
     HrVisualStore visual;
+    HrVisualBatchStore batches;
     HrAutopilotStore policies;
     HrVisualService service;
     HrVisualWorker worker=mock(HrVisualWorker.class);
@@ -44,7 +45,9 @@ class HrVisualServiceTest {
         when(profiles.getCurrentProfileId()).thenReturn(1L);when(profiles.getCurrentProfileIdOrNull()).thenReturn(1L);
         var profile=new ProfileEntity();profile.setName("档案姓名");when(profiles.getCurrentProfile()).thenReturn(profile);
         when(worker.availability()).thenReturn(Map.of("installed",true));when(qq.isConnected()).thenReturn(true);
-        service=new HrVisualService(visual,store,policies,ai,worker,new HrProfileGuard(),profiles,qq,json,new TransactionTemplate(new DataSourceTransactionManager(ds)));
+        batches=new HrVisualBatchStore(db,crypto,json);
+        when(worker.exchange(anyMap(),any(),any())).thenAnswer(inv->worker.exchange(inv.getArgument(0),inv.getArgument(1)));
+        service=new HrVisualService(visual,store,policies,ai,worker,new HrProfileGuard(),profiles,qq,json,new TransactionTemplate(new DataSourceTransactionManager(ds)),batches);
         service.initialize();
         for(int i=0;i<3;i++) {
             var session=new ChatSession("uid"+i,"","HR"+i,"公司"+i,"岗位"+i,"","你好","09-23 14:00");
@@ -123,6 +126,122 @@ class HrVisualServiceTest {
         assertThat(visual.resumeRule(1L).get("state")).isEqualTo("PAUSED");
         service.configureResumeRule(new ResumeRuleRequest(1L,HrVisualTypes.PROTOCOL,true,true,"登录姓名",true));
         assertThat(visual.resumeRuleAuthorized(1L,run.id())).isFalse();
+    }
+    BatchRequest batchRequest(){return new BatchRequest(1L,HrVisualTypes.PROTOCOL,"test-once-request-001","登录姓名",true,true);}
+    void advanceBatch(){ReflectionTestUtils.invokeMethod(service,"advanceBatch",1L);}
+    void discoverBatch(List<Map<String,Object>> contacts,boolean complete) {
+        var b=batches.latest(1L);batches.state(b.id(),"RUNNING","DISCOVER","");
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"contacts",contacts,"coverageComplete",complete,"coverage",complete?"END_CONFIRMED":"NO_PROGRESS","cursor",Map.of("anchor","x"))));
+        advanceBatch();
+        if(complete && batches.latest(1L).stage().equals("DISCOVER"))advanceBatch();
+    }
+    @Test void singlePassStartupIsIdempotentAndNeverReopensAfterFailureOrRestart() {
+        service.startBatch(batchRequest());service.startBatch(batchRequest());
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","CHAT_TAB_MISSING","detail","未找到标签")));
+        advanceBatch();
+        verify(worker).exchange(argThat(m->"bootstrap".equals(m.get("operation")) && Boolean.TRUE.equals(m.get("allowOpenOnce"))),isNull());
+        var b=batches.latest(1L);assertThat(b.status()).isEqualTo("PAUSED");
+        assertThat(json.valueToTree(batches.observation(1L)).path("current").path("errorCode").asText()).isEqualTo("CHAT_TAB_MISSING");
+        service.controlBatch(1L,b.id(),true);advanceBatch();
+        verify(worker).exchange(argThat(m->"bootstrap".equals(m.get("operation")) && Boolean.FALSE.equals(m.get("allowOpenOnce"))),isNull());
+        assertThat(db.queryForObject("SELECT open_reserved FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+    }
+    @Test void incompleteCoverageCannotBecomeCompletedAndDiscoveryStops() {
+        service.startBatch(batchRequest());
+        for(int i=0;i<3;i++)discoverBatch(List.of(),false);
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        advanceBatch();assertThat(batches.latest(1L).status()).isEqualTo("INCOMPLETE");
+        clearInvocations(worker);advanceBatch();verifyNoInteractions(worker);
+    }
+    @Test void batchKeepsTruncatedContactsAndExcludesPriorThreeConversations() {
+        service.start(startRequest(targets,true));var original=visual.runs(1L).getFirst();visual.state(original.id(),"COMPLETED","");
+        service.startBatch(batchRequest());
+        discoverBatch(List.of(Map.of("hrName","HR0","companyName","公司0","identityComplete",true),Map.of("hrName","王女士","companyName","公司…","identityComplete",false)),true);
+        advanceBatch();advanceBatch();advanceBatch();
+        assertThat(batches.status(1L).get("checked")).isEqualTo(0L);
+        assertThat(batches.latest(1L).status()).isEqualTo("INCOMPLETE");
+        assertThat(batches.items(batches.latest(1L).id()).stream().filter(i->i.kind().equals("CONTACT")).map(HrVisualBatchStore.Item::status)).containsExactly("EXCLUDED","BLOCKED");
+    }
+    @Test void batchResumeOnlyUsesScopedConsentAndDoesNotEnableContinuousRule() {
+        service.startBatch(batchRequest());
+        discoverBatch(List.of(Map.of("hrName","新HR","companyName","新公司","identityComplete",true)),true);
+        String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
+        var descriptor=Map.of("text","方便发一份附件简历吗","time",now,"type","文本");
+        var messages=List.of(new ChatMessage("本人","文本","上轮",now),new ChatMessage("对方","文本",descriptor.get("text"),now));
+        var capture=Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",messages);
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"capture",capture,"composer","","resumeRequest",descriptor)));
+        advanceBatch();
+        var run=visual.runs(1L).getFirst();var t=visual.targets(run.id()).getFirst();
+        assertThat(visual.steps(t.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("RESUME_NATIVE"));
+        assertThat(visual.resumeRuleActive(1L)).isFalse();assertThat(batches.resumeRequest(run.id())).isNotNull();
+        service.controlBatch(1L,batches.latest(1L).id(),false);
+        assertThat(batches.allows(1L,run.id())).isFalse();
+        assertThat(store.requireProposal(1L,t.proposalId()).status()).isEqualTo(ProposalStatus.APPROVED);
+    }
+    @Test void anchoredUnknownMayAllowDistinctIdentityButUnknownAndNewUnknownRemainHeld() {
+        long old=store.requireProposal(1L,targets.getFirst().proposalId()).conversationId();
+        store.markFinal(targets.getFirst().proposalId(),ProposalStatus.SEND_UNKNOWN,"未知");
+        var different=new ChatSession("","","其他HR","其他公司","其他岗位","","请发简历","今天");
+        assertThatThrownBy(()->store.resolveVisualSession(1L,different)).hasMessageContaining("无法排除");
+        assertThat(store.resolveVisualSession(1L,different,Set.of(old)).uid()).startsWith("visual:");
+        assertThatThrownBy(()->store.resolveVisualSession(1L,captures.get(1).session())).hasMessageContaining("无法排除");
+        assertThat(policies.conversationHeld(old)).isTrue();
+        store.markFinal(targets.get(1).proposalId(),ProposalStatus.SEND_UNKNOWN,"新未知");
+        assertThatThrownBy(()->store.resolveVisualSession(1L,different,Set.of(old))).hasMessageContaining("无法排除");
+    }
+    @Test void failedObservationKeepsLastSuccessfulObservationWithItsOriginalTimestamp() {
+        batches.observation(1L,json.valueToTree(Map.of("stage","LIST_READY_NO_SELECTION","observedAt",1000,"detail","列表已加载，未选择 HR")));
+        batches.observation(1L,json.valueToTree(Map.of("stage","OBSERVATION_FAILED","observedAt",2000,"detail","无法读取")));
+        var view=json.valueToTree(batches.observation(1L));
+        assertThat(view.path("current").path("stage").asText()).isEqualTo("OBSERVATION_FAILED");
+        assertThat(view.path("lastSuccess").path("observedAt").asInt()).isEqualTo(1000);
+    }
+    @Test void batchQueuesTextOnlyAfterQqConfirmationEvenAfterScanningFinishes() {
+        service.startBatch(batchRequest());
+        discoverBatch(List.of(Map.of("hrName","新HR","companyName","新公司","identityComplete",true)),true);
+        String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
+        var messages=List.of(new ChatMessage("本人","文本","上轮",now),new ChatMessage("对方","文本","你好",now));
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"capture",Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",messages),"composer","")));
+        when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"您好，请介绍一下工作内容。","岗位追问",List.of(),List.of(),1));
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("TEXT","已审核","您好，请介绍一下工作内容。"));
+        advanceBatch();
+        var run=visual.runs(1L).getFirst();var t=visual.targets(run.id()).getFirst();
+        assertThat(run.status()).isEqualTo("WAITING_REVIEW");assertThat(visual.steps(t.proposalId())).isEmpty();
+        verify(qq).notifyProposal(any());
+        advanceBatch();assertThat(batches.latest(1L).status()).isEqualTo("FINISHED");
+        service.queue(1L,t.proposalId(),1);
+        assertThat(visual.steps(t.proposalId())).hasSize(1).allMatch(s->"TEXT".equals(s.get("action_type")));
+        assertThatThrownBy(()->service.queue(1L,t.proposalId(),1)).hasMessageContaining("已排队");
+        assertThat(batches.latest(1L).status()).isEqualTo("FINISHED");
+    }
+    @Test void pageGapCannotBeOverwrittenByLaterEndMarkerAndRestartRequiresResume() {
+        service.startBatch(batchRequest());String id=batches.latest(1L).id();
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(),"coverageGap",true,"cursor",Map.of())));
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(),"coverageComplete",true,"cursor",Map.of())));
+        assertThat(batches.latest(1L).coverage()).isFalse();
+        batches.recover();assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+        assertThat(batches.active(1L)).isFalse();
+    }
+    @Test void reorderedListWithOverlappingPagesCannotClaimCompleteCoverage() {
+        service.startBatch(batchRequest());String id=batches.latest(1L).id();
+        var a=Map.of("hrName","甲","companyName","公司","previewKey","1");
+        var b=Map.of("hrName","乙","companyName","公司","previewKey","2");
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(a,b),"coverageComplete",true,"cursor",Map.of())));
+        assertThat(batches.confirmDiscovery(id)).isFalse();
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(b,a),"coverageComplete",true,"cursor",Map.of())));
+        assertThat(batches.confirmDiscovery(id)).isTrue();assertThat(batches.latest(1L).coverage()).isFalse();
+    }
+    @Test void sameIdentityReappearingOutsideAdjacentViewportRemainsBlocked() {
+        service.startBatch(batchRequest());String id=batches.latest(1L).id();
+        var a=Map.of("hrName","甲","companyName","公司","previewKey","1");
+        var b=Map.of("hrName","乙","companyName","公司","previewKey","2");
+        var c=Map.of("hrName","丙","companyName","公司","previewKey","3");
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(a,b),"cursor",Map.of("keys",List.of("甲|公司","乙|公司")))));
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(b,c),"cursor",Map.of("keys",List.of("乙|公司","丙|公司")))));
+        batches.page(id,json.valueToTree(Map.of("contacts",List.of(c,a),"coverageComplete",true,"cursor",Map.of("keys",List.of("丙|公司","甲|公司")))));
+        assertThat(batches.items(id).stream().filter(i->i.contact().path("hrName").asText().equals("甲")).findFirst().orElseThrow().status()).isEqualTo("BLOCKED");
+        assertThat(batches.latest(1L).coverage()).isFalse();
     }
     StartRequest startRequest(List<TargetRequest> selected,boolean confirmed){return new StartRequest(1L,HrVisualTypes.PROTOCOL,selected,"登录姓名",confirmed);}
     void advance(){ReflectionTestUtils.invokeMethod(service,"advance");}

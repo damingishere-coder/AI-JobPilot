@@ -46,6 +46,10 @@ class WindowsDriver:
         self.baseline_images = {}
         self.human = threading.Event()
         self.hook_stop = threading.Event()
+        self.report = lambda **event: None
+
+    def progress(self, stage, detail, **extra):
+        self.report(stage=stage, detail=detail, observedAt=int(time.time()*1000), **extra)
 
     @staticmethod
     def health():
@@ -202,6 +206,7 @@ class WindowsDriver:
         import win32gui
         from pywinauto import Desktop
         candidates = []
+        self.progress("WAITING_CHROME", "正在核对现有 Chrome 窗口")
         windows = self._chrome_windows()
         for w in windows:
             if "BOSS" in w.window_text() or "Boss" in w.window_text():
@@ -232,6 +237,7 @@ class WindowsDriver:
                 send_keys("^t", pause=.05)
                 send_keys("https://www.zhipin.com/web/geek/chat", with_spaces=True, vk_packet=True, pause=.01)
                 send_keys("{ENTER}")
+                self.progress("OPENED_ONCE", "本轮已执行一次打开动作，后续不会重新开页")
                 time.sleep(3)
                 candidates = chosen
             else:
@@ -240,16 +246,41 @@ class WindowsDriver:
         self.hwnd = self.window.handle
         self._activate(self.window)
         self.guard()
-        nodes = self._nodes()
-        # Account comes from the current profile, never from untrusted message text.
-        if not any("nav-figure" in n["class"].split() and normalized(n["text"]) == normalized(account) for n in nodes):
-            raise Halt("ACCOUNT_UNVERIFIED", "聊天页未显示与当前档案一致的登录账号")
-        self._check_page(nodes)
+        nodes = self.wait_for_list(account)
         # The old optional assistant overlay can obscure the real chat screenshot.
         toggles = [n for n in nodes if n["type"] == "Button" and n["class"] == "toggle" and n["text"] == "收起"]
         if len(toggles) == 1:
             self._click(toggles[0]["box"])
             time.sleep(.3)
+
+    def wait_for_list(self, account):
+        started = time.monotonic()
+        account_seen = False
+        while time.monotonic()-started < 30:
+            self.guard()
+            nodes = self._nodes()
+            self._check_page(nodes)
+            account_seen = any("nav-figure" in n["class"].split() and normalized(n["text"]) == normalized(account) for n in nodes)
+            searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
+            rows = [n for n in nodes if "friend-content" in n["class"].split()]
+            filtered = False
+            if len(searches) == 1:
+                try:
+                    filtered = bool(searches[0]["control"].get_value().strip())
+                except Exception:
+                    pass
+            if account_seen and filtered and not rows:
+                self.progress("LIST_FILTERED_EMPTY", "联系人搜索当前无可见结果，尚未选择 HR")
+                return nodes
+            if account_seen and len(searches) == 1 and rows:
+                selected = any("selected" in n["class"].split() for n in rows)
+                self.progress("LIST_READY" if selected else "LIST_READY_NO_SELECTION",
+                              "联系人列表已加载" if selected else "联系人列表已加载，尚未选择 HR", visibleCount=len(rows))
+                return nodes
+            self.progress("WAITING_LIST", "等待联系人列表及登录账号可核验", elapsedSeconds=int(time.monotonic()-started))
+            time.sleep(1)
+        raise Halt("LIST_NOT_READY" if account_seen else "ACCOUNT_UNVERIFIED",
+                   "30 秒内联系人列表未形成可核验内容" if account_seen else "30 秒内未核验当前登录账号")
 
     def _nodes(self):
         nodes = []
@@ -298,12 +329,23 @@ class WindowsDriver:
 
     def select_and_read(self, target):
         self.target = target
+        self.selected_job = None
+        self.progress("SELECTING_HR", "正在定位 HR 和完整公司", hrName=target["hrName"], companyName=target["companyName"])
         nodes = self._nodes()
         self._check_page(nodes)
         searches = [n for n in nodes if n["type"] == "Edit" and ("联系人" in n["text"] or "boss-search-input" in n["class"])]
         if len(searches) != 1:
             raise Halt("LIST_UNVERIFIED", "联系人列表范围无法唯一确认")
         search = searches[0]["box"]
+        # Native contact search reaches off-screen/virtualized rows without page navigation.
+        self._click(search)
+        from pywinauto.keyboard import send_keys
+        escaped = "".join("{"+c+"}" if c in "+^%~(){}" else c for c in target["hrName"])
+        send_keys("^a"); send_keys(escaped, with_spaces=True, vk_packet=True, pause=.02)
+        time.sleep(3)
+        self.guard()
+        nodes = self._nodes()
+        self._check_page(nodes)
         names = [n for n in nodes if n["type"] == "Text" and normalized(n["text"]) == normalized(target["hrName"])
                  and search[0]-30 <= n["box"][0] < search[2] and n["box"][1] > search[3]]
         matched = []
@@ -318,22 +360,30 @@ class WindowsDriver:
         name, company = matched[0]
         self.chat_box = (search[2]+4, search[1], box(self.window)[2], box(self.window)[3])
         self._click(name["box"])
+        self.progress("WAITING_BODY", "已点击目标联系人，等待正文核验", hrName=target["hrName"], companyName=target["companyName"])
         time.sleep(3)
         deadline = time.monotonic()+17
         previous = None
         last_error = None
         while time.monotonic() < deadline:
+            self.progress("WAITING_BODY", "正在核对连续两次完整正文", elapsedSeconds=max(3, int(20-(deadline-time.monotonic()))),
+                          hrName=target["hrName"], companyName=target["companyName"])
             try:
                 capture = self.read_chat(target)
                 if previous and stable_pair(previous, capture):
+                    self.progress("BODY_VERIFIED", "身份和完整正文连续两次核验一致", hrName=target["hrName"], companyName=target["companyName"])
                     return capture
                 previous = capture
             except Halt as error:
+                previous = None
                 last_error = error
+                if error.code in ("HUMAN_TAKEOVER", "FOCUS_CHANGED", "DESKTOP_LOCKED", "PLATFORM_CHECK", "CANCELLED"):
+                    raise
+                self.progress("WAITING_BODY", str(error), errorCode=error.code)
             time.sleep(1)
         raise last_error or Halt("BODY_NOT_READY", "20 秒内未读到连续稳定且完整的聊天正文，没有刷新页面")
 
-    def list_contacts(self):
+    def list_contacts(self, include_unverified=False):
         self.guard()
         nodes = self._nodes()
         self._check_page(nodes)
@@ -342,18 +392,90 @@ class WindowsDriver:
             texts = [n for n in nodes if n["type"] == "Text" and n["text"] and inside(n["box"], row["box"])]
             names = [n for n in texts if not re.fullmatch(r"\d+|\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日|今天|昨天|前天", n["text"])]
             if len(names) < 2:
+                if include_unverified:
+                    contacts.append({"hrName":names[0]["text"] if names else "未识别联系人", "companyName":"", "identityComplete":False, "previewKey":hashlib.sha256(row["text"].encode()).hexdigest()})
                 continue
             first = min(names, key=lambda n:(n["box"][1],n["box"][0]))
             heading = sorted([n for n in names if abs(n["box"][1]-first["box"][1]) < max(12, first["box"][3]-first["box"][1])],key=lambda n:n["box"][0])
-            if len(heading) < 2 or any("…" in n["text"] or "..." in n["text"] for n in heading[:2]):
+            if len(heading) < 2:
+                if include_unverified:
+                    contacts.append({"hrName": first["text"], "companyName": "", "identityComplete": False, "previewKey": hashlib.sha256(row["text"].encode()).hexdigest()})
                 continue
             hr,company = heading[:2]
+            complete = not any("…" in n["text"] or "..." in n["text"] for n in heading[:2])
+            if not complete and not include_unverified:
+                continue
             material = "|".join(n["text"] for n in texts)
-            contacts.append({"hrName":hr["text"],"companyName":company["text"], "previewKey":hashlib.sha256(material.encode()).hexdigest()})
+            contacts.append({"hrName":hr["text"],"companyName":company["text"], "identityComplete":complete, "previewKey":hashlib.sha256(material.encode()).hexdigest()})
         unique = {(c["hrName"],c["companyName"]):c for c in contacts}
         if len(unique) != len(contacts):
             raise Halt("IDENTITY_AMBIGUOUS", "联系人存在同名同公司重复项，未开始简历巡检")
         return contacts
+
+    def discover_page(self, cursor=None):
+        """One viewport per operation. A stable bottom plus an explicit end marker proves coverage."""
+        self.guard()
+        nodes = self._nodes()
+        searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
+        if len(searches) != 1:
+            raise Halt("LIST_UNVERIFIED", "联系人搜索框不可唯一定位")
+        if not cursor:
+            self._click(searches[0]["box"])
+            from pywinauto.keyboard import send_keys
+            send_keys("^a{BACKSPACE}")
+            time.sleep(3)
+            nodes = self._nodes()
+        rows = [n for n in nodes if "friend-content" in n["class"].split()]
+        if not rows:
+            raise Halt("LIST_NOT_READY", "未读到联系人行，不能认定列表为空或已完成")
+        scroller = None
+        control = rows[0]["control"]
+        for _ in range(8):
+            control = control.parent()
+            if control is None:
+                break
+            rect = box(control)
+            if rect[2] > searches[0]["box"][2]+100:
+                break
+            try:
+                scroller = control.iface_scroll
+                break
+            except Exception:
+                continue
+        if scroller is None:
+            raise Halt("LIST_SCROLL_UNVERIFIED", "无法核验联系人列表滚动容器；未把可见列表算作全部")
+        if cursor:
+            current = self.list_contacts(True)
+            keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in current]
+            if cursor.get("anchor") not in keys:
+                raise Halt("LIST_POSITION_CHANGED", "列表位置已变化，需明确恢复后重新枚举；已保存的记录保留")
+            if scroller.CurrentVerticallyScrollable:
+                view = scroller.CurrentVerticalViewSize
+                step = 65*view/max(1, 100-view)  # Keep 35% overlap so clipped rows become fully visible.
+                scroller.SetScrollPercent(-1, min(100, scroller.CurrentVerticalScrollPercent+step))
+        elif scroller.CurrentVerticallyScrollable:
+            scroller.SetScrollPercent(-1, 0)
+        self.progress("DISCOVERING", "逐屏读取联系人；尚未确认列表末尾")
+        time.sleep(3)
+        self.guard()
+        contacts = self.list_contacts(True)
+        nodes = self._nodes()
+        left = searches[0]["box"]
+        end_marker = any(n["type"] == "Text" and left[0]-30 <= n["box"][0] < left[2]+30 and n["box"][1] > left[3]
+                         and re.fullmatch(r"(?:没有更多|暂无更多|已经到底|到底了|全部加载完|没有更多联系人)[！!。.]?", n["text"].strip()) for n in nodes)
+        at_bottom = not scroller.CurrentVerticallyScrollable or scroller.CurrentVerticalScrollPercent >= 99.9
+        keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in contacts]
+        unchanged = bool(cursor) and keys == cursor.get("keys")
+        gap = bool(cursor and cursor.get("keys") and not set(keys).intersection(cursor["keys"]))
+        if end_marker and at_bottom:
+            time.sleep(1)
+            self.guard()
+            stable = self.list_contacts(True)
+            end_marker = keys == [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in stable]
+        return {"contacts": contacts, "coverageComplete": bool(end_marker and at_bottom),
+                "coverageGap": gap,
+                "coverage": "END_CONFIRMED" if end_marker and at_bottom else "NO_PROGRESS" if unchanged else "MORE",
+                "cursor": {"anchor": keys[-1] if keys else "", "keys": keys}}
 
     def restore_receipt_boundary(self, before):
         # Resume only a previously verified complete HR round, never inferred hidden text.

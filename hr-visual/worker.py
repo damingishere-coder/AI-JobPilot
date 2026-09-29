@@ -16,11 +16,18 @@ def serve(request: dict, driver, receive, emit):
     try:
         if request.get("protocol") != PROTOCOL:
             raise Halt("PROTOCOL_MISMATCH", "视觉执行协议不匹配")
-        if request.get("operation") not in ("inspect", "prepare", "reconcile", "discover"):
+        if request.get("operation") not in ("inspect", "prepare", "reconcile", "discover", "discover_page", "bootstrap"):
             raise Halt("INVALID_OPERATION", "不支持的视觉操作")
+        driver.report = lambda **event: emit({**base, **event, "phase": "progress", "source": "WINDOWS_VISUAL"})
         with driver.session():
-            driver.open_chat(request["account"], existing_only=bool(request.get("existingChatOnly")
-                             or request.get("resumeRule") or request["operation"] in ("discover", "reconcile")))
+            driver.open_chat(request["account"], existing_only=not bool(request.get("allowOpenOnce")
+                             and request["operation"] in ("bootstrap", "inspect") and not request.get("resumeRule")))
+            if request["operation"] == "bootstrap":
+                emit({**base, "phase": "result", "ok": True})
+                return
+            if request["operation"] == "discover_page":
+                emit({**base, "phase": "result", "ok": True, **driver.discover_page(request.get("cursor"))})
+                return
             if request["operation"] == "discover":
                 emit({**base, "phase": "result", "ok": True, "contacts": driver.list_contacts(), "coverage": "VISIBLE_LOADED_CONTACTS"})
                 return

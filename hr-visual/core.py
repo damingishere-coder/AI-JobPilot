@@ -7,7 +7,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
-PROTOCOL = "2026-09-29-hr-visual-v2"
+PROTOCOL = "2026-09-29-hr-visual-v3"
 
 
 class Halt(RuntimeError):
@@ -120,7 +120,7 @@ def verify_source(capture: dict, request: dict) -> None:
 
 
 def signature(capture: dict) -> str:
-    material = {k: capture.get(k) for k in ("hrName", "companyName", "messages", "contextComplete")}
+    material = {k: capture.get(k) for k in ("hrName", "companyName", "jobName", "messages", "contextComplete")}
     return hashlib.sha256(json.dumps(material, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 

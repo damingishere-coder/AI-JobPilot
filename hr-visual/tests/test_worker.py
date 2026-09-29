@@ -44,6 +44,21 @@ class FakeDriver:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_only_explicit_once_token_can_open_and_progress_is_not_a_result(self):
+        d=FakeDriver(capture(msg('你好')))
+        self.run_driver(d,operation='bootstrap',allowOpenOnce=True)
+        self.assertFalse(d.existing_only)
+        self.run_driver(d,operation='bootstrap')
+        self.assertTrue(d.existing_only)
+        self.run_driver(d,operation='prepare',allowOpenOnce=True)
+        self.assertTrue(d.existing_only)
+        events=[]
+        def opening(account,existing_only=False):
+            d.report(stage='LIST_READY_NO_SELECTION',observedAt=1000,detail='列表已加载')
+        d.open_chat=opening
+        serve(self.request(operation='bootstrap'),d,lambda _:None,events.append)
+        self.assertEqual([e['phase'] for e in events],['progress','result'])
+
     def test_background_rule_and_readonly_receipt_never_open_a_new_page(self):
         before=capture(msg('发一份简历'))
         for extra in [dict(operation='discover'),dict(operation='reconcile'),
