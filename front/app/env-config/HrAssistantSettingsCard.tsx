@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react'
 import HrWatchConnection from './HrWatchConnection'
+import HrVisualPanel from './HrVisualPanel'
 import HrAutopilotSettings from './HrAutopilotSettings'
 import { BiMessageDetail, BiRefresh, BiSave } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
@@ -221,7 +222,11 @@ export default function HrAssistantSettingsCard() {
         <CardDescription>按人物档案保存沟通资料和 NapCat 通知设置；BOSS 页面仅保留值守与待确认回复。</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <HrWatchConnection />
+        {currentProfile && <HrVisualPanel key={currentProfile.id} profileId={currentProfile.id} profileName={currentProfile.name} />}
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground">旧版 Chrome Bridge 值守入口</summary>
+          <HrWatchConnection />
+        </details>
         <ProfileSwitcher
           compact
           disabled={loading || saving}

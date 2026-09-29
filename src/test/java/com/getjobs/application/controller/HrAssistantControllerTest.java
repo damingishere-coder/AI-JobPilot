@@ -55,6 +55,26 @@ class HrAssistantControllerTest {
     }
 
     @Test
+    void visualStatusOnlyReadsAndMutationsRejectMissingToken() throws Exception {
+        var visual = mock(com.getjobs.application.service.HrVisualService.class);
+        controller.setVisual(visual);
+        when(profiles.getCurrentProfileId()).thenReturn(4L);
+        when(visual.status(4L)).thenReturn(Map.of("status", "IDLE"));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/visual/status"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.status").value("IDLE"));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/start")
+                        .contentType("application/json").content("{}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/run/resume"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        verify(visual).status(4L);
+        org.mockito.Mockito.verifyNoMoreInteractions(visual);
+        verifyNoInteractions(store, watcher, actions, events);
+    }
+
+    @Test
     void authorizationGuardRequiresPostAndLocalTokenBeforeReadingPolicy() throws Exception {
         var policies=mock(com.getjobs.application.service.HrAutopilotStore.class);
         controller.setAutopilot(policies);

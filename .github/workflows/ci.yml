@@ -11,6 +11,14 @@ permissions:
   contents: read
 
 jobs:
+  hr-visual:
+    name: HR Visual Protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate visual protocol and synthetic Windows layouts
+        run: python3 -m unittest discover -s hr-visual/tests -v
+
   browser-regression:
     name: Browser Regression (${{ matrix.os }})
     needs: frontend

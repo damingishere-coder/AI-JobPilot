@@ -8,17 +8,20 @@ import java.util.function.Supplier;
 @Component
 public class HrProfileGuard {
     private BooleanSupplier blocked = () -> false;
+    private final java.util.List<BooleanSupplier> additionalBlockers = new java.util.ArrayList<>();
 
     public synchronized void registerBlocker(BooleanSupplier blocker) {
         blocked = blocker;
     }
+
+    public synchronized void registerAdditionalBlocker(BooleanSupplier blocker) { additionalBlockers.add(blocker); }
 
     public synchronized <T> T locked(Supplier<T> action) {
         return action.get();
     }
 
     public synchronized boolean isBlocked() {
-        return blocked.getAsBoolean();
+        return blocked.getAsBoolean() || additionalBlockers.stream().anyMatch(BooleanSupplier::getAsBoolean);
     }
 
     public synchronized void requireChangeAllowed() {
