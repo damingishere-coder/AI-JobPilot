@@ -31,6 +31,10 @@ hr-visual/.venv/Scripts/python.exe -u hr-visual/worker.py --health
 
 ### 单轮检查其他 HR（V34）
 
+暂停后可选择“处理已发现的全部会话”，依次处理本轮已收集名单，保留原分页与覆盖未完成记录，后续暂停/恢复不重新枚举。接口 `POST /visual/batches/{id}/process` 提交 `protocol`、`replyMode` 和 `directRepliesConfirmed`。默认仍为 REVIEW；只有明确选择 AUTO 且确认后，本批次普通文字才经生成与独立审核直接进入视觉发送队列，不发送 QQ 确认卡。不会启用长期托管或改变其他批次授权。
+
+V35 增量保存本轮模式、确认时间、资料摘要及已审核标记。旧批次仍为 REVIEW。仅审核结果 TEXT 可直发；拒绝机会、敏感事项、未知事实和审核失败留待本人处理并继续其他会话。原待确认卡会重新读正文并独立审核，旧未知、已发送和人工草稿不自动重试。提交前复核全局档案与会话补充事实摘要。发送未知时冻结该会话、保存失败现场，只读重新锁定未知身份后继续其他联系人；人工操作、焦点变化和平台验证仍暂停整轮。只处理完已发现名单不能冒充列表覆盖完整。
+
 `POST /api/hr-assistant/visual/batches` 使用本机操作令牌，参数为 `profileId`、`protocol`、幂等 `requestKey`、`accountName`、`accountBindingConfirmed` 和 `resumeSharingConfirmed`。仅检查最近 30 天，排除原三会话测试目标；不修改持续值守/自动文字授权。`POST /visual/batches/{id}/pause|resume` 控制本轮，恢复不再取得新开页额度。重复启动键返回原批次，内容不同则拒绝。
 
 批次依次执行首次准备、旧未知身份只读核验、逐屏枚举、逐项读取。只有首次准备可以在既有 Chrome 登录窗口中打开一次固定聊天 URL；该额度在调用执行器前持久化。后续操作仅复用现有标签，窗口关闭、焦点变化或平台验证时暂停，不刷新、重开或重新输入网址。读取用 Windows UIA 与 OCR，不依赖 Codex 浏览器工具；工具连接错误不能作为 BOSS 加载状态。

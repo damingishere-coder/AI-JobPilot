@@ -95,6 +95,14 @@ public class HrAssistantController {
         return execute(()->visual.prioritizeBatchItem(profileService.getCurrentProfileId(),id,itemId));
     }
 
+    @PostMapping("/visual/batches/{id}/process")
+    public ResponseEntity<?> processVisualBatch(@PathVariable String id,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+            @RequestBody com.getjobs.application.hr.HrVisualTypes.BatchProcessRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.processDiscoveredBatch(profileService.getCurrentProfileId(),id,request));
+    }
+
     @PostMapping("/visual/{id}/{operation:pause|resume}")
     public ResponseEntity<?> visualControl(@PathVariable String id,@PathVariable String operation,
             @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String actionToken) {

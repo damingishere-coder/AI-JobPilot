@@ -183,6 +183,114 @@ class HrVisualServiceTest {
         if(resume)response.put("resumeRequest",descriptor);
         when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(response));
     }
+    BatchProcessRequest directBatchRequest(){return new BatchProcessRequest(HrVisualTypes.PROTOCOL,"AUTO",true);}
+    void beginDirectBatch() {
+        var item=preparePriority();service.processDiscoveredBatch(1L,item.batch(),directBatchRequest());positionPriority();advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        priorityObservation(false);
+        when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"原草稿","",List.of(),List.of(),1));
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("TEXT","已审核","您好","{\"allowed\":true}"));
+    }
+    @Test void processDiscoveredKeepsCoverageProgressAndRequiresExplicitBatchTextConsent() {
+        var item=preparePriority();String id=item.batch();var policy=policies.policy(1L);
+        int pages=db.queryForObject("SELECT page_count FROM hr_visual_batch",Integer.class);
+        assertThatThrownBy(()->service.processDiscoveredBatch(1L,id,new BatchProcessRequest(HrVisualTypes.PROTOCOL,"AUTO",false))).hasMessageContaining("明确确认");
+        assertThat(batches.direct(id)).isFalse();
+        service.processDiscoveredBatch(1L,id,directBatchRequest());service.processDiscoveredBatch(1L,id,directBatchRequest());
+        assertThat(db.queryForObject("SELECT page_count FROM hr_visual_batch",Integer.class)).isEqualTo(pages);
+        assertThat(batches.latest(1L).coverage()).isFalse();assertThat(policies.policy(1L)).isEqualTo(policy);
+        assertThat(visual.resumeRuleActive(1L)).isFalse();positionPriority();advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        batches.recover();service.controlBatch(1L,id,true);advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        assertThat(batches.items(id)).hasSize(2);assertThat(db.queryForObject("SELECT open_reserved FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+    }
+    @Test void directBatchAuditsAndSendsTextWithoutQqOrLongTermAutoAuthorization() {
+        beginDirectBatch();advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        assertThat(policies.policy(1L).enabled()).isFalse();assertThat(policies.policy(1L).replyMode()).isEqualTo("REVIEW");
+        assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("TEXT"));
+        assertThat(store.requireProposal(1L,target.proposalId()).draft()).isEqualTo("您好");verify(qq,never()).notifyProposal(any());
+        var before=policies.context(1L,target.conversationId());var after=new ArrayList<>(before.messages());after.add(new ChatMessage("本人","文本","您好","今天"));
+        when(worker.exchange(anyMap(),notNull())).thenAnswer(inv->{
+            var capture=Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",before.messages());
+            java.util.function.Function<com.fasterxml.jackson.databind.JsonNode,Boolean> authorize=inv.getArgument(1);
+            assertThat(authorize.apply(json.valueToTree(Map.of("capture",capture)))).isTrue();
+            return json.valueToTree(Map.of("ok",true,"outcome","SENT_CONFIRMED","capture",Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",after)));
+        });
+        advance();advance();assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.SENT_CONFIRMED);
+        assertThat(batches.items(batches.latest(1L).id()).get(1).status()).isEqualTo("PENDING");
+        assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+    }
+    @Test void humanTakeoverDuringReceiptPreservesConfirmedSendButPausesRemainingContacts() {
+        beginDirectBatch();advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        var before=policies.context(1L,target.conversationId());var after=new ArrayList<>(before.messages());after.add(new ChatMessage("本人","文本","您好","今天"));
+        when(worker.exchange(anyMap(),notNull())).thenAnswer(inv->{
+            var capture=Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",before.messages());
+            java.util.function.Function<com.fasterxml.jackson.databind.JsonNode,Boolean> authorize=inv.getArgument(1);
+            assertThat(authorize.apply(json.valueToTree(Map.of("capture",capture)))).isTrue();
+            return json.valueToTree(Map.of("ok",true,"outcome","SENT_CONFIRMED","code","HUMAN_TAKEOVER","detail","回执期间人工操作，保存成功后暂停",
+                    "capture",Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",after)));
+        });
+        advance();assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.SENT_CONFIRMED);
+        assertThat(visual.steps(target.proposalId()).getFirst().get("status")).isEqualTo("SENT_CONFIRMED");
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+        clearInvocations(worker);advance();advanceBatch();verifyNoInteractions(worker);
+    }
+    @Test void directBatchHumanAssessmentContinuesOtherContactsWithoutQqOrRepeatedAudit() {
+        beginDirectBatch();when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("HUMAN","未知事实","原草稿"));
+        advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        assertThat(visual.steps(target.proposalId())).isEmpty();assertThat(run.status()).isEqualTo("WAITING_REVIEW");verify(qq,never()).notifyProposal(any());
+        var item=batches.items(batches.latest(1L).id()).getFirst();assertThat(batches.needsAutoReview(item.id())).isFalse();
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","BODY_NOT_READY","detail","另一会话未读完整")));
+        advanceBatch();assertThat(batches.items(item.batch()).get(1).status()).isEqualTo("READ_FAILED");
+        advanceBatch();assertThat(batches.latest(1L).status()).isEqualTo("INCOMPLETE");
+        verify(ai,times(1)).assess(anyLong(),anyLong(),any(),any());
+    }
+    @Test void directBatchCannotSubmitAfterFactsChangeDuringDesktopPreparation() {
+        beginDirectBatch();advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        when(worker.exchange(anyMap(),notNull())).thenAnswer(inv->{
+            policies.supplement(1L,target.conversationId(),"当前沟通口径已改变");
+            java.util.function.Function<com.fasterxml.jackson.databind.JsonNode,Boolean> authorize=inv.getArgument(1);
+            assertThat(authorize.apply(json.createObjectNode())).isFalse();
+            return json.valueToTree(Map.of("ok",false,"outcome","BLOCKED","detail","资料变化未提交"));
+        });
+        advance();assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.BLOCKED);
+        assertThat(visual.steps(target.proposalId()).getFirst().get("submitted_at")).isNull();
+    }
+    @Test void directBatchUnknownFreezesOnlyThatConversationThenReanchorsBeforeOthers() {
+        beginDirectBatch();advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        var step=visual.claim(1L,target.proposalId());ReflectionTestUtils.invokeMethod(service,"finish",run,target,step,"SEND_UNKNOWN",Map.of("detail","未见回执"));
+        assertThat(batches.latest(1L).status()).isEqualTo("RUNNING");assertThat(batches.latest(1L).stage()).isEqualTo("ANCHORS");
+        assertThat(batches.allows(1L,run.id())).isFalse();advance();
+        assertThat(visual.steps(target.proposalId())).hasSize(1);assertThat(store.requireProposal(1L,target.proposalId()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
+        advanceBatch();advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        assertThat(batches.items(batches.latest(1L).id()).stream().filter(i->i.kind().equals("ANCHOR"))).allMatch(i->i.status().equals("VERIFIED"));
+        advance();assertThat(visual.steps(target.proposalId())).hasSize(1);
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","BODY_NOT_READY","detail","下一联系人正文不完整")));
+        advanceBatch();
+        assertThat(batches.items(batches.latest(1L).id()).stream().filter(i->i.kind().equals("CONTACT") && i.contact().path("hrName").asText().equals("另一HR")))
+                .allMatch(i->i.status().equals("READ_FAILED"));
+        assertThat(visual.steps(target.proposalId())).hasSize(1);
+    }
+    @Test void existingManualDraftIsPreservedAndSkippedButLiveHumanInputPausesTheBatch() {
+        beginDirectBatch();
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"composer","本人保留的草稿","capture",
+                Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,"messages",captures.getFirst().messages()))));
+        advanceBatch();assertThat(visual.runs(1L)).isEmpty();assertThat(batches.latest(1L).status()).isEqualTo("RUNNING");
+        assertThat(batches.items(batches.latest(1L).id()).getFirst().status()).isEqualTo("BLOCKED");
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","HUMAN_TAKEOVER","detail","检测到实时键鼠输入")));
+        advanceBatch();assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
+        clearInvocations(worker);advanceBatch();verifyNoInteractions(worker);
+    }
+    @Test void priorQqCardIsReReadAndAuditedOnceUnderNewBatchAuthorization() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();priorityObservation(false);
+        when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"您好","",List.of(),List.of(),1));
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("TEXT","已审核","您好"));
+        advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();advanceBatch();service.controlBatch(1L,item.batch(),false);
+        service.processDiscoveredBatch(1L,item.batch(),directBatchRequest());positionPriority();advanceBatch();priorityObservation(false);advanceBatch();
+        assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("TEXT"));
+        assertThat(batches.needsAutoReview(item.id())).isFalse();verify(ai,times(2)).assess(anyLong(),anyLong(),any(),any());verify(qq,times(1)).notifyProposal(any());
+    }
     @Test void priorityResumeIsBatchOwnedIdempotentAndRestartsDiscoveryWithoutReopening() {
         var item=preparePriority();String id=item.batch();
         service.prioritizeBatchItem(1L,id,item.id());service.prioritizeBatchItem(1L,id,item.id());

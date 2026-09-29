@@ -122,8 +122,10 @@ def serve(request: dict, driver, receive, emit):
                     continue
                 if confirmed_new_message(capture, after, action, request.get("draft", "")):
                     evidence = driver.save_receipt(request["stepId"], capture, after)
+                    pause = driver.pending_pause()
                     emit({**base, "phase": "result", "ok": True, "outcome": "SENT_CONFIRMED",
-                          "detail": "已观察到完整匹配的新增本人消息", "capture": after, "evidence": evidence})
+                          "capture": after, "evidence": evidence, **pause,
+                          "detail": "已观察到完整匹配的新增本人消息" + ("；" + pause["detail"] if pause else "")})
                     return
                 last_read_error = ""
                 time.sleep(1)
@@ -136,10 +138,11 @@ def serve(request: dict, driver, receive, emit):
                 evidence.update(driver.save_receipt(request["stepId"], capture, None))
             except Exception:
                 pass
-        emit({**base, "phase": "result", "ok": False, "code": code,
+        pause = driver.pending_pause() if submitted else {}
+        emit({**base, "phase": "result", "ok": False, "code": pause.get("code", code),
               "outcome": "SEND_UNKNOWN" if submitted else "STALE" if code == "STALE" else "BLOCKED",
               "submitted": submitted, "before": capture, "evidence": evidence,
-              "detail": str(error)[:240]})
+              "detail": str(error)[:240] + ("；" + pause["detail"] if pause else "")})
 
 
 def main():

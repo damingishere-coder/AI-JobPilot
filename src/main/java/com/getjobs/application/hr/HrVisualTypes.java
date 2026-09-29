@@ -8,6 +8,7 @@ public final class HrVisualTypes {
     public static final String PROTOCOL = "2026-09-29-hr-visual-v3";
     public record BatchRequest(Long profileId,String protocol,String requestKey,String accountName,
                                boolean accountBindingConfirmed,boolean resumeSharingConfirmed) { }
+    public record BatchProcessRequest(String protocol,String replyMode,boolean directRepliesConfirmed) { }
     public record TargetRequest(long proposalId, int expectedVersion, String draft, boolean sendResume, boolean approved,
                                 String approvalSource, boolean resumeSharingConfirmed, String expectedJobName) { }
     public record StartRequest(Long profileId, String protocol, List<TargetRequest> targets,

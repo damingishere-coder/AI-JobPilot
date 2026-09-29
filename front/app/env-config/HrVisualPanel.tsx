@@ -8,7 +8,7 @@ type Proposal = { id: number; conversationId: number; version: number; status: s
 type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
 type Observation = { stage?: string; detail?: string; errorCode?: string; observedAt?: number; elapsedSeconds?: number; hrName?: string; companyName?: string }
-type Batch = { id?: string; status?: string; stage?: string; reason?: string; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string; canRecheck?: boolean }[] }
+type Batch = { id?: string; status?: string; stage?: string; reason?: string; replyMode?: string; processingDiscovered?: boolean; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string; canRecheck?: boolean }[] }
 type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string }; batch?: Batch; observation?: { current?: Observation; lastSuccess?: Observation; updatedAt?: number } }
 const VISUAL_PROTOCOL = '2026-09-29-hr-visual-v3'
 const labels: Record<string, string> = {
@@ -32,6 +32,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
   const [accountName, setAccountName] = useState(profileName)
   const [bindingConfirmed, setBindingConfirmed] = useState(false)
   const [resumeConfirmed, setResumeConfirmed] = useState(false)
+  const [directConfirmed, setDirectConfirmed] = useState(false)
   const batchRequestKey = useRef<string | null>(null)
   const batchActive = ['STARTING', 'RUNNING'].includes(status?.batch?.status || '')
   const compatible = status?.protocol === VISUAL_PROTOCOL
@@ -123,18 +124,36 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '优先处理未启动')) }
     finally { setBusy(false) }
   }
+  const processDiscovered = async () => {
+    setBusy(true); setError('')
+    try {
+      if (!compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/batches/${status?.batch?.id}/process`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: VISUAL_PROTOCOL, replyMode: directConfirmed ? 'AUTO' : 'REVIEW', directRepliesConfirmed: directConfirmed }),
+      })
+      await readApiResponse(response, '整轮处理未启动'); await refresh()
+    } catch (e) { setError(friendlyApiError(e, '整轮处理未启动')) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-3 rounded-lg border p-4" aria-label="BOSS视觉聊天测试">
-    <p className="font-medium">本机 Chrome 视觉聊天 · QQ 逐条确认</p>
-    <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文。普通文字须 QQ 确认；发送动作至少间隔 5 秒。可检查一轮其他 HR，或使用原三会话测试入口。</p>
+    <p className="font-medium">本机 Chrome 视觉聊天 · {status?.batch?.replyMode === 'AUTO' ? '本轮直接回复' : 'QQ 逐条确认'}</p>
+    <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文。发送动作至少间隔 5 秒；未知结果不重发。可检查一轮其他 HR，或使用原三会话测试入口。</p>
     <div className="space-y-2 rounded border p-3 text-sm" aria-label="单轮检查其他HR">
       <p className="font-medium">检查一轮其他 HR</p>
-      <p>最近 30 天，排除此前测试会话；明确索要简历时分享 BOSS 原生简历，文字回复发 QQ 等你确认。只打开一次，逐屏检查后停止，不开启持续巡检。</p>
+      <p>最近 30 天，排除此前测试会话；明确索要简历时分享 BOSS 原生简历，{status?.batch?.replyMode === 'AUTO' ? '普通文字审核通过后直接回复' : '文字回复发 QQ 等你确认'}。只打开一次，本轮结束后停止，不开启持续巡检。</p>
       <p>使用下方填写的 BOSS 登录姓名和简历分享授权。</p>
       {!compatible && status && <p role="alert">前后端视觉协议不匹配，不能启动。</p>}
       <Button type="button" disabled={busy || !compatible || batchActive || status?.batch?.status === 'PAUSED' || status?.running || status?.executing || !status?.installed || !resumeConfirmed || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void batchAction('start')}>检查一轮其他 HR</Button>
       {batchActive && <Button type="button" variant="outline" disabled={busy} onClick={() => void batchAction('pause')}>暂停本轮</Button>}
       {status?.batch?.status === 'PAUSED' && <Button type="button" variant="outline" disabled={busy || status.executing} onClick={() => void batchAction('resume')}>从保留进度恢复（不重新开页）</Button>}
+      {status?.batch?.status === 'PAUSED' && (status.batch.discovered || 0) > 0 && status.batch.stage !== 'BOOTSTRAP' && <div className="space-y-2">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={directConfirmed} onChange={e => setDirectConfirmed(e.target.checked)} />本轮普通文字经审核后直接回复，无需 QQ 确认</label>
+        <p>依次处理已收集的全部会话，保留未完成的列表范围。需要承诺或资料不足的会话记为待处理，继续其他人；不启用持续值守。</p>
+        <Button type="button" disabled={busy || !compatible || status.executing || status.running} onClick={() => void processDiscovered()}>处理已发现的全部会话（{status.batch.discovered} 人）</Button>
+      </div>}
       {status?.batch?.id && <>
+        <p>本轮回复模式：{status.batch.replyMode === 'AUTO' ? '普通文字审核通过后直接发送，不发送 QQ 确认卡' : '普通文字经 QQ 确认后发送'}{status.batch.processingDiscovered && '；正在依次处理已收集名单，不重新枚举'}</p>
         <p>{labels[status.batch.status || ''] || status.batch.status}：{status.batch.reason}</p>
         <p>发现 {status.batch.discovered || 0} 人 · 检查 {status.batch.checked || 0} 人 · 待确认 {status.batch.pendingReview || 0} 条 · 已确认发送 {status.batch.sent || 0} 条</p>
         <p>列表范围：{status.batch.coverageComplete ? '已确认到达末尾' : '尚未确认完整覆盖'}</p>

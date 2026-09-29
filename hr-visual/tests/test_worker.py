@@ -35,6 +35,7 @@ class FakeDriver:
     def prepare_resume(self, request=None): pass
     def prepare_text_submit(self, text): pass
     def guard(self): pass
+    def pending_pause(self): return {}
     def submit(self, action, before=None):
         self.submissions+=1
         if self.fail_submit: raise RuntimeError("submission interrupted")
@@ -107,6 +108,25 @@ class WorkerTests(unittest.TestCase):
         d=FakeDriver(before,after)
         self.assertEqual(self.run_driver(d)["outcome"],"SENT_CONFIRMED")
         self.assertEqual(d.submissions,1)
+
+    def test_takeover_during_receipt_preserves_confirmed_or_unknown_result_and_stops_batch(self):
+        from windows_driver import WindowsDriver
+        import threading
+        for confirmed in [True, False]:
+            before=capture(msg("你好"),msg("什么时候到岗？"))
+            after=capture(*before["messages"],msg("两周后可以到岗。","本人"))
+            d=FakeDriver(before,after,fail_submit=not confirmed)
+            events=WindowsDriver(threading.Event())
+            original=d.submit
+            def submit(action, capture=None):
+                events.human.set()
+                original(action,capture)
+            d.submit=submit
+            d.pending_pause=events.pending_pause
+            result=self.run_driver(d)
+            self.assertEqual(result['outcome'],'SENT_CONFIRMED' if confirmed else 'SEND_UNKNOWN')
+            self.assertEqual(result['code'],'HUMAN_TAKEOVER')
+            self.assertEqual(d.submissions,1)
 
     def test_never_submits_on_changed_round_or_manual_reply(self):
         cases=[capture(msg("你好"),msg("什么时候到岗？"),msg("新增问题")),

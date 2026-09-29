@@ -87,6 +87,14 @@ class HrAssistantControllerTest {
                         .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
         verify(visual).recheckBatchItem(4L,"b","i");
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/batches/b/process")
+                        .contentType("application/json").content("{\"protocol\":\"2026-09-29-hr-visual-v3\",\"replyMode\":\"AUTO\",\"directRepliesConfirmed\":true}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/visual/batches/b/process")
+                        .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()).contentType("application/json")
+                        .content("{\"protocol\":\"2026-09-29-hr-visual-v3\",\"replyMode\":\"AUTO\",\"directRepliesConfirmed\":true}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(visual).processDiscoveredBatch(4L,"b",new com.getjobs.application.hr.HrVisualTypes.BatchProcessRequest("2026-09-29-hr-visual-v3","AUTO",true));
         org.mockito.Mockito.verifyNoMoreInteractions(visual);
         verifyNoInteractions(store, watcher, actions, events);
     }

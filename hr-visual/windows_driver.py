@@ -133,6 +133,11 @@ class WindowsDriver:
         if not ready.wait(3) or errors:
             raise Halt("INPUT_MONITOR", "无法确认人工接管监测已就绪")
 
+    def pending_pause(self):
+        if self.cancelled.is_set() or self.human.is_set():
+            return {"code": "HUMAN_TAKEOVER", "detail": "检测到暂停或人工操作，保存发送结果后暂停整轮"}
+        return {}
+
     def guard(self, receipt=False, check_url=True):
         import win32gui
         user = ctypes.windll.user32
