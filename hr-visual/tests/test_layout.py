@@ -11,6 +11,43 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_loaded_contacts_without_selection_are_not_body_loading(self):
+        d=WindowsDriver(threading.Event());events=[];d.report=lambda **e:events.append(e)
+        rows=[node('本人','Text','nav-figure',(0,0,100,30)),node('','Edit','boss-search-input',(0,40,300,70)),node('HR 公司','Group','friend-content',(0,80,300,130))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[[],rows]),patch('windows_driver.time.sleep'):
+            self.assertEqual(d.wait_for_list('本人'),rows)
+        self.assertEqual(events[-1]['stage'],'LIST_READY_NO_SELECTION')
+        self.assertEqual(events[0]['stage'],'WAITING_LIST')
+
+    def test_failed_middle_read_resets_stability(self):
+        d=WindowsDriver(threading.Event());d.window=Mock()
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),node('HR','Text','',(20,50,90,70)),node('公司','Text','',(100,50,170,70))]
+        capture={'hrName':'HR','companyName':'公司','jobName':'岗位','contextComplete':True,'messages':[{'from':'对方','text':'你好'}]}
+        with patch.dict(sys.modules,{'pywinauto.keyboard':Mock()}),patch('windows_driver.box',return_value=(0,0,1000,800)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_click'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'read_chat',side_effect=[capture,Halt('BODY_UNVERIFIED','空白'),capture,capture]) as read:
+            self.assertEqual(d.select_and_read({'hrName':'HR','companyName':'公司'}),capture)
+        self.assertEqual(read.call_count,4)
+
+    def test_scroll_bottom_without_end_marker_does_not_prove_coverage(self):
+        d=WindowsDriver(threading.Event());parent=Mock();scroll=parent.iface_scroll
+        scroll.CurrentVerticallyScrollable=True;scroll.CurrentVerticalScrollPercent=100;scroll.CurrentVerticalViewSize=25
+        row=Mock();row.parent.return_value=parent
+        search=node('','Edit','boss-search-input',(0,0,300,30))
+        row_node={**node('HR 公司','Group','friend-content',(0,50,300,100)),'control':row}
+        contact={'hrName':'HR','companyName':'公司','identityComplete':True,'previewKey':'p'}
+        with patch('windows_driver.box',return_value=(0,40,300,700)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=[search,row_node]),patch.object(d,'list_contacts',return_value=[contact]):
+            result=d.discover_page({'anchor':'HR|公司','keys':['HR|公司']})
+        self.assertFalse(result['coverageComplete']);self.assertEqual(result['coverage'],'NO_PROGRESS')
+
+    def test_disjoint_virtualized_page_is_a_coverage_gap(self):
+        d=WindowsDriver(threading.Event());parent=Mock();scroll=parent.iface_scroll
+        scroll.CurrentVerticallyScrollable=True;scroll.CurrentVerticalScrollPercent=30;scroll.CurrentVerticalViewSize=25
+        row=Mock();row.parent.return_value=parent
+        nodes=[node('','Edit','boss-search-input',(0,0,300,30)),{**node('','Group','friend-content',(0,50,300,100)),'control':row}]
+        old={'hrName':'旧','companyName':'公司'};new={'hrName':'新','companyName':'公司'}
+        with patch('windows_driver.box',return_value=(0,40,300,700)),patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',side_effect=[[old],[new]]):
+            result=d.discover_page({'anchor':'旧|公司','keys':['旧|公司']})
+        self.assertTrue(result['coverageGap']);self.assertFalse(result['coverageComplete'])
+
     def test_existing_only_missing_tab_stops_without_any_navigation(self):
         d=WindowsDriver(threading.Event())
         window=Mock();window.window_text.return_value='工作台 - Google Chrome';window.descendants.return_value=[]

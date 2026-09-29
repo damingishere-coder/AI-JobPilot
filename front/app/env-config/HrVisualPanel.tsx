@@ -1,18 +1,26 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { API_BASE, friendlyApiError, localActionFetch, readApiResponse } from '@/lib/api'
 
 type Proposal = { id: number; conversationId: number; version: number; status: string; hrName: string; companyName: string; draft: string }
 type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
-type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string } }
+type Observation = { stage?: string; detail?: string; errorCode?: string; observedAt?: number; elapsedSeconds?: number; hrName?: string; companyName?: string }
+type Batch = { id?: string; status?: string; stage?: string; reason?: string; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string }[] }
+type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string }; batch?: Batch; observation?: { current?: Observation; lastSuccess?: Observation; updatedAt?: number } }
+const VISUAL_PROTOCOL = '2026-09-29-hr-visual-v3'
 const labels: Record<string, string> = {
   IDLE: '尚未开始', RUNNING: '正在处理', STOPPING: '正在停止并核验回执', PAUSED: '已暂停', COMPLETED: '本轮处理结束', ARCHIVED: '正文已按保留期清理',
   PENDING_CAPTURE: '正在定位和读取', REVIEW_REQUIRED: '等你确认', QUEUED: '等待桌面', PREPARED: '已核对，准备发送',
   SUBMITTING: '正在发送', SENT_CONFIRMED: '已确认发送', PARTIAL: '部分完成', SEND_UNKNOWN: '发送结果未知',
   BLOCKED: '已阻塞', STALE: '原回复已失效', SKIPPED: '已跳过', PENDING: '尚未发送',
+  WAITING_CHROME: '等待 Chrome', OPENED_ONCE: '本轮已打开一次', WAITING_LIST: '等待联系人列表', LIST_READY: '联系人列表已加载',
+  LIST_READY_NO_SELECTION: '列表已加载，尚未选择 HR', SELECTING_HR: '正在选择 HR', WAITING_BODY: '等待聊天正文', BODY_VERIFIED: '正文已核验',
+  DISCOVERING: '正在逐屏读取联系人', OBSERVATION_FAILED: '本次读取失败', EXECUTOR_ERROR: '视觉执行器异常',
+  LIST_FILTERED_EMPTY: '联系人搜索无可见结果',
+  STARTING: '正在启动本轮', FINISHED: '本轮扫描完成', INCOMPLETE: '本轮停止，仍有未完成项', EXCLUDED: '本轮排除', VERIFIED: '已只读核验', DATE_UNKNOWN: '日期待核验', READ_FAILED: '正文未读完整', WAITING_REVIEW: '等你确认',
 }
 
 export default function HrVisualPanel({ profileId, profileName }: { profileId: number; profileName: string }) {
@@ -24,6 +32,9 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
   const [accountName, setAccountName] = useState(profileName)
   const [bindingConfirmed, setBindingConfirmed] = useState(false)
   const [resumeConfirmed, setResumeConfirmed] = useState(false)
+  const batchRequestKey = useRef<string | null>(null)
+  const batchActive = ['STARTING', 'RUNNING'].includes(status?.batch?.status || '')
+  const compatible = status?.protocol === VISUAL_PROTOCOL
   const refresh = useCallback(async () => {
     const response = await fetch(`${API_BASE}/api/hr-assistant/visual/status`, { cache: 'no-store' })
     const result = await readApiResponse<Status>(response, '视觉执行器状态读取失败')
@@ -55,6 +66,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
   const act = async (operation: 'start' | 'pause' | 'resume') => {
     setBusy(true); setError('')
     try {
+      if (operation !== 'pause' && !compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
       const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/${operation === 'start' ? 'start' : `${status?.runId}/${operation}`}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         ...(operation === 'start' ? { body: JSON.stringify({ profileId, accountName, accountBindingConfirmed: bindingConfirmed, protocol: status?.protocol, targets: selected.map(id => {
@@ -77,6 +89,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
   const setResumeRule = async (enabled: boolean) => {
     setBusy(true); setError('')
     try {
+      if (enabled && !compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
       const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/resume-rule`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profileId, protocol: status?.protocol, enabled, confirmed: resumeConfirmed, accountName, accountBindingConfirmed: bindingConfirmed }),
@@ -85,9 +98,46 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '简历规则保存失败')) }
     finally { setBusy(false) }
   }
+  const batchAction = async (action: 'start' | 'pause' | 'resume') => {
+    setBusy(true); setError('')
+    try {
+      if (action !== 'pause' && !compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
+      if (action === 'start') batchRequestKey.current ||= crypto.randomUUID()
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/batches${action === 'start' ? '' : `/${status?.batch?.id}/${action}`}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        ...(action === 'start' ? { body: JSON.stringify({ profileId, protocol: VISUAL_PROTOCOL, requestKey: batchRequestKey.current,
+          accountName, accountBindingConfirmed: bindingConfirmed, resumeSharingConfirmed: resumeConfirmed }) } : {}),
+      })
+      await readApiResponse(response, '单轮操作未完成')
+      batchRequestKey.current = null
+      await refresh()
+    } catch (e) { setError(friendlyApiError(e, '单轮操作未完成')) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-3 rounded-lg border p-4" aria-label="BOSS视觉聊天测试">
     <p className="font-medium">本机 Chrome 视觉聊天 · QQ 逐条确认</p>
-    <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文，确认后回发。每个动作至少间隔 5 秒；只处理本轮选定的三个会话。</p>
+    <p className="text-sm text-muted-foreground">自动选中 HR 并核对公司、读取正文。普通文字须 QQ 确认；发送动作至少间隔 5 秒。可检查一轮其他 HR，或使用原三会话测试入口。</p>
+    <div className="space-y-2 rounded border p-3 text-sm" aria-label="单轮检查其他HR">
+      <p className="font-medium">检查一轮其他 HR</p>
+      <p>最近 30 天，排除此前测试会话；明确索要简历时分享 BOSS 原生简历，文字回复发 QQ 等你确认。只打开一次，逐屏检查后停止，不开启持续巡检。</p>
+      <p>使用下方填写的 BOSS 登录姓名和简历分享授权。</p>
+      {!compatible && status && <p role="alert">前后端视觉协议不匹配，不能启动。</p>}
+      <Button type="button" disabled={busy || !compatible || batchActive || status?.batch?.status === 'PAUSED' || status?.running || status?.executing || !status?.installed || !resumeConfirmed || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void batchAction('start')}>检查一轮其他 HR</Button>
+      {batchActive && <Button type="button" variant="outline" disabled={busy} onClick={() => void batchAction('pause')}>暂停本轮</Button>}
+      {status?.batch?.status === 'PAUSED' && <Button type="button" variant="outline" disabled={busy || status.executing} onClick={() => void batchAction('resume')}>从保留进度恢复（不重新开页）</Button>}
+      {status?.batch?.id && <>
+        <p>{labels[status.batch.status || ''] || status.batch.status}：{status.batch.reason}</p>
+        <p>发现 {status.batch.discovered || 0} 人 · 检查 {status.batch.checked || 0} 人 · 待确认 {status.batch.pendingReview || 0} 条 · 已确认发送 {status.batch.sent || 0} 条</p>
+        <p>列表范围：{status.batch.coverageComplete ? '已确认到达末尾' : '尚未确认完整覆盖'}</p>
+        <details><summary>本轮逐项结果</summary>{status.batch.items?.map(item => <p key={item.id}>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>)}</details>
+      </>}
+    </div>
+    {status?.observation?.current && <div className="rounded border p-3 text-sm" aria-label="最近页面观察">
+      <p>{labels[status.observation.current.stage || ''] || status.observation.current.stage}：{status.observation.current.detail}</p>
+      {status.observation.current.hrName && <p>核对目标：{status.observation.current.hrName} · {status.observation.current.companyName}</p>}
+      <p>本次观察：{status.observation.current.observedAt ? new Date(status.observation.current.observedAt).toLocaleTimeString() : '未知'}{status.observation.current.elapsedSeconds !== undefined ? ` · 等待 ${status.observation.current.elapsedSeconds} 秒` : ''}</p>
+      {status.observation.lastSuccess?.observedAt && <p>最近成功观察：{new Date(status.observation.lastSuccess.observedAt).toLocaleTimeString()}（历史观察，不代表当前页面仍然就绪）</p>}
+    </div>}
     <div className="space-y-2 rounded border p-3 text-sm">
       <p className="font-medium">独立规则：HR 索要简历时直接发送</p>
       <p>优先点击简历请求卡片的“同意”，否则使用 BOSS“发简历”。普通文字仍须 QQ 确认。每分钟检查当前已加载的联系人列表，预览变化后核对正文；未加载的历史联系人不视为已检查。</p>
@@ -97,12 +147,12 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
       <label className="flex items-center gap-2"><input type="checkbox" checked={resumeConfirmed} onChange={e => setResumeConfirmed(e.target.checked)} />允许向明确索要简历的 HR 直接分享当前 BOSS 简历</label>
       {status?.resumeRule?.enabled && status.resumeRule.state === 'WATCHING'
         ? <Button type="button" variant="outline" disabled={busy} onClick={() => void setResumeRule(false)}>关闭自动简历规则</Button>
-        : <Button type="button" disabled={busy || status?.running || status?.executing || !status?.installed || !resumeConfirmed || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void setResumeRule(true)}>启用自动简历规则</Button>}
+        : <Button type="button" disabled={busy || !compatible || batchActive || status?.running || status?.executing || !status?.installed || !resumeConfirmed || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void setResumeRule(true)}>启用自动简历规则</Button>}
     </div>
     <p role="status">{status ? `${labels[status.status] || status.status}${status.reason ? `：${status.reason}` : ''}` : '正在检查视觉执行器…'}</p>
     {status && !status.installed && <p>视觉环境尚未安装，请运行项目 hr-visual/setup.ps1 后重试。</p>}
     <div className="flex flex-wrap gap-2">
-      <Button type="button" variant="outline" disabled={busy || status?.running || status?.executing || !status?.installed} onClick={() => void loadChoices()}>选择三个已有会话</Button>
+      <Button type="button" variant="outline" disabled={busy || !compatible || batchActive || status?.running || status?.executing || !status?.installed} onClick={() => void loadChoices()}>选择三个已有会话</Button>
       {selected.length > 0 && <Button type="button" disabled={busy || selected.length !== 3 || status?.running || !accountName.trim() || (accountName !== profileName && !bindingConfirmed)} onClick={() => void act('start')}>读取并发送 QQ 建议卡（{selected.length}/3）</Button>}
       {status?.running && <Button type="button" variant="outline" disabled={busy} onClick={() => void act('pause')}>暂停视觉测试</Button>}
       {status?.runId && ['PAUSED', 'BLOCKED'].includes(status.status) && <Button type="button" disabled={busy || status.executing} onClick={() => void act('resume')}>恢复并重新核对</Button>}

@@ -170,6 +170,9 @@ public class HrAssistantStore {
     /** Match observed identity first; a new local visual identity is not a platform UID. */
     @Transactional
     public ChatSession resolveVisualSession(Long profileId, ChatSession observed) {
+        return resolveVisualSession(profileId,observed,Set.of());
+    }
+    public ChatSession resolveVisualSession(Long profileId, ChatSession observed,Set<Long> verifiedUnknownConversations) {
         var found=jdbcTemplate.query("SELECT * FROM hr_conversation WHERE profile_id=? AND platform IN ('boss','boss_visual') AND external_uid_cipher IS NOT NULL",(rs,n)->{
             String aad=conversationAad(profileId,rs.getString("external_uid_hash"));
             return new ChatSession(crypto.decrypt(rs.getString("external_uid_cipher"),aad),"",crypto.decrypt(rs.getString("hr_name_cipher"),aad+":hr"),
@@ -179,7 +182,8 @@ public class HrAssistantStore {
         if(found.size()>1)throw new IllegalStateException("同名同公司会话不唯一，未关联简历请求");
         if(!found.isEmpty() && !found.getFirst().jobName().isBlank() && !HrVisualService.normalize(found.getFirst().jobName()).equals(HrVisualService.normalize(observed.jobName())))
             throw new IllegalStateException("原联系人岗位已变化，未新建身份或绕过原发送记录");
-        if(found.isEmpty() && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE profile_id=? AND status='SEND_UNKNOWN'",Integer.class,profileId)>0)
+        var unknown=jdbcTemplate.queryForList("SELECT DISTINCT conversation_id FROM hr_reply_proposal WHERE profile_id=? AND status='SEND_UNKNOWN'",Long.class,profileId);
+        if(!verifiedUnknownConversations.containsAll(unknown))
             throw new IllegalStateException("存在未核验发送，无法排除联系人更名；新视觉身份暂不自动分享简历");
         String uid=found.isEmpty()?"visual:"+crypto.blindIndex(HrVisualService.normalize(observed.hrName())+"|"+HrVisualService.normalize(observed.companyName()),"visual-identity:"+profileId):found.getFirst().uid();
         return new ChatSession(uid,"",observed.hrName(),observed.companyName(),observed.jobName(),"",observed.lastMessage(),observed.lastTime());

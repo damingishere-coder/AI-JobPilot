@@ -74,6 +74,19 @@ public class HrAssistantController {
         if(!localActionTokenService.isValid(token))return unauthorized();
         return execute(()->visual.configureResumeRule(request));
     }
+    @PostMapping("/visual/batches")
+    public ResponseEntity<?> startVisualBatch(
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+            @RequestBody com.getjobs.application.hr.HrVisualTypes.BatchRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.startBatch(request));
+    }
+    @PostMapping("/visual/batches/{id}/{operation:pause|resume}")
+    public ResponseEntity<?> controlVisualBatch(@PathVariable String id,@PathVariable String operation,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.controlBatch(profileService.getCurrentProfileId(),id,operation.equals("resume")));
+    }
 
     @PostMapping("/visual/{id}/{operation:pause|resume}")
     public ResponseEntity<?> visualControl(@PathVariable String id,@PathVariable String operation,

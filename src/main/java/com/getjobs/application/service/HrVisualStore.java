@@ -30,7 +30,7 @@ public class HrVisualStore {
     public String create(Long profile, String account, List<Long> sourceIds, List<Long> conversations, List<Seed> seeds) {
         if (busy()) throw new IllegalStateException("已有视觉测试正在执行");
         String id=UUID.randomUUID().toString();
-        db.update("INSERT INTO hr_visual_run(id,profile_id,protocol,status,account_cipher) VALUES (?,?,?,'RUNNING',?)",
+        db.update("INSERT INTO hr_visual_run(id,profile_id,protocol,status,account_cipher,open_reserved) VALUES (?,?,?,'RUNNING',?,0)",
                 id,profile,HrVisualTypes.PROTOCOL,crypto.encrypt(account,"visual-account:"+id));
         for(int i=0;i<seeds.size();i++) {
             String target=UUID.randomUUID().toString();
@@ -39,6 +39,7 @@ public class HrVisualStore {
         }
         return id;
     }
+    public boolean reserveOpen(String run) {return db.update("UPDATE hr_visual_run SET open_reserved=1 WHERE id=? AND open_reserved=0",run)==1;}
     public List<Target> targets(String run) {
         return db.query("SELECT * FROM hr_visual_target WHERE run_id=? ORDER BY rowid",(r,n)->new Target(r.getString("id"),run,
                 r.getLong("conversation_id"),r.getObject("proposal_id")==null?null:r.getLong("proposal_id"),
