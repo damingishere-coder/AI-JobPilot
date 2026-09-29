@@ -198,7 +198,7 @@ class WindowsDriver:
             for tid in reversed(attached):
                 user.AttachThreadInput(current, tid, False)
 
-    def open_chat(self, account):
+    def open_chat(self, account, existing_only=False):
         import win32gui
         from pywinauto import Desktop
         candidates = []
@@ -219,6 +219,8 @@ class WindowsDriver:
                 tabs[0][1].select()
                 time.sleep(3)
             elif not tabs:
+                if existing_only:
+                    raise Halt("CHAT_TAB_MISSING", "未找到现有 BOSS 聊天标签，已停止；不会新开、重载或刷新页面")
                 active = [w for w in windows if w.handle == win32gui.GetForegroundWindow()]
                 chosen = active if len(active) == 1 else windows
                 if len(chosen) != 1:
