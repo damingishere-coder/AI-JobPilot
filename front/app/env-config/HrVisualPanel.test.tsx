@@ -24,6 +24,23 @@ it('prioritizes only an existing paused batch contact without creating a new bat
   expect(vi.mocked(localActionFetch).mock.calls[0]).toEqual([expect.stringContaining('/visual/batches/batch/items/contact/prioritize'), { method: 'POST' }])
 })
 
+it('offers a read recheck only before a send run has been created', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
+    batch: { id: 'batch', status: 'PAUSED', stage: 'DISCOVER', items: [
+      { id: 'unread', kind: 'CONTACT', hrName: 'HR', companyName: '公司', status: 'BLOCKED', reason: '身份未核验', canRecheck: true },
+      { id: 'attempted', kind: 'CONTACT', hrName: '已尝试HR', companyName: '公司', status: 'BLOCKED', reason: '发送已阻塞', runId: 'run' },
+      { id: 'unknown', kind: 'CONTACT', hrName: '旧HR', companyName: '公司', status: 'SEND_UNKNOWN', reason: '未知', runId: 'old-run' },
+    ] } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  vi.mocked(localActionFetch).mockImplementation(async () => response(status))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  fireEvent.click(await screen.findByText('本轮逐项结果'))
+  const buttons = screen.getAllByRole('button', { name: '重新核验未进入发送的会话' })
+  expect(buttons).toHaveLength(1); fireEvent.click(buttons[0])
+  await waitFor(() => expect(localActionFetch).toHaveBeenCalledOnce())
+  expect(vi.mocked(localActionFetch).mock.calls[0][0]).toContain('/items/unread/recheck')
+})
+
 it('shows loaded list without selection separately from stale successful observations and coverage', async () => {
   const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', running: false, status: 'IDLE', targets: [],
     batch: { id: 'b', status: 'INCOMPLETE', discovered: 12, checked: 9, pendingReview: 2, sent: 1, coverageComplete: false, reason: '列表未确认到底' },

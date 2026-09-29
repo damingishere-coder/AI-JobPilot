@@ -170,6 +170,10 @@ class HrVisualServiceTest {
         var b=batches.latest(1L);batches.reserveOpen(b.id());service.controlBatch(1L,b.id(),false);
         return batches.items(b.id()).stream().filter(i->i.kind().equals("CONTACT")).findFirst().orElseThrow();
     }
+    void positionPriority() {
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"contacts",List.of(),"listTopVerified",true,"coverageComplete",false)));
+        advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("ANCHORS");
+    }
     void priorityObservation(boolean resume) {
         String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
         var descriptor=Map.of("text",resume?"方便发一份附件简历吗":"你好","time",now,"type","文本");
@@ -182,7 +186,7 @@ class HrVisualServiceTest {
     @Test void priorityResumeIsBatchOwnedIdempotentAndRestartsDiscoveryWithoutReopening() {
         var item=preparePriority();String id=item.batch();
         service.prioritizeBatchItem(1L,id,item.id());service.prioritizeBatchItem(1L,id,item.id());
-        assertThat(batches.latest(1L).stage()).isEqualTo("ANCHORS");
+        assertThat(batches.latest(1L).stage()).isEqualTo("POSITION_LIST");positionPriority();
         advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS_PRIORITY");
         priorityObservation(true);advanceBatch();
         var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
@@ -200,7 +204,7 @@ class HrVisualServiceTest {
         verify(worker,never()).exchange(argThat(m->m.containsKey("allowOpenOnce")),isNull());
     }
     @Test void priorityTextStillWaitsForQqAndResumeSurvivesRestart() {
-        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());advanceBatch();
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();
         batches.recover();service.controlBatch(1L,item.batch(),true);advanceBatch();
         assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS_PRIORITY");
         priorityObservation(false);
@@ -214,11 +218,31 @@ class HrVisualServiceTest {
         store.markFinal(targets.getFirst().proposalId(),ProposalStatus.SEND_UNKNOWN,"旧未知");
         var item=preparePriority();String id=item.batch();
         service.prioritizeBatchItem(1L,id,item.id());
+        positionPriority();
         when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","BODY_INCOMPLETE","detail","旧未知正文未核验")));
         advanceBatch();advanceBatch();priorityObservation(true);advanceBatch();
         assertThat(batches.items(id).stream().filter(i->i.id().equals(item.id())).findFirst().orElseThrow().status()).isEqualTo("BLOCKED");
         assertThat(visual.runs(1L)).isEmpty();assertThat(store.requireProposal(1L,targets.getFirst().proposalId()).status()).isEqualTo(ProposalStatus.SEND_UNKNOWN);
         service.prioritizeBatchItem(1L,id,item.id());assertThat(visual.runs(1L)).isEmpty();
+    }
+    @Test void interruptedTopPositioningResumesWithoutClaimingCoverageOrReopening() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",true,"contacts",List.of(),"coverage","SEEKING_TOP","cursor",Map.of("seekingTop",true),"listTopVerified",false)));
+        advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("POSITION_LIST");assertThat(batches.latest(1L).coverage()).isFalse();
+        batches.recover();service.controlBatch(1L,item.batch(),true);advanceBatch();
+        assertThat(batches.latest(1L).stage()).isEqualTo("POSITION_LIST");
+        assertThat(batches.afterAnchors(item.batch())).isEqualTo("PROCESS_PRIORITY");
+        positionPriority();advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS_PRIORITY");
+        assertThat(db.queryForObject("SELECT open_reserved FROM hr_visual_batch",Integer.class)).isEqualTo(1);
+    }
+    @Test void explicitRecheckCanOnlyRetryPreflightWithoutAnySendRun() {
+        var item=preparePriority();batches.outcome(item.id(),"BLOCKED","存在未核验发送，无法排除联系人更名；新视觉身份暂不自动分享简历");
+        service.recheckBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();priorityObservation(true);advanceBatch();
+        var run=visual.runs(1L).getFirst();var t=visual.targets(run.id()).getFirst();
+        visual.target(t.id(),null,"SEND_UNKNOWN","模拟未知");visual.state(run.id(),"COMPLETED","");advanceBatch();service.controlBatch(1L,item.batch(),false);
+        service.recheckBatchItem(1L,item.batch(),item.id());
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");assertThat(visual.runs(1L)).hasSize(1);
+        assertThat(visual.targets(run.id()).getFirst().status()).isEqualTo("SEND_UNKNOWN");
     }
     @Test void priorityRejectsActiveScanWrongProfileAndExcludedContacts() {
         var item=preparePriority();String id=item.batch();

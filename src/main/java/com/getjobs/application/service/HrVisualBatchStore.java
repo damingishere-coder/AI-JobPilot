@@ -96,6 +96,21 @@ public class HrVisualBatchStore {
     }
     public boolean discoveryLimit(String id){return count("SELECT COUNT(*) FROM hr_visual_batch WHERE id=? AND (stalled_pages>=3 OR page_count>=200)",id)>0;}
     public void resetCursor(String id){db.update("UPDATE hr_visual_batch SET cursor_cipher=NULL,stalled_pages=0,coverage_gap=0,coverage_complete=0,page_count=0,pass_no=1,first_pass_cipher=NULL,current_pass_cipher=NULL WHERE id=?",id);}
+    public void checkpointTop(String id,JsonNode result) {
+        if(!result.path("cursor").path("seekingTop").asBoolean() || !result.path("contacts").isArray() || !result.path("contacts").isEmpty() || result.path("coverageComplete").asBoolean())
+            throw new IllegalStateException("顶部定位进度无效，未计入联系人列表");
+        var old=decode(db.queryForObject("SELECT cursor_cipher FROM hr_visual_batch WHERE id=?",String.class,id),"batch-cursor:"+id);
+        int attempts=old==null?1:old.path("topAttempts").asInt()+1;
+        if(attempts>20)throw new IllegalStateException("定位列表顶部达到本轮上限，已暂停");
+        db.update("UPDATE hr_visual_batch SET cursor_cipher=? WHERE id=?",encode(Map.of("seekingTop",true,"topAttempts",attempts),"batch-cursor:"+id),id);
+    }
+    public boolean recheckable(Item item) {
+        if(item.run()!=null || item.conversation()!=null)return false;
+        if(Set.of("READ_FAILED","DATE_UNKNOWN").contains(item.status()))return true;
+        if(!"BLOCKED".equals(item.status()))return false;
+        String reason=db.queryForObject("SELECT reason FROM hr_visual_batch_item WHERE id=?",String.class,item.id());
+        return "BLOCKED".equals(item.status()) && "存在未核验发送，无法排除联系人更名；新视觉身份暂不自动分享简历".equals(reason);
+    }
     public void outcome(String item,String status,String reason) {db.update("UPDATE hr_visual_batch_item SET status=?,reason=? WHERE id=?",status,reason,item);}
     public void observed(String item){db.update("UPDATE hr_visual_batch_item SET observed_at=? WHERE id=?",System.currentTimeMillis(),item);}
     public void link(String item,long conversation,String run,Object resumeRequest) {
@@ -107,7 +122,7 @@ public class HrVisualBatchStore {
     public boolean allows(Long profile,String run) {
         String id=owner(run);if(id==null)return true;
         Batch b=get(profile,id);return Set.of("RUNNING","FINISHED","INCOMPLETE").contains(b.status()) &&
-                !Set.of("BOOTSTRAP","ANCHORS").contains(b.stage()) && verifiedAnchors(id).containsAll(unknownConversations(profile));
+                !Set.of("BOOTSTRAP","ANCHORS","POSITION_LIST").contains(b.stage()) && verifiedAnchors(id).containsAll(unknownConversations(profile));
     }
     public void resetAnchors(String id,String nextStage) {
         db.update("UPDATE hr_visual_batch_item SET status='PENDING' WHERE batch_id=? AND kind='ANCHOR'",id);
@@ -153,6 +168,7 @@ public class HrVisualBatchStore {
         for(var item:items(b.id())) {
             var r=new LinkedHashMap<String,Object>();r.put("id",item.id());r.put("kind",item.kind());r.put("hrName",item.contact().path("hrName").asText());r.put("companyName",item.contact().path("companyName").asText());
             r.put("status",item.status());r.put("reason",db.queryForObject("SELECT reason FROM hr_visual_batch_item WHERE id=?",String.class,item.id()));
+            r.put("canRecheck",item.kind().equals("CONTACT") && recheckable(item));
             r.put("observedAt",db.queryForObject("SELECT observed_at FROM hr_visual_batch_item WHERE id=?",Long.class,item.id()));
             if(item.run()!=null) {
                 var targets=db.queryForList("SELECT proposal_id,status,reason FROM hr_visual_target WHERE run_id=?",item.run());

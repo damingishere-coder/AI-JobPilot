@@ -8,7 +8,7 @@ type Proposal = { id: number; conversationId: number; version: number; status: s
 type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
 type Observation = { stage?: string; detail?: string; errorCode?: string; observedAt?: number; elapsedSeconds?: number; hrName?: string; companyName?: string }
-type Batch = { id?: string; status?: string; stage?: string; reason?: string; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string }[] }
+type Batch = { id?: string; status?: string; stage?: string; reason?: string; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string; canRecheck?: boolean }[] }
 type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string }; batch?: Batch; observation?: { current?: Observation; lastSuccess?: Observation; updatedAt?: number } }
 const VISUAL_PROTOCOL = '2026-09-29-hr-visual-v3'
 const labels: Record<string, string> = {
@@ -114,11 +114,11 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     } catch (e) { setError(friendlyApiError(e, '单轮操作未完成')) }
     finally { setBusy(false) }
   }
-  const prioritize = async (itemId: string) => {
+  const prioritize = async (itemId: string, recheck = false) => {
     setBusy(true); setError('')
     try {
       if (!compatible) throw new Error('前后端视觉协议不匹配，请先更新工作台')
-      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/batches/${status?.batch?.id}/items/${itemId}/prioritize`, { method: 'POST' })
+      const response = await localActionFetch(`${API_BASE}/api/hr-assistant/visual/batches/${status?.batch?.id}/items/${itemId}/${recheck ? 'recheck' : 'prioritize'}`, { method: 'POST' })
       await readApiResponse(response, '优先处理未启动'); await refresh()
     } catch (e) { setError(friendlyApiError(e, '优先处理未启动')) }
     finally { setBusy(false) }
@@ -142,6 +142,8 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
           <p>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>
           {status.batch?.status === 'PAUSED' && status.batch.stage === 'DISCOVER' && item.kind === 'CONTACT' && item.status === 'PENDING' &&
             <Button type="button" variant="outline" disabled={busy || !compatible || status.executing || status.running} onClick={() => void prioritize(item.id)}>优先处理此会话，随后继续扫描</Button>}
+          {status.batch?.status === 'PAUSED' && status.batch.stage === 'DISCOVER' && item.canRecheck &&
+            <Button type="button" variant="outline" disabled={busy || !compatible || status.executing || status.running} onClick={() => void prioritize(item.id, true)}>重新核验未进入发送的会话</Button>}
         </div>)}</details>
       </>}
     </div>

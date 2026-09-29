@@ -194,12 +194,12 @@ public class HrVisualService {
                 if(executing.get() || visual.busy() || batches.busy())throw new IllegalStateException("请等待当前操作停止后恢复");
                 if(!"PAUSED".equals(batch.status()))throw new IllegalStateException("批次并未暂停，不能重复恢复");
                 if(!Objects.equals(profile,profiles.getCurrentProfileId()) || policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("档案或其他值守状态已变化");
-                if("DISCOVER".equals(batch.stage()))batches.resetCursor(id);
-                if(!Set.of("BOOTSTRAP","ANCHORS").contains(batch.stage())){
+                if(Set.of("DISCOVER","POSITION_LIST").contains(batch.stage()))batches.resetCursor(id);
+                if(!Set.of("BOOTSTRAP","ANCHORS","POSITION_LIST").contains(batch.stage())){
                     for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
                     batches.resetAnchors(id,batch.stage());
                 }
-                batches.state(id,"RUNNING",batch.stage().equals("BOOTSTRAP")?"BOOTSTRAP":"ANCHORS","明确恢复；重新核验未知会话身份，沿用已有标签，不重新开页");
+                batches.state(id,"RUNNING",batch.stage().equals("BOOTSTRAP")?"BOOTSTRAP":Set.of("DISCOVER","POSITION_LIST").contains(batch.stage())?"POSITION_LIST":"ANCHORS","明确恢复；重新核验未知会话身份，沿用已有标签，不重新开页");
             } else {
                 batches.state(id,"PAUSED",batch.stage(),"本人暂停；保留进度，提交中的动作仅核验回执");
                 for(var item:batches.items(id))if(item.run()!=null && "RUNNING".equals(visual.run(profile,item.run()).status()))visual.state(item.run(),"PAUSED","批次已暂停");
@@ -210,13 +210,20 @@ public class HrVisualService {
     }
     /** Reorder one discovered item within the existing authorization; never creates a new batch. */
     public Object prioritizeBatchItem(Long profile,String id,String itemId) {
+        return prioritizeBatchItem(profile,id,itemId,false);
+    }
+    public Object recheckBatchItem(Long profile,String id,String itemId) {
+        return prioritizeBatchItem(profile,id,itemId,true);
+    }
+    private Object prioritizeBatchItem(Long profile,String id,String itemId,boolean recheck) {
         return guard.locked(()->transaction.execute(tx->{
             var batch=batches.get(profile,id);
             if(!Objects.equals(profile,profiles.getCurrentProfileId()))throw new IllegalStateException("当前档案已变化");
             var item=batches.items(id).stream().filter(i->i.id().equals(itemId) && i.kind().equals("CONTACT")).findFirst()
                     .orElseThrow(()->new IllegalArgumentException("联系人不属于本轮"));
             // Repeated requests, including after completion, cannot requeue the same contact.
-            if(!item.status().equals("PENDING"))return status(profile);
+            boolean unreadFailure=recheck && batches.recheckable(item);
+            if(!item.status().equals("PENDING") && !unreadFailure)return status(profile);
             if(!"PAUSED".equals(batch.status()) || !"DISCOVER".equals(batch.stage()) || executing.get() || visual.busy() || batches.busy())
                 throw new IllegalStateException("请先暂停列表扫描并等待当前操作结束");
             if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守已启用，请先停止");
@@ -224,8 +231,9 @@ public class HrVisualService {
                 throw new IllegalStateException("联系人身份不完整或属于本轮排除范围");
             for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
             batches.outcome(itemId,"PRIORITY_PENDING","优先核对本条；文字仍需 QQ 确认，之后继续本轮扫描");
+            batches.resetCursor(id);
             batches.resetAnchors(id,"PROCESS_PRIORITY");
-            batches.state(id,"RUNNING","ANCHORS","优先处理已发现会话；重新核验未知会话身份，沿用已有标签");
+            batches.state(id,"RUNNING","POSITION_LIST","先定位列表顶部，再核验旧未知会话与优先联系人；不重新开页");
             return status(profile);
         }));
     }
@@ -255,6 +263,21 @@ public class HrVisualService {
                 if(!response.path("ok").asBoolean())throw new ObservationFailure(response);
                 if(batches.active(profile))batches.state(batch.id(),"RUNNING","ANCHORS","");return;
             }
+            if(batch.stage().equals("POSITION_LIST")) {
+                request.put("operation","discover_page");if(batch.cursor()!=null)request.put("cursor",batch.cursor());
+                var response=observe(profile,request);
+                if(!response.path("ok").asBoolean())throw new ObservationFailure(response);
+                guard.locked(()->transaction.execute(tx->{
+                    if(!batches.active(profile))return null;
+                    if(!response.path("listTopVerified").asBoolean() && !"SEEKING_TOP".equals(response.path("coverage").asText()))
+                        throw new IllegalStateException("列表顶部未核验，未开始身份检查");
+                    if(response.path("listTopVerified").asBoolean()) {
+                        batches.resetCursor(batch.id());batches.state(batch.id(),"RUNNING","ANCHORS","");
+                    } else batches.checkpointTop(batch.id(),response);
+                    return null;
+                }));
+                return;
+            }
             if(batch.stage().equals("ANCHORS")) {
                 var anchor=batches.items(batch.id()).stream().filter(i->i.kind().equals("ANCHOR") && i.status().equals("PENDING")).findFirst();
                 if(anchor.isPresent()) {inspectBatchItem(batch,anchor.get());return;}
@@ -283,6 +306,7 @@ public class HrVisualService {
                 if(!response.path("ok").asBoolean())throw new ObservationFailure(response);
                 if(!response.path("contacts").isArray() || response.path("contacts").size()>100)throw new IllegalStateException("联系人分页响应不可核验");
                 if(!batches.active(profile))return;
+                if("SEEKING_TOP".equals(response.path("coverage").asText())){batches.checkpointTop(batch.id(),response);return;}
                 batches.page(batch.id(),response);
                 if(response.path("coverageComplete").asBoolean()) {
                     if(batches.confirmDiscovery(batch.id()))batches.state(batch.id(),"RUNNING","PROCESS",batches.get(profile,batch.id()).coverage()?"两次列表枚举一致，已确认末尾":"列表覆盖未完成：枚举不一致或发生重排");

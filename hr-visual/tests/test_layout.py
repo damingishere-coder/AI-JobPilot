@@ -89,6 +89,41 @@ class LayoutTests(unittest.TestCase):
             with self.assertRaises(Halt) as result:d._list_to_top()
         self.assertEqual(result.exception.code,'LIST_TOP_UNVERIFIED')
 
+    def test_long_list_upward_progress_yields_without_claiming_top(self):
+        d=WindowsDriver(threading.Event())
+        def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]
+        with patch('windows_driver.time.sleep'),patch('windows_driver.time.monotonic',side_effect=[0,0,19]),patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[rows('中'),rows('下'),rows('上')]),patch.object(d,'_wheel_contacts'):
+            with self.assertRaises(Halt) as result:d._list_to_top()
+        self.assertEqual(result.exception.code,'LIST_TOP_SEEKING')
+
+    def test_scroll_pattern_top_requires_readback_and_stable_contacts(self):
+        d=WindowsDriver(threading.Event());row=Mock();parent=row.parent.return_value;scroll=parent.iface_scroll
+        scroll.CurrentVerticallyScrollable=True;scroll.CurrentVerticalScrollPercent=50
+        search=Mock();search.get_value.return_value=''
+        nodes=[{**node('','Edit','boss-search-input',(0,0,300,30)),'control':search},{**node('HR 公司','Group','friend-content',(0,50,300,100)),'control':row}]
+        contact={'hrName':'HR','companyName':'公司'}
+        with patch('windows_driver.time.sleep'),patch('windows_driver.box',return_value=(0,0,300,500)),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',return_value=[contact]):
+            with self.assertRaises(Halt):d.discover_page({'seekingTop':True})
+            scroll.CurrentVerticalScrollPercent=0
+            self.assertTrue(d.discover_page({'seekingTop':True})['listTopVerified'])
+        with patch('windows_driver.time.sleep'),patch('windows_driver.box',return_value=(0,0,300,500)),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'list_contacts',side_effect=[[contact],[{**contact,'hrName':'另一个'}]]):
+            with self.assertRaises(Halt):d.discover_page({'seekingTop':True})
+
+    def test_top_checkpoint_is_resumable_without_exposing_middle_as_first_page(self):
+        d=WindowsDriver(threading.Event());row=Mock();row.parent.return_value=None
+        search=Mock();search.get_value.return_value=''
+        nodes=[{**node('','Edit','boss-search-input',(0,0,300,30)),'control':search},{**node('HR 公司','Group','friend-content',(0,50,300,100)),'control':row}]
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'_list_to_top',side_effect=Halt('LIST_TOP_SEEKING','仍在移动')),patch.object(d,'_click') as click:
+            result=d.discover_page({'seekingTop':True})
+        self.assertEqual(result['contacts'],[]);self.assertFalse(result['coverageComplete']);self.assertFalse(result['listTopVerified']);click.assert_not_called()
+        with patch('windows_driver.time.sleep'),patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'_list_to_top'),patch.object(d,'list_contacts',return_value=[{'hrName':'HR','companyName':'公司'}]):
+            continued=d.discover_page(result['cursor'])
+        self.assertTrue(continued['listTopVerified']);self.assertFalse(continued['coverageComplete'])
+        search.get_value.return_value='HR'
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes),patch.object(d,'_list_to_top') as top:
+            with self.assertRaises(Halt):d.discover_page({'seekingTop':True})
+        top.assert_not_called()
+
     def test_virtualized_top_detection_compares_text_not_only_rectangles(self):
         d=WindowsDriver(threading.Event())
         def rows(text):return [node('','Edit','boss-search-input',(0,0,300,30)),node('','Group','friend-content',(0,50,300,100)),node(text,'Text','',(20,55,200,75))]

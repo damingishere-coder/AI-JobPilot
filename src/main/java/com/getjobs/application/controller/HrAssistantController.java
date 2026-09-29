@@ -102,6 +102,14 @@ public class HrAssistantController {
         return execute(()->visual.control(profileService.getCurrentProfileId(),id,operation.equals("resume")));
     }
 
+    @PostMapping("/visual/batches/{id}/items/{itemId}/recheck")
+    public ResponseEntity<?> recheckVisualBatchItem(@PathVariable String id,@PathVariable String itemId,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        return execute(()->visual.recheckBatchItem(profileService.getCurrentProfileId(),id,itemId));
+    }
+
+
     @PostMapping("/visual/{runId}/targets/{targetId}/reconfirm")
     public ResponseEntity<?> reconfirmVisual(@PathVariable String runId,@PathVariable String targetId,
             @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,

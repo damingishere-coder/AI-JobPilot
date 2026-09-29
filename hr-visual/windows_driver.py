@@ -412,7 +412,9 @@ class WindowsDriver:
                     raise Halt("LIST_TOP_UNVERIFIED", "列表仍可向上移动，尚未到达顶部")
                 return
             previous = current
-        raise Halt("LIST_TOP_UNVERIFIED", "向上滚动后未核验列表顶部，保留现场等待恢复")
+        if moved_up:
+            raise Halt("LIST_TOP_SEEKING", "列表仍在向顶部移动，保留位置并在下一次有界读取中继续")
+        raise Halt("LIST_TOP_UNVERIFIED", "未观察到向顶部移动，保留现场等待恢复")
 
     @staticmethod
     def _list_end_marker(nodes):
@@ -567,6 +569,14 @@ class WindowsDriver:
         searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
         if len(searches) != 1:
             raise Halt("LIST_UNVERIFIED", "联系人搜索框不可唯一定位")
+        seeking_top = bool(cursor and cursor.get("seekingTop"))
+        if seeking_top:
+            try:
+                filtered = bool(searches[0]["control"].get_value().strip())
+            except Exception:
+                raise Halt("LIST_UNVERIFIED", "无法核验联系人搜索过滤，未继续定位顶部")
+            if filtered:
+                raise Halt("LIST_POSITION_CHANGED", "联系人搜索条件已变化，需明确恢复后重新定位顶部")
         if not cursor:
             self._click(searches[0]["box"])
             from pywinauto.keyboard import send_keys
@@ -590,7 +600,7 @@ class WindowsDriver:
                 break
             except Exception:
                 continue
-        if cursor:
+        if cursor and not seeking_top:
             current = self.list_contacts(True)
             keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in current]
             if cursor.get("anchor") not in keys:
@@ -602,13 +612,28 @@ class WindowsDriver:
                 step = 65*view/max(1, 100-view)  # Keep 35% overlap so clipped rows become fully visible.
                 scroller.SetScrollPercent(-1, min(100, scroller.CurrentVerticalScrollPercent+step))
         elif scroller is None:
-            self._list_to_top()
+            try:
+                self._list_to_top()
+            except Halt as error:
+                if error.code != "LIST_TOP_SEEKING":
+                    raise
+                self.progress("DISCOVERING", str(error))
+                return {"contacts": [], "coverageComplete": False, "coverage": "SEEKING_TOP",
+                        "cursor": {"seekingTop": True}, "listTopVerified": False}
         elif scroller.CurrentVerticallyScrollable:
             scroller.SetScrollPercent(-1, 0)
         self.progress("DISCOVERING", "逐屏读取联系人；尚未确认列表末尾")
         time.sleep(3)
         self.guard()
         contacts = self.list_contacts(True)
+        if scroller is not None and (not cursor or seeking_top):
+            if scroller.CurrentVerticallyScrollable and scroller.CurrentVerticalScrollPercent > .01:
+                raise Halt("LIST_TOP_UNVERIFIED", "系统滚动接口未返回列表顶部，未开始核验")
+            time.sleep(1)
+            self.guard()
+            stable_top = self.list_contacts(True)
+            if stable_top != contacts or (scroller.CurrentVerticallyScrollable and scroller.CurrentVerticalScrollPercent > .01):
+                raise Halt("LIST_TOP_UNVERIFIED", "列表顶部位置或联系人尚未稳定，未开始核验")
         nodes = self._nodes()
         end_marker = self._list_end_marker(nodes)
         keys = [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in contacts]
@@ -626,7 +651,7 @@ class WindowsDriver:
             self.guard()
             stable = self.list_contacts(True)
             end_marker = self._list_end_marker(self._nodes()) and keys == [normalized(c["hrName"])+"|"+normalized(c["companyName"]) for c in stable]
-        return {"contacts": contacts, "coverageComplete": bool(end_marker and at_bottom),
+        return {"contacts": contacts, "coverageComplete": bool(end_marker and at_bottom), "listTopVerified": not cursor or seeking_top,
                 "coverageGap": gap,
                 "coverage": "END_CONFIRMED" if end_marker and at_bottom else "NO_PROGRESS" if unchanged else "MORE",
                 "cursor": {"anchor": keys[-1] if keys else "", "keys": keys, "scrollMode": "WHEEL" if scroller is None else "UIA"}}
