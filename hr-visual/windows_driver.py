@@ -262,7 +262,7 @@ class WindowsDriver:
             self._check_page(nodes)
             account_seen = any("nav-figure" in n["class"].split() and normalized(n["text"]) == normalized(account) for n in nodes)
             searches = [n for n in nodes if n["type"] == "Edit" and "boss-search-input" in n["class"]]
-            rows = [n for n in nodes if "friend-content" in n["class"].split()]
+            rows = self._contact_rows(nodes) if len(searches) == 1 else []
             filtered = False
             if len(searches) == 1:
                 try:
@@ -273,7 +273,7 @@ class WindowsDriver:
                 self.progress("LIST_FILTERED_EMPTY", "联系人搜索当前无可见结果，尚未选择 HR")
                 return nodes
             if account_seen and len(searches) == 1 and rows:
-                selected = any("selected" in n["class"].split() for n in rows)
+                selected = any("selected" in n["class"].split() for n in rows) or any("chat-input" in n["class"].split() for n in nodes)
                 self.progress("LIST_READY" if selected else "LIST_READY_NO_SELECTION",
                               "联系人列表已加载" if selected else "联系人列表已加载，尚未选择 HR", visibleCount=len(rows))
                 return nodes

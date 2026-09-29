@@ -11,6 +11,13 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect}
 
 class LayoutTests(unittest.TestCase):
+    def test_selected_chat_scrolled_out_of_list_is_not_reported_unselected(self):
+        d=WindowsDriver(threading.Event());events=[];d.report=lambda **e:events.append(e)
+        nodes=[node('本人','Text','nav-figure',(0,0,100,30)),node('','Edit','boss-search-input',(0,40,300,70)),
+               node('HR 公司','Group','friend-content',(0,80,300,130)),node('','Edit','chat-input',(400,600,900,800))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):d.wait_for_list('本人')
+        self.assertEqual(events[-1]['stage'],'LIST_READY')
+
     def test_clipped_row_behind_fixed_filter_is_not_an_hr(self):
         d=WindowsDriver(threading.Event())
         nodes=[node('','Edit','boss-search-input',(20,0,300,30)),node('','List','',(20,45,300,70)),
