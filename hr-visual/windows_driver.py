@@ -326,6 +326,33 @@ class WindowsDriver:
             result[key] = matches[0]["text"]
         return result
 
+    def _reveal_selected_row(self, nodes, target):
+        if any("friend-content" in n["class"].split() and "selected" in n["class"].split() for n in nodes) or self.window is None:
+            return False
+        # Chrome exposes the selected row even when it is outside the viewport.
+        # Use it only to position the list; identity still comes from a fresh visible read.
+        selected = [c for c in self.window.descendants()
+                    if "friend-content" in (c.element_info.class_name or "").split()
+                    and "selected" in (c.element_info.class_name or "").split()]
+        if not selected:
+            return False
+        if len(selected) != 1:
+            raise Halt("IDENTITY_AMBIGUOUS", "列表中选中的联系人不唯一，未滚动")
+        texts = [normalized(c.window_text()) for c in selected[0].descendants(control_type="Text")]
+        if any(texts.count(normalized(target[key])) != 1 for key in ("hrName", "companyName")):
+            raise Halt("IDENTITY_MISMATCH", "离屏选中行的姓名或公司不匹配，未滚动")
+        try:
+            scroll = selected[0].iface_scroll_item
+        except Exception:
+            return False
+        # Receipt reads may ignore takeover to collect evidence, but positioning never does.
+        self.guard()
+        scroll.ScrollIntoView()
+        self.guard()
+        self.progress("WAITING_BODY", "已将当前选中联系人滚入列表视口，重新核验可见姓名和公司")
+        time.sleep(.3)
+        return True
+
     @staticmethod
     def _check_page(nodes):
         for n in nodes:
@@ -679,6 +706,9 @@ class WindowsDriver:
         self.guard(receipt=receipt)
         nodes = self._nodes()
         self._check_page(nodes)
+        if self._reveal_selected_row(nodes, target):
+            nodes = self._nodes()
+            self._check_page(nodes)
         identity = self._selected_identity(nodes, target)
         right = [n for n in nodes if inside(n["box"], self.chat_box)]
         headers = [n for n in right if n["type"] == "Text" and normalized(n["text"]) == normalized(target["hrName"])

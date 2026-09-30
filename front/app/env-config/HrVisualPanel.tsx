@@ -161,7 +161,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
           <p>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>
           {status.batch?.status === 'PAUSED' && status.batch.stage === 'DISCOVER' && item.kind === 'CONTACT' && item.status === 'PENDING' &&
             <Button type="button" variant="outline" disabled={busy || !compatible || status.executing || status.running} onClick={() => void prioritize(item.id)}>优先处理此会话，随后继续扫描</Button>}
-          {status.batch?.status === 'PAUSED' && status.batch.stage === 'DISCOVER' && item.canRecheck &&
+          {status.batch?.status === 'PAUSED' && (status.batch.stage === 'DISCOVER' || (status.batch.processingDiscovered && status.batch.stage === 'PROCESS')) && item.canRecheck &&
             <Button type="button" variant="outline" disabled={busy || !compatible || status.executing || status.running} onClick={() => void prioritize(item.id, true)}>重新核验未进入发送的会话</Button>}
         </div>)}</details>
       </>}

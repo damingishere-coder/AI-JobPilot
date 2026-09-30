@@ -79,6 +79,59 @@ class LayoutTests(unittest.TestCase):
         conflict=[node('','Group','friend-content selected',(0,0,350,100)),node('张女士','Text','',(10,10,80,40)),node('乙公司','Text','',(100,10,200,40))]
         with self.assertRaises(Halt):d._selected_identity(header+conflict,target)
 
+    def offscreen_selected(self, hr='张女士', company='甲公司'):
+        row=Mock();row.element_info.class_name='friend-content selected'
+        name=Mock();name.window_text.return_value=hr
+        firm=Mock();firm.window_text.return_value=company
+        row.descendants.return_value=[name,firm]
+        return row
+
+    def test_native_scroll_reveals_only_unique_matching_selected_row(self):
+        d=WindowsDriver(threading.Event());d.window=Mock()
+        row=self.offscreen_selected();d.window.descendants.return_value=[row]
+        target={'hrName':'张女士','companyName':'甲公司'}
+        with patch.object(d,'guard'),patch('windows_driver.time.sleep'):
+            self.assertTrue(d._reveal_selected_row([],target))
+        row.iface_scroll_item.ScrollIntoView.assert_called_once_with()
+        d.window.descendants.return_value=[row,self.offscreen_selected()]
+        with self.assertRaises(Halt) as result:d._reveal_selected_row([],target)
+        self.assertEqual(result.exception.code,'IDENTITY_AMBIGUOUS')
+        wrong=self.offscreen_selected(company='乙公司');d.window.descendants.return_value=[wrong]
+        with self.assertRaises(Halt) as result:d._reveal_selected_row([],target)
+        self.assertEqual(result.exception.code,'IDENTITY_MISMATCH')
+        wrong.iface_scroll_item.ScrollIntoView.assert_not_called()
+
+    def test_visible_selection_or_missing_scroll_pattern_never_causes_extra_positioning(self):
+        from unittest.mock import PropertyMock
+        d=WindowsDriver(threading.Event());d.window=Mock();row=self.offscreen_selected()
+        d.window.descendants.return_value=[row];target={'hrName':'张女士','companyName':'甲公司'}
+        visible=[node('','Group','friend-content selected',(0,0,300,100))]
+        self.assertFalse(d._reveal_selected_row(visible,target))
+        row.iface_scroll_item.ScrollIntoView.assert_not_called()
+        missing=self.offscreen_selected();d.window.descendants.return_value=[missing]
+        type(missing).iface_scroll_item=PropertyMock(side_effect=RuntimeError('pattern unavailable'))
+        self.assertFalse(d._reveal_selected_row([],target))
+        with self.assertRaises(Halt):d._selected_identity([],target)
+
+    def test_scroll_refreshes_visible_identity_and_keeps_job_and_takeover_checks(self):
+        d=WindowsDriver(threading.Event());d.window=Mock();d.chat_box=(400,0,1200,900);d.selected_job='新岗位'
+        row=self.offscreen_selected();d.window.descendants.return_value=[row]
+        target={'hrName':'张女士','companyName':'甲公司'}
+        visible=[node('','Group','friend-content selected',(0,0,350,100)),node('张女士','Text','',(10,10,80,40)),node('甲公司','Text','',(100,10,200,40)),
+                 node('张女士','Text','',(430,10,500,40)),node('','Edit','chat-input',(400,600,1200,850)),
+                 node('','Group','left-content',(430,70,850,120)),node('旧岗位','Text','',(450,80,550,105))]
+        with patch.object(d,'guard'),patch.object(d,'_nodes',side_effect=[[],visible]),patch('windows_driver.time.sleep'):
+            with self.assertRaises(Halt) as result:d.read_chat(target)
+        self.assertEqual(result.exception.code,'IDENTITY_MISMATCH')
+        row.iface_scroll_item.ScrollIntoView.assert_called_once_with()
+        row.iface_scroll_item.ScrollIntoView.reset_mock()
+        def takeover(receipt=False):
+            if not receipt:raise Halt('HUMAN_TAKEOVER','人工操作')
+        with patch.object(d,'guard',side_effect=takeover),patch.object(d,'_nodes',return_value=[]):
+            with self.assertRaises(Halt) as result:d.read_chat(target,receipt=True)
+        self.assertEqual(result.exception.code,'HUMAN_TAKEOVER')
+        row.iface_scroll_item.ScrollIntoView.assert_not_called()
+
     def test_highlighted_search_name_uses_popup_not_background_row(self):
         search=(20,0,300,30);target={'hrName':'张女士','companyName':'甲公司','visualJob':'产品经理'}
         popup=node('张女士甲公司招聘职位: 产品经理','ListItem','search-list',(10,35,320,145))
