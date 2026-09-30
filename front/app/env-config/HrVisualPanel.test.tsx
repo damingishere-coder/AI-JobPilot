@@ -37,9 +37,9 @@ it('prioritizes only an existing paused batch contact without creating a new bat
   expect(vi.mocked(localActionFetch).mock.calls[0]).toEqual([expect.stringContaining('/visual/batches/batch/items/contact/prioritize'), { method: 'POST' }])
 })
 
-it('offers a read recheck only before a send run has been created', async () => {
+it.each([['DISCOVER', false], ['PROCESS', true]])('offers a read recheck only before a send run has been created in %s', async (stage, processingDiscovered) => {
   const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
-    batch: { id: 'batch', status: 'PAUSED', stage: 'DISCOVER', items: [
+    batch: { id: 'batch', status: 'PAUSED', stage, processingDiscovered, items: [
       { id: 'unread', kind: 'CONTACT', hrName: 'HR', companyName: '公司', status: 'BLOCKED', reason: '身份未核验', canRecheck: true },
       { id: 'attempted', kind: 'CONTACT', hrName: '已尝试HR', companyName: '公司', status: 'BLOCKED', reason: '发送已阻塞', runId: 'run' },
       { id: 'unknown', kind: 'CONTACT', hrName: '旧HR', companyName: '公司', status: 'SEND_UNKNOWN', reason: '未知', runId: 'old-run' },

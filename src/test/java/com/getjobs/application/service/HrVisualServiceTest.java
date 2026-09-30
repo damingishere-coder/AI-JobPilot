@@ -282,6 +282,20 @@ class HrVisualServiceTest {
         advanceBatch();assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");
         clearInvocations(worker);advanceBatch();verifyNoInteractions(worker);
     }
+    @Test void processBatchRechecksOnlyUnreadFailureWithoutRestartingDiscoveryOrSending() {
+        beginDirectBatch();
+        when(worker.exchange(anyMap(),isNull())).thenReturn(json.valueToTree(Map.of("ok",false,"code","IDENTITY_MISMATCH","detail","离屏身份未核验")));
+        advanceBatch();var batch=batches.latest(1L);var item=batches.items(batch.id()).getFirst();
+        assertThat(item.status()).isEqualTo("READ_FAILED");service.controlBatch(1L,batch.id(),false);
+        int pages=db.queryForObject("SELECT page_count FROM hr_visual_batch",Integer.class);
+        service.recheckBatchItem(1L,batch.id(),item.id());service.recheckBatchItem(1L,batch.id(),item.id());
+        assertThat(batches.latest(1L).status()).isEqualTo("PAUSED");assertThat(batches.latest(1L).stage()).isEqualTo("PROCESS");
+        assertThat(batches.items(batch.id()).getFirst().status()).isEqualTo("PENDING");assertThat(batches.direct(batch.id())).isTrue();
+        assertThat(db.queryForObject("SELECT page_count FROM hr_visual_batch",Integer.class)).isEqualTo(pages);
+        assertThat(visual.runs(1L)).isEmpty();assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_step",Integer.class)).isZero();
+        db.update("UPDATE hr_visual_batch_item SET status='SEND_UNKNOWN',conversation_id=1 WHERE id=?",item.id());
+        service.recheckBatchItem(1L,batch.id(),item.id());assertThat(batches.items(batch.id()).getFirst().status()).isEqualTo("SEND_UNKNOWN");
+    }
     @Test void priorQqCardIsReReadAndAuditedOnceUnderNewBatchAuthorization() {
         var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();priorityObservation(false);
         when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"您好","",List.of(),List.of(),1));

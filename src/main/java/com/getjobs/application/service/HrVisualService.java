@@ -250,11 +250,16 @@ public class HrVisualService {
             // Repeated requests, including after completion, cannot requeue the same contact.
             boolean unreadFailure=recheck && batches.recheckable(item);
             if(!item.status().equals("PENDING") && !unreadFailure)return status(profile);
-            if(!"PAUSED".equals(batch.status()) || !"DISCOVER".equals(batch.stage()) || executing.get() || visual.busy() || batches.busy())
-                throw new IllegalStateException("请先暂停列表扫描并等待当前操作结束");
+            if(!"PAUSED".equals(batch.status()) || executing.get() || visual.busy() || batches.busy())
+                throw new IllegalStateException("请先暂停本轮并等待当前操作结束");
             if(policies.policy(profile).enabled() || visual.resumeRuleActive(profile))throw new IllegalStateException("其他值守已启用，请先停止");
             if(!item.contact().path("identityComplete").asBoolean() || batches.items(id).stream().anyMatch(i->i.kind().equals("EXCLUDED") && sameContact(i.contact(),item.contact())))
                 throw new IllegalStateException("联系人身份不完整或属于本轮排除范围");
+            if(recheck && batches.processingDiscovered(id) && batch.stage().equals("PROCESS")) {
+                batches.outcome(itemId,"PENDING","重新读取此前未核验的正文；沿用本轮模式和名单，未创建发送步骤");
+                return status(profile);
+            }
+            if(!batch.stage().equals("DISCOVER"))throw new IllegalStateException("当前阶段不能优先处理，请使用整批恢复");
             for(long conversation:batches.unknownConversations(profile))addBatchIdentity(id,profile,conversation,"ANCHOR");
             batches.outcome(itemId,"PRIORITY_PENDING","优先核对本条；文字仍需 QQ 确认，之后继续本轮扫描");
             batches.resetCursor(id);
