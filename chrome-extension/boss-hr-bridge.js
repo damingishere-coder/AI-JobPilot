@@ -135,7 +135,7 @@
 
   function hostPageStatus() {
     // Only the signed-in top navigation describes the applicant. Never use the HR pane's name.
-    const accountNode=document.querySelector(".nav-figure .label-text,.nav-figure .label,.nav-figure .name,.nav-figure,[data-geek-account-name]");
+    const accountNode=document.querySelector("[data-geek-account-name]") || document.querySelector(".nav-figure .label-text") || document.querySelector(".nav-figure .label") || document.querySelector(".nav-figure .name");
     const accountName=support.normalizeText(accountNode?.getAttribute("data-geek-account-name") || accountNode?.textContent);
     const stableAccount=support.normalizeText(document.querySelector("[data-geek-account-id]")?.getAttribute("data-geek-account-id"));
     const safety=support.pageSafety(document);
@@ -169,18 +169,28 @@
         return {success:true,targets:[],hasMore:false,nextScrollTop:0,observedAt:Date.now()};
       const filter=cursor.scope==="UNREAD"?support.unreadTab(document):support.allTab(document);
       if (!filter) return {success:false,errorCode:"HR_LIST_FILTER_MISSING",message:"未读到聊天列表筛选，请人工查看"};
-      if (!/active|selected/i.test(String(filter.className || ""))) {filter.click();await wait(OPEN_WAIT_MS);}
+      let selected=false;
+      // The text span may live inside the selected filter button.
+      for(let node=filter,depth=0;node && depth<3;node=node.parentElement,depth++) {
+        if (/(?:^|[\s_-])(active|selected|checked)(?:$|[\s_-])/i.test(String(node.className || "")) || node.getAttribute?.("aria-selected")==="true") {selected=true;break;}
+      }
+      if (!selected) {filter.click();await wait(OPEN_WAIT_MS);}
       let items=support.chatItems(document);
       if (!items.length) return {success:false,errorCode:"HR_LIST_NOT_READY",message:"会话列表尚未加载",retryable:true};
-      const list=findScrollableList(items[0]);
-      if (list) {list.scrollTop=Number(cursor.scrollTop || 0);list.dispatchEvent(new Event("scroll",{bubbles:true}));await wait(500);items=support.chatItems(document);}
+      let list=findScrollableList(items[0]);
+      if (list) {
+        list.scrollTop=Math.max(0,Math.min(Number(cursor.scrollTop || 0),list.scrollHeight-list.clientHeight));
+        list.dispatchEvent(new Event("scroll",{bubbles:true}));await wait(500);
+        items=support.chatItems(document);
+        list=findScrollableList(items[0]);
+      }
       const snapshots=items.map(support.itemSnapshot).filter(item=>item.uid && (cursor.scope==="ALL" || item.unreadCount));
       const targets=snapshots.map(item=>({uid:item.uid,captureId:support.captureId(item),legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
         const expected=anchor.capture?.session;
         return expected?.hrName && expected.companyName && support.normalizeText(expected.hrName)===item.hrName && support.normalizeText(expected.companyName)===item.companyName;
       })?.conversationId || null}));
       const hasMore=Boolean(list && list.scrollTop+list.clientHeight<list.scrollHeight-2);
-      return {success:true,targets,hasMore,nextScrollTop:hasMore?Math.min(list.scrollHeight,list.scrollTop+Math.max(240,Math.floor(list.clientHeight*.85))):0,observedAt:Date.now()};
+      return {success:true,targets,hasMore,actualScrollTop:list?.scrollTop || 0,nextScrollTop:hasMore?Math.min(list.scrollHeight-list.clientHeight,list.scrollTop+Math.max(240,Math.floor(list.clientHeight*.85))):0,observedAt:Date.now()};
     }
     if (!message.target?.uid) return {success:true,capture:null,observedAt:Date.now()};
     const located=await locateByUid(message.target.uid,message.deadlineAt);
@@ -450,10 +460,15 @@
   }
 
   function findScrollableList(item) {
+    const scrollable=element=> {
+      if (!element || element.scrollHeight<=element.clientHeight+2) return false;
+      const overflow=document.defaultView?.getComputedStyle?.(element)?.overflowY;
+      return !overflow || /^(auto|scroll|overlay)$/.test(overflow);
+    };
     for (let element = item?.parentElement; element && element !== document.body; element = element.parentElement) {
-      if (element.scrollHeight > element.clientHeight + 20) return element;
+      if (scrollable(element)) return element;
     }
-    return document.querySelector("[class*='chat-list'],[class*='friend-list'],[class*='conversation-list']");
+    return Array.from(document.querySelectorAll(".user-list-content,[class*='chat-list'],[class*='friend-list'],[class*='conversation-list']")).find(scrollable) || null;
   }
 
   async function locateByUid(uid, deadlineAt = Infinity) {

@@ -4,6 +4,17 @@ const {create,PROTOCOL,KEY,ALARM}=require("../boss-hr-host.js");
 const crypto=require("node:crypto").webcrypto;
 const support=require("../boss-hr-support.js");
 const URL_CHAT="https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
+test("three unchanged list steps pause and preserve the queue without claiming baseline completion",async()=>{
+  const h=harness({scan:()=>({success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:true,nextScrollTop:704})});
+  await h.start();
+  for(let i=0;i<3;i++)await h.host.tick();
+  assert.equal(h.store[KEY].state,"BLOCKED");
+  assert.equal(h.store[KEY].errorCode,"HR_LIST_SCROLL_STALLED");
+  assert.equal(h.store[KEY].paused,true);
+  assert.equal(h.store[KEY].cursor.queue[0].uid,"u1");
+  assert.notEqual(h.store[KEY].baselineComplete,true);
+  assert.equal(h.requests.some(item=>item.path.endsWith("/watch/captures")),false);
+});
 function harness(options={}) {
   const store=options.store || {},requests=[],updates=[],created=[],focused=[],alarms=[],messages=[];
   const tabs=options.tabs || [{id:99,windowId:8,url:"http://127.0.0.1:6866/env-config",active:true,status:"complete"}];
@@ -21,7 +32,7 @@ function harness(options={}) {
       sendMessage:async(id,message)=>{messages.push(message);
         if(message.type==="BOSS_HR_HOST_PAGE_PING")return {...page,observedAt:++pageTime};
         if(message.type==="BOSS_HR_HOST_BIND" && message.explicitResume)page.userPaused=false;
-        if(message.type==="BOSS_HR_HOST_SCAN_STEP")return message.cursor.stage==="LIST"?{success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:false,nextScrollTop:0}
+        if(message.type==="BOSS_HR_HOST_SCAN_STEP")return options.scan?options.scan(message):message.cursor.stage==="LIST"?{success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:false,nextScrollTop:0}
           :{success:true,observedAt:++pageTime,capture:{captureId:"whole-round",unreadCount:1,session:{uid:"u1"},messages:[{from:"对方",type:"文本",text:"您好",messageId:"in-1"}],contextComplete:true}};
         return {success:true};}}};
   const response=data=>({success:true,httpStatus:200,data:{success:true,data}});
