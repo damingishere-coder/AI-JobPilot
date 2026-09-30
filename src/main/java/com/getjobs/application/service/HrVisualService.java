@@ -386,7 +386,8 @@ public class HrVisualService {
             batches.autoReviewed(item.id());visual.target(target.id(),null,"REVIEW_REQUIRED","原卡上下文变化或存在人工草稿，未自动发送");return;
         }
         String facts=policies.visualFactsHash(batch.profile(),target.conversationId());
-        var draft=new AiDraft(Classification.valueOf(proposal.classification()),proposal.draft(),proposal.summary(),proposal.riskTags(),proposal.missingFacts(),proposal.confidence());
+        var acknowledgment=HrDeclineAcknowledgment.draft(fresh);
+        var draft=acknowledgment!=null?acknowledgment:new AiDraft(Classification.valueOf(proposal.classification()),proposal.draft(),proposal.summary(),proposal.riskTags(),proposal.missingFacts(),proposal.confidence());
         var audit=autopilot.assess(batch.profile(),target.conversationId(),fresh,draft);
         guard.locked(()->transaction.execute(tx->{
             if(!batches.active(batch.profile()))return null;
