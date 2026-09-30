@@ -7,6 +7,25 @@ vi.mock('@/lib/chromeBridge', () => ({ getChromeBridgeStatus: vi.fn(), sendChrom
 vi.mock('./HrDutyActivity', () => ({ default: () => null }))
 
 const defaultPolicy = { version: 2, enabled: false, paused: false, resumeName: '', resumeSha256: '', facts: '', rules: '按已确认事实回复', replyMode: 'REVIEW', historyMode: 'NEW_ONLY', historyDays: 30, sharePhone: false, shareResume: false, authorizationValid: false, communicationProfile: { expectedSalary: '20–25K' } }
+it('explains the disabled start button and preserves an explicitly selected history window', async () => {
+  const { requests } = setup()
+  render(<HrAutopilotSettings profileId={1} />)
+  await screen.findByText(/开启前还需/)
+  expect(screen.getByText(/开启前还需/)).toHaveTextContent('勾选资料与托管范围确认')
+  expect(screen.getByLabelText('历史范围天数')).toHaveValue('15')
+  fireEvent.change(screen.getByLabelText('历史范围天数'), { target: { value: '7' } })
+  await confirmAndStart()
+  await waitFor(() => expect(requests[0]?.historyDays).toBe(7))
+})
+
+it('keeps an enabled saved history window and hides old stopped-account menu text', async () => {
+  setup({ policy: { enabled: true, historyDays: 7 }, host: { accountName: '合成姓名 退出登录 隐藏菜单' } })
+  render(<HrAutopilotSettings profileId={1} />)
+  await screen.findByLabelText('已有消息处理')
+  fireEvent.change(screen.getByLabelText('已有消息处理'), { target: { value: 'RECENT' } })
+  expect(screen.getByLabelText('历史范围天数')).toHaveValue('7')
+  expect(screen.queryByText(/隐藏菜单/)).not.toBeInTheDocument()
+})
 const stoppedHost = { transport: 'CHROME_BACKGROUND', state: 'STOPPED', intentEnabled: false, paused: false }
 const runtimeBinding = { watchSessionId: 'synthetic-watch', hostGeneration: 'synthetic-generation', pageDocumentId: 'synthetic-document' }
 
@@ -76,7 +95,7 @@ async function confirmAndStart() {
   fireEvent.click(screen.getByRole('button', { name: '一键开启后台托管' }))
 }
 
-it('saves AUTO and recent 30 days authorization before starting the background host without a PDF or extra sharing', async () => {
+it('saves AUTO and recent 15 days authorization before starting the background host without a PDF or extra sharing', async () => {
   const { requests, order } = setup()
   render(<HrAutopilotSettings profileId={1} />)
   await screen.findByText(/20–25K/)
@@ -88,7 +107,7 @@ it('saves AUTO and recent 30 days authorization before starting the background h
   fireEvent.click(screen.getByRole('checkbox', { name: /我确认当前 Chrome 的 BOSS 求职者账号/ }))
   fireEvent.click(screen.getByRole('button', { name: '一键开启后台托管' }))
   expect(await screen.findByText(/已开始后台准备/)).toBeInTheDocument()
-  expect(requests[0]).toMatchObject({ profileId: 1, replyMode: 'AUTO', enabled: true, rulesConfirmed: true, sharePhone: false, shareResume: false, resumeName: '', historyMode: 'RECENT', historyDays: 30 })
+  expect(requests[0]).toMatchObject({ profileId: 1, replyMode: 'AUTO', enabled: true, rulesConfirmed: true, sharePhone: false, shareResume: false, resumeName: '', historyMode: 'RECENT', historyDays: 15 })
   expect(order).toEqual(['SAVE_AUTHORIZATION', 'BOSS_HR_HOST_START'])
   expect(sendChromeBridgeMessage).toHaveBeenCalledWith({ type: 'BOSS_HR_HOST_START', expectedProfileId: 1, hrBackgroundProtocol: HR_BACKGROUND_PROTOCOL, accountBindingConfirmed: true }, 30000)
   expect(screen.getByText('托管状态：正在后台核对账号与聊天页')).toBeInTheDocument()

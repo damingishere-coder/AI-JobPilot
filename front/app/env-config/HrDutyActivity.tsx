@@ -30,13 +30,13 @@ export default function HrDutyActivity({ profileId }: { profileId: number }) {
     const timer = setInterval(() => void refresh(), 15000)
     return () => { disposed = true; clearInterval(timer) }
   }, [profileId])
-  return <div className="space-y-3 border-t pt-4">
-    <h4 className="font-semibold">回复记录</h4>
+  return <details className="space-y-3 rounded-xl border bg-white p-4">
+    <summary className="cursor-pointer font-semibold">回复记录 <span className="ml-2 text-sm font-normal text-muted-foreground">{rows.length} 条 · 已发送 {activity?.counts.SENT_CONFIRMED || 0} · 待你决定 {activity?.counts.REVIEW_REQUIRED || 0} · 点击展开</span></summary>
     {activity && <p className="text-sm">已保存 {activity.progress.processed} 次会话处理进度 · {activity.progress.baseline_complete ? '最近一轮扫描完成' : '尚未完成全部扫描，已保存进度可恢复'} · 已发送 {activity.counts.SENT_CONFIRMED || 0} · 待你决定 {activity.counts.REVIEW_REQUIRED || 0}</p>}
     {error && <p role="alert">{error}</p>}
     {rows.length === 0 && <p className="text-sm text-muted-foreground">暂无回复记录。开始值班后在这里查看实际发送结果。</p>}
-    {rows.map(row => <Reply key={`${profileId}:${row.id}`} row={row} decision={activity?.decisions.find(d => d.proposalId === row.id)} />)}
-  </div>
+    <div className="max-h-[32rem] space-y-3 overflow-y-auto">{rows.map(row => <Reply key={`${profileId}:${row.id}`} row={row} decision={activity?.decisions.find(d => d.proposalId === row.id)} />)}</div>
+  </details>
 }
 
 function Reply({ row, decision }: { row: Proposal; decision?: { reason: string; origin: string } }) {
