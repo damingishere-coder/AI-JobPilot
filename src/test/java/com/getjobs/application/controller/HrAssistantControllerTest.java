@@ -101,6 +101,19 @@ class HrAssistantControllerTest {
     }
 
     @Test
+    void readAuthorizationFailureKeepsPublicErrorEnvelopeWithoutMutatingState() throws Exception {
+        when(profiles.getCurrentProfileId()).thenThrow(new IllegalStateException("当前人物档案不可用"));
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isServiceUnavailable())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.success").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("SERVICE_UNAVAILABLE"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.requestId").isNotEmpty())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data").doesNotExist());
+        verifyNoInteractions(store,watcher,actions,events);
+    }
+
+    @Test
     void authorizationGuardRequiresPostAndLocalTokenBeforeReadingPolicy() throws Exception {
         var policies=mock(com.getjobs.application.service.HrAutopilotStore.class);
         controller.setAutopilot(policies);

@@ -144,7 +144,12 @@ public class HrAssistantController {
 
     @GetMapping("/autopilot")
     public ResponseEntity<?> autopilot() {
-        return execute(()->autopilotView(profileService.getCurrentProfileId()));
+        String requestId=UUID.randomUUID().toString();
+        try {
+            return ResponseEntity.ok(envelope(true,"","",requestId,autopilotView(profileService.getCurrentProfileId())));
+        } catch(Throwable error) {
+            return requestFailure(error,requestId);
+        }
     }
 
     private Map<String,Object> autopilotView(Long id) {

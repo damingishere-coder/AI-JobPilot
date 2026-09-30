@@ -75,9 +75,15 @@ class HrBackgroundControllerTest {
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.communicationProfile.workLocation").value("广州"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.blockers").isEmpty())
                 .andReturn().getResponse().getContentAsString();
+        var policyBeforeRead=db.queryForList("SELECT * FROM hr_autopilot_policy");
+        var settingsBeforeRead=db.queryForList("SELECT * FROM hr_assistant_settings");
+        var progressBeforeRead=db.queryForList("SELECT * FROM hr_duty_progress");
         var read=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(json.readTree(saved).path("data")).isEqualTo(json.readTree(read).path("data"));
+        assertThat(db.queryForList("SELECT * FROM hr_autopilot_policy")).isEqualTo(policyBeforeRead);
+        assertThat(db.queryForList("SELECT * FROM hr_assistant_settings")).isEqualTo(settingsBeforeRead);
+        assertThat(db.queryForList("SELECT * FROM hr_duty_progress")).isEqualTo(progressBeforeRead);
         var changed=new CommunicationProfile("面议","深圳",profile.availability(),profile.interviewAvailability(),profile.contactPreference(),profile.tone(),profile.forbiddenClaims());
         store.saveSettings(1L,changed,true,"ws://127.0.0.1:3001",null,QqTargetType.GROUP,null,null,30);
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
