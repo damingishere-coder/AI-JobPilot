@@ -117,7 +117,7 @@
           await chrome.windows.update(tab.windowId, { focused: true });
           return status();
         }
-        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载 Chrome Bridge 1.10.0 并刷新工作台");
+        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载 Chrome Bridge 1.10.1 并刷新工作台");
         let previous = await read();
         const profileId = Number(message.expectedProfileId);
         if (!Number.isSafeInteger(profileId) || profileId <= 0) throw fault("PROFILE_REQUIRED", "请先确认当前人物档案");
@@ -307,7 +307,11 @@
           for (const item of response.targets || []) if (item.uid && !seen.has(item.uid)) { seen.add(item.uid); targets.push({ uid: item.uid, captureId: item.captureId,legacyAnchorId:item.legacyAnchorId || null }); }
           targets.sort((a,b)=>Number(Boolean(b.legacyAnchorId))-Number(Boolean(a.legacyAnchorId)));
           if (seen.size > 1000) throw fault("HR_LIST_LIMIT", "会话列表超过安全范围，请人工检查");
+          const stalled=response.hasMore && seen.size===cursor.seen.length && Number(response.nextScrollTop)===Number(cursor.scrollTop);
+          const stalledSteps=stalled?Number(cursor.stalledSteps || 0)+1:0;
+          if(stalledSteps>=3) throw fault("HR_LIST_SCROLL_STALLED", "联系人列表滚动未前进，已暂停并保留采集进度，请检查页面后恢复");
           await update({ cursor: { ...cursor, queue: targets, seen: [...seen], scrollTop: response.nextScrollTop,
+            stalledSteps,
             stage: response.hasMore ? "LIST" : "CAPTURE" }, operation: null },state);
         } else {
           if (response.capture) {
