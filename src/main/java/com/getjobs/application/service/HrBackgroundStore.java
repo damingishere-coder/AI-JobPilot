@@ -1,0 +1,237 @@
+package com.getjobs.application.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.getjobs.application.hr.HrAssistantTypes.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+
+/** Durable encrypted captures. A receipt acknowledges storage, never an AI decision or a send. */
+@Service
+@DependsOn("databaseSchemaService")
+@RequiredArgsConstructor
+public class HrBackgroundStore {
+    private final JdbcTemplate db;
+    private final HrAssistantCryptoService crypto;
+    private final ObjectMapper json;
+    private final HrAssistantStore hr;
+    private final HrAutopilotStore policies;
+
+    public record CaptureAck(boolean accepted,String captureId,boolean duplicate,String queueStatus) { }
+    public record Task(String id,Long profileId,int policyVersion,ChatCapture capture) { }
+
+    private String accountHash(Long profile,String identity) {
+        return crypto.blindIndex(normalize(identity),"hr-background-account:"+profile);
+    }
+
+    @Transactional
+    public CaptureAck accept(Long profile,String account,int version,ChatCapture capture) {
+        String encoded=encode(capture);
+        if(encoded.length()>2_000_000)throw new IllegalArgumentException("单条聊天快照过大");
+        String key=crypto.blindIndex(capture.captureId(),"hr-background-capture:"+profile);
+        String digest=crypto.blindIndex(sourceEvidence(capture),"hr-background-payload:"+profile);
+        String id=UUID.randomUUID().toString();
+        int inserted=db.update("""
+                INSERT OR IGNORE INTO hr_background_capture(id,profile_id,capture_key,payload_hash,
+                  payload_cipher,account_hash,policy_version) VALUES (?,?,?,?,?,?,?)
+                """,id,profile,key,digest,crypto.encrypt(encoded,"background-capture:"+id),accountHash(profile,account),version);
+        var row=db.queryForMap("SELECT id,payload_hash,payload_cipher,account_hash,status,error_code,policy_version FROM hr_background_capture WHERE profile_id=? AND capture_key=?",profile,key);
+        if(!accountHash(profile,account).equals(row.get("account_hash")))
+            throw new HrAssistantStore.StaleProposalException("采集编号对应的正文或账号已变化，未覆盖原快照");
+        boolean upgrade=false;
+        if(inserted==0 && capture.contextComplete() && row.get("payload_cipher") instanceof String oldCipher && !oldCipher.isBlank()) {
+            var previous=decode(crypto.decrypt(oldCipher,"background-capture:"+row.get("id")));
+            upgrade=!previous.contextComplete() && compatibleIdentity(previous.session(),capture.session())
+                    && sourceRound(previous).equals(sourceRound(capture));
+        }
+        if(!digest.equals(row.get("payload_hash")) && !upgrade)throw new HrAssistantStore.StaleProposalException("采集编号对应的正文或身份已变化，未覆盖原快照");
+        boolean freshAuthorization=inserted==0 && ((Number)row.get("policy_version")).intValue()!=version
+                && ("PENDING".equals(row.get("status")) || ("BLOCKED".equals(row.get("status")) && "AUTHORIZATION_CHANGED".equals(row.get("error_code"))));
+        boolean freshSuggestion=inserted==0 && capture.contextComplete() && "DONE".equals(row.get("status"))
+                && unchangedSuggestion(profile,capture,version);
+        if(upgrade || freshAuthorization || freshSuggestion) {
+            String originalId=row.get("id").toString();
+            db.update("UPDATE hr_background_capture SET payload_cipher=?,payload_hash=?,policy_version=?,status='PENDING',error_code='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    crypto.encrypt(encoded,"background-capture:"+originalId),digest,version,originalId);
+            return new CaptureAck(true,capture.captureId(),true,"PENDING");
+        }
+        return new CaptureAck(true,capture.captureId(),inserted==0,row.get("status").toString());
+    }
+
+    private boolean unchangedSuggestion(Long profile,ChatCapture capture,int version) {
+        String uidHash=crypto.blindIndex(capture.session().uid(),"conversation:"+profile);
+        var conversations=db.queryForList("""
+                SELECT conversation_id FROM hr_chrome_conversation_alias WHERE profile_id=? AND chrome_uid_hash=?
+                UNION SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss' AND external_uid_hash=?
+                """,Long.class,profile,uidHash,profile,uidHash);
+        if(conversations.size()!=1 || capture.messages().isEmpty() || !capture.messages().getLast().inbound())return false;
+        long conversation=conversations.getFirst();
+        String source=sourceFingerprint(profile,conversation,capture,capture.messages().getLast());
+        return hr.hasUnchangedBackgroundSuggestion(profile,conversation,source,version);
+    }
+
+    /** Only unfinished analysis is recovered; send leases have their separate UNKNOWN recovery. */
+    public void recover() {
+        db.update("UPDATE hr_background_capture SET status='PENDING',updated_at=CURRENT_TIMESTAMP WHERE status='PROCESSING'");
+    }
+
+    @Transactional
+    public Task claim(Long profile,String account,int version) {
+        String accountHash=accountHash(profile,account);
+        db.update("UPDATE hr_background_capture SET status='BLOCKED',error_code='AUTHORIZATION_CHANGED',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND account_hash=? AND status='PENDING' AND policy_version<>?",profile,accountHash,version);
+        var ids=db.queryForList("SELECT id FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status='PENDING' ORDER BY created_at,rowid LIMIT 1",String.class,profile,accountHash,version);
+        if(ids.isEmpty())return null;
+        String id=ids.getFirst();
+        if(db.update("UPDATE hr_background_capture SET status='PROCESSING',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PENDING'",id)!=1)return null;
+        String cipher=db.queryForObject("SELECT payload_cipher FROM hr_background_capture WHERE id=?",String.class,id);
+        return new Task(id,profile,version,decode(crypto.decrypt(cipher,"background-capture:"+id)));
+    }
+
+    public void finish(String id,String errorCode) {
+        db.update("UPDATE hr_background_capture SET status=?,error_code=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING'",errorCode.isBlank()?"DONE":"BLOCKED",errorCode,id);
+    }
+    public void defer(String id) {
+        db.update("UPDATE hr_background_capture SET status='PENDING',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING'",id);
+    }
+    public int pending(Long profile) {
+        return db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND status IN ('PENDING','PROCESSING')",Integer.class,profile);
+    }
+
+    public List<Map<String,Object>> legacyAnchors(Long profile) {
+        var ids=db.queryForList("""
+                SELECT DISTINCT c.id FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
+                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
+                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
+                """,Long.class,profile);
+        return ids.stream().map(id->{
+            var result=new LinkedHashMap<String,Object>();result.put("conversationId",id);
+            try {result.put("capture",policies.context(profile,id));result.put("status","READ_ONLY");}
+            catch(RuntimeException unavailable){result.put("status","CONTEXT_UNAVAILABLE");}
+            return (Map<String,Object>)result;
+        }).toList();
+    }
+
+    public void purgeExpired() {
+        // Keep dedupe keys while expiring sensitive snapshots independently.
+        db.update("UPDATE hr_background_capture SET status='BLOCKED',error_code='CAPTURE_EXPIRED',payload_cipher='' WHERE status IN ('PENDING','PROCESSING') AND created_at<datetime('now','-30 days')");
+        db.update("UPDATE hr_background_capture SET payload_cipher='' WHERE status IN ('DONE','BLOCKED') AND updated_at<datetime('now','-30 days')");
+        db.update("UPDATE hr_chrome_conversation_alias SET evidence_cipher='' WHERE created_at<datetime('now','-30 days')");
+    }
+
+    /** Preserve canonical IDs and fingerprints when returning from the visual transport. */
+    @Transactional
+    public long resolveConversation(Long profile,ChatCapture observed) {
+        ChatSession identity=observed.session();
+        if(identity.uid().startsWith("visual:"))throw new IllegalArgumentException("后台 Chrome 必须提供平台会话 UID");
+        String uidHash=crypto.blindIndex(identity.uid(),"conversation:"+profile);
+        String identityHash=identityHash(profile,identity);
+        var aliases=db.queryForList("SELECT conversation_id,identity_hash FROM hr_chrome_conversation_alias WHERE profile_id=? AND chrome_uid_hash=?",profile,uidHash);
+        if(!aliases.isEmpty()) {
+            if(!identityHash.equals(aliases.getFirst().get("identity_hash")))throw new IdentityHeldException();
+            return ((Number)aliases.getFirst().get("conversation_id")).longValue();
+        }
+        var visualIds=db.queryForList("SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss_visual'",Long.class,profile);
+        var identityMatches=new ArrayList<Long>();
+        var sourceMatches=new ArrayList<Long>();
+        for(Long candidate:visualIds) {
+            try {
+                ChatCapture baseline=policies.context(profile,candidate);
+                if(identityHash.equals(identityHash(profile,baseline.session()))) {
+                    identityMatches.add(candidate);
+                    if(completeIdentity(identity) && baseline.contextComplete() && observed.contextComplete()
+                            && !uniqueSourceRound(observed.messages(),baseline.messages()).isEmpty())sourceMatches.add(candidate);
+                }
+            }catch(IdentityHeldException e){throw e;}
+            catch(RuntimeException unavailable) {
+                // An unavailable baseline is never used as identity evidence.
+            }
+        }
+        if(!identityMatches.isEmpty()) {
+            if(identityMatches.size()!=1 || sourceMatches.size()!=1)throw new IdentityHeldException();
+            long canonical=sourceMatches.getFirst();
+            if(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias WHERE profile_id=? AND conversation_id=?",Integer.class,profile,canonical)>0)
+                throw new IdentityHeldException();
+            ChatCapture baseline=policies.context(profile,canonical);
+            ChatMessage oldSource=baseline.messages().stream().filter(ChatMessage::inbound).reduce((first,last)->last).orElseThrow(IdentityHeldException::new);
+            db.update("INSERT INTO hr_chrome_conversation_alias(profile_id,chrome_uid_hash,chrome_uid_cipher,conversation_id,identity_hash,source_round_hash,legacy_source_fingerprint,evidence_cipher) VALUES (?,?,?,?,?,?,?,?)",
+                    profile,uidHash,crypto.encrypt(identity.uid(),"chrome-alias:"+profile+":"+uidHash),canonical,identityHash,
+                    crypto.blindIndex(encode(roundEvidence(uniqueSourceRound(observed.messages(),baseline.messages()))),"chrome-alias-source:"+profile+":"+canonical),hr.sourceFingerprint(canonical,oldSource),
+                    crypto.encrypt(encode(observed),"chrome-alias-evidence:"+profile+":"+uidHash));
+            return canonical;
+        }
+        var direct=db.queryForList("SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss' AND external_uid_hash=?",Long.class,profile,uidHash);
+        if(!direct.isEmpty())return direct.getFirst();
+        // A new UID cannot sidestep an old unknown visual identity. Existing
+        // verified platform UIDs are unaffected; unresolved new identities stay read-only.
+        Integer unresolved=db.queryForObject("""
+                SELECT COUNT(DISTINCT c.id) FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
+                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
+                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
+                """,Integer.class,profile);
+        if(unresolved!=null && unresolved>0)throw new IdentityHeldException();
+        return hr.upsertConversation(profile,identity);
+    }
+
+    public String sourceFingerprint(Long profile,long conversation,ChatCapture capture,ChatMessage source) {
+        String roundHash=crypto.blindIndex(encode(sourceRound(capture)),"chrome-alias-source:"+profile+":"+conversation);
+        var old=db.queryForList("SELECT legacy_source_fingerprint FROM hr_chrome_conversation_alias WHERE profile_id=? AND conversation_id=? AND source_round_hash=?",String.class,profile,conversation,roundHash);
+        return old.isEmpty()?hr.sourceFingerprint(conversation,source):old.getFirst();
+    }
+
+    public static boolean completeIdentity(ChatSession session) {
+        return session!=null && !normalize(session.hrName()).isEmpty() && !normalize(session.companyName()).isEmpty() && !normalize(session.jobName()).isEmpty();
+    }
+    private String identityHash(Long profile,ChatSession identity) {
+        if(identity==null)return "";
+        return crypto.blindIndex(normalize(identity.hrName())+"|"+normalize(identity.companyName())+"|"+normalize(identity.jobName()),"hr-background-identity:"+profile);
+    }
+    private static List<ChatMessage> uniqueSourceRound(List<ChatMessage> observed,List<ChatMessage> baseline) {
+        int end=baseline.size();while(end>0 && !baseline.get(end-1).inbound())end--;
+        int start=end;while(start>0 && baseline.get(start-1).inbound())start--;
+        var round=baseline.subList(start,end);
+        if(round.isEmpty())return List.of();
+        List<ChatMessage> found=List.of();
+        for(int offset=0;offset+round.size()<=observed.size();offset++) {
+            if(offset>0 && observed.get(offset-1).inbound())continue;
+            if(offset+round.size()<observed.size() && observed.get(offset+round.size()).inbound())continue;
+            boolean match=true;
+            for(int j=0;j<round.size();j++)match &= sameMessage(observed.get(offset+j),round.get(j));
+            if(match) {
+                if(!found.isEmpty())throw new IdentityHeldException();
+                found=observed.subList(offset,offset+round.size());
+            }
+        }
+        return found;
+    }
+    public static boolean sameMessage(ChatMessage left,ChatMessage right) {
+        return left.inbound()==right.inbound() && normalize(left.type()).equals(normalize(right.type()))
+                && normalize(left.time()).equals(normalize(right.time())) && normalize(left.text()).equals(normalize(right.text()));
+    }
+    private static String normalize(String text) {return Objects.toString(text,"").replaceAll("\\s+","").strip();}
+    private String sourceEvidence(ChatCapture capture) {
+        var identity=capture.session();
+        return encode(List.of(identity.uid(),normalize(identity.hrName()),normalize(identity.companyName()),normalize(identity.jobName()),sourceRound(capture)));
+    }
+    private List<String> sourceRound(ChatCapture capture) {
+        int end=capture.messages().size();while(end>0 && !capture.messages().get(end-1).inbound())end--;
+        int start=end;while(start>0 && capture.messages().get(start-1).inbound())start--;
+        return roundEvidence(capture.messages().subList(start,end));
+    }
+    private List<String> roundEvidence(List<ChatMessage> round) {
+        return round.stream().map(m->encode(List.of(normalize(m.type()),normalize(m.time()),normalize(m.text()),Objects.toString(m.messageId(),"")))).toList();
+    }
+    private boolean compatibleIdentity(ChatSession old,ChatSession fresh) {
+        return old.uid().equals(fresh.uid()) && compatiblePart(old.hrName(),fresh.hrName())
+                && compatiblePart(old.companyName(),fresh.companyName()) && compatiblePart(old.jobName(),fresh.jobName());
+    }
+    private boolean compatiblePart(String old,String fresh) {return normalize(old).isBlank() || normalize(old).equals(normalize(fresh));}
+    private String encode(Object value) {try{return json.writeValueAsString(value);}catch(Exception e){throw new IllegalStateException("后台采集快照无法保存",e);}}
+    private ChatCapture decode(String value) {try{return json.readValue(value,ChatCapture.class);}catch(Exception e){throw new IllegalStateException("后台采集快照无法读取",e);}}
+    public static class IdentityHeldException extends IllegalStateException {
+        public IdentityHeldException(){super("LEGACY_IDENTITY_UNRESOLVED: 旧视觉会话的身份或完整来源轮尚未核验，仅保留只读快照，不发送");}
+    }
+}

@@ -77,6 +77,8 @@
   }
 
   function install(documentRef) {
+    if (documentRef.__getJobsHrIdentityInstalled) return;
+    documentRef.__getJobsHrIdentityInstalled=true;
     // On-demand, synchronous metadata only: no timer, network, navigation or
     // component method calls. Do not export the rest of the component props.
     documentRef.addEventListener(EVENT, () => sync(documentRef));

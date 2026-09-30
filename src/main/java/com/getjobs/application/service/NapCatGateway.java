@@ -33,6 +33,9 @@ public class NapCatGateway {
     private HrAutopilotStore autopilot;
     @org.springframework.beans.factory.annotation.Autowired
     public void setAutopilot(HrAutopilotStore autopilot) { this.autopilot=autopilot; }
+    private HrAssistantWatchService watcher;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWatcher(@org.springframework.context.annotation.Lazy HrAssistantWatchService watcher) { this.watcher=watcher; }
     private static final Pattern SIMPLE_COMMAND = Pattern.compile("^(发送|跳过|详情)\\s*(\\d{4})$");
     private static final Pattern REVISE_COMMAND = Pattern.compile("^修改\\s*(\\d{4})\\s+([\\s\\S]{1,500})$");
 
@@ -278,9 +281,10 @@ public class NapCatGateway {
         if(!special) return false;
         if(!store.rememberQqCommand(messageId,sender,"托管指令")) return true;
         if(text.equals("暂停")||text.equals("恢复")) {
-            boolean handled=visual!=null && visual.qqControl(profileId,text.equals("恢复"));
+            boolean background=watcher!=null && watcher.isBackgroundForProfile(profileId);
+            boolean handled=!background && visual!=null && visual.qqControl(profileId,text.equals("恢复"));
             if(!handled) autopilot.pause(profileId,text.equals("暂停"));
-            sendConfigured(settings,text.equals("暂停")?"已暂停，停止新扫描和发送；已触发动作仍核验结果。":handled?"已恢复视觉测试，将重新核对未发送步骤。":"已允许恢复托管；专用标签的手动暂停需在该标签明确恢复。");
+            sendConfigured(settings,text.equals("暂停")?"已暂停，停止新扫描和发送；已触发动作仍核验结果。":handled?"已恢复视觉测试，将重新核对未发送步骤。":background?"已允许后台托管恢复；本人主动暂停或人工接管仍需在工作台明确恢复。":"已允许恢复托管；专用标签的手动暂停需在该标签明确恢复。");
         } else if(text.startsWith("记住 ")||text.startsWith("确认记住 ")) {
             boolean confirm=text.startsWith("确认记住 ");
             String fact=text.substring(confirm?5:3).trim();

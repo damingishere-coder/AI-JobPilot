@@ -218,7 +218,20 @@ public final class HrAssistantTypes {
             List<String> blockers,
             java.util.Map<String,Object> activity,
             boolean reviewReady,
-            int reviewCount
+            int reviewCount,
+            String transport,
+            String phase,
+            String blockerCode,
+            LocalDateTime lastPageHeartbeatAt,
+            LocalDateTime lastSuccessfulScanAt,
+            String hostGeneration,
+            String pageDocumentId,
+            int pendingCaptures
     ) {
     }
+
+    public record BackgroundBinding(String hostGeneration,String pageDocumentId,String accountIdentity,
+                                    String accountName,boolean accountBindingConfirmed,long pageObservedAt) { }
+
+    public record PageObservation(String hostGeneration,String pageDocumentId,String accountIdentity,long pageObservedAt) { }
 }

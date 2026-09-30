@@ -3,6 +3,8 @@ package com.getjobs.application.service;
 import com.getjobs.application.hr.HrAssistantTypes.ChatMessage;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
 import com.getjobs.application.hr.HrAssistantTypes.SendCommandView;
+import com.getjobs.application.hr.HrAssistantTypes.ChatCapture;
+import com.getjobs.application.hr.HrAssistantTypes.ChatSession;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -41,6 +43,20 @@ class HrReplyActionServiceTest {
         assertThat(service.complete(1L, "watch-1", "command-1", "lease", "RESULT_UNKNOWN", "未确认", null).status())
                 .isEqualTo("SEND_UNKNOWN");
         verify(store).completeSendCommand(1L, "watch-1", "command-1", "lease", "RESULT_UNKNOWN", "未确认", null);
+    }
+
+    @Test void receiptRequiresOneNewCompleteOwnMessageAndUnchangedFullPrefix() {
+        var identity=new ChatSession("uid","","HR","公司","岗位","","问题","今天");
+        var source=new ChatMessage("对方","文本","问题","今天");
+        var before=new ChatCapture("before",1,identity,List.of(new ChatMessage("本人","文本","好的，谢谢","昨天"),source),false,true);
+        var after=new ChatCapture("after",0,identity,List.of(before.messages().getFirst(),source,new ChatMessage("本人","文本","好的，谢谢","今天")),false,true);
+        assertThat(HrReplyActionService.confirmedReceipt(before,after,"好的，谢谢","TEXT")).isTrue();
+        assertThat(HrReplyActionService.confirmedReceipt(before,before,"好的，谢谢","TEXT")).isFalse();
+        var partial=new ChatCapture("after",0,identity,List.of(source,new ChatMessage("本人","文本","好的，谢谢","今天")),false,true);
+        assertThat(HrReplyActionService.confirmedReceipt(before,partial,"好的，谢谢","TEXT")).isFalse();
+        var invented=new ChatCapture("after",0,identity,List.of(before.messages().getFirst(),source,new ChatMessage("本人","文本","好的，谢谢，明天可以面试","今天")),false,true);
+        assertThat(HrReplyActionService.confirmedReceipt(before,invented,"好的，谢谢","TEXT")).isFalse();
+        assertThat(HrReplyActionService.confirmedReceipt(null,after,"好的，谢谢","TEXT")).isFalse();
     }
 
     private ProposalView proposal(String status) {

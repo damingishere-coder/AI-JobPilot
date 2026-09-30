@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const CONTENT_VERSION = "2026-09-28-hr-review-identity";
+  const CONTENT_VERSION = "2026-09-30-hr-background-v1";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
   const support = globalThis.GetJobsBossHrSupport;
@@ -18,7 +18,21 @@
   let executingPolicyVersion=0;
   let operationActive=false;
   let sendDispatched=false;
+  let executingHostCommand=null;
+  const hostDocumentId = crypto.randomUUID();
+  let hostGeneration = "", hostWatchSessionId = "", hostObserver = null;
+  let hostNotificationAt = 0;
+  const hostMessage = (type, payload = {}) => backgroundRequest(type, {
+    hostGeneration, documentId: hostDocumentId, observedAt: Date.now(),accountIdentity:hostPageStatus().accountIdentity, ...payload
+  });
   const pauseForUser=(event)=> {
+    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==CONTENT_VERSION)return;
+    if (hostGeneration && event.isTrusted && !event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) {
+      userPaused=true;
+      try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
+      hostMessage("BOSS_HR_HOST_MANUAL_PAUSE").catch(()=>{});
+      return;
+    }
     if((!managed && !trialActive && !reviewConnected) || !event.isTrusted || event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) return;
     userPaused=true;
     try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
@@ -30,6 +44,16 @@
   window.addEventListener("getjobs:hr:resume",()=>{userPaused=false;try {sessionStorage.removeItem("getjobs-hr-paused");} catch {userPaused=true;}});
   async function guard() {
     if(userPaused) throw new Error("USER_PAUSED：检测到手动操作，请明确恢复托管");
+    if(executingHostCommand && (hostGeneration!==executingHostCommand.hostGeneration || hostDocumentId!==executingHostCommand.pageDocumentId))
+      throw new Error("发送命令所属后台绑定已停止或变化");
+    if (hostGeneration) {
+      const guardedGeneration=hostGeneration,guardedSession=hostWatchSessionId;
+      const result = await hostMessage("BOSS_HR_HOST_GUARD",{commandId:executingHostCommand?.commandId || null});
+      if (userPaused || hostGeneration!==guardedGeneration || hostWatchSessionId!==guardedSession
+        || !result?.success || !result.watchActive || (executingPolicyVersion && result.policyVersion !== executingPolicyVersion))
+        throw new Error("后台托管已停止、账号或授权发生变化");
+      return;
+    }
     if(reviewConnected && !managed) {
       const response=await backgroundRequest("BOSS_LOCAL_API",{operation:"hr-review-guard"});
       if(userPaused || !response?.success || !response?.data?.data?.watchActive) throw new Error("USER_PAUSED：确认回发连接已停止或失效");
@@ -41,7 +65,30 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==CONTENT_VERSION)return;
     if (message?.source !== "GET_JOBS_BACKGROUND") return;
+    if (message.type === "BOSS_HR_HOST_PAGE_PING") {
+      sendResponse(hostPageStatus()); return;
+    }
+    if (message.type === "BOSS_HR_HOST_BIND") {
+      if (message.protocol !== CONTENT_VERSION || message.documentId !== hostDocumentId || operationActive) { sendResponse({success:false}); return; }
+      hostGeneration=String(message.hostGeneration || ""); hostWatchSessionId=String(message.watchSessionId || "");
+      if (message.explicitResume) { userPaused=false; try {sessionStorage.removeItem("getjobs-hr-paused");} catch {userPaused=true;} }
+      startHostObserver();
+      sendResponse({success:Boolean(hostGeneration && hostWatchSessionId && !userPaused)}); return;
+    }
+    if (message.type === "BOSS_HR_HOST_UNBIND") {
+      if (message.hostGeneration === hostGeneration) { hostGeneration=""; hostWatchSessionId=""; hostObserver?.disconnect(); hostObserver=null; }
+      sendResponse({success:true}); return;
+    }
+    if (message.type === "BOSS_HR_HOST_SCAN_STEP") {
+      if (!hostGeneration || message.hostGeneration!==hostGeneration || message.documentId!==hostDocumentId || operationActive || userPaused) {
+        sendResponse({success:false,errorCode:"HR_HOST_STALE_PAGE",message:"后台页面绑定或操作状态已变化"}); return;
+      }
+      operationActive=true;
+      hostReadStep(message).then(sendResponse).catch(error=>sendResponse({...failure("HR_CAPTURE_READ_FAILED",error),retryable:true})).finally(()=>{operationActive=false;});
+      return true;
+    }
     if (message.type === "BOSS_HR_PREPARE_REVIEW") {
       if (message.version !== CONTENT_VERSION || operationActive) { sendResponse({success:false}); return; }
       userPaused=false;
@@ -61,14 +108,97 @@
       return true;
     }
     if (message.type === "BOSS_HR_SEND_V2") {
+      if (message.command?.hostGeneration && (message.command.hostGeneration!==hostGeneration || message.command.pageDocumentId!==hostDocumentId)) {
+        sendResponse({success:true,outcome:"FAILED_SAFE",evidence:"后台页面绑定已变化"}); return;
+      }
       if(operationActive) {sendResponse({success:true,outcome:"FAILED_SAFE",evidence:"已有浏览器操作，未执行发送"});return;}
       operationActive=true;
-      executeSend(message.command).then(sendResponse).catch((error) => {
-        sendResponse({ success: true, outcome: sendDispatched ? "RESULT_UNKNOWN" : "FAILED_SAFE", evidence: concise(error) });
-      }).finally(()=>{operationActive=false;});
+      executeSend(message.command).catch(error=>({ success:true,outcome:sendDispatched?"RESULT_UNKNOWN":"FAILED_SAFE",evidence:concise(error) })).then(async result=> {
+        if (message.command?.hostGeneration) {
+          if (result.outcome==="SENT") {
+            // Observe the actual current DOM and its history boundary; never claim
+            // complete history solely because the outgoing text matched.
+            const receipt=await readContext(Date.now());
+            result.observedCapture=hostCapture(message.command,receipt.messages,receipt.complete);
+          }
+          const reported=await hostMessage("BOSS_HR_HOST_RESULT",{commandId:message.command.commandId,leaseToken:message.command.leaseToken,...result,
+            hostGeneration:message.command.hostGeneration,documentId:message.command.pageDocumentId,watchSessionId:message.command.watchSessionId}).catch(()=>({success:false}));
+          result.reported=reported?.success===true;
+        }
+        sendResponse(result);
+      }).catch((error) => {
+        sendResponse({ success: true, outcome: sendDispatched ? "RESULT_UNKNOWN" : "FAILED_SAFE", evidence: concise(error),reported:false });
+      }).finally(()=>{operationActive=false;executingHostCommand=null;executingPolicyVersion=0;});
       return true;
     }
   });
+
+  function hostPageStatus() {
+    // Only the signed-in top navigation describes the applicant. Never use the HR pane's name.
+    const accountNode=document.querySelector(".nav-figure .label-text,.nav-figure .label,.nav-figure .name,.nav-figure,[data-geek-account-name]");
+    const accountName=support.normalizeText(accountNode?.getAttribute("data-geek-account-name") || accountNode?.textContent);
+    const stableAccount=support.normalizeText(document.querySelector("[data-geek-account-id]")?.getAttribute("data-geek-account-id"));
+    const safety=support.pageSafety(document);
+    return {success:true,protocol:CONTENT_VERSION,documentId:hostDocumentId,observedAt:Date.now(),url:location.href,
+      safety,accountName,accountIdentity:stableAccount?"geek-id:"+stableAccount:accountName?"geek:"+accountName:"",accountIdentityStable:Boolean(stableAccount),accountRole:/^\/web\/geek\/chat\/?$/.test(location.pathname)?"GEEK":"UNKNOWN",
+      userPaused,operation:{active:operationActive,sendDispatched},hasDraft:Boolean(support.normalizeText(inputValue(document.querySelector("#chat-input,textarea,[contenteditable='true']") || {})))};
+  }
+
+  function startHostObserver() {
+    if (hostObserver || typeof MutationObserver!=="function") return;
+    // Adapted from the MIT HRHandler setupMessageObserver in 2bebetter/boss-job-helper.
+    // Copyright (c) 2026 2bebetter; MIT License; see THIRD-PARTY-NOTICES.md.
+    // Observe the persistent chat root as virtual lists and message panes can be replaced.
+    hostObserver=new MutationObserver(records=> {
+      if (!hostGeneration || operationActive || userPaused || Date.now()-hostNotificationAt<5000) return;
+      if (!records.some(record=>record.type==="childList" || record.type==="characterData")) return;
+      hostNotificationAt=Date.now();
+      hostMessage("BOSS_HR_HOST_CHANGED").catch(()=>{});
+    });
+    const root=document.querySelector(".chat-container,.chat-wrapper,.chat-content,.user-list") || document.body;
+    hostObserver.observe(root,{childList:true,subtree:true,characterData:true});
+  }
+
+  async function hostReadStep(message) {
+    await guard();
+    const cursor=message.cursor || {};
+    const safety=support.pageSafety(document);
+    if (!safety.safe) return {success:false,...safety};
+    if (cursor.stage==="LIST") {
+      if (cursor.scope==="UNREAD" && support.unreadTotal(document)===0)
+        return {success:true,targets:[],hasMore:false,nextScrollTop:0,observedAt:Date.now()};
+      const filter=cursor.scope==="UNREAD"?support.unreadTab(document):support.allTab(document);
+      if (!filter) return {success:false,errorCode:"HR_LIST_FILTER_MISSING",message:"未读到聊天列表筛选，请人工查看"};
+      if (!/active|selected/i.test(String(filter.className || ""))) {filter.click();await wait(OPEN_WAIT_MS);}
+      let items=support.chatItems(document);
+      if (!items.length) return {success:false,errorCode:"HR_LIST_NOT_READY",message:"会话列表尚未加载",retryable:true};
+      const list=findScrollableList(items[0]);
+      if (list) {list.scrollTop=Number(cursor.scrollTop || 0);list.dispatchEvent(new Event("scroll",{bubbles:true}));await wait(500);items=support.chatItems(document);}
+      const snapshots=items.map(support.itemSnapshot).filter(item=>item.uid && (cursor.scope==="ALL" || item.unreadCount));
+      const targets=snapshots.map(item=>({uid:item.uid,captureId:support.captureId(item),legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
+        const expected=anchor.capture?.session;
+        return expected?.hrName && expected.companyName && support.normalizeText(expected.hrName)===item.hrName && support.normalizeText(expected.companyName)===item.companyName;
+      })?.conversationId || null}));
+      const hasMore=Boolean(list && list.scrollTop+list.clientHeight<list.scrollHeight-2);
+      return {success:true,targets,hasMore,nextScrollTop:hasMore?Math.min(list.scrollHeight,list.scrollTop+Math.max(240,Math.floor(list.clientHeight*.85))):0,observedAt:Date.now()};
+    }
+    if (!message.target?.uid) return {success:true,capture:null,observedAt:Date.now()};
+    const located=await locateByUid(message.target.uid,message.deadlineAt);
+    if (located.matches.length!==1) return {success:false,errorCode:"BOSS_CHAT_IDENTITY_AMBIGUOUS",message:"未能唯一定位待处理会话"};
+    const snapshot=support.itemSnapshot(located.unique);
+    const opened=await openConversation(located.unique,snapshot,message.deadlineAt);
+    if (!opened.success) return {...opened,retryable:true};
+    const read=await readContext(message.deadlineAt);
+    if (!read.messages.length || (!message.target.legacyAnchorId && read.messages.at(-1)?.from!=="对方")) return {success:true,capture:null,observedAt:Date.now()};
+    if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
+    const session=support.currentSession(document,snapshot);
+    session.lastMessage=support.latestInbound(read.messages)?.text || "";delete session.surfaceText;
+    const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.scope==="ALL" || cursor.baseline===true,contextComplete:read.complete};
+    await hydrateMedia(capture.messages,message.deadlineAt);
+    await guard();
+    if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
+    return {success:true,capture,observedAt:Date.now()};
+  }
 
   async function scan(message) {
     managed=message.managed===true;
@@ -326,7 +456,7 @@
     return document.querySelector("[class*='chat-list'],[class*='friend-list'],[class*='conversation-list']");
   }
 
-  async function locateByUid(uid) {
+  async function locateByUid(uid, deadlineAt = Infinity) {
     let located = support.findByUid(document, uid);
     if (located.matches.length) return located;
     const items = support.chatItems(document);
@@ -336,6 +466,7 @@
     list.dispatchEvent(new Event("scroll", { bubbles: true }));
     await wait(120);
     for (let round = 0; round < 120; round++) {
+      if (Date.now() >= deadlineAt) return {matches:[],unique:null};
       await guard();
       located = support.findByUid(document, uid);
       if (located.matches.length) return located;
@@ -349,6 +480,7 @@
 
   async function executeSend(command) {
     sendDispatched=false;
+    executingHostCommand=command?.hostGeneration?{commandId:command.commandId,hostGeneration:command.hostGeneration,pageDocumentId:command.pageDocumentId}:null;
     if(command?.reviewOnly===true) reviewConnected=true;
     managed=Number(command?.policyVersion||0)>0;
     executingPolicyVersion=Number(command?.policyVersion||0);
@@ -359,7 +491,7 @@
     const safety = support.pageSafety(document);
     if (!safety.safe) return { success: true, outcome: "FAILED_SAFE", evidence: safety.errorCode };
 
-    const located = await locateByUid(command.uid);
+    const located = await locateByUid(command.uid, command.deadlineAt);
     if (located.matches.length !== 1) {
       return { success: true, outcome: "FAILED_SAFE", evidence: "BOSS_CHAT_IDENTITY_AMBIGUOUS" };
     }
@@ -371,7 +503,7 @@
     if (!identityMatches(session, command)) {
       return { success: true, outcome: "STALE", evidence: `${CONTENT_VERSION}: 发送前身份不符：${identityFailures(session,command).join("、")}` };
     }
-    const read=await readContext();
+    const read=await readContext(command.deadlineAt);
     const before=read.messages;
     // A reviewed reply needs the complete current HR round, not two earlier self replies.
     // Keep the stricter historical-context requirement for unattended sends.
@@ -384,8 +516,11 @@
       if(round.length!==command.expectedInboundRound.length || round.some((m,i)=>!support.messagesMatch(m,command.expectedInboundRound[i])))
         return {success:true,outcome:"STALE",evidence:"HR本轮内容已变化"};
     }
-    if(command.actionType==="RESUME_NATIVE") return await sendNativeResume(command,before);
-    if(command.actionType==="RESUME") return await sendResume(command,before);
+    if(command.actionType==="RESUME_NATIVE" || command.actionType==="RESUME") {
+      if (hostGeneration && !await hostDispatch(command,before,read.complete)) return {success:true,outcome:"FAILED_SAFE",evidence:"简历发送前持久授权未确认"};
+      if(command.actionType==="RESUME_NATIVE") return await sendNativeResume(command,before);
+      return await sendResume(command,before);
+    }
     const latest = support.latestInbound(before);
     if (!support.messagesMatch(latest, command.expectedLatestInbound)) {
       return { success: true, outcome: "STALE", evidence: "HR 最新消息已变化", observedLatestInbound: latest };
@@ -398,6 +533,9 @@
     const input = inputs[0];
     if(support.normalizeText(inputValue(input))) return {success:true,outcome:"FAILED_SAFE",evidence:"输入框已有未发送文字，等待人工处理"};
     await guard();
+    if (hostGeneration && !await hostDispatch(command,before,read.complete)) return {success:true,outcome:"FAILED_SAFE",evidence:"发送前持久授权未确认"};
+    await guard();
+    if (Date.now()>=command.deadlineAt) return {success:true,outcome:"FAILED_SAFE",evidence:"持久授权后租约已过期"};
     writeInput(input, command.draft);
     if (support.normalizeText(inputValue(input)) !== support.normalizeText(command.draft)) {
       return { success: true, outcome: "FAILED_SAFE", evidence: "输入框内容复核失败" };
@@ -436,7 +574,17 @@
       : { success: true, outcome: "RESULT_UNKNOWN", evidence: "发送动作已触发但未确认相同本人出站消息", observedLatestInbound: latest };
   }
 
-  async function readContext() {
+  function hostCapture(command,messages,complete) {
+    const session=support.currentSession(document,command);
+    session.lastMessage=support.latestInbound(messages)?.text || "";
+    delete session.surfaceText;
+    return {captureId:String(command.commandId || command.captureId || "host-observation"),unreadCount:1,session,messages,contextComplete:complete};
+  }
+  async function hostDispatch(command,messages,complete) {
+    const result=await hostMessage("BOSS_HR_HOST_DISPATCH",{commandId:command.commandId,leaseToken:command.leaseToken,beforeCapture:hostCapture(command,messages,complete)});
+    return result?.success===true;
+  }
+  async function readContext(deadlineAt = Infinity) {
     let messages=support.readMessages(document);
     const pane=document.querySelector(".chat-conversation .im-list");
     let scroller=pane?.parentElement;
@@ -446,6 +594,7 @@
       .filter(node=>!node.classList.contains("item-system")).length;
     let lostBoundary=rowCount()!==messages.length;
     for(let i=0;i<8 && !hasBoundary(messages) && scroller;i++) {
+      if (Date.now()>=deadlineAt) break;
       await guard();
       const count=messages.length;
       scroller.scrollTop=0; scroller.dispatchEvent(new Event("scroll",{bubbles:true})); await wait(350);
@@ -469,14 +618,15 @@
       && new Set(roundIds).size===roundIds.length;
     return {messages,complete,roundComplete};
   }
-  async function hydrateMedia(messages) {
+  async function hydrateMedia(messages,deadlineAt=Infinity) {
     let budget=12_000_000;
     for(const message of messages) for(const media of message.media||[]) {
       if(!media.sourceUrl) continue;
       try {
+        if(Date.now()>=deadlineAt)throw new Error("本次读取时限已到，媒体待人工核验");
         const url=new URL(media.sourceUrl,location.href);
         if(url.protocol!=="https:" || !/(^|\.)(zhipin\.com|zhipin\.cn|bosszhipin\.com)$/i.test(url.hostname)) throw new Error("未授权的媒体来源");
-        const response=await fetch(url.href,{credentials:url.origin===location.origin?"same-origin":"omit",redirect:"error",signal:AbortSignal.timeout(10000)});
+        const response=await fetch(url.href,{credentials:url.origin===location.origin?"same-origin":"omit",redirect:"error",signal:AbortSignal.timeout(Math.max(1,Math.min(10000,deadlineAt-Date.now())))});
         if(!response.ok) throw new Error("媒体未取得");
         const declared=Number(response.headers.get("content-length")||0);
         if(declared>6000000) throw new Error("媒体过大");

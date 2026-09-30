@@ -219,14 +219,9 @@ export default function HrAssistantSettingsCard() {
           <BiMessageDetail className="text-primary" />
           BOSS HR 值守与 QQ 通知
         </CardTitle>
-        <CardDescription>按人物档案保存沟通资料和 NapCat 通知设置；BOSS 页面仅保留值守与待确认回复。</CardDescription>
+        <CardDescription>按人物档案保存沟通资料和 QQ 通知设置，一键启动当前 Chrome 的后台聊天托管。</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {currentProfile && <HrVisualPanel key={currentProfile.id} profileId={currentProfile.id} profileName={currentProfile.name} />}
-        <details>
-          <summary className="cursor-pointer text-sm text-muted-foreground">旧版 Chrome Bridge 值守入口</summary>
-          <HrWatchConnection />
-        </details>
         <ProfileSwitcher
           compact
           disabled={loading || saving}
@@ -322,7 +317,7 @@ export default function HrAssistantSettingsCard() {
                 <input type="checkbox" checked={form.qqEnabled} onChange={(event) => updateForm('qqEnabled', event.target.checked)} />
                 仅将需要人工决策或处理的事项通知到上述 QQ 目标
               </label>
-              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。试运行只发 QQ 回复确认卡，不自动回复 HR；简历使用 BOSS 的“发简历”按钮，无需本地文件。</p>
+              <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。普通对话可按授权自动回复，关键事项通过 QQ 通知；电话和简历需要各自明确授权。</p>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -331,6 +326,14 @@ export default function HrAssistantSettingsCard() {
                 <BiSave className="mr-1" />{saving ? '保存中…' : '保存 BOSS HR 设置'}
               </Button>
             </div>
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">三个会话辅助测试（先发 QQ 确认）</summary>
+              <HrWatchConnection />
+            </details>
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">本机视觉辅助工具（需要前台桌面）</summary>
+              <HrVisualPanel key={currentProfile.id} profileId={currentProfile.id} profileName={currentProfile.name} />
+            </details>
           </>
         ) : null}
       </CardContent>

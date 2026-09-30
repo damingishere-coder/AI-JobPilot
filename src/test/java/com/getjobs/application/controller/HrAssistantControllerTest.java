@@ -6,6 +6,7 @@ import com.getjobs.application.hr.HrAssistantTypes.SettingsView;
 import com.getjobs.application.service.HrAssistantEventService;
 import com.getjobs.application.service.HrAssistantStore;
 import com.getjobs.application.service.HrAssistantWatchService;
+import com.getjobs.application.service.HrBackgroundStore;
 import com.getjobs.application.service.HrReplyActionService;
 import com.getjobs.application.service.LocalActionTokenService;
 import com.getjobs.application.service.ProfileService;
@@ -125,13 +126,13 @@ class HrAssistantControllerTest {
         request.setTabId(77);
 
         when(watcher.withSession(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.eq("watch-1"),
-                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any()))
-                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(4)).get());
+                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(5)).get());
         var response = controller.claimSendCommand(tokens.issueToken(), request);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(watcher).withSession(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.eq("watch-1"),
-                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any());
+                org.mockito.ArgumentMatchers.eq(77), org.mockito.ArgumentMatchers.eq(false), org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
         verify(actions).claim(1L, "watch-1");
     }
 
@@ -182,8 +183,8 @@ class HrAssistantControllerTest {
         when(watcher.isReviewTrial()).thenReturn(true);
         when(watcher.trialSendScope()).thenReturn(java.util.Set.of());
         when(watcher.withSession(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("trial"),
-                org.mockito.ArgumentMatchers.eq(77),org.mockito.ArgumentMatchers.eq(false),org.mockito.ArgumentMatchers.any()))
-                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(4)).get());
+                org.mockito.ArgumentMatchers.eq(77),org.mockito.ArgumentMatchers.eq(false),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> ((java.util.function.Supplier<?>) call.getArgument(5)).get());
         var request=new HrAssistantController.SendCommandClaimRequest();request.setWatchSessionId("trial");request.setTabId(77);
         assertThat(controller.claimSendCommand(tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(actions).claim(1L,"trial",java.util.Set.of());
@@ -191,6 +192,16 @@ class HrAssistantControllerTest {
         controller.claimSendCommand(tokens.issueToken(),request);
         verify(actions).claim(1L,"trial",java.util.Set.of(101L,102L));
         org.mockito.Mockito.verify(actions,org.mockito.Mockito.never()).claim(1L,"trial");
+    }
+
+    @Test void quickCaptureAcknowledgesAcceptedStorageAndRequiresLocalToken() {
+        var request=new HrAssistantController.ScanResultsRequest();request.setWatchSessionId("host");request.setTabId(77);request.setScanId("scan");
+        when(watcher.acceptCapture(org.mockito.ArgumentMatchers.eq("host"),org.mockito.ArgumentMatchers.eq(77),org.mockito.ArgumentMatchers.eq("scan"),
+                org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any())).thenReturn(new HrBackgroundStore.CaptureAck(true,"capture",false,"PENDING"));
+        assertThat(controller.captures("invalid",request).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        var accepted=controller.captures(tokens.issueToken(),request);
+        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(responseBody(accepted).get("data")).isEqualTo(new HrBackgroundStore.CaptureAck(true,"capture",false,"PENDING"));
     }
 
 }

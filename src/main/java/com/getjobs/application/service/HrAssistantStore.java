@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.hr.HrAssistantTypes.ChatMessage;
 import com.getjobs.application.hr.HrAssistantTypes.ChatSession;
+import com.getjobs.application.hr.HrAssistantTypes.ChatCapture;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalStatus;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
@@ -292,6 +293,54 @@ public class HrAssistantStore {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id WHERE p.conversation_id=? AND p.source_fingerprint=? AND NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY') AND NOT (p.status='EXPIRED' AND EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT') AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE')))",Integer.class,conversationId,sourceFingerprint)>0;
     }
 
+    public boolean hasUnchangedBackgroundSuggestion(Long profileId,long conversationId,String sourceFingerprint,int currentPolicyVersion) {
+        var ids=jdbcTemplate.queryForList("""
+                SELECT p.id FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id
+                WHERE p.profile_id=? AND p.conversation_id=? AND p.source_fingerprint=?
+                  AND NOT ((p.version=1 AND p.status IN ('REVIEW_REQUIRED','EXPIRED') AND p.classification='REPLY'
+                    AND COALESCE(d.policy_version,0)<? AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id))
+                    OR (p.status='EXPIRED' AND COALESCE(d.automatic,0)=1 AND EXISTS
+                      (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT')
+                      AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE'))))
+                """,Long.class,profileId,conversationId,sourceFingerprint,currentPolicyVersion);
+        if(!ids.isEmpty())return false;
+        return hasProposalForSource(conversationId,sourceFingerprint);
+    }
+
+    @Transactional
+    public boolean prepareCompleteBackgroundSource(Long profileId,long conversationId,String sourceFingerprint,boolean reconsiderHistory,int currentPolicyVersion) {
+        var rows=jdbcTemplate.queryForList("""
+                SELECT p.id,COALESCE(d.policy_version,0) AS policy_version,
+                  EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id) AS commanded
+                FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id
+                WHERE p.profile_id=? AND p.conversation_id=? AND p.source_fingerprint=?
+                """,profileId,conversationId,sourceFingerprint);
+        var ignored=new java.util.HashSet<Long>();
+        for(var row:rows) {
+            Long id=((Number)row.get("id")).longValue();
+            var view=getProposalView(profileId,id);
+            boolean untouched=view.version()==1 && Set.of("REVIEW_REQUIRED","EXPIRED").contains(view.status())
+                    && ((Number)row.get("commanded")).intValue()==0;
+            boolean retryIncomplete=untouched && view.riskTags().contains("INCOMPLETE_CONTEXT");
+            boolean freshAuthorization=untouched && "REPLY".equals(view.classification())
+                    && ((Number)row.get("policy_version")).intValue()<currentPolicyVersion;
+            if(retryIncomplete || freshAuthorization) {
+                // Keep the unchanged suggestion as history; its initial version is
+                // preserved to distinguish it from user edits and manual decisions.
+                jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='REVIEW_REQUIRED' AND version=1",id);
+                ignored.add(id);
+            }
+        }
+        var handled=jdbcTemplate.queryForList("""
+                SELECT p.id FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id
+                WHERE p.conversation_id=? AND p.source_fingerprint=?
+                  AND (?=0 OR NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY'))
+                  AND (?=0 OR NOT (COALESCE(d.automatic,0)=1 AND p.status='EXPIRED' AND EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT')
+                    AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE'))))
+                """,Long.class,conversationId,sourceFingerprint,reconsiderHistory?1:0,reconsiderHistory?1:0);
+        return handled.stream().anyMatch(id->!ignored.contains(id));
+    }
+
     @Transactional
     public void resumePendingCommands(Long profileId,String watchSessionId) {
         // Only commands never leased to a browser can be resumed or re-evaluated.
@@ -522,26 +571,76 @@ public class HrAssistantStore {
         String leaseHash = crypto.blindIndex(leaseToken, "send-lease:" + commandId);
         int leased = jdbcTemplate.update("""
                 UPDATE hr_send_command
-                   SET watch_session_id=?, status='LEASED', lease_token_hash=?,
+                   SET watch_session_id=?, status='LEASED', lease_token_hash=?, original_lease_token_hash=?,
                        lease_expires_at=datetime('now', '+60 seconds'), updated_at=CURRENT_TIMESTAMP
                  WHERE command_id=? AND status='PENDING'
-                """, safe(watchSessionId), leaseHash, commandId);
+                """, safe(watchSessionId), leaseHash, leaseHash, commandId);
         if (leased != 1) return null;
         Long proposalId = jdbcTemplate.queryForObject(
                 "SELECT proposal_id FROM hr_send_command WHERE command_id=?", Long.class, commandId);
         if (proposalId == null) throw new IllegalStateException("待发送命令缺少回复任务");
         transition(proposalId, ProposalStatus.APPROVED, ProposalStatus.SENDING);
         ProposalRecord record = requireProposal(profileId, proposalId);
-        ChatMessage expectedInbound = recentMessages(record.conversationId(), 20).stream()
-                .filter(ChatMessage::inbound)
-                .filter(message -> sourceFingerprint(record.conversationId(), message).equals(record.sourceFingerprint()))
-                .reduce((first, second) -> second)
-                .orElseThrow(() -> new StaleProposalException("发送命令的来源消息已不存在"));
+        var sources=jdbcTemplate.query("""
+                SELECT fingerprint,direction,message_type,body_cipher,message_time,metadata_cipher
+                FROM hr_message WHERE conversation_id=? AND fingerprint=? AND direction='INBOUND'
+                """,(rs,row)->readMessage(rs,record.conversationId()),record.conversationId(),record.sourceFingerprint());
+        if(sources.size()!=1)throw new StaleProposalException("发送命令的来源消息已不存在");
+        ChatMessage expectedInbound=sources.getFirst();
         return new SendCommandView(commandId, leaseToken, proposalId, record.uid(), record.hrName(),
                 record.companyName(), record.jobName(), record.sourceFingerprint(), expectedInbound,
                 record.draft(), record.expiresAt(), java.util.Objects.requireNonNull(jdbcTemplate.queryForObject(
                         "SELECT CAST(strftime('%s', lease_expires_at) AS INTEGER)*1000 FROM hr_send_command WHERE command_id=?",
                         Long.class, commandId)));
+    }
+
+    @Transactional
+    public void dispatchSendCommand(Long profileId,String watchSessionId,String commandId,String leaseToken,ChatCapture before) {
+        dispatchSendCommand(profileId,watchSessionId,commandId,leaseToken,before,null);
+    }
+
+    @Transactional
+    public void dispatchSendCommand(Long profileId,String watchSessionId,String commandId,String leaseToken,ChatCapture before,String canonicalSourceFingerprint) {
+        if(before==null || !before.contextComplete() || before.messages().isEmpty() || !before.messages().getLast().inbound())
+            throw new IllegalArgumentException("发送前需要完整、仍待回复的聊天快照");
+        String encoded=writeJson(before);
+        if(encoded.length()>2_000_000)throw new IllegalArgumentException("发送前快照过大");
+        var ids=jdbcTemplate.queryForList("SELECT proposal_id FROM hr_send_command WHERE command_id=? AND profile_id=? AND watch_session_id=? AND status='LEASED' AND lease_token_hash=? AND lease_expires_at>CURRENT_TIMESTAMP AND dispatch_at IS NULL",
+                Long.class,commandId,profileId,watchSessionId,crypto.blindIndex(safe(leaseToken),"send-lease:"+commandId));
+        if(ids.size()!=1)throw new StaleProposalException("发送租约或检查点已变化，禁止重复点击");
+        var proposal=requireProposal(profileId,ids.getFirst());
+        String observedSource=canonicalSourceFingerprint==null?sourceFingerprint(proposal.conversationId(),before.messages().getLast()):canonicalSourceFingerprint;
+        if(!observedSource.equals(proposal.sourceFingerprint()))
+            throw new StaleProposalException("提交前 HR 来源消息已变化");
+        if(jdbcTemplate.update("UPDATE hr_send_command SET dispatch_at=CURRENT_TIMESTAMP,before_capture_cipher=? WHERE command_id=? AND status='LEASED' AND dispatch_at IS NULL",
+                crypto.encrypt(encoded,"send-before:"+commandId),commandId)!=1)throw new StaleProposalException("检查点已经提交，不能重复发送");
+    }
+
+    public ChatCapture beforeDispatch(Long profileId,String watchSessionId,String commandId,String leaseToken) {
+        var rows=jdbcTemplate.queryForList("SELECT before_capture_cipher FROM hr_send_command WHERE command_id=? AND profile_id=? AND watch_session_id=? AND status='LEASED' AND lease_token_hash=? AND dispatch_at IS NOT NULL",
+                String.class,commandId,profileId,watchSessionId,crypto.blindIndex(safe(leaseToken),"send-lease:"+commandId));
+        if(rows.size()!=1 || rows.getFirst()==null)return null;
+        try{return objectMapper.readValue(crypto.decrypt(rows.getFirst(),"send-before:"+commandId),ChatCapture.class);}
+        catch(Exception e){throw new IllegalStateException("发送前检查点无法读取",e);}
+    }
+
+    public ProposalRecord proposalForCommand(Long profileId,String commandId) {
+        var ids=jdbcTemplate.queryForList("SELECT proposal_id FROM hr_send_command WHERE command_id=? AND profile_id=?",Long.class,commandId,profileId);
+        if(ids.size()!=1)throw new StaleProposalException("发送命令不存在");
+        return requireProposal(profileId,ids.getFirst());
+    }
+
+    public java.util.Map<String,Object> backgroundCommandStatus(Long profileId,String watchSessionId,String commandId,String leaseToken) {
+        var rows=jdbcTemplate.queryForList("""
+                SELECT proposal_id,status,outcome,dispatch_at,
+                  COALESCE(CAST(strftime('%s',lease_expires_at) AS INTEGER)*1000,0) AS deadline
+                FROM hr_send_command WHERE profile_id=? AND command_id=? AND watch_session_id=? AND original_lease_token_hash=?
+                """,profileId,commandId,watchSessionId,crypto.blindIndex(safe(leaseToken),"send-lease:"+commandId));
+        if(rows.size()!=1)throw new StaleProposalException("发送检查点不属于原领取会话及租约");
+        var row=rows.getFirst();String state=row.get("status").toString();
+        if("COMPLETE".equals(state))state=switch(java.util.Objects.toString(row.get("outcome"),"")){case "SENT"->"SENT";case "STALE"->"STALE";case "FAILED_SAFE"->"BLOCKED";default->"UNKNOWN";};
+        return java.util.Map.of("state",state,"proposalId",((Number)row.get("proposal_id")).longValue(),
+                "dispatched",row.get("dispatch_at")!=null,"leaseDeadlineEpochMs",((Number)row.get("deadline")).longValue());
     }
 
     @Transactional
@@ -552,6 +651,12 @@ public class HrAssistantStore {
                                             String outcome,
                                             String evidence,
                                             ChatMessage observedLatestInbound) {
+        return completeSendCommand(profileId,watchSessionId,commandId,leaseToken,outcome,evidence,observedLatestInbound,null);
+    }
+
+    @Transactional
+    public ProposalView completeSendCommand(Long profileId,String watchSessionId,String commandId,String leaseToken,String outcome,String evidence,
+                                            ChatMessage observedLatestInbound,String canonicalSourceFingerprint) {
         List<SendCommandRecord> commands = jdbcTemplate.query("""
                 SELECT proposal_id, lease_token_hash, status, lease_expires_at,
                        lease_expires_at<=CURRENT_TIMESTAMP AS lease_expired
@@ -582,7 +687,7 @@ public class HrAssistantStore {
         }
         if ("SENT".equals(normalizedOutcome)) {
             if (observedLatestInbound == null || !observedLatestInbound.inbound()
-                    || !sourceFingerprint(proposal.conversationId(), observedLatestInbound).equals(proposal.sourceFingerprint())) {
+                    || !(canonicalSourceFingerprint==null?sourceFingerprint(proposal.conversationId(),observedLatestInbound):canonicalSourceFingerprint).equals(proposal.sourceFingerprint())) {
                 normalizedOutcome = "RESULT_UNKNOWN";
                 evidence = "发送后来源消息无法与确认快照一致；" + safe(evidence);
             }
@@ -635,18 +740,19 @@ public class HrAssistantStore {
         List<ChatMessage> rows = jdbcTemplate.query("""
                 SELECT fingerprint, direction, message_type, body_cipher, message_time, metadata_cipher
                   FROM hr_message WHERE conversation_id=? ORDER BY id DESC LIMIT ?
-                """, (rs, rowNum) -> {
-            String meta = rs.getString("metadata_cipher");
-            if (meta != null && !meta.isBlank()) {
-                try { return objectMapper.readValue(crypto.decrypt(meta, messageAad(conversationId, rs.getString("fingerprint")) + ":meta"), ChatMessage.class); }
-                catch (Exception e) { throw new IllegalStateException("消息原始内容读取失败", e); }
-            }
-            return new ChatMessage(
-                "INBOUND".equals(rs.getString("direction")) ? "对方" : "我", rs.getString("message_type"),
-                crypto.decrypt(rs.getString("body_cipher"), messageAad(conversationId, rs.getString("fingerprint"))),
-                safe(rs.getString("message_time"))); }, conversationId, Math.max(1, Math.min(limit, 200)));
+                """, (rs, rowNum) -> readMessage(rs,conversationId), conversationId, Math.max(1, Math.min(limit, 200)));
         Collections.reverse(rows);
         return rows;
+    }
+
+    private ChatMessage readMessage(java.sql.ResultSet rs,long conversationId) throws java.sql.SQLException {
+        String meta=rs.getString("metadata_cipher");
+        if(meta!=null && !meta.isBlank()) {
+            try {return objectMapper.readValue(crypto.decrypt(meta,messageAad(conversationId,rs.getString("fingerprint"))+":meta"),ChatMessage.class);}
+            catch(Exception e){throw new IllegalStateException("消息原始内容读取失败",e);}
+        }
+        return new ChatMessage("INBOUND".equals(rs.getString("direction"))?"对方":"我",rs.getString("message_type"),
+                crypto.decrypt(rs.getString("body_cipher"),messageAad(conversationId,rs.getString("fingerprint"))),safe(rs.getString("message_time")));
     }
 
     @Transactional(readOnly = true)

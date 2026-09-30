@@ -50,9 +50,8 @@ public class HrAutopilotService {
         public Assessment(String action,String reason,String draft) { this(action,reason,draft,""); }
     }
     public Assessment historyAssessment(Long profileId,ChatCapture capture) {
-        if(!capture.historical()) return null;
         var p=policy(profileId);
-        if(!"RECENT".equals(p.historyMode())) return new Assessment("HISTORY","启用前历史仅整理","");
+        if(!"RECENT".equals(p.historyMode())) return capture.historical()?new Assessment("HISTORY","启用前历史仅整理",""):null;
         var today=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
         var date=HrDutyHistory.date(capture.session().lastTime(),today);
         if(date==null || date.isAfter(today)) return new Assessment("HUMAN","历史消息日期无法确认，请人工判断时效","");
@@ -73,6 +72,11 @@ public class HrAutopilotService {
         if(draft.classification()==Classification.COMPENSATION && !inbound.matches("(?s).*(期望|预期|期待|期薪|薪资要求).*") )
             return new Assessment("HUMAN","薪资协商或让步须本人确认",draft.replyText());
         var communication=normalized(store.loadSettingsSecret(profileId).communicationProfile());
+        String availability=Objects.toString(communication.availability(),"");
+        if((draft.classification()==Classification.AVAILABILITY || Pattern.compile("到岗|入职|到职").matcher(draft.replyText()).find())
+                && Pattern.compile("随时|立即|马上").matcher(availability).find()
+                && Pattern.compile("(?i)offer.{0,10}(两周|[1-9]\\d*\\s*(天|周|月))").matcher(availability).find())
+            return new Assessment("HUMAN","到岗资料同时包含立即和等待 Offer 后的时间，需本人确认",draft.replyText());
         if(!draft.missingFacts().isEmpty() || !draft.riskTags().isEmpty() || draft.classification()==Classification.NEEDS_USER)
             return new Assessment("HUMAN","资料不足或风险待确认",draft.replyText());
         if(inbound.matches("(?s).*(我给你|我给您|我的电话|我的号码|我的手机|我发你|我发您).*") && draft.classification()==Classification.CONTACT_REQUEST)
@@ -91,7 +95,6 @@ public class HrAutopilotService {
             if(!policy.shareResume()) return new Assessment("HUMAN","未授权自动发送简历",candidate);
             if(policy.resumeName().isBlank()) return new Assessment("HUMAN","尚未指定简历","");
             if (HrAutopilotStore.BOSS_RESUME.equals(policy.resumeName())) {
-                if (!"REVIEW".equals(policy.replyMode())) return new Assessment("HUMAN","BOSS发简历必须本人逐条确认","");
                 return new Assessment("RESUME_NATIVE","本人确认后点击BOSS发简历，不使用本地文件","点击 BOSS 聊天框下方的“发简历”，发送当前 BOSS 账号的简历。");
             }
             candidate="发送已确认简历："+policy.resumeName();action="RESUME";
@@ -165,7 +168,7 @@ public class HrAutopilotService {
         var policy=policies.policy(profileId);
         var assessment=assess(profileId,conversationId,capture,draft);
         var current=policies.policy(profileId);
-        boolean automatic=policies.authorizationValid(profileId) && current.version()==policy.version() && current.enabled()&&"AUTO".equals(current.replyMode())&&!current.paused()&&!Set.of("HUMAN","HISTORY","HISTORY_OLD").contains(assessment.action());
+        boolean automatic=policies.authorizationValid(profileId) && current.version()==policy.version() && current.enabled()&&"AUTO".equals(current.replyMode())&&!current.paused()&&!Set.of("HUMAN","HISTORY","HISTORY_OLD","RESUME_NATIVE").contains(assessment.action());
         policies.decision(proposalId,policy.version(),assessment.action(),assessment.reason(),automatic);
         policies.audit(proposalId,assessment.evidence(),capture.historical());
         if(Set.of("HISTORY","HISTORY_OLD","NO_REPLY").contains(assessment.action())) {

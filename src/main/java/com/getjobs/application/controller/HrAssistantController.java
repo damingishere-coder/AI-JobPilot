@@ -4,6 +4,8 @@ import com.getjobs.application.hr.HrAssistantTypes.ChatCapture;
 import com.getjobs.application.hr.HrAssistantTypes.ChatMessage;
 import com.getjobs.application.hr.HrAssistantTypes.CommunicationProfile;
 import com.getjobs.application.hr.HrAssistantTypes.QqTargetType;
+import com.getjobs.application.hr.HrAssistantTypes.BackgroundBinding;
+import com.getjobs.application.hr.HrAssistantTypes.PageObservation;
 import com.getjobs.application.service.HrAssistantEventService;
 import com.getjobs.application.service.HrAssistantStore;
 import com.getjobs.application.service.HrAssistantWatchService;
@@ -161,13 +163,20 @@ public class HrAssistantController {
     public ResponseEntity<?> deliveryCounts() { return execute(()->autopilot.deliveryCounts(profileService.getCurrentProfileId())); }
 
     @PostMapping("/autopilot/guard")
-    public ResponseEntity<?> guard(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+    public ResponseEntity<?> guard(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                   @RequestBody(required=false) SendCommandClaimRequest request) {
         if(!localActionTokenService.isValid(token)) return unauthorized();
-        return execute(()-> {
+        return execute(()-> profileGuard.locked(()-> {
         Long id=profileService.getCurrentProfileId(); var p=autopilot.policy(id);
-        return java.util.Map.of("enabled",p.enabled(),"paused",p.paused(),"version",p.version(),
-                "authorizationValid",autopilot.authorizationValid(id),"protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL);
-    }); }
+        var result=new java.util.LinkedHashMap<String,Object>();result.putAll(java.util.Map.of("enabled",p.enabled(),"paused",p.paused(),"version",p.version(),
+                "authorizationValid",autopilot.authorizationValid(id),"protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL));
+        if(request!=null && request.getHostGeneration()!=null) {
+            return watchService.withSession(id,request.getWatchSessionId(),request.getTabId(),false,request.observation(),()->{result.put("watchActive",true);return result;});
+        }
+        // A legacy policy read cannot certify a background page or its session.
+        result.put("watchActive",false);return result;
+    })); }
+    public ResponseEntity<?> guard(String token){return guard(token,null);}
 
     @PutMapping("/autopilot")
     public ResponseEntity<?> saveAutopilot(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
@@ -176,6 +185,11 @@ public class HrAssistantController {
         return execute(()-> profileGuard.locked(()-> {
             Long id=profileService.getCurrentProfileId();
             if(!id.equals(request.profileId())) throw new HrAssistantStore.StaleProposalException("当前人物档案已变化");
+            if(!request.enabled()) {
+                var disabled=autopilot.disable(id);
+                watchService.stop("","USER_STOPPED_AUTHORIZATION_REVOKED");
+                return disabled;
+            }
             profileGuard.requireChangeAllowed();
             if(watchService.status().watching() || watchService.status().scanRunning() || store.hasLeasedSendCommands())
                 throw new IllegalStateException("请先停止值守并等待发送结果后再修改托管授权");
@@ -186,13 +200,17 @@ public class HrAssistantController {
     public record AutopilotRequest(Long profileId,int expectedVersion,boolean enabled,boolean rulesConfirmed,String resumeName,String resumeSha256,String replyMode,boolean sharePhone,boolean shareResume,String historyMode,int historyDays) { }
 
     @PostMapping("/autopilot/{operation:pause|resume}")
-    public ResponseEntity<?> pauseAutopilot(@PathVariable String operation,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {
+    public ResponseEntity<?> pauseAutopilot(@PathVariable String operation,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                            @RequestBody(required=false) RuntimeControlRequest request) {
         if(!localActionTokenService.isValid(token)) return unauthorized();
-        return execute(()-> {
+        return execute(()-> profileGuard.locked(()-> {
             Long profile=profileService.getCurrentProfileId();
+            String transport=request==null?"":java.util.Objects.toString(request.getTransport(),"");
+            if("CHROME_BACKGROUND".equals(transport) || (transport.isBlank() && watchService.isBackgroundForProfile(profile)))return autopilot.pause(profile,operation.equals("pause"));
+            if(!transport.isBlank() && !"WINDOWS_VISUAL".equals(transport))throw new IllegalArgumentException("暂停恢复的执行方式无效");
             if(visual!=null && visual.qqControl(profile,operation.equals("resume"))) return visual.status(profile);
             return autopilot.pause(profile,operation.equals("pause"));
-        });
+        }));
     }
 
     @GetMapping("/proposals/{id}/context")
@@ -237,8 +255,11 @@ public class HrAssistantController {
             @RequestBody WatchStartRequest request) {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("值守启动请求不能为空");
+        if("CHROME_BRIDGE".equals(request.getTransport()))return execute(()->watchService.start(request.getTabId(),request.getUrl(),request.getContentVersion(),
+                request.getBrowserSessionId(),request.getExpectedProfileId(),request.getIntervalMinutes(),request.getReviewLimit()));
         return execute(() -> watchService.start(request.getTabId(), request.getUrl(), request.getContentVersion(),
-                request.getBrowserSessionId(), request.getExpectedProfileId(), request.getIntervalMinutes(), request.getReviewLimit()));
+                request.getBrowserSessionId(), request.getExpectedProfileId(), request.getIntervalMinutes(), request.getReviewLimit(),
+                request.getTransport(),"CHROME_BACKGROUND".equals(request.getTransport())?new BackgroundBinding(request.getHostGeneration(),request.getPageDocumentId(),request.getAccountIdentity(),request.getAccountName(),request.isAccountBindingConfirmed(),request.getPageObservedAt()):null));
     }
 
     @PostMapping("/watch/heartbeat")
@@ -248,7 +269,7 @@ public class HrAssistantController {
         if (!localActionTokenService.isValid(actionToken)) return unauthorized();
         if (request == null) return badRequest("值守心跳请求不能为空");
         return execute(() -> watchService.heartbeat(request.getWatchSessionId(), request.getTabId(), request.getUrl(),
-                request.getContentVersion(), request.isScanRunning(), request.getOutboxCount(), request.getFault()));
+                request.getContentVersion(), request.isScanRunning(), request.getOutboxCount(), request.getFault(),request.observation()));
     }
 
     @PostMapping("/watch/scan-results")
@@ -259,6 +280,35 @@ public class HrAssistantController {
         if (request == null) return badRequest("扫描结果不能为空");
         return execute(() -> watchService.ingestScan(request.getWatchSessionId(), request.getTabId(),
                 request.getScanId(), request.getTotalUnread(), request.getCaptures()));
+    }
+
+    @PostMapping("/watch/captures")
+    public ResponseEntity<?> captures(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                       @RequestBody ScanResultsRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null)return badRequest("采集请求不能为空");
+        String requestId=UUID.randomUUID().toString();
+        try {
+            var ack=watchService.acceptCapture(request.getWatchSessionId(),request.getTabId(),request.getScanId(),request.getCaptures(),request.observation());
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(envelope(true,"","",requestId,ack));
+        }catch(Throwable error){return requestFailure(error,requestId);}
+    }
+
+    @PostMapping("/watch/legacy-anchors")
+    public ResponseEntity<?> legacyAnchors(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                           @RequestBody SendCommandClaimRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null)return badRequest("只读身份核验请求不能为空");
+        return execute(()->watchService.withSession(profileService.getCurrentProfileId(),request.getWatchSessionId(),request.getTabId(),false,
+                request.observation(),watchService::legacyAnchors));
+    }
+
+    @PostMapping("/watch/fault")
+    public ResponseEntity<?> fault(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                    @RequestBody WatchFaultRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null || !"CHROME_BACKGROUND".equals(request.getTransport()))return badRequest("后台故障报告执行方式无效");
+        return execute(()->watchService.reportFault(request.getWatchSessionId(),request.getHostGeneration(),request.getAccountIdentity(),request.getCode()));
     }
 
     @PostMapping("/watch/stop")
@@ -278,11 +328,24 @@ public class HrAssistantController {
         if (request == null) return badRequest("发送命令领取请求不能为空");
         return execute(() -> {
             Long profileId = profileService.getCurrentProfileId();
-            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), false,
+            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), false,request.observation(),
                     () -> watchService.isReviewTrial()
                             ? actionService.claim(profileId, request.getWatchSessionId(), watchService.trialSendScope())
                             : actionService.claim(profileId, request.getWatchSessionId()));
         });
+    }
+
+    @PostMapping("/send-commands/{id}/dispatch")
+    public ResponseEntity<?> dispatch(@PathVariable String id,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                      @RequestBody SendCommandDispatchRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null)return badRequest("发送前核验快照不能为空");
+        return execute(()->watchService.withSession(profileService.getCurrentProfileId(),request.getWatchSessionId(),request.getTabId(),false,
+                request.observation(),()->{
+                    if(!watchService.isBackground())throw new IllegalStateException("该发送检查点仅用于后台 Chrome");
+                    actionService.dispatch(profileService.getCurrentProfileId(),request.getWatchSessionId(),id,request.getLeaseToken(),request.getBeforeCapture());
+                    return Map.of("dispatched",true);
+                }));
     }
 
     @PostMapping("/watch/review-ready")
@@ -303,10 +366,20 @@ public class HrAssistantController {
         if (request == null) return badRequest("发送结果不能为空");
         return execute(() -> {
             Long profileId = profileService.getCurrentProfileId();
-            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), true,
+            if(request.getHostGeneration()!=null && !request.getHostGeneration().isBlank())return profileGuard.locked(()->
+                    actionService.completePersistedBackground(profileId,request.getWatchSessionId(),id,request.getLeaseToken(),request.getOutcome(),request.getEvidence(),request.getObservedLatestInbound(),request.getObservedCapture()));
+            return watchService.withSession(profileId, request.getWatchSessionId(), request.getTabId(), true,request.observation(),
                     () -> actionService.complete(profileId, request.getWatchSessionId(), id, request.getLeaseToken(),
-                    request.getOutcome(), request.getEvidence(), request.getObservedLatestInbound()));
+                    request.getOutcome(), request.getEvidence(), request.getObservedLatestInbound(),request.getObservedCapture(),watchService.isBackground()));
         });
+    }
+
+    @PostMapping("/send-commands/{id}/status")
+    public ResponseEntity<?> sendCommandStatus(@PathVariable String id,@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+                                              @RequestBody SendCommandStatusRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null)return badRequest("发送检查点核验请求不能为空");
+        return execute(()->profileGuard.locked(()->store.backgroundCommandStatus(profileService.getCurrentProfileId(),request.getWatchSessionId(),id,request.getLeaseToken())));
     }
 
     @GetMapping("/proposals")
@@ -365,6 +438,7 @@ public class HrAssistantController {
         } else if (error instanceof IllegalArgumentException e) {
             return failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", e.getMessage(), requestId);
         } else if (error instanceof IllegalStateException e) {
+            if(e.getMessage()!=null && e.getMessage().startsWith("WATCH_SESSION_EXPIRED:"))return failure(HttpStatus.CONFLICT,"WATCH_SESSION_EXPIRED",e.getMessage(),requestId);
             return failure(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", e.getMessage(), requestId);
         } else {
             log.error("HR assistant request failed requestId={} type={}", requestId, error.getClass().getSimpleName());
@@ -433,10 +507,39 @@ public class HrAssistantController {
         private String contentVersion;
         private String browserSessionId;
         private Long expectedProfileId;
+        private String transport="CHROME_BRIDGE";
+        private String hostGeneration;
+        private String pageDocumentId;
+        private String accountIdentity;
+        private String accountName;
+        private boolean accountBindingConfirmed;
+        private long pageObservedAt;
     }
 
     @Data
-    public static class WatchHeartbeatRequest {
+    public static class BackgroundAnchoredRequest {
+        private String hostGeneration;
+        private String pageDocumentId;
+        private String accountIdentity;
+        private long pageObservedAt;
+        public PageObservation observation(){return new PageObservation(hostGeneration,pageDocumentId,accountIdentity,pageObservedAt);}
+    }
+
+    @Data
+    public static class RuntimeControlRequest { private String transport=""; }
+
+    @Data
+    public static class WatchFaultRequest {
+        private String transport="CHROME_BACKGROUND";
+        private String watchSessionId;
+        private String hostGeneration;
+        private String accountIdentity;
+        private String code;
+    }
+
+    @Data
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class WatchHeartbeatRequest extends BackgroundAnchoredRequest {
         private String watchSessionId;
         private int tabId;
         private String url;
@@ -447,7 +550,8 @@ public class HrAssistantController {
     }
 
     @Data
-    public static class ScanResultsRequest {
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class ScanResultsRequest extends BackgroundAnchoredRequest {
         private String watchSessionId;
         private int tabId;
         private String scanId;
@@ -462,18 +566,32 @@ public class HrAssistantController {
     }
 
     @Data
-    public static class SendCommandClaimRequest {
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class SendCommandClaimRequest extends BackgroundAnchoredRequest {
         private String watchSessionId;
         private int tabId;
     }
 
     @Data
-    public static class SendCommandResultRequest {
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class SendCommandResultRequest extends BackgroundAnchoredRequest {
         private String watchSessionId;
         private int tabId;
         private String leaseToken;
         private String outcome;
         private String evidence;
         private ChatMessage observedLatestInbound;
+        private ChatCapture observedCapture;
     }
+
+    @Data
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class SendCommandDispatchRequest extends SendCommandClaimRequest {
+        private String leaseToken;
+        private ChatCapture beforeCapture;
+    }
+
+    @Data
+    @lombok.EqualsAndHashCode(callSuper=true)
+    public static class SendCommandStatusRequest extends SendCommandClaimRequest { private String leaseToken; }
 }
