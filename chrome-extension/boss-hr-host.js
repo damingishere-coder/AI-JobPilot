@@ -117,7 +117,7 @@
           await chrome.windows.update(tab.windowId, { focused: true });
           return status();
         }
-        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载 Chrome Bridge 1.10.2 并刷新工作台");
+        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载最新版 Chrome Bridge 并刷新工作台");
         let previous = await read();
         const profileId = Number(message.expectedProfileId);
         if (!Number.isSafeInteger(profileId) || profileId <= 0) throw fault("PROFILE_REQUIRED", "请先确认当前人物档案");
@@ -261,7 +261,7 @@
         if (!policy.success) throw fault(policy.errorType || "HR_POLICY_UNAVAILABLE", policy.message || "无法读取托管规则", !policy.httpStatus || policy.httpStatus>=500);
         if (p?.paused) { await stop("QQ 或工作台已暂停托管", false,"REMOTE"); return; }
         if (!p?.enabled || !["AUTO","REVIEW"].includes(p.replyMode) || p.authorizationValid !== true
-          || !["RECENT","NEW_ONLY"].includes(p.historyMode) || Number(p.historyDays) !== 30)
+          || !["RECENT","NEW_ONLY"].includes(p.historyMode) || !Number.isInteger(p.historyDays) || p.historyDays < 1 || p.historyDays > 30)
           throw fault("HR_AUTHORIZATION_REQUIRED", "请确认回复模式、历史处理范围和当前沟通资料");
         const ready = await getPage(state, state.explicitResume===true);
         state = await bind(ready.state, ready.page);
