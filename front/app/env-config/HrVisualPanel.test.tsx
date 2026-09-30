@@ -63,7 +63,38 @@ it('shows loaded list without selection separately from stale successful observa
   expect(await screen.findByText(/列表已加载，尚未选择 HR/)).toBeInTheDocument()
   expect(screen.getByText(/尚未确认完整覆盖/)).toBeInTheDocument()
   expect(screen.getByText(/历史观察，不代表当前页面仍然就绪/)).toBeInTheDocument()
-  expect(screen.getByText(/发现 12 人 · 检查 9 人 · 待确认 2 条 · 已确认发送 1 条/)).toBeInTheDocument()
+  expect(screen.getByText(/已发现 12 人 · 正文已核验 9 人 · 待资料或审核 2 人/)).toBeInTheDocument()
+  expect(screen.getByText(/当前尝试全部步骤已确认 1 人；文字和简历分别统计暂不可用/)).toBeInTheDocument()
+  expect(screen.queryByText(/文字已确认发送 0 条/)).not.toBeInTheDocument()
+})
+
+it('shows confirmed actions independently of an unknown second step and preserves unresolved coverage', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
+    batch: { id: 'b', status: 'PAUSED', discovered: 8, checked: 4, pendingReview: 1, sent: 0,
+      textSentConfirmed: 1, resumeSentConfirmed: 0, pending: 2, noReply: 1, excluded: 1, unknown: 1, unknownSteps: 1, blocked: 1, readFailed: 1, dateUnknown: 0, stale: 0,
+      statusCounts: { PENDING: 2, SKIPPED: 1, EXCLUDED: 1, SEND_UNKNOWN: 1, BLOCKED: 1, READ_FAILED: 1, REVIEW_REQUIRED: 1 }, coverageComplete: false },
+    observation: { current: { stage: 'OBSERVATION_FAILED', errorCode: 'FOCUS_CHANGED', detail: '窗口焦点变化，停止操作；前台进程：ChatGPT.exe；物理输入：未检测到', observedAt: 2000 } } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  expect(await screen.findByText('文字已确认发送 1 条 · 简历已确认发送 0 份 · 当前尝试全部步骤已确认 0 人')).toBeInTheDocument()
+  expect(screen.getByText('尚待读取或执行 2 人 · 已跳过/无需回复 1 人 · 本轮排除 1 人')).toBeInTheDocument()
+  expect(screen.getByText(/发送结果未知 1 人 · 读取失败 1 人 · 已阻塞 1 人/)).toBeInTheDocument()
+  expect(screen.getByText('观察结果代码：FOCUS_CHANGED')).toBeInTheDocument()
+  expect(screen.getByText(/前台进程：ChatGPT.exe；物理输入：未检测到/)).toBeInTheDocument()
+  expect(screen.getByText(/尚未确认完整覆盖/)).toBeInTheDocument()
+  expect(localActionFetch).not.toHaveBeenCalled()
+})
+
+it('keeps an earlier unknown attempt visible after a later explicitly reconfirmed attempt succeeds', async () => {
+  const status = { installed: true, protocol: '2026-09-29-hr-visual-v3', executing: false, running: false, status: 'IDLE', targets: [],
+    batch: { id: 'b', status: 'INCOMPLETE', sent: 1, textSentConfirmed: 1, resumeSentConfirmed: 0, unknown: 0, unknownSteps: 1,
+      statusCounts: { SENT_CONFIRMED: 1 }, coverageComplete: false } }
+  vi.stubGlobal('fetch', vi.fn(async () => response(status)))
+  render(<HrVisualPanel profileId={4} profileName="本人" />)
+  expect(await screen.findByText(/当前尝试全部步骤已确认 1 人/)).toBeInTheDocument()
+  expect(screen.getByText('保留未知发送记录 1 条（含之前尝试）；未知步骤不自动重试')).toBeInTheDocument()
+  expect(screen.getByText(/尚未确认完整覆盖/)).toBeInTheDocument()
+  expect(localActionFetch).not.toHaveBeenCalled()
 })
 
 it('starts a finite batch with separate resume consent and no automatic text setting', async () => {

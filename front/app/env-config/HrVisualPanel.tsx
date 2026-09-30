@@ -8,7 +8,7 @@ type Proposal = { id: number; conversationId: number; version: number; status: s
 type Step = { id: string; action_type: string; status: string; reviewed_at?: string }
 type Target = { id: string; hrName: string; companyName: string; status: string; reason: string; steps: Step[]; previousAttempts?: { old_proposal_id: number; action_type: string; status: string }[] }
 type Observation = { stage?: string; detail?: string; errorCode?: string; observedAt?: number; elapsedSeconds?: number; hrName?: string; companyName?: string }
-type Batch = { id?: string; status?: string; stage?: string; reason?: string; replyMode?: string; processingDiscovered?: boolean; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string; canRecheck?: boolean }[] }
+type Batch = { id?: string; status?: string; stage?: string; reason?: string; replyMode?: string; processingDiscovered?: boolean; coverageComplete?: boolean; discovered?: number; checked?: number; pendingReview?: number; sent?: number; textSentConfirmed?: number; resumeSentConfirmed?: number; pending?: number; noReply?: number; excluded?: number; unknown?: number; unknownSteps?: number; blocked?: number; readFailed?: number; dateUnknown?: number; stale?: number; statusCounts?: Record<string, number>; items?: { id: string; hrName: string; companyName: string; kind: string; status: string; reason: string; notificationStatus?: string; canRecheck?: boolean }[] }
 type Status = { installed: boolean; protocol: string; running: boolean; executing: boolean; status: string; reason?: string; runId?: string; targets: Target[]; resumeRule?: { enabled: boolean; state: string; reason: string }; batch?: Batch; observation?: { current?: Observation; lastSuccess?: Observation; updatedAt?: number } }
 const VISUAL_PROTOCOL = '2026-09-29-hr-visual-v3'
 const labels: Record<string, string> = {
@@ -155,7 +155,15 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
       {status?.batch?.id && <>
         <p>本轮回复模式：{status.batch.replyMode === 'AUTO' ? '普通文字审核通过后直接发送，不发送 QQ 确认卡' : '普通文字经 QQ 确认后发送'}{status.batch.processingDiscovered && '；正在依次处理已收集名单，不重新枚举'}</p>
         <p>{labels[status.batch.status || ''] || status.batch.status}：{status.batch.reason}</p>
-        <p>发现 {status.batch.discovered || 0} 人 · 检查 {status.batch.checked || 0} 人 · 待确认 {status.batch.pendingReview || 0} 条 · 已确认发送 {status.batch.sent || 0} 条</p>
+        <p>已发现 {status.batch.discovered || 0} 人 · 正文已核验 {status.batch.checked || 0} 人 · 待资料或审核 {status.batch.pendingReview || 0} 人</p>
+        {status.batch.textSentConfirmed !== undefined && status.batch.resumeSentConfirmed !== undefined
+          ? <p>文字已确认发送 {status.batch.textSentConfirmed} 条 · 简历已确认发送 {status.batch.resumeSentConfirmed} 份 · 当前尝试全部步骤已确认 {status.batch.sent || 0} 人</p>
+          : <p>当前尝试全部步骤已确认 {status.batch.sent || 0} 人；文字和简历分别统计暂不可用</p>}
+        {status.batch.statusCounts && <>
+          <p>尚待读取或执行 {status.batch.pending || 0} 人 · 已跳过/无需回复 {status.batch.noReply || 0} 人 · 本轮排除 {status.batch.excluded || 0} 人</p>
+          <p>发送结果未知 {status.batch.unknown || 0} 人 · 读取失败 {status.batch.readFailed || 0} 人 · 已阻塞 {status.batch.blocked || 0} 人 · 日期待核验 {status.batch.dateUnknown || 0} 人 · 原建议失效 {status.batch.stale || 0} 人</p>
+        </>}
+        {status.batch.unknownSteps !== undefined && <p>保留未知发送记录 {status.batch.unknownSteps} 条（含之前尝试）；未知步骤不自动重试</p>}
         <p>列表范围：{status.batch.coverageComplete ? '已确认到达末尾' : '尚未确认完整覆盖'}</p>
         <details><summary>本轮逐项结果</summary>{status.batch.items?.map(item => <div key={item.id} className="my-2">
           <p>{item.hrName} · {item.companyName}：{labels[item.status] || item.status}；{item.reason}{item.notificationStatus && `；QQ 通知：${({ CONFIRMED: '已确认送达', PENDING: '等待通道发送', UNKNOWN: '结果未知，未重发', FAILED: '发送失败', NOT_QUEUED: '尚未排队' } as Record<string, string>)[item.notificationStatus] || item.notificationStatus}`}</p>
@@ -168,6 +176,7 @@ export default function HrVisualPanel({ profileId, profileName }: { profileId: n
     </div>
     {status?.observation?.current && <div className="rounded border p-3 text-sm" aria-label="最近页面观察">
       <p>{labels[status.observation.current.stage || ''] || status.observation.current.stage}：{status.observation.current.detail}</p>
+      {status.observation.current.errorCode && <p>观察结果代码：{status.observation.current.errorCode}</p>}
       {status.observation.current.hrName && <p>核对目标：{status.observation.current.hrName} · {status.observation.current.companyName}</p>}
       <p>本次观察：{status.observation.current.observedAt ? new Date(status.observation.current.observedAt).toLocaleTimeString() : '未知'}{status.observation.current.elapsedSeconds !== undefined ? ` · 等待 ${status.observation.current.elapsedSeconds} 秒` : ''}</p>
       {status.observation.lastSuccess?.observedAt && <p>最近成功观察：{new Date(status.observation.lastSuccess.observedAt).toLocaleTimeString()}（历史观察，不代表当前页面仍然就绪）</p>}
