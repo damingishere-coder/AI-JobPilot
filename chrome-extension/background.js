@@ -2,6 +2,7 @@ importScripts("scan-observer.js");
 importScripts("boss-delivery-support.js");
 importScripts("application-runtime-protocol.js");
 importScripts("browser-application-runtime.js");
+importScripts("boss-hr-host.js");
 const PLATFORM_CONFIG = {
   boss: {
     hosts: ["zhipin.com"],
@@ -63,7 +64,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.9.5";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.10.0";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -85,6 +86,7 @@ const ALLOWED_PAGE_MESSAGE_TYPES = new Set([
   "BOSS_HR_OPEN_CHAT",
   "BOSS_HR_TRIAL_START",
   "BOSS_HR_TRIAL_STOP",
+  ...GetJobsBossHrHost.TYPES,
   "BOSS_PAGE_STATUS",
   "ZHILIAN_PAGE_STATUS",
   "BOSS_DEBUG_COLLECT",
@@ -117,9 +119,20 @@ chrome.runtime.onInstalled?.addListener?.(() => {
 });
 
 const scanObserver = GetJobsScanObserver.create({storage:chrome.storage.local, request:requestLocalApi, version:chrome.runtime.getManifest().version});
+const bossHrHost = GetJobsBossHrHost.create({ chrome, request: requestLocalApi,
+  ensureContent: async tabId => {
+    await ensureContentScript(tabId, "boss-content.js");
+    await chrome.scripting.executeScript({ target:{tabId}, world:"MAIN", files:["boss-hr-identity.js"] });
+  } });
+bossHrHost.initialize().catch(()=>{});
+chrome.runtime.onStartup?.addListener?.(()=>bossHrHost.initialize(true).catch(()=>{}));
 chrome.storage.local.get('__GET_JOBS_SCAN_OBSERVER_V1__').then(data=>{if(Object.keys(data.__GET_JOBS_SCAN_OBSERVER_V1__||{}).length) chrome.alarms?.create?.('scan-observer-sync',{periodInMinutes:0.5});}).catch(()=>{});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.source === "GET_JOBS_BOSS_HR_CONTENT" && String(message.type || "").startsWith("BOSS_HR_HOST_")) {
+    bossHrHost.content(message, sender).then(sendResponse).catch(error=>sendResponse({success:false,errorCode:error.errorCode || "HR_HOST_FAILED",message:error.message}));
+    return true;
+  }
   if (message?.source === "GET_JOBS_BOSS_CONTENT" && message.type === "BOSS_DELIVERY_CHECKPOINT") {
     sendResponse(checkpointBossDelivery(message, sender));
     return;
@@ -241,7 +254,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  bossHrHost.removed(tabId, removeInfo).catch(()=>{});
   scanObserver.closed(tabId).catch(()=>{});
   pageTabs.delete(tabId);
   clearScanSession("boss", tabId).catch(() => {});
@@ -250,6 +264,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
+  bossHrHost.changed(tabId, changeInfo, tab).catch(()=>{});
   const url = changeInfo?.url || tab?.url || "";
   if (url && !isBossChatUrl(url)) {
     stopBossHrWatchIfOwned(tabId, "BOSS_CHAT_TAB_NAVIGATED", "值守标签页已离开 BOSS 聊天页").catch(() => {});
@@ -259,6 +274,7 @@ chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo, tab) => {
 chrome.alarms?.onAlarm?.addListener?.((alarm) => {
   if (alarm?.name === 'scan-observer-sync') scanObserver.tick().catch(()=>{});
   if (alarm?.name === BOSS_HR_ALARM_NAME) runBossHrTick().catch(() => {});
+  if (alarm?.name === bossHrHost.alarmName) bossHrHost.tick().catch(()=>{});
 });
 
 async function forwardPlatformEvent(message, sender) {
@@ -549,7 +565,7 @@ async function handleBossLocalApiRequest(message, sender) {
   return result;
 }
 
-const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-28-hr-review-identity";
+const REQUIRED_BOSS_HR_CONTENT_VERSION = "2026-09-30-hr-background-v1";
 
 async function startBossHrWatch(sender, requestContext, expectedProfileId, intervalMinutes = 1, reviewLimit = 0) {
   if (![0,3].includes(reviewLimit)) return {success:false,message:"试运行只支持三个会话"};
@@ -1309,12 +1325,13 @@ async function handlePageMessage(message, sender) {
 }
 
 async function handlePageMessageInternal(message, sender) {
+  if (bossHrHost.types.has(message.type)) return await bossHrHost.control(message, sender);
   const pageTabId = sender.tab?.id;
   if (pageTabId) pageTabs.set(pageTabId, Date.now());
 
   if (message.type === "GET_JOBS_EXTENSION_PING") {
     return { success: true, message: "Chrome扩展已连接", version: BACKGROUND_VERSION,
-      scanProtocol: 1, hrReviewProtocol:REQUIRED_BOSS_HR_CONTENT_VERSION, extensionVersion: chrome.runtime.getManifest().version, runtimeProtocol: ApplicationRuntimeProtocol.VERSION };
+      scanProtocol: 1, hrReviewProtocol:REQUIRED_BOSS_HR_CONTENT_VERSION, hrBackgroundProtocol:bossHrHost.protocol, extensionVersion: chrome.runtime.getManifest().version, runtimeProtocol: ApplicationRuntimeProtocol.VERSION };
   }
 
   if (message.type === "BOSS_HR_OPEN_CHAT") return await openBossHrChat();

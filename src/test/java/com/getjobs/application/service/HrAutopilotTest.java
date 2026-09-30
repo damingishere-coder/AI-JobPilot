@@ -42,7 +42,7 @@ class HrAutopilotTest {
         policies.configure(1L,1,true,"测试简历.pdf","a".repeat(64));
     }
     ChatCapture capture(String question, boolean historical, boolean complete) {
-        return new ChatCapture("capture",1,new ChatSession("uid","","测试HR","测试公司","运营","测试HR",question,""),
+        return new ChatCapture("capture",1,new ChatSession("uid","","测试HR","测试公司","运营","测试HR",question,"今天"),
                 List.of(new ChatMessage("本人","文本","您好","昨天","m1",List.of()),new ChatMessage("对方","文本",question,"今天","m2",List.of())),historical,complete);
     }
     AiDraft draft(Classification c,String text) {return new AiDraft(c,text,"摘要",List.of(),List.of(),0.99);}
@@ -305,6 +305,36 @@ class HrAutopilotTest {
         assertThat(policies.decision(id).automatic()).isFalse();
         assertThat(jdbc.queryForObject("SELECT capture_origin FROM hr_autopilot_decision WHERE proposal_id=?",String.class,id)).isEqualTo("TRIAL");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        verifyNoInteractions(ai);
+    }
+
+    @Test void clockTimesAreAlwaysHumanDecisionsIncludingFullWidthColon() {
+        for(String question:List.of("明天14:30面试","9：00可以吗")) {
+            assertThat(service.assess(1L,conversation,capture(question,false,true),draft(Classification.REPLY,"好的，谢谢")).action()).isEqualTo("HUMAN");
+        }
+        verifyNoInteractions(ai);
+    }
+    @Test void conflictingImmediateAndPostOfferAvailabilityCannotBecomeAnAutomaticFact() {
+        var conflicting=new CommunicationProfile("15-20K","深圳","确认 Offer 后两周内、可以随时到岗","电话","13800138000","礼貌","不编造");
+        hr.saveSettings(1L,conflicting,true,"ws://127.0.0.1:3001","test-token",QqTargetType.GROUP,"987654321","123456",30);
+        assertThat(service.assess(1L,conversation,capture("什么时候能到岗",false,true),draft(Classification.AVAILABILITY,"可以随时到岗")).action()).isEqualTo("HUMAN");
+        verifyNoInteractions(ai);
+    }
+    @Test void nativeResumePermissionAllowsOrdinaryAutoDutyButEveryResumeRequestStillNeedsConfirmation() {
+        policies.configure(1L,policies.policy(1L).version(),true,HrAutopilotStore.BOSS_RESUME,"","AUTO",false,true,"RECENT",30);
+        assertThat(policies.authorizationValid(1L)).isTrue();
+        var c=capture("请发一份简历",false,true);long id=proposal(c,draft(Classification.DOCUMENT_REQUEST,""));
+        assertThat(service.apply(1L,id,conversation,c,draft(Classification.DOCUMENT_REQUEST,""),"watch")).isTrue();
+        assertThat(policies.decision(id).action()).isEqualTo("RESUME_NATIVE");assertThat(policies.decision(id).automatic()).isFalse();
+        assertThat(hr.getProposalView(1L,id).draft()).contains("发简历");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
+    @Test void recentScopeStillRejectsThirtyOneDaySourceWhenClientCallsItNew() {
+        configure("AUTO",false,false,"RECENT");
+        var base=capture("工作经验？",false,true);
+        var old=new ChatCapture("claimed-new",1,new ChatSession("uid","","HR","公司","采购","","工作经验？",
+                java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(31).toString()),base.messages(),false,true);
+        assertThat(service.assess(1L,conversation,old,draft(Classification.REPLY,"三年运营经验")).action()).isEqualTo("HISTORY_OLD");
         verifyNoInteractions(ai);
     }
 

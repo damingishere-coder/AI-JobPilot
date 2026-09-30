@@ -12,7 +12,7 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class HrAutopilotStore {
-    public static final String PROTOCOL = "2026-09-28-hr-review-identity";
+    public static final String PROTOCOL = "2026-09-30-hr-background-v1";
     public static final String BOSS_RESUME = "BOSS_NATIVE";
     public static final String RULES = "基于当前档案中已确认的简历与沟通资料回答，可主动询问岗位职责、地点和待遇；不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
     private final JdbcTemplate jdbc;
@@ -55,8 +55,8 @@ public class HrAutopilotStore {
         String hash = Objects.toString(resumeSha256, "").trim().toLowerCase(Locale.ROOT);
         if (enabled && shareResume && !BOSS_RESUME.equals(name) && (!name.toLowerCase(Locale.ROOT).endsWith(".pdf") || !hash.matches("[a-f0-9]{64}")))
             throw new IllegalArgumentException("请先选择并确认允许发送的简历文件");
-        if (enabled && shareResume && BOSS_RESUME.equals(name) && "AUTO".equals(replyMode))
-            throw new IllegalArgumentException("BOSS 发简历按钮目前仅支持逐条确认后执行");
+        // Native resume requests still require per-message confirmation. Their
+        // separate permission must not prevent ordinary text duty from starting.
         Policy next = new Policy(old.version()+1, enabled, false, name, hash, old.facts(), RULES, "", replyMode, sharePhone, shareResume, historyMode, historyDays);
         save(profileId, next);
         jdbc.update("UPDATE hr_autopilot_policy SET settings_hash=?,contract_version=2 WHERE profile_id=?",settingsHash(profileId),profileId);
@@ -73,6 +73,30 @@ public class HrAutopilotStore {
     public boolean authorizationValid(Long profileId) {
         var rows=jdbc.query("SELECT settings_hash FROM hr_autopilot_policy WHERE profile_id=? AND contract_version=2",(rs,n)->rs.getString(1),profileId);
         return !rows.isEmpty() && settingsHash(profileId).equals(rows.getFirst());
+    }
+
+    /** Revocation only lowers permission, even when a client holds an older policy. */
+    @Transactional
+    public Policy disable(Long profileId) {
+        Policy p=policy(profileId);
+        Policy next=new Policy(p.version()+1,false,p.paused(),p.resumeName(),p.resumeSha256(),
+                p.facts(),p.rules(),p.pendingFact(),p.replyMode(),p.sharePhone(),p.shareResume(),p.historyMode(),p.historyDays());
+        save(profileId,next);
+        // Only unleased automatic replies are retired for fresh-page re-evaluation.
+        // User-edited replies have automatic=false and keep their manual decision.
+        jdbc.update("""
+                UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP
+                WHERE profile_id=? AND status='APPROVED'
+                  AND id IN (SELECT c.proposal_id FROM hr_send_command c JOIN hr_autopilot_decision d ON d.proposal_id=c.proposal_id WHERE c.status='PENDING' AND d.automatic=1)
+                  AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=hr_reply_proposal.id AND c.status IN ('LEASED','COMPLETE'))
+                """,profileId);
+        jdbc.update("""
+                UPDATE hr_send_command SET status='STALE',outcome=CASE WHEN proposal_id IN
+                  (SELECT id FROM hr_reply_proposal WHERE status='EXPIRED') THEN 'EXPIRED_UNSENT' ELSE 'STALE' END,
+                  updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='PENDING'
+                    AND proposal_id IN (SELECT proposal_id FROM hr_autopilot_decision WHERE automatic=1)
+                """,profileId);
+        return next;
     }
 
     /** Facts and permissions bound to one visual batch, without enabling continuous duty. */

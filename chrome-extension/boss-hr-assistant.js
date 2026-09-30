@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-28-hr-review-identity";
+  const PANEL_VERSION = "2026-09-30-hr-background-v1";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;

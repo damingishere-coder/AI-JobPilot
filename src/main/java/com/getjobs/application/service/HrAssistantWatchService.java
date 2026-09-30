@@ -9,6 +9,8 @@ import com.getjobs.application.hr.HrAssistantTypes.Classification;
 import com.getjobs.application.hr.HrAssistantTypes.ProposalView;
 import com.getjobs.application.hr.HrAssistantTypes.ScanReceipt;
 import com.getjobs.application.hr.HrAssistantTypes.WatchStatus;
+import com.getjobs.application.hr.HrAssistantTypes.BackgroundBinding;
+import com.getjobs.application.hr.HrAssistantTypes.PageObservation;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -16,12 +18,16 @@ import org.springframework.stereotype.Service;
 
 import java.net.URI;
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Slf4j
 @Service
@@ -29,6 +35,19 @@ public class HrAssistantWatchService {
     private HrAutopilotService autopilot;
     @org.springframework.beans.factory.annotation.Autowired
     public void setAutopilot(HrAutopilotService autopilot) { this.autopilot = autopilot; }
+    private HrBackgroundStore background;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setBackground(HrBackgroundStore background) { this.background=background; }
+    private final ExecutorService analysisExecutor=Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
+    private final AtomicBoolean processingBackground=new AtomicBoolean();
+    private volatile long pageObservedAt;
+    private volatile String backgroundBlocker="";
+    @jakarta.annotation.PostConstruct void recoverBackground() { if(background!=null)background.recover(); }
+    @jakarta.annotation.PreDestroy void shutdownBackground() {
+        analysisExecutor.shutdownNow();
+        try {analysisExecutor.awaitTermination(3,java.util.concurrent.TimeUnit.SECONDS);}
+        catch(InterruptedException e){Thread.currentThread().interrupt();}
+    }
     private static final long SCAN_INTERVAL_MS = 60_000L;
     private final ProfileService profileService;
     private final HrAssistantStore store;
@@ -68,7 +87,7 @@ public class HrAssistantWatchService {
                                    HrProfileGuard profileGuard) {
         this.profileService = profileService;
         this.profileGuard = profileGuard;
-        profileGuard.registerBlocker(() -> watching.get() || processingScan.get() || browserScanRunning || store.hasLeasedSendCommands());
+        profileGuard.registerBlocker(() -> watching.get() || processingScan.get() || processingBackground.get() || browserScanRunning || store.hasLeasedSendCommands());
         this.store = store;
         this.draftService = draftService;
         this.events = events;
@@ -85,6 +104,11 @@ public class HrAssistantWatchService {
     }
 
     public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId, int intervalMinutes, int reviewLimit) {
+        return start(tabId,url,contentVersion,browserSessionId,expectedProfileId,intervalMinutes,reviewLimit,"CHROME_BRIDGE",null);
+    }
+
+    public WatchStatus start(int tabId, String url, String contentVersion, String browserSessionId, Long expectedProfileId,
+                             int intervalMinutes, int reviewLimit,String transport,BackgroundBinding binding) {
         if (reviewLimit != 0 && reviewLimit != 3) throw new IllegalArgumentException("试运行仅支持三个会话");
         if (intervalMinutes != 1 && intervalMinutes != 30) throw new IllegalArgumentException("值守间隔仅支持 1 分钟或 30 分钟");
         return profileGuard.locked(() -> {
@@ -92,6 +116,16 @@ public class HrAssistantWatchService {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请刷新后重新开始值守");
             }
             validateChatTab(tabId, url, contentVersion, browserSessionId);
+            boolean hosted="CHROME_BACKGROUND".equals(transport);
+            if(!hosted && !"CHROME_BRIDGE".equals(transport))throw new IllegalArgumentException("值守执行方式无效");
+            if(hosted) {
+                if(reviewLimit!=0 || !HrAutopilotStore.PROTOCOL.equals(contentVersion))throw new IllegalArgumentException("后台托管协议不匹配");
+                validateBinding(binding);
+                String profileName=profileService.getCurrentProfile()==null?"":profileService.getCurrentProfile().getName();
+                if(!normalize(binding.accountName()).equals(normalize(profileName)) && !binding.accountBindingConfirmed())
+                    throw new IllegalArgumentException("请确认当前 BOSS 账号属于所选人物档案");
+                if(autopilot==null || !autopilot.policy(expectedProfileId).enabled())throw new IllegalStateException("请先确认并保存托管规则");
+            }
             if (reviewLimit == 3) {
                 if (!HrAutopilotStore.PROTOCOL.equals(contentVersion)) throw new IllegalStateException("请更新 HR 扩展后再试运行");
                 if (autopilot != null && autopilot.policy(expectedProfileId).enabled() && "AUTO".equals(autopilot.policy(expectedProfileId).replyMode()))
@@ -100,20 +134,24 @@ public class HrAssistantWatchService {
                     throw new IllegalStateException("请先连接已配置的 QQ 通知通道");
             }
             if(reviewLimit == 0 && autopilot!=null && autopilot.policy(expectedProfileId).enabled()
-                    && (!url.contains("getjobs-autopilot=1") || !contentVersion.equals(HrAutopilotStore.PROTOCOL)))
+                    && ((!hosted && !url.contains("getjobs-autopilot=1")) || !contentVersion.equals(HrAutopilotStore.PROTOCOL)))
                 throw new IllegalStateException("请打开新版扩展的专用托管聊天标签，再开始值守");
             if(reviewLimit == 0 && autopilot!=null && autopilot.policy(expectedProfileId).enabled()) {
                 var blockers=dutyBlockers(expectedProfileId);
                 if(!blockers.isEmpty()) throw new IllegalStateException(String.join("；",blockers));
             }
             if (watching.get()) {
-                if (session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId) && session.reviewLimit() == reviewLimit) return status();
+                expirePageHeartbeat();
+                if (watching.get() && session != null && session.tabId() == tabId && session.browserSessionId().equals(browserSessionId)
+                        && session.reviewLimit() == reviewLimit && session.transport().equals(transport)
+                        && (!hosted || sameBinding(session.binding(),binding))) return status();
+                if(watching.get())
                 throw new IllegalStateException("已有其他 BOSS 标签页正在值守，请先在原标签页停止");
             }
             profileGuard.requireChangeAllowed();
             Long profileId = profileService.getCurrentProfileId();
             session = new WatchSession(UUID.randomUUID().toString(), browserSessionId.trim(), profileId,
-                    tabId, url.trim(), contentVersion.trim(), reviewLimit);
+                    tabId, url.trim(), contentVersion.trim(), reviewLimit,transport,binding);
             trialUids.clear();
             trialProposalIds.clear();
             reviewReady = false;
@@ -124,6 +162,8 @@ public class HrAssistantWatchService {
             browserScanRunning = false;
             lastScanAt = null;
             lastHeartbeatAt = LocalDateTime.now();
+            pageObservedAt=hosted?binding.pageObservedAt():0;
+            backgroundBlocker="";
             lastError = "";
             outboxCount = 0;
             WatchStatus status = status();
@@ -142,6 +182,7 @@ public class HrAssistantWatchService {
             // A stop cancels future work, but must not release an in-flight ingestion.
             browserScanRunning = false;
             lastError = safe(reason);
+            if(isBackground())backgroundBlocker=lastError.startsWith("USER_STOPPED")?"USER_STOPPED":"HOST_PAUSED";
             if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED") && !lastError.startsWith("TRIAL_COMPLETED")) {
                 napCatGateway.notifySystemFault(session.profileId(), lastError);
             }
@@ -170,11 +211,17 @@ public class HrAssistantWatchService {
                                                boolean browserScanRunning,
                                                int browserOutboxCount,
                                                String fault) {
+        return heartbeat(watchSessionId,tabId,url,contentVersion,browserScanRunning,browserOutboxCount,fault,null);
+    }
+
+    public WatchStatus heartbeat(String watchSessionId,int tabId,String url,String contentVersion,
+                                 boolean browserScanRunning,int browserOutboxCount,String fault,PageObservation observation) {
         return profileGuard.locked(() -> {
             requireSession(watchSessionId, tabId);
             validateChatTab(tabId, url, contentVersion, session.browserSessionId());
+            requirePageObservation(observation,true);
             session = new WatchSession(session.watchSessionId(), session.browserSessionId(), session.profileId(),
-                    tabId, url.trim(), contentVersion.trim(), session.reviewLimit());
+                    tabId, url.trim(), contentVersion.trim(), session.reviewLimit(),session.transport(),session.binding());
             lastHeartbeatAt = LocalDateTime.now();
             if(browserScanRunning && !this.browserScanRunning && autopilot!=null) autopilot.scanStarted(session.profileId());
             this.browserScanRunning = browserScanRunning;
@@ -182,6 +229,7 @@ public class HrAssistantWatchService {
             if (fault != null && !fault.isBlank()) {
                 lastError = concise(fault);
                 watching.set(false);
+                if(isBackground())backgroundBlocker="PAGE_FAULT";
                 this.browserScanRunning = false;
                 napCatGateway.notifySystemFault(session.profileId(), lastError);
                 events.emit("watch-paused", java.util.Map.of("message", lastError));
@@ -263,6 +311,56 @@ public class HrAssistantWatchService {
         }
     }
 
+    public HrBackgroundStore.CaptureAck acceptCapture(String watchSessionId,int tabId,String scanId,
+                                                       List<ChatCapture> captures,PageObservation observation) {
+        requireNonBlank(scanId,"scanId");
+        if(captures==null || captures.size()!=1)throw new IllegalArgumentException("后台每次仅提交一条完整会话快照");
+        ChatCapture capture=captures.getFirst();
+        if(capture==null || capture.session()==null)throw new IllegalArgumentException("后台快照缺少会话身份");
+        requireNonBlank(capture.captureId(),"captureId");requireNonBlank(capture.session().uid(),"平台会话 UID");
+        return profileGuard.locked(()->{
+            WatchSession active=requireSession(watchSessionId,tabId);
+            if(!isBackground() || background==null || autopilot==null)throw new IllegalStateException("请先启用后台托管");
+            requirePageObservation(observation,false);
+            if(!dutyBlockers(active.profileId()).isEmpty())throw new IllegalStateException("托管资料或授权已变化，请重新核对");
+            var ack=background.accept(active.profileId(),active.binding().accountIdentity(),autopilot.policy(active.profileId()).version(),capture);
+            lastScanAt=LocalDateTime.now();
+            return ack;
+        });
+    }
+
+    @Scheduled(fixedDelay=500)
+    public void processBackgroundCaptures() {
+        if(background==null || autopilot==null || !processingBackground.compareAndSet(false,true))return;
+        final WatchSession active;
+        final HrBackgroundStore.Task task;
+        try {
+            var pair=profileGuard.locked(()->{
+                expirePageHeartbeat();
+                if(!watching.get() || !isBackground() || !session.profileId().equals(profileService.getCurrentProfileId())
+                        || !dutyBlockers(session.profileId()).isEmpty())return null;
+                return new Object[]{session,background.claim(session.profileId(),session.binding().accountIdentity(),autopilot.policy(session.profileId()).version())};
+            });
+            if(pair==null || pair[1]==null){processingBackground.set(false);return;}
+            active=(WatchSession)pair[0];task=(HrBackgroundStore.Task)pair[1];
+        }catch(RuntimeException e){processingBackground.set(false);throw e;}
+        analysisExecutor.submit(()->{
+            try {
+                processCapture(active.profileId(),store.loadSettingsSecret(active.profileId()),task.capture(),active);
+                background.finish(task.id(),"");
+                autopilot.progress(active.profileId(),false);
+            }catch(BackgroundInterrupted e){background.defer(task.id());}
+            catch(RuntimeException error) {
+                String code=error instanceof HrBackgroundStore.IdentityHeldException?"LEGACY_IDENTITY_UNRESOLVED":errorCode(error);
+                background.finish(task.id(),code);
+                // Captured text is encrypted and retained. Fault notices contain no chat text.
+                napCatGateway.notifySystemFault(active.profileId(),code.equals("LEGACY_IDENTITY_UNRESOLVED")?
+                        "旧视觉发送记录需要只读身份核验，相关新身份未自动发送":"后台聊天分析未完成，请在工作台检查");
+                events.emit("background-capture-blocked",java.util.Map.of("errorCode",code));
+            } finally {processingBackground.set(false);}
+        });
+    }
+
     public WatchStatus status() {
         return profileGuard.locked(this::statusLocked);
     }
@@ -274,6 +372,7 @@ public class HrAssistantWatchService {
     }
 
     private WatchStatus statusLocked() {
+        expirePageHeartbeat();
         var currentProfile = profileService.getCurrentProfile();
         WatchSession active = session;
         LocalDateTime next = watching.get() && !reviewReady && lastScanAt != null ? lastScanAt.plusNanos(scanIntervalMs * 1_000_000) : null;
@@ -288,7 +387,14 @@ public class HrAssistantWatchService {
                 isReviewTrial()?"TRIAL_REVIEW":autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
                 autopilot==null || currentProfile==null?List.of():dutyBlockers(currentProfile.getId()),
                 autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()),
-                watching.get() && reviewReady, trialProposalIds.size());
+                watching.get() && reviewReady, trialProposalIds.size(),
+                active==null?"CHROME_BRIDGE":active.transport(),
+                !watching.get()?backgroundBlocker.equals("USER_STOPPED")?"STOPPED":backgroundBlocker.isBlank()?"STOPPED":"PAUSED":
+                        processingBackground.get()?"ANALYZING":browserScanRunning?"SCANNING":"WATCHING",
+                backgroundBlocker,pageObservedAt==0?null:LocalDateTime.ofInstant(Instant.ofEpochMilli(pageObservedAt),ZoneId.systemDefault()),lastScanAt,
+                active==null || active.binding()==null?"":active.binding().hostGeneration(),
+                active==null || active.binding()==null?"":active.binding().pageDocumentId(),
+                background==null || currentProfile==null?0:background.pending(currentProfile.getId()));
     }
 
     public String requireActiveWatchSession(Long profileId) {
@@ -307,6 +413,11 @@ public class HrAssistantWatchService {
 
     public <T> T withSession(Long profileId, String watchSessionId, int tabId, boolean completing,
                              java.util.function.Supplier<T> action) {
+        return withSession(profileId,watchSessionId,tabId,completing,null,action);
+    }
+
+    public <T> T withSession(Long profileId,String watchSessionId,int tabId,boolean completing,
+                             PageObservation observation,java.util.function.Supplier<T> action) {
         return profileGuard.locked(() -> {
             if (completing) {
                 WatchSession active = session;
@@ -318,6 +429,7 @@ public class HrAssistantWatchService {
             } else {
                 assertActiveSession(profileId, watchSessionId, tabId);
             }
+            requirePageObservation(observation,false);
             return action.get();
         });
     }
@@ -325,19 +437,26 @@ public class HrAssistantWatchService {
 
     @Scheduled(fixedDelay = 5000)
     public void expireSendLeases() {
-        profileGuard.locked(() -> { store.expireUnconfirmedLeases(); return null; });
+        profileGuard.locked(() -> { store.expireUnconfirmedLeases(); expirePageHeartbeat();return null; });
     }
 
     @Scheduled(cron = "0 15 3 * * *")
     public void purgeExpiredSensitiveData() {
         int deleted = store.purgeExpired();
         if(autopilot!=null) autopilot.purgeExpired();
+        if(background!=null)background.purgeExpired();
         if (deleted > 0) log.info("已清理 {} 条过期 HR 消息正文", deleted);
     }
 
     private Long processCapture(Long profileId, HrAssistantStore.SettingsSecret settings, ChatCapture capture) {
+        return processCapture(profileId,settings,capture,session);
+    }
+
+    private Long processCapture(Long profileId,HrAssistantStore.SettingsSecret settings,ChatCapture capture,WatchSession owner) {
         ChatSession chat = capture.session();
-        long conversationId = store.upsertConversation(profileId, chat);
+        boolean hosted=owner!=null && "CHROME_BACKGROUND".equals(owner.transport());
+        boolean trial=owner!=null && owner.reviewLimit()==3;
+        long conversationId = hosted?background.resolveConversation(profileId,capture):store.upsertConversation(profileId, chat);
         for (ChatMessage message : capture.messages()) store.saveMessage(conversationId, message, settings.retentionDays());
         // Full-list scans include conversations that the user has already answered.
         // Never draft a second response to an older inbound message in that case.
@@ -347,16 +466,20 @@ public class HrAssistantWatchService {
         }
         ChatMessage source = latestInboundForCurrentLastMessage(capture.messages(), chat.lastMessage());
         if (source == null) throw new IllegalStateException("最新入站消息与会话列表不一致，已保留 Outbox 并停止处理");
-        String sourceFingerprint = store.sourceFingerprint(conversationId, source);
+        String sourceFingerprint = hosted?background.sourceFingerprint(profileId,conversationId,capture,source):store.sourceFingerprint(conversationId, source);
         store.updateLastInbound(conversationId, sourceFingerprint);
-        if (isReviewTrial() ? store.prepareTrialSource(conversationId, sourceFingerprint) : store.hasHandledSource(conversationId, sourceFingerprint,autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode()))) return null;
+        boolean reconsider=autopilot!=null && autopilot.policy(profileId).enabled() && "RECENT".equals(autopilot.policy(profileId).historyMode());
+        if (trial ? store.prepareTrialSource(conversationId, sourceFingerprint) : hosted && capture.contextComplete()?
+                store.prepareCompleteBackgroundSource(profileId,conversationId,sourceFingerprint,reconsider,autopilot.policy(profileId).version()):store.hasHandledSource(conversationId, sourceFingerprint,reconsider)) return null;
 
         if (autopilot != null) {
-            if(isReviewTrial() || autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
+            if(trial || autopilot.historyAssessment(profileId,capture)==null) capture = autopilot.resolve(capture);
             autopilot.saveContext(conversationId, capture);
         }
         AiDraft draft;
-        if(!isReviewTrial() && autopilot!=null && autopilot.historyAssessment(profileId,capture)!=null) {
+        if(hosted && !capture.contextComplete()) {
+            draft=new AiDraft(Classification.NEEDS_USER,"","聊天正文未完整读取，请本人核验",List.of("INCOMPLETE_CONTEXT"),List.of("完整聊天正文"),0);
+        } else if(!trial && autopilot!=null && autopilot.historyAssessment(profileId,capture)!=null) {
             var assessment=autopilot.historyAssessment(profileId,capture);
             draft=new AiDraft(assessment.action().equals("HUMAN")?Classification.NEEDS_USER:Classification.NO_REPLY,"",assessment.reason(),List.of(),List.of(),1);
         } else if (autopilot == null && !"文本".equals(source.type())) {
@@ -374,16 +497,17 @@ public class HrAssistantWatchService {
                 events.emit("ai-draft-failed", java.util.Map.of("message", concise(aiFailure), "hrName", safe(chat.hrName())));
             }
         }
+        if(hosted && (!watching.get() || session==null || !session.watchSessionId().equals(owner.watchSessionId()) || Thread.currentThread().isInterrupted()))throw new BackgroundInterrupted();
         long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
-        if (isReviewTrial() && Set.of(Classification.NO_REPLY, Classification.REJECTION).contains(draft.classification())) {
+        if (trial && Set.of(Classification.NO_REPLY, Classification.REJECTION).contains(draft.classification())) {
             store.skip(profileId, proposalId);
             return null;
         }
         boolean notify;
-        if (isReviewTrial() && autopilot != null) {
+        if (trial && autopilot != null) {
             autopilot.reviewTrial(profileId, proposalId, capture, draft);
             notify = true;
-        } else notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, session.watchSessionId());
+        } else notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, owner.watchSessionId());
         ProposalView proposal = store.getProposalView(profileId, proposalId);
         events.emit("proposal-created", proposal);
         if (notify && settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
@@ -401,8 +525,9 @@ public class HrAssistantWatchService {
     }
 
     private WatchSession requireSession(String watchSessionId, int tabId) {
+        expirePageHeartbeat();
         WatchSession active = session;
-        if (!watching.get() || active == null) throw new IllegalStateException("BOSS HR 值守未启动或已暂停");
+        if (!watching.get() || active == null) throw new IllegalStateException("WATCH_SESSION_EXPIRED: BOSS HR 值守未启动或已暂停");
         if (!active.profileId().equals(profileService.getCurrentProfileId())) {
             throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新开始值守");
         }
@@ -470,7 +595,72 @@ public class HrAssistantWatchService {
         return value == null ? "" : value.trim();
     }
 
+    public boolean isBackground() {return session!=null && "CHROME_BACKGROUND".equals(session.transport());}
+    public boolean isBackgroundForProfile(Long profile) {
+        return isBackground() && session.profileId().equals(profile) && !"USER_STOPPED".equals(backgroundBlocker)
+                && autopilot!=null && autopilot.policy(profile).enabled();
+    }
+    public java.util.List<java.util.Map<String,Object>> legacyAnchors() {
+        if(!isBackground() || background==null)throw new IllegalStateException("请先绑定后台 Chrome");
+        return background.legacyAnchors(session.profileId());
+    }
+
+    /** A fault can be reported from a frozen page. It never advances page liveness. */
+    public WatchStatus reportFault(String watchSessionId,String generation,String account,String code) {
+        return profileGuard.locked(()->{
+            if(!isBackground() || !session.watchSessionId().equals(watchSessionId)
+                    || !session.binding().hostGeneration().equals(generation)
+                    || !normalize(session.binding().accountIdentity()).equals(normalize(account))
+                    || !session.profileId().equals(profileService.getCurrentProfileId()))
+                throw new HrAssistantStore.StaleProposalException("故障报告不属于当前后台托管");
+            String error=safe(code).matches("[A-Z][A-Z_]{1,79}")?safe(code):"HOST_BLOCKED";
+            boolean repeated=error.equals(backgroundBlocker) && !watching.get();
+            watching.set(false);browserScanRunning=false;backgroundBlocker=error;
+            lastError="后台聊天托管已暂停（"+error+"），请在工作台查看并处理";
+            if(!repeated)napCatGateway.notifySystemFault(session.profileId(),lastError);
+            return status();
+        });
+    }
+
+    private boolean sameBinding(BackgroundBinding left,BackgroundBinding right) {
+        return left!=null && right!=null && left.hostGeneration().equals(right.hostGeneration())
+                && left.pageDocumentId().equals(right.pageDocumentId()) && normalize(left.accountIdentity()).equals(normalize(right.accountIdentity()));
+    }
+    private void validateBinding(BackgroundBinding binding) {
+        if(binding==null)throw new IllegalArgumentException("后台托管缺少页面和账号绑定");
+        requireNonBlank(binding.hostGeneration(),"托管 generation");requireNonBlank(binding.pageDocumentId(),"页面 documentId");
+        requireNonBlank(binding.accountIdentity(),"BOSS 账号身份");requireNonBlank(binding.accountName(),"BOSS 登录姓名");
+        // accountIdentity is an opaque page anchor (for example geek:<id>),
+        // while accountName is the visible name confirmed by the user.
+        validateObservationTime(binding.pageObservedAt());
+    }
+    private void requirePageObservation(PageObservation observation,boolean update) {
+        if(!isBackground())return;
+        BackgroundBinding binding=session.binding();
+        if(observation==null || !safe(observation.hostGeneration()).equals(binding.hostGeneration())
+                || !safe(observation.pageDocumentId()).equals(binding.pageDocumentId())
+                || !normalize(observation.accountIdentity()).equals(normalize(binding.accountIdentity())))
+            throw new HrAssistantStore.StaleProposalException("后台托管页面、generation 或账号已变化");
+        validateObservationTime(observation.pageObservedAt());
+        if(update) {
+            if(observation.pageObservedAt()<pageObservedAt)throw new HrAssistantStore.StaleProposalException("页面心跳倒退，不能用后台计时器冒充页面在线");
+            pageObservedAt=observation.pageObservedAt();
+        }
+    }
+    private void validateObservationTime(long observed) {
+        long now=System.currentTimeMillis();
+        if(observed<=0 || observed>now+5000 || now-observed>120_000)throw new HrAssistantStore.StaleProposalException("页面观察已过期，请重新只读核验聊天页");
+    }
+    private void expirePageHeartbeat() {
+        if(isBackground() && watching.get() && (pageObservedAt==0 || System.currentTimeMillis()-pageObservedAt>120_000)) {
+            watching.set(false);browserScanRunning=false;backgroundBlocker="PAGE_HEARTBEAT_EXPIRED";
+            lastError="真实聊天页面心跳已超过 120 秒，停止领取发送动作";
+        }
+    }
+    private String normalize(String value) {return safe(value).replaceAll("\\s+","");}
+    private static class BackgroundInterrupted extends IllegalStateException { }
+
     private record WatchSession(String watchSessionId, String browserSessionId, Long profileId,
-                                int tabId, String url, String contentVersion, int reviewLimit) {
+                                int tabId, String url, String contentVersion, int reviewLimit,String transport,BackgroundBinding binding) {
     }
 }

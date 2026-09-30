@@ -1,11 +1,16 @@
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { runInNewContext } from 'node:vm'
+import { randomUUID } from 'node:crypto'
+import { runInNewContext as runScriptInNewContext } from 'node:vm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const identity = require('../../chrome-extension/boss-hr-identity.js')
 const support = require('../../chrome-extension/boss-hr-support.js')
+
+function runInNewContext(code: string, context: Record<string, unknown>) {
+  return runScriptInNewContext(code, { crypto: { randomUUID }, ...context })
+}
 
 function addCard(id = '101', source = 0, name = '王女士') {
   const wrapper = document.createElement('div')
@@ -390,7 +395,7 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(result).toMatchObject({ outcome: mode === 'reviewed' ? 'SENT' : 'STALE' })
     expect(clicks).toBe(mode === 'reviewed' ? 1 : 0)
     if (mode === 'changed-company' || mode === 'missing-company') {
-      expect(result).toMatchObject({ evidence: '2026-09-28-hr-review-identity: 发送前身份不符：公司' })
+      expect(result).toMatchObject({ evidence: '2026-09-30-hr-background-v1: 发送前身份不符：公司' })
     }
   })
 

@@ -15,7 +15,7 @@ test("manifest loads the direct HR bridge and one-minute alarm capability", () =
   const bossScripts = manifest.content_scripts.find((entry) => entry.matches.includes("https://www.zhipin.com/*")).js;
   assert.deepEqual(bossScripts.slice(-3), ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"]);
   assert.ok(manifest.permissions.includes("alarms"));
-  assert.equal(manifest.version, "1.9.5");
+  assert.equal(manifest.version, "1.10.0");
 });
 
 test("assistant exposes policy-gated dedicated watch and preserves explicit manual send", () => {
@@ -39,7 +39,8 @@ test("background binds one exact BOSS tab, scans every minute, and persists Outb
   assert.match(background, /LOCAL_API_BASE_URLS = \["http:\/\/127\.0\.0\.1:6866"\]/);
   assert.match(bridge, /BOSS_HR_OUTBOX_PUT/);
   assert.match(bridge, /await openConversation\(located\.unique, currentSnapshot, message\.deadlineAt\)/);
-  assert.ok(bridge.indexOf("BOSS_HR_OUTBOX_PUT") < bridge.indexOf("await openConversation(located.unique"));
+  const legacyScan=bridge.slice(bridge.indexOf("async function scan(message)"),bridge.indexOf("async function collectUnreadTargets"));
+  assert.ok(legacyScan.indexOf("BOSS_HR_OUTBOX_PUT") < legacyScan.indexOf("await openConversation(located.unique"));
   const hrBackground = background.slice(background.indexOf("async function startBossHrWatch("), background.indexOf("async function handleZhilianLocalApiRequest("));
   assert.doesNotMatch(hrBackground + bridge, /chrome\.windows\.create|about:blank|screenX|screenY|clientX|clientY/);
 });

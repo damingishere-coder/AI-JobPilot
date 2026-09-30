@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { runInNewContext } from 'node:vm'
+import { randomUUID } from 'node:crypto'
+import { runInNewContext as runScriptInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 const require=createRequire(import.meta.url)
@@ -10,7 +11,8 @@ function harness(storage:Map<string,string>, valid=true) {
   let listener:(message:object,sender:object,respond:(value:Record<string,unknown>)=>void)=>unknown=()=>{}
   const pageSafety=vi.fn(()=>({safe:false,errorCode:'TEST_STOP'}))
   const same={}
-  runInNewContext(script,{
+  runScriptInNewContext(script,{
+    crypto:{randomUUID},
     window:{top:same,self:same,addEventListener:(name:string,fn:(event?:unknown)=>void)=>events.set(name,fn)},
     document:{},location:{href:'https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1'},
     sessionStorage:{getItem:(key:string)=>storage.get(key),setItem:(key:string,value:string)=>storage.set(key,value),removeItem:(key:string)=>storage.delete(key)},

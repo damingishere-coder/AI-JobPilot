@@ -266,9 +266,22 @@
     return `${simpleHash(snapshot.uid)}-${simpleHash([snapshot.uid, snapshot.lastMessage, snapshot.lastTime].join("|"))}`;
   }
 
+  async function sourceCaptureId(uid, messages, accountIdentity, cryptoApi = globalThis.crypto) {
+    let end=messages.length;
+    while(end>0 && messages[end-1].from!=="对方") end--;
+    let start=end;
+    while(start>0 && messages[start-1].from==="对方") start--;
+    const round=messages.slice(start,end).map(message=>({id:String(message.messageId || ""),from:message.from,type:message.type,
+      time:normalizeText(message.time),text:normalizeText(message.text),media:(message.media || []).map(media=>({url:media.sourceUrl || "",name:media.name || ""}))}));
+    if (!uid || !round.length) throw new Error("未取得稳定会话与完整 HR 消息轮");
+    const input=new TextEncoder().encode(JSON.stringify([String(accountIdentity || ""),String(uid),round]));
+    const digest=await cryptoApi.subtle.digest("SHA-256",input);
+    return "hr-"+Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,"0")).join("");
+  }
+
   return {
     normalizeText, pageSafety, unreadTotal, unreadTab, allTab, chatItems, badgeCount, stableUid,
     itemSnapshot, findByUid, currentSession, readMessages, latestInbound, messagesMatch,
-    simpleHash, captureId
+    simpleHash, captureId, sourceCaptureId
   };
 });
