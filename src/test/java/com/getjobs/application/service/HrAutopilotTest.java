@@ -46,6 +46,32 @@ class HrAutopilotTest {
                 List.of(new ChatMessage("本人","文本","您好","昨天","m1",List.of()),new ChatMessage("对方","文本",question,"今天","m2",List.of())),historical,complete);
     }
     AiDraft draft(Classification c,String text) {return new AiDraft(c,text,"摘要",List.of(),List.of(),0.99);}
+    @Test void pureDeclineGeneratesOnlyTheUserAcknowledgmentAndStillRequiresIndependentAudit() {
+        var c=capture("您好！感谢您的关注，岗位合适会跟您联系。",false,true);
+        var d=service.generate(1L,conversation,communication,c);
+        assertThat(d.classification()).isEqualTo(Classification.REPLY);
+        assertThat(d.replyText()).isEqualTo("好的，谢谢");
+        verify(drafts,never()).generateWithFacts(anyLong(),anyLong(),any(),anyList(),anyString());
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[],\"reason\":\"礼貌回复\",\"claims\":[]}");
+        assertThat(service.assess(1L,conversation,c,d).action()).isEqualTo("TEXT");
+        verify(ai).sendStructuredRequest(contains("正文：好的，谢谢"),anyString());
+        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":false,\"evidence\":[],\"reason\":\"需人工核验\",\"claims\":[]}");
+        assertThat(service.assess(1L,conversation,c,d).action()).isEqualTo("HUMAN");
+    }
+    @Test void declineWithUnresolvedRequestUsesNormalGeneration() {
+        var expected=draft(Classification.NEEDS_USER,"");
+        when(drafts.generateWithFacts(anyLong(),anyLong(),any(),anyList(),anyString())).thenReturn(expected);
+        var c=capture("很遗憾暂时没有适合您的岗位，请介绍您的淘宝运营经历",false,true);
+        assertThat(service.generate(1L,conversation,communication,c)).isSameAs(expected);
+        verify(drafts).generateWithFacts(eq(1L),eq(conversation),eq(communication),eq(c.messages()),anyString());
+    }
+    @Test void fixedAcknowledgmentCannotBypassAnUnknownSendHold() {
+        var c=capture("很遗憾暂时没有适合您的岗位",false,true);
+        var d=service.generate(1L,conversation,communication,c);
+        long id=proposal(c,d);hr.markFinal(id,ProposalStatus.SEND_UNKNOWN,"未见回执");
+        assertThat(service.assess(1L,conversation,c,d).action()).isEqualTo("HUMAN");
+        verifyNoInteractions(ai);
+    }
     long proposal(ChatCapture capture,AiDraft draft) {
         for(var m:capture.messages()) hr.saveMessage(conversation,m,30);
         String source=hr.sourceFingerprint(conversation,capture.messages().getLast()); hr.updateLastInbound(conversation,source);

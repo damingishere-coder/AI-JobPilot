@@ -175,8 +175,11 @@ class HrVisualServiceTest {
         advanceBatch();assertThat(batches.latest(1L).stage()).isEqualTo("ANCHORS");
     }
     void priorityObservation(boolean resume) {
+        priorityObservation(resume?"方便发一份附件简历吗":"你好",resume);
+    }
+    void priorityObservation(String text,boolean resume) {
         String now=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))+" 10:00";
-        var descriptor=Map.of("text",resume?"方便发一份附件简历吗":"你好","time",now,"type","文本");
+        var descriptor=Map.of("text",text,"time",now,"type","文本");
         var capture=Map.of("hrName","新HR","companyName","新公司","jobName","岗位","contextComplete",true,
                 "messages",List.of(new ChatMessage("本人","文本","上轮",now),new ChatMessage("对方","文本",descriptor.get("text"),now)));
         var response=new LinkedHashMap<String,Object>(Map.of("ok",true,"capture",capture,"composer",""));
@@ -304,6 +307,28 @@ class HrVisualServiceTest {
         service.processDiscoveredBatch(1L,item.batch(),directBatchRequest());positionPriority();advanceBatch();priorityObservation(false);advanceBatch();
         assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("TEXT"));
         assertThat(batches.needsAutoReview(item.id())).isFalse();verify(ai,times(2)).assess(anyLong(),anyLong(),any(),any());verify(qq,times(1)).notifyProposal(any());
+    }
+    @Test void priorDeclineCardRequiresFreshPureRoundAndQueuesOnlyTheAcknowledgmentOnce() {
+        var item=preparePriority();service.prioritizeBatchItem(1L,item.batch(),item.id());positionPriority();advanceBatch();
+        String decline="您好！感谢您的关注，岗位合适会跟您联系。";
+        priorityObservation(decline,false);
+        when(ai.generate(anyLong(),anyLong(),any(),any())).thenReturn(new AiDraft(Classification.REPLY,"旧追问草稿","",List.of(),List.of(),1));
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenReturn(new HrAutopilotService.Assessment("HUMAN","等待审核","旧追问草稿"));
+        advanceBatch();var run=visual.runs(1L).getFirst();var target=visual.targets(run.id()).getFirst();
+        db.update("UPDATE hr_reply_proposal SET classification='REJECTION' WHERE id=?",target.proposalId());
+        advanceBatch();service.controlBatch(1L,item.batch(),false);
+        service.processDiscoveredBatch(1L,item.batch(),directBatchRequest());positionPriority();advanceBatch();
+        priorityObservation(decline,false);clearInvocations(ai);
+        when(ai.assess(anyLong(),anyLong(),any(),any())).thenAnswer(inv->{
+            AiDraft reviewed=inv.getArgument(3);
+            assertThat(reviewed.classification()).isEqualTo(Classification.REPLY);
+            assertThat(reviewed.replyText()).isEqualTo("好的，谢谢");
+            return new HrAutopilotService.Assessment("TEXT","礼貌回复已审核",reviewed.replyText(),"{\"allowed\":true}");
+        });
+        advanceBatch();advanceBatch();
+        assertThat(store.requireProposal(1L,target.proposalId()).draft()).isEqualTo("好的，谢谢");
+        assertThat(visual.steps(target.proposalId())).hasSize(1).allMatch(s->s.get("action_type").equals("TEXT"));
+        assertThat(batches.needsAutoReview(item.id())).isFalse();verify(ai,times(1)).assess(anyLong(),anyLong(),any(),any());
     }
     @Test void priorityResumeIsBatchOwnedIdempotentAndRestartsDiscoveryWithoutReopening() {
         var item=preparePriority();String id=item.batch();
