@@ -11,6 +11,89 @@ def node(text,kind,cls,rect):
     return {"text":text,"type":kind,"class":cls,"box":rect,"control":Mock()}
 
 class LayoutTests(unittest.TestCase):
+    def test_focus_stop_reports_only_process_basename_and_observed_input(self):
+        d=WindowsDriver(threading.Event());d.hwnd=100
+        gui=Mock();gui.GetForegroundWindow.return_value=200
+        api=Mock();handle=api.OpenProcess.return_value
+        constants=Mock();constants.PROCESS_QUERY_INFORMATION=0x400;constants.PROCESS_VM_READ=0x10
+        process=Mock();process.GetWindowThreadProcessId.return_value=(1,20)
+        process.GetModuleFileNameEx.return_value=r'C:\Users\private\ChatGPT.exe'
+        desktop=Mock();desktop.user32.OpenInputDesktop.return_value=1
+        modules={'win32gui':gui,'win32api':api,'win32con':constants,'win32process':process}
+        for physical,cancelled in ((False,False),(True,False),(False,True),(True,True)):
+            d.human.clear();d.cancelled.clear()
+            if physical:d.human.set()
+            if cancelled:d.cancelled.set()
+            with patch.dict(sys.modules,modules),patch('windows_driver.ctypes.windll',desktop,create=True),patch.object(d,'_activate') as activate:
+                with self.assertRaises(Halt) as result:d.guard(receipt=True)
+            self.assertEqual(result.exception.code,'FOCUS_CHANGED')
+            detail=str(result.exception)
+            self.assertIn('前台进程=ChatGPT.exe',detail)
+            self.assertIn('物理输入='+('已观察到' if physical else '未观察到'),detail)
+            self.assertIn('取消请求='+('是' if cancelled else '否'),detail)
+            self.assertNotIn('private',detail)
+            activate.assert_not_called()
+        self.assertEqual(handle.Close.call_count,4)
+
+    def test_unreadable_foreground_process_still_stops_on_focus_change(self):
+        d=WindowsDriver(threading.Event());d.hwnd=100
+        gui=Mock();gui.GetForegroundWindow.return_value=200
+        api=Mock();api.OpenProcess.side_effect=OSError('not permitted')
+        constants=Mock();constants.PROCESS_QUERY_INFORMATION=0x400;constants.PROCESS_VM_READ=0x10
+        process=Mock();process.GetWindowThreadProcessId.return_value=(1,20)
+        desktop=Mock();desktop.user32.OpenInputDesktop.return_value=1
+        with patch.dict(sys.modules,{'win32gui':gui,'win32api':api,'win32con':constants,'win32process':process}),patch('windows_driver.ctypes.windll',desktop,create=True):
+            with self.assertRaises(Halt) as result:d.guard()
+        self.assertEqual(result.exception.code,'FOCUS_CHANGED')
+        self.assertIn('前台进程=未知',str(result.exception))
+
+    def history_body(self, text='你好'):
+        d=WindowsDriver(threading.Event());d.chat_box=(400,0,1200,900)
+        target={'hrName':'合成HR','companyName':'合成公司'}
+        message_list=node('','List','im-list',(400,130,1200,600))
+        message_list['control'].element_info.runtime_id=(1,2)
+        message_list['control'].element_info.control_type='List'
+        message_list['control'].element_info.class_name='im-list'
+        nodes=[node('合成HR','Text','',(430,10,500,40)),node('合成公司','Text','',(520,12,650,42)),
+               node('','Edit','chat-input',(400,600,1200,850)),
+               node('','Group','left-content',(430,70,850,120)),node('合成岗位','Text','',(450,80,550,105)),
+               message_list,node(text,'ListItem','message-item item-friend',(440,160,1100,260)),
+               node(text,'Text','message-text',(470,200,650,230))]
+        return d,target,nodes,message_list
+
+    def history_marker(self, message_list):
+        marker=node('没有更多消息','Text','history-boundary',(410,135,600,155))
+        marker['control'].element_info.runtime_id=(1,3)
+        marker['control'].element_info.control_type='Text'
+        marker['control'].element_info.class_name='history-boundary'
+        marker['control'].parent.return_value=message_list['control']
+        return marker
+
+    def test_recruiter_history_marker_words_do_not_prove_first_chat_is_complete(self):
+        for text in ('没有更多消息','暂无更多消息'):
+            d,target,nodes,_=self.history_body(text)
+            with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes):
+                capture=d.read_chat(target,modal_recheck=True)
+            self.assertFalse(capture['contextComplete'])
+            self.assertEqual(capture['messages'][0]['text'],text)
+
+    def test_first_chat_requires_history_marker_owned_by_the_current_message_list(self):
+        d,target,nodes,message_list=self.history_body()
+        marker=self.history_marker(message_list)
+        with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes+[marker]):
+            self.assertTrue(d.read_chat(target,modal_recheck=True)['contextComplete'])
+        for invalid in ('toolbar','message_parent','outside','unreadable'):
+            d,target,nodes,message_list=self.history_body()
+            marker=self.history_marker(message_list)
+            if invalid=='toolbar':marker['control'].parent.return_value=None
+            if invalid=='message_parent':
+                parent=Mock();parent.element_info.control_type='ListItem';parent.element_info.class_name='message-item'
+                parent.parent.return_value=message_list['control'];marker['control'].parent.return_value=parent
+            if invalid=='outside':marker['box']=(410,610,600,630)
+            if invalid=='unreadable':marker['control'].parent.side_effect=OSError('stale UIA')
+            with patch.object(d,'guard'),patch.object(d,'_nodes',return_value=nodes+[marker]):
+                self.assertFalse(d.read_chat(target,modal_recheck=True)['contextComplete'],invalid)
+
     def test_search_job_excludes_contact_rows_behind_popup(self):
         d=WindowsDriver(threading.Event());d.window=Mock()
         popup=node('HR公司职位:产品经理','ListItem','search-list',(0,35,300,130))

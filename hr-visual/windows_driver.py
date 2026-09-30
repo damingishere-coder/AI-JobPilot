@@ -11,7 +11,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import threading
 import time
@@ -138,6 +138,22 @@ class WindowsDriver:
             return {"code": "HUMAN_TAKEOVER", "detail": "检测到暂停或人工操作，保存发送结果后暂停整轮"}
         return {}
 
+    def _focus_failure_detail(self, detail, foreground):
+        process_name = "未知"
+        try:
+            import win32api, win32con, win32process
+            _, pid = win32process.GetWindowThreadProcessId(foreground)
+            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ, False, pid)
+            try:
+                process_name = PureWindowsPath(win32process.GetModuleFileNameEx(handle, 0)).name or "未知"
+            finally:
+                handle.Close()
+        except Exception:
+            pass  # A diagnostic read cannot change the existing focus stop.
+        physical = "已观察到" if self.human.is_set() else "未观察到"
+        cancelled = "是" if self.cancelled.is_set() else "否"
+        return f"{detail}；前台进程={process_name}；物理输入={physical}；取消请求={cancelled}"
+
     def guard(self, receipt=False, check_url=True):
         import win32gui
         user = ctypes.windll.user32
@@ -146,8 +162,9 @@ class WindowsDriver:
         if not desktop:
             raise Halt("DESKTOP_LOCKED", "桌面已锁定，停止操作")
         user.CloseDesktop(ctypes.c_void_p(desktop))
-        if self.hwnd and win32gui.GetForegroundWindow() != self.hwnd:
-            raise Halt("FOCUS_CHANGED", "窗口焦点变化，停止操作")
+        foreground = win32gui.GetForegroundWindow()
+        if self.hwnd and foreground != self.hwnd:
+            raise Halt("FOCUS_CHANGED", self._focus_failure_detail("窗口焦点变化，停止操作", foreground))
         if not receipt and (self.cancelled.is_set() or self.human.is_set()):
             raise Halt("HUMAN_TAKEOVER", "收到暂停或检测到人工操作，停止自动输入")
         if self.window and check_url:
@@ -201,8 +218,9 @@ class WindowsDriver:
             win32gui.BringWindowToTop(window.handle)
             win32gui.SetForegroundWindow(window.handle)
             time.sleep(.15)
-            if win32gui.GetForegroundWindow() != window.handle:
-                raise Halt("FOCUS_CHANGED", "无法激活指定 Chrome 窗口")
+            foreground = win32gui.GetForegroundWindow()
+            if foreground != window.handle:
+                raise Halt("FOCUS_CHANGED", self._focus_failure_detail("无法激活指定 Chrome 窗口", foreground))
         finally:
             for tid in reversed(attached):
                 user.AttachThreadInput(current, tid, False)
@@ -702,6 +720,33 @@ class WindowsDriver:
             start -= 1
         self.round_boundary = [(m["from"],m["text"],m["time"]) for m in messages[start:end]]
 
+    @staticmethod
+    def _history_start_visible(nodes, message_list):
+        # Recruiter words and toolbar text cannot establish the oldest history edge.
+        items = [n for n in nodes if n["type"] == "ListItem" or "message-item" in n["class"].split()]
+        for marker in nodes:
+            if marker["type"] != "Text" or marker["text"] not in ("没有更多消息", "暂无更多消息") \
+                    or not inside(marker["box"], message_list["box"]) \
+                    or any(inside(marker["box"], item["box"]) for item in items):
+                continue
+            try:
+                expected = message_list["control"].element_info.runtime_id
+                if not expected:
+                    continue
+                control = marker["control"]
+                for _ in range(8):
+                    info = control.element_info
+                    if info.control_type == "ListItem" or "message-item" in (info.class_name or "").split():
+                        break
+                    if info.runtime_id and info.runtime_id == expected:
+                        return True
+                    control = control.parent()
+                    if control is None:
+                        break
+            except Exception:
+                continue  # Unreadable ancestry is not proof of complete history.
+        return False
+
     def read_chat(self, target, receipt=False, modal_recheck=False):
         self.guard(receipt=receipt)
         nodes = self._nodes()
@@ -746,7 +791,8 @@ class WindowsDriver:
         message_nodes = [n for n in right if inside(n["box"], lists[0]["box"])]
         messages = self._messages(message_nodes, body)
         # A fully visible preceding self-message bounds the complete unanswered HR round.
-        complete = bool(messages) and (any(m["from"] == "本人" for m in messages[:-1]) or any(n["text"] in ("没有更多消息", "暂无更多消息") for n in right))
+        complete = bool(messages) and (any(m["from"] == "本人" for m in messages[:-1])
+                                      or self._history_start_visible(message_nodes, lists[0]))
         last_hr = len(messages)
         while last_hr and messages[last_hr-1]["from"] == "本人":
             last_hr -= 1
