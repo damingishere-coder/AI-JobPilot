@@ -245,12 +245,52 @@ for(const checkpoint of ["LEASED","UNAVAILABLE"]){
     assert.equal(h.requests.filter(item=>item.path.endsWith("/autopilot/resume")).length,0);
   });
 }
-for(const replyMode of ["AUTO","REVIEW"])for(const historyMode of ["RECENT","NEW_ONLY"]){
-  test(replyMode+" "+historyMode+" policy is supported by the background reader",async()=>{
-    const h=harness({request:async path=>path.endsWith("/autopilot")?{success:true,httpStatus:200,data:{data:{enabled:true,paused:false,authorizationValid:true,replyMode,historyMode,historyDays:30}}}:null});
+for(const replyMode of ["AUTO","REVIEW"])for(const historyMode of ["RECENT","NEW_ONLY"])for(const historyDays of [1,7,15,30]){
+  test(replyMode+" "+historyMode+" "+historyDays+" days policy binds and captures in the background",async()=>{
+    const h=harness({request:async path=>path.endsWith("/autopilot")?{success:true,httpStatus:200,data:{data:{enabled:true,paused:false,authorizationValid:true,replyMode,historyMode,historyDays}}}:null});
     await h.start();assert.equal(h.store[KEY].state,"RUNNING");
+    assert.ok(h.requests.some(item=>item.path.endsWith("/watch/start")));
+    await h.host.tick();
+    assert.ok(h.requests.some(item=>item.path.endsWith("/watch/captures")));
+    assert.equal(h.created[0].active,false);
+    assert.equal(h.focused.length,0);
+    assert.ok(h.updates.every(item=>!("active" in item.config)));
+    assert.equal(h.tabs.find(tab=>tab.id===99).active,true);
   });
 }
+
+for(const historyDays of [0,-1,31,1.5,15.5,"15",null,undefined]){
+  test("invalid history range "+String(historyDays)+" is refused before creating or binding a chat tab",async()=>{
+    const h=harness({request:async path=>path.endsWith("/autopilot")?{success:true,httpStatus:200,data:{data:{enabled:true,paused:false,authorizationValid:true,replyMode:"AUTO",historyMode:"RECENT",historyDays}}}:null});
+    await h.start();
+    assert.equal(h.store[KEY].state,"BLOCKED");
+    assert.equal(h.store[KEY].errorCode,"HR_AUTHORIZATION_REQUIRED");
+    assert.equal(h.created.length,0);
+    assert.equal(h.requests.some(item=>item.path.endsWith("/watch/start")),false);
+    assert.equal(h.requests.some(item=>item.path.endsWith("/watch/captures")),false);
+  });
+}
+
+test("a reloaded worker can explicitly resume a range-blocked host using the saved fifteen-day policy",async()=>{
+  let historyDays=31;
+  const request=async path=>path.endsWith("/autopilot")?{success:true,httpStatus:200,data:{data:{enabled:true,paused:false,authorizationValid:true,replyMode:"AUTO",historyMode:"RECENT",historyDays}}}:null;
+  const blocked=harness({request});
+  await blocked.start();
+  assert.equal(blocked.store[KEY].errorCode,"HR_AUTHORIZATION_REQUIRED");
+  assert.equal(blocked.store[KEY].paused,true);
+  const generation=blocked.store[KEY].hostGeneration;
+  historyDays=15;
+  const reloaded=harness({store:blocked.store,request});
+  const result=await reloaded.host.control({type:"BOSS_HR_HOST_RESUME",expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},reloaded.sender);
+  assert.equal(result.success,true);
+  assert.equal(result.data.state,"RUNNING");
+  assert.equal(result.data.hostGeneration,generation);
+  assert.ok(reloaded.requests.some(item=>item.path.endsWith("/autopilot/resume")));
+  await reloaded.host.tick();
+  assert.ok(reloaded.requests.some(item=>item.path.endsWith("/watch/captures")));
+  assert.equal(reloaded.created[0].active,false);
+  assert.equal(reloaded.focused.length,0);
+});
 test("an explicitly confirmed start after STOP binds the new account and rebuilds baseline",async()=>{
   const h=harness();await h.start();await h.host.tick();assert.equal(h.store[KEY].baselineComplete,true);
   await h.host.control({type:"BOSS_HR_HOST_STOP"},h.sender);
