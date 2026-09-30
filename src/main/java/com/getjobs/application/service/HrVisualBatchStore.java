@@ -192,10 +192,34 @@ public class HrVisualBatchStore {
             }
             list.add(r);
         }
+        var statusCounts=new LinkedHashMap<String,Long>();
+        for(var item:list)if("CONTACT".equals(item.get("kind")))statusCounts.merge(Objects.toString(item.get("status")),1L,Long::sum);
+        result.put("statusCounts",statusCounts);
+        result.put("pending",statusCounts.entrySet().stream().filter(e->Set.of("PENDING","PRIORITY_PENDING","PENDING_CAPTURE","LINKED","QUEUED","PREPARED","SUBMITTING","PARTIAL").contains(e.getKey())).mapToLong(Map.Entry::getValue).sum());
+        result.put("noReply",statusCounts.getOrDefault("SKIPPED",0L));result.put("excluded",statusCounts.getOrDefault("EXCLUDED",0L));
+        result.put("unknown",statusCounts.getOrDefault("SEND_UNKNOWN",0L));result.put("blocked",statusCounts.getOrDefault("BLOCKED",0L));
+        result.put("readFailed",statusCounts.getOrDefault("READ_FAILED",0L));result.put("dateUnknown",statusCounts.getOrDefault("DATE_UNKNOWN",0L));
+        result.put("stale",statusCounts.getOrDefault("STALE",0L));
+        // A later unknown resume must not hide an earlier confirmed text receipt.
+        // Commands retain their visual run ownership even after explicit reconfirmation replaces a target's proposal.
+        var receipts=db.queryForList("""
+            SELECT s.action_type,s.status,COUNT(DISTINCT s.id) AS receipt_count FROM hr_send_step s
+            JOIN hr_send_command c ON c.command_id=s.command_id
+            JOIN hr_visual_batch_item i ON c.watch_session_id='visual:'||i.run_id
+            WHERE i.batch_id=? AND i.kind='CONTACT' AND c.profile_id=? AND c.transport='WINDOWS_VISUAL'
+              AND s.status IN ('SENT_CONFIRMED','SEND_UNKNOWN') GROUP BY s.action_type,s.status
+            """,id,profile);
+        long texts=0,resumes=0,unknownSteps=0;
+        for(var receipt:receipts){long count=((Number)receipt.get("receipt_count")).longValue();
+            if("SEND_UNKNOWN".equals(receipt.get("status")))unknownSteps+=count;
+            else if("TEXT".equals(receipt.get("action_type")))texts=count;
+            else if("RESUME_NATIVE".equals(receipt.get("action_type")))resumes=count;
+        }
+        result.put("textSentConfirmed",texts);result.put("resumeSentConfirmed",resumes);result.put("unknownSteps",unknownSteps);
         result.put("items",list);result.put("discovered",list.stream().filter(i->"CONTACT".equals(i.get("kind"))).count());
         result.put("checked",list.stream().filter(i->"CONTACT".equals(i.get("kind")) && i.get("observedAt")!=null).count());
-        result.put("pendingReview",list.stream().filter(i->"REVIEW_REQUIRED".equals(i.get("status"))).count());
-        result.put("sent",list.stream().filter(i->"SENT_CONFIRMED".equals(i.get("status"))).count());return result;
+        result.put("pendingReview",statusCounts.getOrDefault("REVIEW_REQUIRED",0L));
+        result.put("sent",statusCounts.getOrDefault("SENT_CONFIRMED",0L));return result;
     }
     public void recover(){db.update("UPDATE hr_visual_batch SET status='PAUSED',reason='服务重启，保留进度；明确恢复后继续，不重新开页' WHERE status IN ('STARTING','RUNNING')");}
     private int count(String sql,Object...args){return Objects.requireNonNull(db.queryForObject(sql,Integer.class,args));}
