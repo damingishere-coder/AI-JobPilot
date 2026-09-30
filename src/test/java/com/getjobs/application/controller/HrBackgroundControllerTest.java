@@ -37,7 +37,7 @@ class HrBackgroundControllerTest {
         var profiles=mock(ProfileService.class);var profile=new ProfileEntity();profile.setId(1L);profile.setName("本人");
         when(profiles.getCurrentProfileId()).thenReturn(1L);when(profiles.getCurrentProfile()).thenReturn(profile);
         var auto=mock(HrAutopilotService.class);when(auto.policy(1L)).thenAnswer(call->policies.policy(1L));
-        when(auto.blockers(1L)).thenReturn(List.of());var qq=mock(NapCatGateway.class);when(qq.isConnected()).thenReturn(true);
+        when(auto.blockers(1L)).thenAnswer(call->policies.authorizationValid(1L)?List.of():List.of("授权缺失、旧版授权或资料已变化，请重新确认"));var qq=mock(NapCatGateway.class);when(qq.isConnected()).thenReturn(true);
         var guard=new HrProfileGuard();var events=mock(HrAssistantEventService.class);
         watcher=new HrAssistantWatchService(profiles,store,mock(HrReplyDraftService.class),events,qq,100,guard);watcher.setAutopilot(auto);
         var actions=new HrReplyActionService(store,events);actions.setAutopilot(policies,auto);
@@ -56,6 +56,44 @@ class HrBackgroundControllerTest {
         request.setHostGeneration("wrong");assertThat(controller.guard(tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         request=anchored();ReflectionTestUtils.setField(watcher,"pageObservedAt",System.currentTimeMillis()-120_001);
         assertThat(controller.guard(tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+    @Test void publicAuthorizationSaveReturnsTheSameCompleteViewAsReadAndReportsInvalidatedSettings() throws Exception {
+        watcher.stop(started.watchSessionId(),"USER_STOPPED");
+        var profile=new CommunicationProfile("面议","广州","确认后两周","工作日可沟通","站内沟通","简洁礼貌","不得编造经历");
+        store.saveSettings(1L,profile,true,"ws://127.0.0.1:3001",null,QqTargetType.GROUP,null,null,30);
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        var json=new ObjectMapper();
+        var enable=new HrAssistantController.AutopilotRequest(1L,policies.policy(1L).version(),true,true,"","","AUTO",false,false,"RECENT",30);
+        var saved=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/hr-assistant/autopilot")
+                .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()).contentType("application/json").content(json.writeValueAsString(enable)))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.authorizationValid").value(true))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.enabled").value(true))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.replyMode").value("AUTO"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.historyDays").value(30))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.protocol").value(HrAutopilotStore.PROTOCOL))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.communicationProfile.workLocation").value("广州"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.blockers").isEmpty())
+                .andReturn().getResponse().getContentAsString();
+        var read=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(json.readTree(saved).path("data")).isEqualTo(json.readTree(read).path("data"));
+        var changed=new CommunicationProfile("面议","深圳",profile.availability(),profile.interviewAvailability(),profile.contactPreference(),profile.tone(),profile.forbiddenClaims());
+        store.saveSettings(1L,changed,true,"ws://127.0.0.1:3001",null,QqTargetType.GROUP,null,null,30);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.authorizationValid").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.communicationProfile.workLocation").value("深圳"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.blockers").isNotEmpty());
+        var disable=new HrAssistantController.AutopilotRequest(1L,1,false,false,"ignored","ignored","INVALID",true,true,"INVALID",90);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/hr-assistant/autopilot")
+                .header(LocalActionTokenService.HEADER_NAME,tokens.issueToken()).contentType("application/json").content(json.writeValueAsString(disable)))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.enabled").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.authorizationValid").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.communicationProfile.workLocation").value("深圳"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.protocol").value(HrAutopilotStore.PROTOCOL));
+        assertThat(watcher.status().watching()).isFalse();assertThat(policies.policy(1L).sharePhone()).isFalse();
+        assertThat(store.loadSettings(1L).communicationProfile()).isEqualTo(changed);
     }
     @Test void disablingIsAlwaysAvailableAndLateReceiptKeepsTheAlreadyDispatchedLease() {
         var capture=new ChatCapture("c",1,new ChatSession("uid","","HR","公司","采购","","你好","今天"),List.of(new ChatMessage("对方","文本","你好","今天")),false,true);

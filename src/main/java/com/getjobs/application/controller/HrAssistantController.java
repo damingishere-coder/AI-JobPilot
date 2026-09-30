@@ -143,8 +143,11 @@ public class HrAssistantController {
     public void setAutopilot(com.getjobs.application.service.HrAutopilotStore autopilot) { this.autopilot=autopilot; }
 
     @GetMapping("/autopilot")
-    public ResponseEntity<?> autopilot() { return execute(()-> {
-        Long id=profileService.getCurrentProfileId();
+    public ResponseEntity<?> autopilot() {
+        return execute(()->profileGuard.locked(()->autopilotView(profileService.getCurrentProfileId())));
+    }
+
+    private Map<String,Object> autopilotView(Long id) {
         var result=new java.util.LinkedHashMap<String,Object>();
         var p=autopilot.policy(id);
         result.put("version",p.version()); result.put("enabled",p.enabled()); result.put("paused",p.paused());
@@ -157,7 +160,7 @@ public class HrAssistantController {
         result.put("activity",autopilot.activity(id));
         result.put("blockers",watchService.dutyBlockers(id));
         return result;
-    }); }
+    }
 
     @GetMapping("/autopilot/deliveries")
     public ResponseEntity<?> deliveryCounts() { return execute(()->autopilot.deliveryCounts(profileService.getCurrentProfileId())); }
@@ -186,15 +189,16 @@ public class HrAssistantController {
             Long id=profileService.getCurrentProfileId();
             if(!id.equals(request.profileId())) throw new HrAssistantStore.StaleProposalException("当前人物档案已变化");
             if(!request.enabled()) {
-                var disabled=autopilot.disable(id);
+                autopilot.disable(id);
                 watchService.stop("","USER_STOPPED_AUTHORIZATION_REVOKED");
-                return disabled;
+                return autopilotView(id);
             }
             profileGuard.requireChangeAllowed();
             if(watchService.status().watching() || watchService.status().scanRunning() || store.hasLeasedSendCommands())
                 throw new IllegalStateException("请先停止值守并等待发送结果后再修改托管授权");
             if(!request.rulesConfirmed()) throw new IllegalArgumentException("请先核对并确认托管规则");
-            return autopilot.configure(id,request.expectedVersion(),request.enabled(),request.resumeName(),request.resumeSha256(),request.replyMode(),request.sharePhone(),request.shareResume(),request.historyMode(),request.historyDays());
+            autopilot.configure(id,request.expectedVersion(),request.enabled(),request.resumeName(),request.resumeSha256(),request.replyMode(),request.sharePhone(),request.shareResume(),request.historyMode(),request.historyDays());
+            return autopilotView(id);
         }));
     }
     public record AutopilotRequest(Long profileId,int expectedVersion,boolean enabled,boolean rulesConfirmed,String resumeName,String resumeSha256,String replyMode,boolean sharePhone,boolean shareResume,String historyMode,int historyDays) { }
