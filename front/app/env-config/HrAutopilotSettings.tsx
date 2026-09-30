@@ -11,7 +11,7 @@ export const HR_BACKGROUND_PROTOCOL = '2026-09-30-hr-background-v1'
 type Policy = { version: number; enabled: boolean; paused: boolean; resumeName: string; resumeSha256: string; rules: string; facts: string; replyMode: string; sharePhone: boolean; shareResume: boolean; historyMode: string; historyDays: number; authorizationValid?: boolean; blockers?: string[]; communicationProfile?: Record<string, string> }
 type HostState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'RECOVERING' | 'BLOCKED'
 type PageBinding = { watchSessionId?: string; hostGeneration?: string; pageDocumentId?: string }
-type HostStatus = PageBinding & { transport: 'CHROME_BACKGROUND'; state: HostState; intentEnabled: boolean; paused?: boolean; pauseReason?: string; tabId?: number; accountName?: string; needsAccountConfirmation?: boolean; errorCode?: string; message?: string; lastPageSeenAt?: number | string; lastScanAt?: number | string; nextScanAt?: number | string }
+type HostStatus = PageBinding & { transport: 'CHROME_BACKGROUND'; state: HostState; intentEnabled: boolean; paused?: boolean; pauseReason?: string; tabId?: number; accountName?: string; needsAccountConfirmation?: boolean; errorCode?: string; message?: string; lastPageSeenAt?: number | string; lastScanAt?: number | string; nextScanAt?: number | string; cursor?: { stage?: string; seen?: unknown[]; queue?: unknown[] } | null; operation?: { kind?: string } | null }
 type WatchStatus = PageBinding & { watching: boolean; transport?: string; lastPageHeartbeatAt?: number | string; lastSuccessfulScanAt?: number | string }
 type Runtime = { host: HostStatus | null; watch: WatchStatus | null; hostError: string; backendError: string }
 const stateLabels: Record<HostState, string> = { STOPPED: '已停止', STARTING: '正在后台核对账号与聊天页', RUNNING: '后台托管中', PAUSED: '已暂停', RECOVERING: '正在校验并恢复连接', BLOCKED: '需要处理后恢复' }
@@ -45,18 +45,26 @@ function timeLabel(value?: number | string) {
   return Number.isNaN(date.getTime()) ? '尚无记录' : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
 }
 
+function progressLabel(host: HostStatus | null) {
+  if (host?.operation?.kind === 'SEND') return '正在核验或发送已审核回复'
+  if (host?.cursor?.stage === 'LIST') return `正在浏览联系人，已发现 ${Array.isArray(host.cursor.seen) ? host.cursor.seen.length : 0} 个`
+  if (host?.cursor?.stage === 'CAPTURE') return `正在检查待回复会话，剩余 ${Array.isArray(host.cursor.queue) ? host.cursor.queue.length : 0} 个`
+  return '正在等待下一次巡检'
+}
+
 export default function HrAutopilotSettings({ profileId, settingsDirty = false }: { profileId: number; settingsDirty?: boolean }) {
   const [policy, setPolicy] = useState<Policy | null>(null)
   const [confirmed, setConfirmed] = useState(false)
   const [accountConfirmed, setAccountConfirmed] = useState(false)
   const [status, setStatus] = useState('')
+  const [statusPending, setStatusPending] = useState(false)
   const [busy, setBusy] = useState(false)
   const [runtime, setRuntime] = useState<Runtime>({ host: null, watch: null, hostError: '正在检查 Chrome 后台托管连接…', backendError: '' })
   const [deliveries, setDeliveries] = useState<Record<string, number>>({})
 
   useEffect(() => {
     let cancelled = false, refreshing = false
-    setPolicy(null); setConfirmed(false); setAccountConfirmed(false); setStatus('')
+    setPolicy(null); setConfirmed(false); setAccountConfirmed(false); setStatus(''); setStatusPending(false)
     fetch(`${API_BASE}/api/hr-assistant/autopilot`, { cache: 'no-store' })
       .then(r => readApiResponse<Policy>(r, '托管策略读取失败'))
       .then(r => { if (!cancelled && r.data) setPolicy({ ...r.data, replyMode: r.data.enabled ? r.data.replyMode : 'AUTO', historyMode: r.data.enabled ? r.data.historyMode : 'RECENT', historyDays: r.data.historyDays || 30 }) })
@@ -102,20 +110,21 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
 
   async function start() {
     if (!policy || settingsDirty || !confirmed || !accountConfirmed) return
-    setBusy(true); setStatus('')
+    setBusy(true); setStatus(''); setStatusPending(true)
     try {
       const bridge = await getChromeBridgeStatus()
       if (!bridge.success || bridge.hrBackgroundProtocol !== HR_BACKGROUND_PROTOCOL) throw new Error('请重新加载 Chrome Bridge 1.10.0 并刷新工作台；当前扩展尚不支持后台托管。')
       const saved = await savePolicy(true)
       if (!saved.enabled || saved.authorizationValid !== true) throw new Error(saved.blockers?.join('；') || '托管授权尚未通过，请核对已保存的资料。')
       const host = await command('START')
+      setStatusPending(host.state !== 'BLOCKED')
       setStatus(host.state === 'RUNNING' ? '后台标签已连接，正在核对后端托管状态。' : host.state === 'BLOCKED' ? host.message || host.pauseReason || '账号或聊天页尚未核验，当前不会发送。' : '已开始后台准备，正在核对账号和聊天页；连接状态确认后才会处理消息。')
-    } catch (e) { setStatus(friendlyApiError(e, '后台托管未启动')) }
+    } catch (e) { setStatusPending(false); setStatus(friendlyApiError(e, '后台托管未启动')) }
     finally { setBusy(false) }
   }
 
   async function control(operation: 'PAUSE' | 'RESUME' | 'STOP') {
-    setBusy(true); setStatus('')
+    setBusy(true); setStatus(''); setStatusPending(false)
     try {
       if (operation === 'STOP') {
         let stopError = ''
@@ -126,6 +135,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
         setStatus(stopError ? `已撤销自动托管授权。${stopError}；请核对已触发步骤的回执。` : '已停止后台托管，并撤销自动托管授权。')
       } else {
         const host = await command(operation)
+        setStatusPending(operation === 'RESUME' && host.state !== 'BLOCKED' && host.state !== 'PAUSED')
         setStatus(operation === 'PAUSE' ? '已暂停后台托管。' : host.state === 'RUNNING' ? '后台标签已恢复，正在核对后端托管状态。' : host.message || '正在重新核对账号、页面和已保存进度。')
       }
     } catch (e) { setStatus(friendlyApiError(e, '托管操作未完成')) }
@@ -133,7 +143,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
   }
 
   async function viewChat() {
-    setBusy(true); setStatus('')
+    setBusy(true); setStatus(''); setStatusPending(false)
     try {
       const response = await sendChromeBridgeMessage({ type: 'BOSS_HR_HOST_VIEW', expectedProfileId: profileId, hrBackgroundProtocol: HR_BACKGROUND_PROTOCOL }, 5000)
       if (!response.success) throw new Error(response.message || '未能打开已绑定聊天页。')
@@ -159,6 +169,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
     <p className="text-sm">复用当前 Chrome 登录，在后台专用聊天标签中处理消息。Chrome 和标签需保持打开；你可以切换其他页面、最小化 Chrome 或继续使用桌面。</p>
     <div role="status" aria-live="polite" className="space-y-1 rounded border bg-muted/30 p-3 text-sm">
       <p>托管状态：{runtimeLabel}</p>
+      {running && <p>当前进度：{progressLabel(host)}</p>}
       <p>已核验 BOSS 账号：{host?.accountName || '尚未核验，开启时从聊天页读取'}</p>
       <p>后台标签：{host?.tabId ? `#${host.tabId}` : '尚未绑定'} · 最近读取页面：{timeLabel(host?.lastPageSeenAt || runtime.watch?.lastPageHeartbeatAt)}</p>
       <p>最近完成巡检：{timeLabel(host?.lastScanAt || runtime.watch?.lastSuccessfulScanAt)} · 下次巡检：{timeLabel(host?.nextScanAt)}</p>
@@ -204,7 +215,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
       <p className="text-sm">普通文字托管无需本地 PDF。电话和简历仅使用各自明确授权；面试安排、薪资承诺、未知事实等事项交给你处理。</p>
       {policy.facts && <details><summary className="text-sm">明确记住的个人事实</summary><p className="whitespace-pre-wrap text-sm">{policy.facts}</p></details>}
     </>}
-    {status && <p role="status" className="text-sm">{status}</p>}
+    {status && !(running && statusPending) && <p role="status" className="text-sm">{status}</p>}
     <HrDutyActivity key={profileId} profileId={profileId} />
   </section>
 }

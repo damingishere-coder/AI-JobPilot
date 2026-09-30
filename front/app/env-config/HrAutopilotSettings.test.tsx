@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import HrAutopilotSettings, { HR_BACKGROUND_PROTOCOL } from './HrAutopilotSettings'
 import { getChromeBridgeStatus, sendChromeBridgeMessage } from '@/lib/chromeBridge'
@@ -15,10 +15,11 @@ beforeEach(() => {
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
 
-function setup(options: { policy?: Record<string, unknown>; host?: Record<string, unknown>; watch?: Record<string, unknown>; startHost?: Record<string, unknown>; stopError?: boolean; invalidAuthorization?: boolean } = {}) {
+function setup(options: { policy?: Record<string, unknown>; host?: Record<string, unknown>; watch?: Record<string, unknown>; startHost?: Record<string, unknown>; resumeHost?: Record<string, unknown>; resumeError?: boolean; stopError?: boolean; invalidAuthorization?: boolean } = {}) {
   const policy = { ...defaultPolicy, ...options.policy }
   let host: Record<string, unknown> = { ...stoppedHost, ...runtimeBinding, ...options.host }
   let watch = { watching: false, transport: 'CHROME_BACKGROUND', ...runtimeBinding, ...options.watch }
+  let backendError = ''
   const requests: Record<string, unknown>[] = []
   const order: string[] = []
   vi.mocked(sendChromeBridgeMessage).mockImplementation(async payload => {
@@ -29,7 +30,10 @@ function setup(options: { policy?: Record<string, unknown>; host?: Record<string
       host = { ...host, state: 'STARTING', intentEnabled: true, ...options.startHost }
       watch = { ...watch, watching: host.state === 'RUNNING' }
     } else if (type === 'BOSS_HR_HOST_PAUSE') host = { ...host, state: 'PAUSED', paused: true }
-    else if (type === 'BOSS_HR_HOST_RESUME') host = { ...host, state: 'RECOVERING', paused: false, errorCode: '', needsAccountConfirmation: false }
+    else if (type === 'BOSS_HR_HOST_RESUME') {
+      if (options.resumeError) return { success: false, message: '恢复失败：聊天页面未就绪' }
+      host = { ...host, state: 'RECOVERING', paused: false, errorCode: '', needsAccountConfirmation: false, ...options.resumeHost }
+    }
     else if (type === 'BOSS_HR_HOST_STOP') {
       if (options.stopError) return { success: false, message: '扩展未响应' }
       host = { ...stoppedHost }
@@ -40,7 +44,10 @@ function setup(options: { policy?: Record<string, unknown>; host?: Record<string
     const url = String(input)
     let data: unknown = policy
     if (url.endsWith('/action-token')) data = { token: 'synthetic' }
-    else if (url.endsWith('/status')) data = watch
+    else if (url.endsWith('/status')) {
+      if (backendError) return new Response(JSON.stringify({ success: false, message: backendError, errorCode: 'SERVICE_UNAVAILABLE' }), { status: 503, headers: { 'Content-Type': 'application/json' } })
+      data = watch
+    }
     else if (url.endsWith('/deliveries')) data = {}
     else if (init?.method === 'PUT') {
       const body = JSON.parse(String(init.body))
@@ -50,7 +57,16 @@ function setup(options: { policy?: Record<string, unknown>; host?: Record<string
     }
     return new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } })
   }))
-  return { requests, order }
+  return { requests, order, setHost: (value: Record<string, unknown>) => { host = { ...host, ...value } }, setBackendError: (value: string) => { backendError = value } }
+}
+
+function runtimePoll() {
+  const timers = vi.spyOn(globalThis, 'setInterval')
+  return async () => {
+    const callback = timers.mock.calls.find(([, interval]) => interval === 5000)?.[0]
+    if (typeof callback !== 'function') throw new Error('Expected the existing runtime status poll')
+    await act(async () => { callback() })
+  }
 }
 
 async function confirmAndStart() {
@@ -105,10 +121,77 @@ it('requires the backend background connection to confirm an extension RUNNING s
 })
 
 it.each(['watchSessionId', 'hostGeneration', 'pageDocumentId'])('does not show running when backend %s belongs to an older binding', async key => {
-  setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'RUNNING', intentEnabled: true }, watch: { watching: true, [key]: 'old-binding' } })
+  setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'RUNNING', intentEnabled: true, cursor: { stage: 'LIST', seen: ['private-uid'] } }, watch: { watching: true, [key]: 'old-binding' } })
   render(<HrAutopilotSettings profileId={1} />)
   expect(await screen.findByText('托管状态：后台连接待核验')).toBeInTheDocument()
   expect(screen.queryByText('托管状态：后台托管中')).not.toBeInTheDocument()
+  expect(screen.queryByText(/当前进度：/)).not.toBeInTheDocument()
+})
+
+it('updates LIST, CAPTURE, SEND and idle progress through the existing read-only status poll without exposing identifiers or claiming delivery', async () => {
+  const poll = runtimePoll()
+  const { setHost, requests, order } = setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'RUNNING', intentEnabled: true,
+    cursor: { stage: 'LIST', seen: ['private-uid-1', 'private-uid-2', 'private-uid-3'], queue: [{ uid: 'private-uid-1' }] } }, watch: { watching: true } })
+  render(<HrAutopilotSettings profileId={1} />)
+  expect(await screen.findByText('当前进度：正在浏览联系人，已发现 3 个')).toBeInTheDocument()
+  setHost({ cursor: { stage: 'CAPTURE', queue: [{ uid: 'private-uid-1' }, { uid: 'private-uid-2' }] }, operation: { kind: 'CAPTURE' } })
+  await poll()
+  expect(screen.getByText('当前进度：正在检查待回复会话，剩余 2 个')).toBeInTheDocument()
+  expect(screen.queryByText(/当前进度：正在浏览联系人/)).not.toBeInTheDocument()
+  setHost({ operation: { kind: 'SEND', leaseToken: 'private-lease', commandId: 'private-command' } })
+  await poll()
+  expect(screen.getByText('当前进度：正在核验或发送已审核回复')).toBeInTheDocument()
+  expect(screen.queryByText(/当前进度：正在检查待回复会话/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/发送成功|回复已发送/)).not.toBeInTheDocument()
+  expect(document.body.textContent).not.toMatch(/private-uid|private-lease|private-command/)
+  setHost({ cursor: null, operation: null })
+  await poll()
+  expect(screen.getByText('当前进度：正在等待下一次巡检')).toBeInTheDocument()
+  expect(screen.queryByText('当前进度：正在核验或发送已审核回复')).not.toBeInTheDocument()
+  expect(requests).toHaveLength(0)
+  expect(order).toHaveLength(0)
+  expect(vi.mocked(sendChromeBridgeMessage).mock.calls.every(([payload]) => payload.type === 'BOSS_HR_HOST_STATUS')).toBe(true)
+})
+
+it.each(['PAUSED', 'BLOCKED', 'RECOVERING'])('keeps %s and its reason visible without presenting a retained cursor or SEND as active progress', async state => {
+  setup({ policy: { enabled: true, authorizationValid: true }, host: { state, intentEnabled: true, pauseReason: '等待本人核验发送结果',
+    cursor: { stage: 'CAPTURE', queue: ['private-uid'] }, operation: { kind: 'SEND' } }, watch: { watching: true } })
+  render(<HrAutopilotSettings profileId={1} />)
+  expect(await screen.findByText('等待本人核验发送结果')).toBeInTheDocument()
+  expect(screen.queryByText(/当前进度：/)).not.toBeInTheDocument()
+  expect(screen.queryByText('托管状态：后台托管中')).not.toBeInTheDocument()
+})
+
+it('replaces stale resume loading feedback with real progress only after the runtime binding confirms RUNNING', async () => {
+  const poll = runtimePoll()
+  const { setHost } = setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'PAUSED', intentEnabled: true, paused: true },
+    watch: { watching: true }, resumeHost: { message: '聊天标签正在加载，后台稍后重试' } })
+  render(<HrAutopilotSettings profileId={1} />)
+  fireEvent.click(await screen.findByRole('button', { name: '恢复后台托管' }))
+  expect(await screen.findAllByText('聊天标签正在加载，后台稍后重试')).not.toHaveLength(0)
+  expect(screen.queryByText(/当前进度：/)).not.toBeInTheDocument()
+  setHost({ state: 'RUNNING', message: '后台托管中', cursor: { stage: 'LIST', seen: ['private-uid'] } })
+  await poll()
+  expect(screen.getByText('托管状态：后台托管中')).toBeInTheDocument()
+  expect(screen.getByText('当前进度：正在浏览联系人，已发现 1 个')).toBeInTheDocument()
+  expect(screen.queryByText('聊天标签正在加载，后台稍后重试')).not.toBeInTheDocument()
+})
+
+it('preserves an actual resume failure after a later RUNNING status and preserves backend status errors', async () => {
+  const poll = runtimePoll()
+  const { setHost, setBackendError } = setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'PAUSED', intentEnabled: true, paused: true }, watch: { watching: true }, resumeError: true })
+  render(<HrAutopilotSettings profileId={1} />)
+  fireEvent.click(await screen.findByRole('button', { name: '恢复后台托管' }))
+  expect(await screen.findByText('恢复失败：聊天页面未就绪')).toBeInTheDocument()
+  setHost({ state: 'RUNNING', paused: false })
+  await poll()
+  expect(screen.getByText('托管状态：后台托管中')).toBeInTheDocument()
+  expect(screen.getByText('恢复失败：聊天页面未就绪')).toBeInTheDocument()
+  setBackendError('后端值守状态读取失败')
+  await poll()
+  expect(screen.getByText('后端值守状态读取失败')).toBeInTheDocument()
+  expect(screen.getByText('恢复失败：聊天页面未就绪')).toBeInTheDocument()
+  expect(screen.queryByText(/当前进度：/)).not.toBeInTheDocument()
 })
 
 it('requires a nonempty page binding before confirming the running state', async () => {
