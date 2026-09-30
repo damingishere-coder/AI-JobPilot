@@ -2,8 +2,9 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === CONTENT_VERSION) return;
-  window.__GET_JOBS_BOSS_HR_BRIDGE__ = CONTENT_VERSION;
+  const SCRIPT_BUILD = "1.10.2";
+  if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
+  window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
   const MAX_CAPTURES = 100;
   const OPEN_WAIT_MS = 3000;
@@ -26,7 +27,7 @@
     hostGeneration, documentId: hostDocumentId, observedAt: Date.now(),accountIdentity:hostPageStatus().accountIdentity, ...payload
   });
   const pauseForUser=(event)=> {
-    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==CONTENT_VERSION)return;
+    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==SCRIPT_BUILD)return;
     if (hostGeneration && event.isTrusted && !event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) {
       userPaused=true;
       try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
@@ -65,7 +66,7 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==CONTENT_VERSION)return;
+    if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==SCRIPT_BUILD)return;
     if (message?.source !== "GET_JOBS_BACKGROUND") return;
     if (message.type === "BOSS_HR_HOST_PAGE_PING") {
       sendResponse(hostPageStatus()); return;

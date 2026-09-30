@@ -117,7 +117,7 @@
           await chrome.windows.update(tab.windowId, { focused: true });
           return status();
         }
-        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载 Chrome Bridge 1.10.1 并刷新工作台");
+        if (message.hrBackgroundProtocol !== PROTOCOL) throw fault("HR_HOST_PROTOCOL_MISMATCH", "请加载 Chrome Bridge 1.10.2 并刷新工作台");
         let previous = await read();
         const profileId = Number(message.expectedProfileId);
         if (!Number.isSafeInteger(profileId) || profileId <= 0) throw fault("PROFILE_REQUIRED", "请先确认当前人物档案");

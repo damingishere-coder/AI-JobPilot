@@ -1,22 +1,24 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-30-hr-background-v1";
+  const PANEL_VERSION = "2026-09-30-hr-background-ui-v2";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
 
   const HOST_ID = "getjobs-boss-hr-assistant";
   document.getElementById(HOST_ID)?.remove();
-  const REFRESH_MS = 15_000;
+  const REFRESH_MS = 5_000;
   let activeRequest = false;
   let latestStatus = null;
   let latestProposals = [];
   let latestPolicy = null;
+  let latestHost = null;
+  let lastRefreshAt = 0;
   let actionError = "";
-  let intervalMinutes = 1;
   const cards=new Map();
   let includeClosed=false;
+  let recordsOpen=false;
 
   const host = document.createElement("div");
   host.id = HOST_ID;
@@ -28,7 +30,7 @@
   style.textContent = `
     *{box-sizing:border-box}.panel{width:370px;max-height:78vh;background:#fff;color:#172033;border:1px solid #cbd5e1;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.24);overflow:hidden}
     header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff}.title{font-weight:750;flex:1}.dot{width:9px;height:9px;border-radius:50%;background:#f59e0b}.dot.on{background:#4ade80}.toggle{border:0;background:rgba(255,255,255,.18);color:#fff;border-radius:8px;padding:5px 9px;cursor:pointer}
-    .body{padding:12px;overflow:auto;max-height:calc(78vh - 48px)}.status{font-size:12px;line-height:1.55;background:#f8fafc;border-radius:10px;padding:9px;margin-bottom:9px}.error{color:#b91c1c}.actions{display:flex;gap:7px;margin-bottom:10px}.btn{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:8px;padding:7px 10px;cursor:pointer;font-size:12px}.btn.primary{background:#0f766e;color:#fff;border-color:#0f766e}.btn.danger{color:#b91c1c}.btn:disabled{opacity:.48;cursor:not-allowed}.locked{flex:1;background:#e2e8f0;color:#64748b}
+    .body{padding:14px;overflow:auto;max-height:calc(78vh - 48px)}.status{font-size:12px;line-height:1.8;background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px;overflow-wrap:anywhere}.error{color:#b91c1c}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.btn{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:8px;padding:9px 12px;cursor:pointer;font-size:12px;line-height:1.5;text-align:center;text-decoration:none;display:inline-block}.btn.primary{background:#0f766e;color:#fff;border-color:#0f766e}.btn.danger{color:#b91c1c}.btn:disabled{opacity:.48;cursor:not-allowed}.locked{flex:1;background:#e2e8f0;color:#64748b}summary{cursor:pointer;font-size:13px;line-height:1.8}details.records{border-top:1px solid #e2e8f0;padding-top:12px;margin-top:12px}.freshness{font-size:11px;color:#64748b;margin:8px 0}
     textarea{width:100%;border:1px solid #cbd5e1;border-radius:7px;padding:7px;font:inherit;font-size:12px;background:#fff;resize:vertical;min-height:58px}
     .section-title{font-size:13px;font-weight:700;margin:9px 0}.empty{font-size:12px;color:#64748b;text-align:center;padding:18px}.card{border:1px solid #e2e8f0;border-radius:11px;padding:10px;margin-bottom:9px;background:#fff}.meta{display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:#64748b}.code{font-weight:800;color:#0f766e}.source{font-size:12px;background:#f8fafc;border-radius:7px;padding:7px;margin:7px 0;white-space:pre-wrap}.card-actions{display:flex;gap:6px;margin-top:7px}.card-actions .btn{padding:6px 9px}.high{border-color:#f59e0b}.tag{background:#fff7ed;color:#9a3412;border-radius:999px;padding:2px 6px}.hidden{display:none!important}
   `;
@@ -60,14 +62,17 @@
     if (activeRequest || !location.pathname.startsWith("/web/geek/chat")) return;
     activeRequest = true;
     try {
-      const [status, proposals, policy] = await Promise.all([
-        localApi("hr-status"), localApi("hr-proposals",{includeClosed}), localApi("hr-autopilot")
+      const [status, proposals, policy, background] = await Promise.all([
+        localApi("hr-status"), localApi("hr-proposals",{includeClosed}), localApi("hr-autopilot"), localApi("hr-background-status")
       ]);
       latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
       latestPolicy=policy;
+      latestHost=background;
+      lastRefreshAt=Date.now();
 
     } catch (error) {
+      latestHost=null;
       latestStatus = { watching: false, lastError: error.message || String(error), chromeBridge: { ready: true, tabBound: false } };
     } finally {
       activeRequest = false;
@@ -78,70 +83,55 @@
   function render() {
     const rendered={nodes:[],appendChild(node){this.nodes.push(node);}};
     const scroll=body.scrollTop;
-    const watching = Boolean(latestStatus?.watching);
-    const reviewReady = Boolean(latestStatus?.reviewReady);
-    dot.classList.toggle("on", watching);
-    const statusBox = element("div", `status ${latestStatus?.lastError ? "error" : ""}`);
-    const bridge = latestStatus?.chromeBridge;
-    const timing = latestStatus?.lastScanAt ? `｜上次扫描 ${formatTime(latestStatus.lastScanAt)}` : "";
-    const next = latestStatus?.nextScanAt ? `｜下次 ${formatTime(latestStatus.nextScanAt)}` : "";
-    statusBox.textContent = reviewReady ? `本轮已生成 ${latestStatus.reviewCount||0}/3 张确认卡，等待你确认。确认后系统自动选中 HR 回发，间隔至少 10 秒；不再扫描其他会话。` : latestStatus
-      ? `${watching ? (latestStatus.intervalMs === 1800000 ? "值守中：每 30 分钟读取全部会话" : (latestStatus.fullAutoLocked ? "值守中：每 60 秒检查未读" : "托管中：每分钟新消息，半小时补漏")) : "值守已停止"}｜Chrome 扩展已连接${bridge?.tabBound ? "／当前 BOSS 标签已绑定" : "／标签未绑定"}｜Outbox ${bridge?.outboxCount || 0}｜NapCat ${latestStatus.napcatConnected ? "已连接" : "未连接"}${latestStatus.scanRunning ? `｜正在逐个读取与生成，已处理 ${latestStatus.scannedCount || 0} 个` : timing + next}${latestStatus.lastError ? `｜${latestStatus.lastError}` : ""}`
-      : "正在连接本地 AI-JobPilot…";
+    const bound=Boolean(latestHost?.watchSessionId && latestHost.hostGeneration && latestHost.pageDocumentId
+      && latestHost.watchSessionId===latestStatus?.watchSessionId && latestHost.hostGeneration===latestStatus?.hostGeneration
+      && latestHost.pageDocumentId===latestStatus?.pageDocumentId && latestHost.profileId===latestStatus?.currentProfileId);
+    const watching=latestHost?.state==="RUNNING" && bound && latestStatus?.watching && latestStatus.transport==="CHROME_BACKGROUND"
+      && latestPolicy?.enabled && latestPolicy.authorizationValid===true;
+    const labels={STOPPED:"已停止",STARTING:"正在核对账号与页面",RUNNING:"后台连接待核验",PAUSED:"已暂停",RECOVERING:"正在恢复连接",BLOCKED:"需要处理后恢复"};
+    dot.classList.toggle("on",Boolean(watching));
+    const statusBox=element("div","status");
+    statusBox.appendChild(element("strong","",`后台托管：${watching?"运行中":labels[latestHost?.state] || "状态未确认"}`));
+    statusBox.appendChild(element("div","",`当前档案：${latestStatus?.currentProfileName || "未读取"}`));
+    if(latestHost?.intentEnabled) statusBox.appendChild(element("div","",`已核验账号：${latestHost.accountName || "等待核验"}`));
+    if(watching) {
+      const cursor=latestHost.cursor;
+      const progress=latestHost.operation?.kind==="SEND"?"正在核验或发送已审核回复":cursor?.stage==="LIST"?`浏览联系人，已发现 ${cursor.seen?.length || 0} 个`:cursor?.stage==="CAPTURE"?`检查待回复会话，剩余 ${cursor.queue?.length || 0} 个`:"等待下一次巡检";
+      statusBox.appendChild(element("div","",progress));
+    }
+    const error=actionError || (!latestHost?latestStatus?.lastError:latestHost.state==="BLOCKED"?latestHost.message:latestHost.state==="RECOVERING"?latestHost.message:"");
+    if(error) statusBox.appendChild(element("div","error",error));
     rendered.appendChild(statusBox);
-    rendered.appendChild(element("div", "status", `当前人物档案：${latestStatus?.currentProfileName || "未读取"}；切换档案不会切换 BOSS 登录账号。值守期间请先停止再切换。`));
     const automatic=latestPolicy?.enabled && latestPolicy.replyMode==="AUTO";
-    rendered.appendChild(element("div","status",`回复方式：${latestStatus?.replyMode==="TRIAL_REVIEW"?"三个会话试运行，仅QQ确认":automatic?"按已确认规则自动发送":"逐条确认后发送"}。已有消息：${latestPolicy?.historyMode==="RECENT"?"最近30天待回复会话一并处理":"仅处理新消息"}。逐条确认模式会把原话与建议发到QQ；试运行最多三个会话，结束后停止。`));
-    if(latestPolicy?.enabled && latestPolicy.blockers?.length) rendered.appendChild(element("div","status error",latestPolicy.blockers.join("；")));
-    if(!latestPolicy?.enabled) {
-      const settings=document.createElement("a"); settings.href="http://127.0.0.1:6866/env-config";settings.target="_blank";settings.rel="noopener noreferrer";settings.textContent="前往工作台确认自动回复规则"; rendered.appendChild(settings);
-    }
-    const schedule = document.createElement("select");
-    schedule.setAttribute("aria-label", "值守检查范围与间隔");
-    schedule.className = "btn";
-    for (const [value, label] of [[30, "每 30 分钟：全部会话（含已读）"], [1, "每 1 分钟：仅未读会话"]]) {
-      const option = element("option", "", label);
-      option.value = String(value);
-      schedule.appendChild(option);
-    }
-    schedule.value = String(watching ? (latestStatus.intervalMs === 1800000 ? 30 : 1) : intervalMinutes);
-    schedule.disabled = watching;
-    schedule.addEventListener("change", () => { intervalMinutes = Number(schedule.value); });
-    rendered.appendChild(schedule);
-
-    const actions = element("div", "actions");
-    const start = button(automatic ? "开始自动值班" : "开始值守", "btn primary");
-    start.disabled = watching;
-    start.disabled = watching || !latestStatus?.currentProfileId || latestStatus?.profileSwitchBlocked;
-    if(latestPolicy?.enabled && (latestPolicy.blockers?.length || !/getjobs-autopilot=1/.test(location.search||""))) start.disabled=true;
-    start.addEventListener("click", () => mutate("hr-start", null, { expectedProfileId: latestStatus?.currentProfileId, intervalMinutes }));
-    const stop = button("停止", "btn danger");
-    stop.disabled = !watching;
-    stop.addEventListener("click", () => mutate("hr-stop"));
-    const dedicated=/getjobs-autopilot=1/.test(location.search||"");
-    const locked = button(!dedicated ? "打开专用托管标签" : "恢复托管", "btn");
-    locked.addEventListener("click",()=> {
-      if(!dedicated) mutate("hr-dedicated-open");
-      else { window.dispatchEvent(new Event("getjobs:hr:resume")); mutate("hr-resume"); }
-    });
-    const trial = button("试运行：三个会话 → QQ确认", "btn primary");
-    trial.disabled = watching || activeRequest || !latestStatus?.currentProfileId;
-    trial.addEventListener("click",()=>{ window.dispatchEvent(new Event("getjobs:hr:resume")); mutate("hr-start",null,{expectedProfileId:latestStatus?.currentProfileId,intervalMinutes:1,reviewLimit:3}); });
-    actions.append(trial, start, stop, locked);
+    rendered.appendChild(element("div","status",`回复方式：${automatic?"普通对话自动回复，关键事项发 QQ":"逐条确认后发送"}。范围：${latestPolicy?.historyMode==="RECENT"?`最近 ${latestPolicy.historyDays} 天待回复会话`:"仅处理新消息"}。已由你回复且没有新提问的会话跳过。`));
+    if(latestPolicy?.enabled && latestPolicy.blockers?.length && latestHost?.state!=="STOPPED") rendered.appendChild(element("div","status error",latestPolicy.blockers.join("；")));
+    const actions=element("div","actions");
+    const settings=element("a","btn primary",latestHost?.intentEnabled?"托管设置 / 修改范围":"前往工作台开启托管");
+    settings.href="http://127.0.0.1:6866/env-config";settings.target="_blank";settings.rel="noopener noreferrer";
+    actions.appendChild(settings);
+    const paused=latestHost?.state==="PAUSED" || latestHost?.state==="BLOCKED";
+    const control=button(paused?"恢复后台托管":"暂停后台托管","btn");
+    control.disabled=activeRequest || !latestHost?.intentEnabled || !latestStatus?.currentProfileId || latestHost.profileId!==latestStatus.currentProfileId
+      || (paused && (latestHost.needsAccountConfirmation || latestPolicy?.authorizationValid!==true));
+    control.addEventListener("click",()=>mutate(paused?"hr-background-resume":"hr-background-pause",null,{expectedProfileId:latestStatus.currentProfileId}));
+    actions.appendChild(control);
     rendered.appendChild(actions);
-    const readAll = button("立即读取全部并生成草稿", "btn");
-    readAll.disabled = !watching || reviewReady || Boolean(latestStatus?.scanRunning);
-    readAll.addEventListener("click", () => mutate("hr-scan-all", null, { expectedProfileId: latestStatus?.currentProfileId }));
-    rendered.appendChild(readAll);
+    if(latestHost?.needsAccountConfirmation) rendered.appendChild(element("div","status error","请在工作台重新确认 BOSS 账号后恢复。"));
+    const freshness=element("div","freshness",`上次刷新：${lastRefreshAt?formatTime(lastRefreshAt):"尚未成功"} · 每 5 秒读取后台实际状态`);
+    const refreshButton=button("立即刷新","btn");
+    refreshButton.disabled=activeRequest;
+    refreshButton.addEventListener("click",()=>refresh());
+    rendered.appendChild(freshness);rendered.appendChild(refreshButton);
+    const records=element("details","records");
+    records.appendChild(element("summary","",`回复记录（${latestProposals.length}） · 点击展开`));
+    records.open=recordsOpen;
+    records.addEventListener("toggle",()=>{recordsOpen=records.open;});
     const historyToggle=button(includeClosed?"只看待处理":"查看最近已处理记录","btn");
     historyToggle.addEventListener("click",()=>{includeClosed=!includeClosed;refresh();});
-    rendered.appendChild(historyToggle);
-    rendered.appendChild(element("div", "section-title", `${includeClosed?"最近记录（最多200条）":"待确认回复"}（${latestProposals.length}）`));
-    if (!latestProposals.length) {
-      rendered.appendChild(element("div", "empty", "暂无待确认消息。符合已确认托管边界的新消息自动处理，例外发送 QQ。"));
-    } else {
-      latestProposals.forEach((proposal) => rendered.appendChild(renderProposal(proposal)));
-    }
+    records.appendChild(historyToggle);
+    if(!latestProposals.length) records.appendChild(element("div","empty","暂无待处理回复。普通消息按授权自动处理，关键事项发送 QQ。"));
+    else latestProposals.forEach(proposal=>records.appendChild(renderProposal(proposal)));
+    rendered.appendChild(records);
     const wanted=rendered.nodes;
     wanted.forEach((node,index)=>{if(body.childNodes[index]!==node) body.insertBefore(node,body.childNodes[index]||null);});
     while(body.childNodes.length>wanted.length) body.lastChild.remove();

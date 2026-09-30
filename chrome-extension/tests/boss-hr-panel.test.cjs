@@ -1,0 +1,52 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+class Node {
+  constructor(tag){this.tagName=tag;this.childNodes=[];this.events={};this.style={};this.dataset={};this.scrollTop=0;this.classes=new Set();this.classList={toggle:(name,value)=>{const on=value??!this.classes.has(name);if(on)this.classes.add(name);else this.classes.delete(name);},contains:name=>this.classes.has(name)};}
+  append(...nodes){nodes.forEach(node=>this.appendChild(node));}
+  appendChild(node){node.remove();node.parent=this;this.childNodes.push(node);return node;}
+  insertBefore(node,next){node.remove();node.parent=this;const index=this.childNodes.indexOf(next);this.childNodes.splice(index<0?this.childNodes.length:index,0,node);}
+  remove(){if(this.parent){const index=this.parent.childNodes.indexOf(this);if(index>=0)this.parent.childNodes.splice(index,1);this.parent=null;}}
+  get lastChild(){return this.childNodes.at(-1);}
+  addEventListener(name,fn){this.events[name]=fn;}
+  setAttribute(name,value){this[name]=value;}
+  attachShadow(){this.shadow=new Node('shadow');return this.shadow;}
+}
+const flush=()=>new Promise(resolve=>setImmediate(resolve));
+async function harness({mismatch=false}={}){
+  const document={documentElement:new Node('html'),getElementById:()=>null,createElement:tag=>new Node(tag)};
+  let timer,fail=false;const operations=[];
+  const binding={watchSessionId:'watch',hostGeneration:'generation',pageDocumentId:'document'};
+  const host={transport:'CHROME_BACKGROUND',state:'RUNNING',intentEnabled:true,profileId:4,...binding};
+  const status={transport:'CHROME_BACKGROUND',watching:true,currentProfileId:4,currentProfileName:'合成档案',...binding,...(mismatch?{watchSessionId:'other'}:{})};
+  const policy={enabled:true,authorizationValid:true,replyMode:'AUTO',historyMode:'RECENT',historyDays:15};
+  const runtime={sendMessage:(message,reply)=>{operations.push(message);if(fail)return reply({success:false,message:'连接失败'});
+    const data=message.operation==='hr-background-status'?host:message.operation==='hr-status'?status:message.operation==='hr-autopilot'?policy:message.operation==='hr-proposals'?[]:{};
+    reply({success:true,data:{success:true,data}});}};
+  const window={setInterval:fn=>{timer=fn;return 1;},clearInterval:()=>{}};window.top=window;window.self=window;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../boss-hr-assistant.js'),'utf8'),{document,window,chrome:{runtime},location:{pathname:'/web/geek/chat'},Date});
+  await flush();const root=document.documentElement.childNodes[0].shadow;
+  const nodes=()=>{const result=[];const walk=node=>{result.push(node);node.childNodes.forEach(walk);};walk(root);return result;};
+  return {nodes,operations,tick:async()=>{timer();await flush();},fail:()=>{fail=true;}};
+}
+test('panel shows the saved 15 day policy and shared status, with collapsed records and same-host pause',async()=>{
+  const h=await harness();
+  assert.ok(h.nodes().some(node=>node.textContent==='后台托管：运行中'));
+  assert.ok(h.nodes().some(node=>node.textContent?.includes('最近 15 天')));
+  assert.equal(Boolean(h.nodes().find(node=>node.tagName==='details' && node.className==='records').open),false);
+  const pause=h.nodes().find(node=>node.textContent==='暂停后台托管');assert.equal(pause.disabled,false);await pause.events.click();await flush();
+  const message=h.operations.find(message=>message.operation==='hr-background-pause');assert.equal(message.body.expectedProfileId,4);
+  assert.equal(h.operations.some(message=>message.operation==='hr-start'),false);
+});
+test('different backend binding is never shown as running',async()=>{
+  const h=await harness({mismatch:true});
+  assert.equal(h.nodes().some(node=>node.textContent==='后台托管：运行中'),false);
+  assert.ok(h.nodes().some(node=>node.textContent==='后台托管：后台连接待核验'));
+});
+test('a refresh failure removes the old running claim and keeps a manual refresh control',async()=>{
+  const h=await harness();h.fail();await h.tick();
+  assert.equal(h.nodes().some(node=>node.textContent==='后台托管：运行中'),false);
+  assert.ok(h.nodes().some(node=>node.textContent==='立即刷新'));
+  assert.ok(h.nodes().some(node=>node.textContent==='连接失败'));
+});

@@ -15,13 +15,14 @@ test("manifest loads the direct HR bridge and one-minute alarm capability", () =
   const bossScripts = manifest.content_scripts.find((entry) => entry.matches.includes("https://www.zhipin.com/*")).js;
   assert.deepEqual(bossScripts.slice(-3), ["boss-hr-support.js", "boss-hr-bridge.js", "boss-hr-assistant.js"]);
   assert.ok(manifest.permissions.includes("alarms"));
-  assert.equal(manifest.version, "1.10.1");
+  assert.equal(manifest.version, "1.10.2");
 });
 
-test("assistant exposes policy-gated dedicated watch and preserves explicit manual send", () => {
+test("assistant uses the shared background host and preserves explicit manual send", () => {
   const assistant = source("chrome-extension/boss-hr-assistant.js");
-  assert.match(assistant, /打开专用托管标签/);
-  assert.match(assistant, /fullAutoLocked/);
+  assert.match(assistant, /hr-background-status/);
+  assert.match(assistant, /hr-background-pause/);
+  assert.doesNotMatch(assistant, /mutate\("hr-start"/);
   assert.match(assistant, /window\.confirm/);
   assert.match(assistant, /const dirty = draft\.value\.trim\(\) !== savedDraft/);
   assert.doesNotMatch(assistant, /hr-command-poll/);
