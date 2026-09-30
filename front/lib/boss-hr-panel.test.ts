@@ -31,7 +31,7 @@ it('explains manual review and AI failure without enabling an empty draft or ren
   expect(root.textContent).toContain('<img src=x onerror=alert(1)>')
   expect(root.querySelector('img')).toBeNull()
   expect(Array.from(root.querySelectorAll<HTMLButtonElement>('.card .primary')).every(node => node.disabled)).toBe(true)
-  expect(operations).toEqual(['hr-status', 'hr-proposals', 'hr-autopilot'])
+  expect(operations).toEqual(['hr-status', 'hr-proposals', 'hr-autopilot', 'hr-background-status'])
 })
 
 
@@ -52,6 +52,8 @@ it('keeps the same focused editor and unsaved text across status polling', async
   const root = document.getElementById('getjobs-boss-hr-assistant')!.shadowRoot!
   await vi.waitFor(() => expect(root.querySelector('textarea')).not.toBeNull())
   const editor = root.querySelector('textarea')!
+  const records = root.querySelector<HTMLDetailsElement>('.records')!
+  records.open = true
   editor.value = '我正在输入的内容'
   editor.dispatchEvent(new Event('input', { bubbles: true }))
   editor.focus()
@@ -59,5 +61,8 @@ it('keeps the same focused editor and unsaved text across status polling', async
   await new Promise(resolve => setTimeout(resolve, 0))
   expect(root.querySelector('textarea')).toBe(editor)
   expect(editor.value).toBe('我正在输入的内容')
+  expect(root.querySelector('.records')).toBe(records)
+  expect(records.open).toBe(true)
+  expect(root.activeElement).toBe(editor)
   expect(root.querySelector<HTMLButtonElement>('.card .primary')!.disabled).toBe(true)
 })

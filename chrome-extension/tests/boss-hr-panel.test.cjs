@@ -6,6 +6,7 @@ class Node {
   constructor(tag){this.tagName=tag;this.childNodes=[];this.events={};this.style={};this.dataset={};this.scrollTop=0;this.classes=new Set();this.classList={toggle:(name,value)=>{const on=value??!this.classes.has(name);if(on)this.classes.add(name);else this.classes.delete(name);},contains:name=>this.classes.has(name)};}
   append(...nodes){nodes.forEach(node=>this.appendChild(node));}
   appendChild(node){node.remove();node.parent=this;this.childNodes.push(node);return node;}
+  replaceChild(node,old){node.remove();const index=this.childNodes.indexOf(old);old.parent=null;node.parent=this;this.childNodes[index]=node;}
   insertBefore(node,next){node.remove();node.parent=this;const index=this.childNodes.indexOf(next);this.childNodes.splice(index<0?this.childNodes.length:index,0,node);}
   remove(){if(this.parent){const index=this.parent.childNodes.indexOf(this);if(index>=0)this.parent.childNodes.splice(index,1);this.parent=null;}}
   get lastChild(){return this.childNodes.at(-1);}

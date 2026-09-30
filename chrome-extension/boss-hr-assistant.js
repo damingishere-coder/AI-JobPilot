@@ -18,7 +18,6 @@
   let actionError = "";
   const cards=new Map();
   let includeClosed=false;
-  let recordsOpen=false;
 
   const host = document.createElement("div");
   host.id = HOST_ID;
@@ -43,6 +42,7 @@
   const collapse = button("收起", "toggle");
   header.append(dot, title, collapse);
   const body = element("div", "body");
+  const recordsSection=element("details","records");
   panel.append(header, body);
   root.appendChild(panel);
   collapse.addEventListener("click", () => {
@@ -122,22 +122,31 @@
     refreshButton.disabled=activeRequest;
     refreshButton.addEventListener("click",()=>refresh());
     rendered.appendChild(freshness);rendered.appendChild(refreshButton);
-    const records=element("details","records");
-    records.appendChild(element("summary","",`回复记录（${latestProposals.length}） · 点击展开`));
-    records.open=recordsOpen;
-    records.addEventListener("toggle",()=>{recordsOpen=records.open;});
+    const recordNodes=[element("summary","",`回复记录（${latestProposals.length}） · 点击展开`)];
     const historyToggle=button(includeClosed?"只看待处理":"查看最近已处理记录","btn");
     historyToggle.addEventListener("click",()=>{includeClosed=!includeClosed;refresh();});
-    records.appendChild(historyToggle);
-    if(!latestProposals.length) records.appendChild(element("div","empty","暂无待处理回复。普通消息按授权自动处理，关键事项发送 QQ。"));
-    else latestProposals.forEach(proposal=>records.appendChild(renderProposal(proposal)));
-    rendered.appendChild(records);
+    recordNodes.push(historyToggle);
+    if(!latestProposals.length) recordNodes.push(element("div","empty","暂无待处理回复。普通消息按授权自动处理，关键事项发送 QQ。"));
+    else latestProposals.forEach(proposal=>recordNodes.push(renderProposal(proposal)));
+    reconcile(recordsSection,recordNodes);
+    rendered.appendChild(recordsSection);
     const wanted=rendered.nodes;
-    wanted.forEach((node,index)=>{if(body.childNodes[index]!==node) body.insertBefore(node,body.childNodes[index]||null);});
-    while(body.childNodes.length>wanted.length) body.lastChild.remove();
+    reconcile(body,wanted);
     body.scrollTop=scroll;
     const live=new Set(latestProposals.map(p=>p.id));
     for(const id of cards.keys()) if(!live.has(id)) cards.delete(id);
+  }
+
+  function reconcile(container,wanted) {
+    wanted.forEach((node,index)=> {
+      const previous=container.childNodes[index];
+      if(previous===node) return;
+      // Replace transient status nodes in place so the attached reply editor
+      // and its details element retain focus, unsaved text and open state.
+      if(previous && !wanted.includes(previous)) container.replaceChild(node,previous);
+      else container.insertBefore(node,previous || null);
+    });
+    while(container.childNodes.length>wanted.length) container.lastChild.remove();
   }
 
   function renderProposal(proposal) {
