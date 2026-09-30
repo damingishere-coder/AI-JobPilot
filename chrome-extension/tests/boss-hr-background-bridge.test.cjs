@@ -4,6 +4,17 @@ const {readFileSync}=require("node:fs");
 const vm=require("node:vm");
 const source=readFileSync(require.resolve("../boss-hr-bridge.js"),"utf8");
 const PROTOCOL="2026-09-30-hr-background-v1";
+test("a new build replaces an older bridge with the same wire protocol and same-build injection stays single",()=>{
+  let registrations=0,listener;
+  const window={__GET_JOBS_BOSS_HR_BRIDGE__:PROTOCOL,addEventListener:()=>{}};window.top=window;window.self=window;
+  const context=vm.createContext({window,document:{querySelector:()=>null},location:{pathname:'/web/geek/chat',href:'https://www.zhipin.com/web/geek/chat'},
+    crypto:{randomUUID:()=>"new-document"},chrome:{runtime:{onMessage:{addListener:fn=>{registrations++;listener=fn;}}}},sessionStorage:{getItem:()=>null},
+    GetJobsBossHrSupport:{normalizeText:value=>String(value || ''),pageSafety:()=>({safe:true})}});
+  vm.runInContext(source,context);vm.runInContext(source,context);
+  assert.equal(registrations,1);
+  let result;listener({source:'GET_JOBS_BACKGROUND',type:'BOSS_HR_HOST_PAGE_PING'},{},value=>result=value);
+  assert.equal(result.documentId,'new-document');assert.equal(result.protocol,PROTOCOL);
+});
 test("production list reader uses the overflow scroller, keeps selected parent filter and clamps the bottom",async()=>{
   let listener,clicks=0,writes=[];
   const account={textContent:"合成求职者",getAttribute:()=>null};

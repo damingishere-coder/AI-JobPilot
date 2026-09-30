@@ -64,7 +64,7 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.10.1";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.10.2";
 const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
@@ -490,6 +490,24 @@ async function handleBossLocalApiRequest(message, sender) {
   }
 
   const operation = String(message.operation || "");
+  if (operation.startsWith("hr-background-") && (!isBossChatUrl(sender?.tab?.url || "") || sender.frameId > 0))
+    return {success:false,errorCode:"BOSS_CHAT_TAB_REQUIRED",message:"请在 BOSS 求职者聊天页查看或控制后台托管"};
+  if (operation === "hr-background-status") {
+    const result=await bossHrHost.status();
+    return {success:result.success,data:{success:result.success,data:result.data}};
+  }
+  if (operation === "hr-background-pause" || operation === "hr-background-resume") {
+    const current=(await bossHrHost.status()).data;
+    const backend=await requestLocalApi("/api/hr-assistant/status",{platform:"boss",method:"GET",pageTabId:sender?.tab?.id});
+    const profileId=normalizeProfileId(message.body?.expectedProfileId);
+    if(!backend.success || !profileId || current.profileId!==profileId || backend.data?.data?.currentProfileId!==profileId || !current.intentEnabled)
+      return {success:false,errorCode:"HR_HOST_PROFILE_CONFLICT",message:"托管档案已变化，请返回工作台核对"};
+    if(operation==="hr-background-resume" && current.needsAccountConfirmation)
+      return {success:false,errorCode:"ACCOUNT_RECONFIRM_REQUIRED",message:"请在工作台重新核对 BOSS 账号后恢复"};
+    const result=await bossHrHost.control({type:operation==="hr-background-pause"?"BOSS_HR_HOST_PAUSE":"BOSS_HR_HOST_RESUME",
+      expectedProfileId:profileId,hrBackgroundProtocol:GetJobsBossHrHost.PROTOCOL},sender);
+    return result.success?{success:true,data:{success:true,data:result.data}}:result;
+  }
   if (operation === "runtime-begin") {
     const ownerPage = await chrome.tabs.get(message.pageTabId).catch(() => null);
     if (!ownerPage || !isAllowedPageUrl(ownerPage.url || "")) {
@@ -1007,6 +1025,8 @@ async function handleZhilianLocalApiRequest(message) {
 
 function resolveBossLocalApiEndpoint(message) {
   const operation = String(message?.operation || "");
+  if (["hr-background-status","hr-background-pause","hr-background-resume"].includes(operation))
+    return {success:true,method:"GET",path:"/api/hr-assistant/status"};
   if (operation === "runtime-begin") {
     const key = String(message?.params?.requestKey || "");
     if (!/^[A-Za-z0-9-]{1,120}$/.test(key)) return { success: false, message: "执行请求标识无效" };

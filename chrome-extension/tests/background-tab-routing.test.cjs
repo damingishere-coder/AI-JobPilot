@@ -13,6 +13,33 @@ function readContentVersion(file) {
   return match[1];
 }
 
+test('overlay background status shares worker state and rejects foreign frames and profiles', async () => {
+  const h=loadBackground({tabs:[],fetchImpl:async()=>jsonResponse({success:true,data:{currentProfileId:8}})});
+  const key=require('../boss-hr-host.js').KEY;
+  h.storage[key]={profileId:4,state:'PAUSED',paused:true,intentEnabled:true,protocol:'2026-09-30-hr-background-v1'};
+  const message=operation=>({source:'GET_JOBS_BOSS_CONTENT',type:'BOSS_LOCAL_API',operation,body:{expectedProfileId:4}});
+  const sender={frameId:0,tab:{id:7,windowId:8,url:'https://www.zhipin.com/web/geek/chat'}};
+  const state=await h.dispatchRuntimeMessage(message('hr-background-status'),sender);
+  assert.equal(state.data.data.profileId,4);assert.equal(state.data.data.state,'PAUSED');
+  const rejected=await h.dispatchRuntimeMessage(message('hr-background-resume'),sender);
+  assert.equal(rejected.success,false);assert.equal(rejected.errorCode,'HR_HOST_PROFILE_CONFLICT');
+  assert.equal(h.storage[key].paused,true);
+  const frame=await h.dispatchRuntimeMessage(message('hr-background-pause'),{...sender,frameId:1});
+  assert.equal(frame.success,false);assert.equal(frame.errorCode,'BOSS_CHAT_TAB_REQUIRED');
+});
+
+test('overlay pause changes the persistent background host instead of the legacy watcher', async () => {
+  const paths=[];
+  const h=loadBackground({tabs:[],fetchImpl:async url=>{paths.push(url);return jsonResponse({success:true,data:url.endsWith('/action-token')?{token:'synthetic-token'}:{currentProfileId:4}});}});
+  const key=require('../boss-hr-host.js').KEY;
+  h.storage[key]={profileId:4,state:'RUNNING',paused:false,intentEnabled:true,protocol:'2026-09-30-hr-background-v1'};
+  const result=await h.dispatchRuntimeMessage({source:'GET_JOBS_BOSS_CONTENT',type:'BOSS_LOCAL_API',operation:'hr-background-pause',body:{expectedProfileId:4}},
+    {frameId:0,tab:{id:7,windowId:8,url:'https://www.zhipin.com/web/geek/chat'}});
+  assert.equal(result.success,true);assert.equal(result.data.data.state,'PAUSED');
+  assert.equal(h.storage[key].paused,true);assert.equal(h.storage[key].intentEnabled,true);
+  assert.ok(paths.some(path=>path.endsWith('/autopilot/pause')));
+});
+
 const BOSS_CONTENT_VERSION = readContentVersion("boss-content.js");
 const ZHILIAN_CONTENT_VERSION = readContentVersion("zhilian-content.js");
 
