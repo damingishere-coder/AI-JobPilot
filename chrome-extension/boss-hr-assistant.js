@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-09-30-hr-background-ui-v2";
+  const PANEL_VERSION = "2026-10-08-hr-background-ui-v3";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -9,7 +9,12 @@
   const HOST_ID = "getjobs-boss-hr-assistant";
   document.getElementById(HOST_ID)?.remove();
   const REFRESH_MS = 5_000;
-  let activeRequest = false;
+  const READ_TIMEOUT_MS = 15_000;
+  const ACTION_TIMEOUT_MS = 120_000;
+  let actionBusy = false;
+  let activeRefresh = null;
+  let refreshRevision = 0;
+  let disposed = false;
   let latestStatus = null;
   let latestProposals = [];
   let latestPolicy = null;
@@ -56,15 +61,24 @@
     host.style.display = location.pathname.startsWith("/web/geek/chat") ? "block" : "none";
     if (host.style.display !== "none") refresh();
   }, REFRESH_MS);
-  window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__ = () => { window.clearInterval(refreshTimer); host.remove(); };
+  window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__ = () => {
+    disposed = true;
+    refreshRevision++;
+    window.clearInterval(refreshTimer);
+    host.remove();
+  };
 
   async function refresh() {
-    if (activeRequest || !location.pathname.startsWith("/web/geek/chat")) return;
-    activeRequest = true;
+    if (disposed || actionBusy || activeRefresh !== null || !location.pathname.startsWith("/web/geek/chat")) return;
+    const revision = ++refreshRevision;
+    activeRefresh = revision;
     try {
       const [status, proposals, policy, background] = await Promise.all([
-        localApi("hr-status"), localApi("hr-proposals",{includeClosed}), localApi("hr-autopilot"), localApi("hr-background-status")
+        localApi("hr-status", {}, undefined, READ_TIMEOUT_MS), localApi("hr-proposals", {includeClosed}, undefined, READ_TIMEOUT_MS),
+        localApi("hr-autopilot", {}, undefined, READ_TIMEOUT_MS), localApi("hr-background-status", {}, undefined, READ_TIMEOUT_MS)
       ]);
+      // A read started before a user action must never restore its old state.
+      if (disposed || revision !== refreshRevision || actionBusy) return;
       latestStatus = { ...status, lastError: status?.lastError || actionError };
       latestProposals = Array.isArray(proposals) ? proposals : [];
       latestPolicy=policy;
@@ -72,11 +86,12 @@
       lastRefreshAt=Date.now();
 
     } catch (error) {
+      if (disposed || revision !== refreshRevision || actionBusy) return;
       latestHost=null;
       latestStatus = { watching: false, lastError: error.message || String(error), chromeBridge: { ready: true, tabBound: false } };
     } finally {
-      activeRequest = false;
-      render();
+      if (activeRefresh === revision) activeRefresh = null;
+      if (!disposed && revision === refreshRevision && !actionBusy) render();
     }
   }
 
@@ -111,15 +126,21 @@
     actions.appendChild(settings);
     const paused=latestHost?.state==="PAUSED" || latestHost?.state==="BLOCKED";
     const control=button(paused?"恢复后台托管":"暂停后台托管","btn");
-    control.disabled=activeRequest || !latestHost?.intentEnabled || !latestStatus?.currentProfileId || latestHost.profileId!==latestStatus.currentProfileId
-      || (paused && (latestHost.needsAccountConfirmation || latestPolicy?.authorizationValid!==true));
+    const controlReason=actionBusy?"正在处理托管操作，请稍候。":!latestHost?"后台托管状态尚未读取，请先刷新。"
+      :!latestHost.intentEnabled?"请前往工作台开启后台托管。":!latestStatus?.currentProfileId?"当前人物档案尚未读取，请先刷新。"
+      :latestHost.profileId!==latestStatus.currentProfileId?"托管档案与当前档案不一致，请在工作台核对。"
+      :paused && latestHost.needsAccountConfirmation?"请在工作台重新确认 BOSS 账号后恢复。"
+      :paused && latestPolicy?.authorizationValid!==true?"托管授权尚未确认，请在工作台核对规则后恢复。":"";
+    control.disabled=Boolean(controlReason);
+    control.title=controlReason;
     control.addEventListener("click",()=>mutate(paused?"hr-background-resume":"hr-background-pause",null,{expectedProfileId:latestStatus.currentProfileId}));
     actions.appendChild(control);
     rendered.appendChild(actions);
-    if(latestHost?.needsAccountConfirmation) rendered.appendChild(element("div","status error","请在工作台重新确认 BOSS 账号后恢复。"));
+    if(controlReason) rendered.appendChild(element("div","status error",controlReason));
+    else if(latestHost?.needsAccountConfirmation) rendered.appendChild(element("div","status error","请在工作台重新确认 BOSS 账号后恢复。"));
     const freshness=element("div","freshness",`上次刷新：${lastRefreshAt?formatTime(lastRefreshAt):"尚未成功"} · 每 5 秒读取后台实际状态`);
     const refreshButton=button("立即刷新","btn");
-    refreshButton.disabled=activeRequest;
+    refreshButton.disabled=actionBusy || activeRefresh !== null;
     refreshButton.addEventListener("click",()=>refresh());
     rendered.appendChild(freshness);rendered.appendChild(refreshButton);
     const recordNodes=[element("summary","",`回复记录（${latestProposals.length}） · 点击展开`)];
@@ -234,32 +255,51 @@
   }
 
   async function mutate(operation, id, body) {
-    if (activeRequest) return;
-    activeRequest = true;
+    if (disposed || actionBusy) return;
+    actionBusy = true;
+    refreshRevision++;
+    activeRefresh = null;
+    render();
     try {
       await localApi(operation, id ? { id } : {}, body);
+      if (disposed) return;
       actionError = "";
     } catch (error) {
+      if (disposed) return;
       actionError = error.message || String(error);
       latestStatus = { ...(latestStatus || {}), lastError: actionError };
     } finally {
-      activeRequest = false;
+      actionBusy = false;
+      if (disposed) return;
+      render();
       await refresh();
     }
   }
 
-  function localApi(operation, params = {}, body) {
+  function localApi(operation, params = {}, body, timeoutMs = ACTION_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({
-        source: "GET_JOBS_BOSS_CONTENT", type: "BOSS_LOCAL_API", operation, params, body, timeoutMs: 120000
-      }, (response) => {
-        const runtimeError = chrome.runtime.lastError?.message;
-        if (runtimeError) return reject(new Error(runtimeError));
-        if (!response?.success) return reject(new Error(formatError(response, "本地接口调用失败")));
-        const envelope = response.data;
-        if (!envelope?.success) return reject(new Error(formatError(envelope, "本地接口拒绝请求")));
-        resolve(envelope.data);
-      });
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (error) reject(error); else resolve(value);
+      };
+      const timer = window.setTimeout(() => finish(new Error(
+        "[HR_LOCAL_TIMEOUT] 本地接口未及时响应，结果尚未确认；请刷新查看，不会自动重试操作。"
+      )), timeoutMs);
+      try {
+        chrome.runtime.sendMessage({
+          source: "GET_JOBS_BOSS_CONTENT", type: "BOSS_LOCAL_API", operation, params, body, timeoutMs
+        }, (response) => {
+          const runtimeError = chrome.runtime.lastError?.message;
+          if (runtimeError) return finish(new Error(runtimeError));
+          if (!response?.success) return finish(new Error(formatError(response, "本地接口调用失败")));
+          const envelope = response.data;
+          if (!envelope?.success) return finish(new Error(formatError(envelope, "本地接口拒绝请求")));
+          finish(null, envelope.data);
+        });
+      } catch (error) { finish(error); }
     });
   }
 
