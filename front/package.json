@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "node start-dev.mjs",
-    "build": "next build",
-    "build:prod": "next build && node scripts/copy-dist.mjs",
+    "build": "next build && node scripts/prepare-static-navigation.mjs",
+    "build:prod": "pnpm build && node scripts/copy-dist.mjs",
     "start": "node start-prod.mjs",
     "test": "vitest run",
     "lint": "eslint",
