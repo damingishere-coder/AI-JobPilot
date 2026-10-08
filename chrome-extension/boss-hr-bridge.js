@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "2026-10-08-hr-patrol-v1";
+  const SCRIPT_BUILD = "2026-10-08-hr-send-control-v2";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -581,6 +581,8 @@
     if (!Number.isFinite(command.deadlineAt) || Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     const input = inputs[0];
     if(support.normalizeText(inputValue(input))) return {success:true,outcome:"FAILED_SAFE",evidence:"输入框已有未发送文字，等待人工处理"};
+    const controls=findTextSendControls(input);
+    if(controls.length!==1)return {success:true,outcome:"FAILED_SAFE",evidence:controls.length?"发送按钮命中多个候选项":"未找到真实发送按钮，未输入或触发发送"};
     await guard();
     if (hostGeneration && !await hostDispatch(command,before,read.complete)) return {success:true,outcome:"FAILED_SAFE",evidence:"发送前持久授权未确认"};
     await guard();
@@ -590,8 +592,9 @@
       return { success: true, outcome: "FAILED_SAFE", evidence: "输入框内容复核失败" };
     }
 
-    const sendButtons = Array.from(document.querySelectorAll("button,[role='button']"))
-      .filter((element) => visible(element) && /^发送$/.test(support.normalizeText(element.textContent)) && !element.disabled);
+    // Let the reactive editor update its native send control before checking readiness.
+    await wait(50);
+    const sendButtons=findTextSendControls(input).filter(sendControlEnabled);
     if (Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     await guard();
     const recheck=support.currentSession(document,{uid:command.uid});
@@ -608,10 +611,7 @@
       sendButtons[0].click();
       dispatched = true;
     } else if (sendButtons.length === 0) {
-      sendDispatched=true;
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
-      input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
-      dispatched = true;
+      return { success: true, outcome: "FAILED_SAFE", evidence: "真实发送按钮不可用，未触发发送动作" };
     } else {
       return { success: true, outcome: "FAILED_SAFE", evidence: "发送按钮命中多个候选项" };
     }
@@ -804,6 +804,18 @@
     }
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function findTextSendControls(input) {
+    const scope=input.closest?.(".chat-conversation") || input.parentElement || document;
+    return Array.from(scope.querySelectorAll("div.send-message,button[type='send'].btn-send,button.btn-send,button,[role='button']"))
+      .filter(element=>visible(element) && /^发送(?:[（(]Enter[）)])?$/.test(support.normalizeText(element.textContent)));
+  }
+
+  function sendControlEnabled(element) {
+    return !element.disabled && element.getAttribute("aria-disabled")!=="true"
+      && !element.hasAttribute("disabled") && !element.classList.contains("disabled")
+      && !element.classList.contains("is-disabled");
   }
 
   function inputValue(input) {
