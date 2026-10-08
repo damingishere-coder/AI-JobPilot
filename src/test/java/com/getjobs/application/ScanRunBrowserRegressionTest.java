@@ -120,7 +120,22 @@ class ScanRunBrowserRegressionTest {
                     """);
                 assertThat(jdbc.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-stop")).isEqualTo("PENDING");
                 assertThat(page.evaluate("async()=>{try{await api('/api/'+task.platform+'/chrome/jobs',batch);return false}catch(e){return String(e).includes('409')}}")).isEqualTo(true);
-                page.evaluate("async()=>await control.leave()");
+                page.evaluate("""
+                    async()=>{
+                      await control.leave();
+                      // A busy SQLite connection can defer the first durable ACK. The control
+                      // retains it for its heartbeat; observe that handoff rather than leave().
+                      const deadline=Date.now()+20000;
+                      let lastState='';
+                      while(Date.now()<deadline){
+                        lastState=(await api(base)).state;
+                        if(lastState==='STOPPED')return;
+                        await new Promise(r=>setTimeout(r,200));
+                      }
+                      throw new Error('STOP ACK was not persisted; last state: '+lastState);
+                    }
+                    """);
+                assertThat(jdbc.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-stop")).isEqualTo("ACKNOWLEDGED");
                 assertThat(jdbc.queryForObject("SELECT state FROM scan_run WHERE platform=?",String.class,platform)).isEqualTo("STOPPED");
             }
             assertThat(jdbc.queryForList("SELECT payload FROM scan_event").toString()).doesNotContain("DO_NOT_STORE_SECRET");
