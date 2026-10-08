@@ -294,7 +294,11 @@ public class HrAssistantController {
 
     @GetMapping("/watch/captures")
     public ResponseEntity<?> inspectCaptures(@RequestParam(defaultValue="20") int size) {
-        return execute(()->watchService.inspectBackgroundCaptures(size));
+        String requestId=UUID.randomUUID().toString();
+        try {
+            // Keep inspection outside the mutation action dispatcher.
+            return ResponseEntity.ok(envelope(true,"","",requestId,watchService.inspectBackgroundCaptures(size)));
+        }catch(Throwable error){return requestFailure(error,requestId);}
     }
 
     @PostMapping("/watch/captures")

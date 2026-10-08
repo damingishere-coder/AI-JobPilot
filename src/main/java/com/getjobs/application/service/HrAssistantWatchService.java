@@ -366,10 +366,9 @@ public class HrAssistantWatchService {
     }
 
     public java.util.List<java.util.Map<String,Object>> inspectBackgroundCaptures(int size) {
-        return profileGuard.locked(()->{
-            if(background==null)throw new IllegalStateException("后台采集服务不可用");
-            return background.inspectCaptures(profileService.getCurrentProfileId(),size);
-        });
+        if(background==null)throw new IllegalStateException("后台采集服务不可用");
+        Long profile=profileService.getCurrentProfileId();
+        return background.inspectCaptures(profile,size);
     }
 
     private java.util.Map<String,Object> backgroundActivity(Long profile) {
