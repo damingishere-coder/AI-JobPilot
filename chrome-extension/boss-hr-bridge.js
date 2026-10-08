@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "2026-10-08-hr-new-incoming-v2";
+  const SCRIPT_BUILD = "2026-10-08-hr-locator-v3";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -186,7 +186,7 @@
         list=findScrollableList(items[0]);
       }
       const snapshots=items.map(support.itemSnapshot).filter(item=>item.uid && (cursor.scope==="ALL" || item.unreadCount));
-      const targets=snapshots.map(item=>({uid:item.uid,captureId:support.captureId(item),legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
+      const targets=snapshots.map(item=>({uid:item.uid,captureId:support.captureId(item),listScrollTop:list?.scrollTop || 0,legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
         const expected=anchor.capture?.session;
         return expected?.hrName && expected.companyName && support.normalizeText(expected.hrName)===item.hrName && support.normalizeText(expected.companyName)===item.companyName;
       })?.conversationId || null}));
@@ -194,8 +194,8 @@
       return {success:true,targets,hasMore,actualScrollTop:list?.scrollTop || 0,nextScrollTop:hasMore?Math.min(list.scrollHeight-list.clientHeight,list.scrollTop+Math.max(240,Math.floor(list.clientHeight*.85))):0,observedAt:Date.now()};
     }
     if (!message.target?.uid) return {success:true,capture:null,observedAt:Date.now()};
-    const located=await locateByUid(message.target.uid,message.deadlineAt);
-    if (located.matches.length!==1) return {success:false,errorCode:"BOSS_CHAT_IDENTITY_AMBIGUOUS",message:"未能唯一定位待处理会话"};
+    const located=await locateByUid(message.target.uid,message.deadlineAt,message.target.listScrollTop);
+    if (located.matches.length!==1) return locateFailure(located);
     const snapshot=support.itemSnapshot(located.unique);
     const opened=await openConversation(located.unique,snapshot,message.deadlineAt);
     if (!opened.success) return {...opened,retryable:true};
@@ -475,26 +475,47 @@
     return Array.from(document.querySelectorAll(".user-list-content,[class*='chat-list'],[class*='friend-list'],[class*='conversation-list']")).find(scrollable) || null;
   }
 
-  async function locateByUid(uid, deadlineAt = Infinity) {
+  function locateFailure(located) {
+    if (located.timedOut) return {success:false,errorCode:"BOSS_CHAT_LOCATE_TIMEOUT",message:"列表定位未在本次时限内完成，保留目标稍后重试",retryable:true};
+    if (!located.matches.length) return {success:false,errorCode:"BOSS_CHAT_NOT_FOUND",message:"列表暂未找到目标会话，保留目标稍后重试",retryable:true};
+    return {success:false,errorCode:"BOSS_CHAT_IDENTITY_AMBIGUOUS",message:"找到多个相同身份的会话，需人工核验",retryable:false};
+  }
+
+  async function locateByUid(uid, deadlineAt = Infinity, preferredScrollTop = null) {
+    const expired=()=>({matches:[],unique:null,timedOut:true});
+    if (Date.now() >= deadlineAt) return expired();
     let located = support.findByUid(document, uid);
     if (located.matches.length) return located;
     const items = support.chatItems(document);
     const list = findScrollableList(items[0]);
     if (!list) return located;
+    // A saved viewport is only a search hint. The platform UID must still match
+    // exactly once, and an outdated hint falls back to the bounded full search.
+    if (Number.isFinite(preferredScrollTop) && preferredScrollTop >= 0) {
+      list.scrollTop=Math.min(preferredScrollTop,Math.max(0,list.scrollHeight-list.clientHeight));
+      list.dispatchEvent(new Event("scroll",{bubbles:true}));
+      await wait(500);
+      if (Date.now() >= deadlineAt) return expired();
+      await guard();
+      located=support.findByUid(document,uid);
+      if (located.matches.length) return located;
+    }
     list.scrollTop = 0;
     list.dispatchEvent(new Event("scroll", { bubbles: true }));
     await wait(120);
+    let reachedEnd=false;
     for (let round = 0; round < 120; round++) {
-      if (Date.now() >= deadlineAt) return {matches:[],unique:null};
+      if (Date.now() >= deadlineAt) return expired();
       await guard();
       located = support.findByUid(document, uid);
       if (located.matches.length) return located;
-      if (list.scrollTop + list.clientHeight >= list.scrollHeight - 2) break;
+      if (list.scrollTop + list.clientHeight >= list.scrollHeight - 2) {reachedEnd=true;break;}
       list.scrollTop = Math.min(list.scrollHeight, list.scrollTop + Math.max(240, Math.floor(list.clientHeight * 0.85)));
       list.dispatchEvent(new Event("scroll", { bubbles: true }));
       await wait(120);
     }
-    return support.findByUid(document, uid);
+    located=support.findByUid(document, uid);
+    return located.matches.length || reachedEnd ? located : {...located,timedOut:true};
   }
 
   async function executeSend(command) {
@@ -512,7 +533,7 @@
 
     const located = await locateByUid(command.uid, command.deadlineAt);
     if (located.matches.length !== 1) {
-      return { success: true, outcome: "FAILED_SAFE", evidence: "BOSS_CHAT_IDENTITY_AMBIGUOUS" };
+      return { success: true, outcome: "FAILED_SAFE", evidence: locateFailure(located).errorCode };
     }
     const opened = await openConversation(located.unique, command, command.deadlineAt);
     if (!opened.success) return { success: true, outcome: "FAILED_SAFE", evidence: opened.errorCode + ": " + opened.message };
@@ -814,7 +835,14 @@
     return value.length <= 300 ? value : value.slice(0, 300);
   }
 
-  function wait(ms) {
+  async function wait(ms) {
+    if (hostGeneration && hostWatchSessionId) {
+      const generation=hostGeneration,session=hostWatchSessionId;
+      const response=await hostMessage("BOSS_HR_HOST_WAIT",{delayMs:ms,watchSessionId:session});
+      if (!response?.success || hostGeneration!==generation || hostWatchSessionId!==session || userPaused)
+        throw new Error(response?.errorCode || "HR_HOST_WAIT_CANCELLED");
+      return;
+    }
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 })();
