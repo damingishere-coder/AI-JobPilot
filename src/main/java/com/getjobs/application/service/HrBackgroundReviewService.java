@@ -20,10 +20,12 @@ public class HrBackgroundReviewService {
     // Caller holds HrProfileGuard through the transaction, including its commit.
     @Transactional
     public ProposalView prepare(Long profile,String account,String captureId,ReviewRequest request) {
+        boolean authorizationValid=policies.authorizationValid(profile);
+        if(!authorizationValid)throw new HrAssistantStore.StaleProposalException("托管授权已变化，请重新核对");
         if(request==null || !profile.equals(request.expectedProfileId()))
             throw new HrAssistantStore.StaleProposalException("当前人物档案已变化");
         var policy=policies.policy(profile);
-        if(policy.version()!=request.expectedPolicyVersion() || !policy.enabled() || policy.paused() || !policies.authorizationValid(profile))
+        if(policy.version()!=request.expectedPolicyVersion() || !policy.enabled() || policy.paused())
             throw new HrAssistantStore.StaleProposalException("托管规则或授权已变化，请重新核对");
         String draft=Objects.toString(request.draft(),"").trim();
         if(draft.isBlank() || draft.length()>2000)throw new IllegalArgumentException("人工文字回复应为1–2000字");

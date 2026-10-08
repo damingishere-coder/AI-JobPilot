@@ -63,6 +63,17 @@ class HrBackgroundReviewServiceTest {
         assertThatThrownBy(()->review.prepare(1L,"account",id,request())).isInstanceOf(HrAssistantStore.StaleProposalException.class);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
     }
+    @Test void authorizationIsCheckedEvenForNullWrongProfileOrWrongVersionRequests() {
+        var checked=org.mockito.Mockito.spy(policies);var target=new HrBackgroundReviewService(background,store,checked);
+        for(var request:new HrBackgroundReviewService.ReviewRequest[]{null,
+                new HrBackgroundReviewService.ReviewRequest(2L,version,"回复"),
+                new HrBackgroundReviewService.ReviewRequest(1L,version-1,"回复")}) {
+            org.mockito.Mockito.clearInvocations(checked);
+            assertThatThrownBy(()->target.prepare(1L,"account",id,request)).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+            org.mockito.Mockito.verify(checked).authorizationValid(1L);
+        }
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
+    }
     @Test void partialUnknownCardsAnsweredOrMismatchingPreviewsCannotBeReviewed() {
         var messages=source.messages();
         var unknown=new java.util.ArrayList<>(messages);unknown.add(new ChatMessage("对方","其他","","","card",List.of(new MediaContent("image","image/png","","","CAPTURED",""))));
