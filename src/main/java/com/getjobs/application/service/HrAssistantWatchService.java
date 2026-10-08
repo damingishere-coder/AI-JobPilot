@@ -371,6 +371,17 @@ public class HrAssistantWatchService {
         return background.inspectCaptures(profile,size);
     }
 
+    /** Does not renew the page observation; the real page must already be connected. */
+    public String requireBackgroundReviewAccount(Long profile) {
+        expirePageHeartbeat();
+        if(!watching.get() || !isBackground() || !session.profileId().equals(profile)
+                || !profile.equals(profileService.getCurrentProfileId()) || !dutyBlockers(profile).isEmpty())
+            throw new HrAssistantStore.StaleProposalException("请先恢复当前账号的后台托管并等待真实页面连接");
+        if(processingBackground.get() || processingScan.get() || browserScanRunning)
+            throw new HrAssistantStore.StaleProposalException("后台正在读取或分析，请稍后复核");
+        return session.binding().accountIdentity();
+    }
+
     private java.util.Map<String,Object> backgroundActivity(Long profile) {
         var result=new java.util.LinkedHashMap<String,Object>(autopilot.progressStatus(profile));
         if(background!=null && isBackground())result.put("background",background.captureDiagnostics(profile,autopilot.policy(profile).version()));

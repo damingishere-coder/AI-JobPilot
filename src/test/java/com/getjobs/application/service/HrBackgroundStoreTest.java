@@ -236,14 +236,14 @@ class HrBackgroundStoreTest {
         long old=unknownVisual("visual:old");var source=independentCapture(false,true);var s=source.session();
         var sameName=new ChatSession(s.uid(),"","测试HR",s.companyName(),s.jobName(),"",s.lastMessage(),s.lastTime());
         var sameCompany=new ChatSession(s.uid(),"",s.hrName(),"测试公司",s.jobName(),"",s.lastMessage(),s.lastTime());
-        var missingJob=new ChatSession(s.uid(),"",s.hrName(),s.companyName(),"","",s.lastMessage(),s.lastTime());
+        var missingUid=new ChatSession("","",s.hrName(),s.companyName(),"","",s.lastMessage(),s.lastTime());
         var withoutIds=source.messages().stream().map(m->new ChatMessage(m.from(),m.type(),m.text(),m.time())).toList();
         var duplicateIds=List.of(source.messages().getFirst(),source.messages().getLast(),source.messages().getLast());
         var oldRound=policies.context(1L,old).messages();
         for(var ambiguous:List.of(independentCapture(false,false),
                 new ChatCapture("same-name",1,sameName,source.messages(),false,true),
                 new ChatCapture("same-company",1,sameCompany,source.messages(),false,true),
-                new ChatCapture("missing-job",1,missingJob,source.messages(),false,true),
+                new ChatCapture("missing-uid",1,missingUid,source.messages(),false,true),
                 new ChatCapture("missing-ids",1,s,withoutIds,false,true),
                 new ChatCapture("duplicate-ids",1,s,duplicateIds,false,true),
                 new ChatCapture("same-old-round",1,s,oldRound.stream().map(m->new ChatMessage(m.from(),m.type(),m.text(),m.time(),"old-"+m.from(),List.of())).toList(),false,true))) {
@@ -271,6 +271,17 @@ class HrBackgroundStoreTest {
         var ambiguous=capture("ambiguous","blocked","采购","另一问题");background.accept(1L,"测试",2,ambiguous);
         var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
         assertThat(background.claim(1L,"测试",2)).isNull();
+    }
+
+    @Test void independentContactWithoutDisplayedJobRecoversWithoutInventingAJobOrReleasingUnknown() {
+        long old=unknownVisual("visual:old");var full=independentCapture(true,true);var s=full.session();
+        var noJob=new ChatSession(s.uid(),"",s.hrName(),s.companyName(),"","",s.lastMessage(),s.lastTime());
+        var source=new ChatCapture(full.captureId(),1,noJob,full.messages(),true,true);
+        background.accept(1L,"测试",2,source);var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        var recovered=background.claim(1L,"测试",2);assertThat(recovered.capture()).isEqualTo(source);
+        long fresh=background.resolveConversation(1L,recovered.capture());
+        assertThat(fresh).isNotEqualTo(old);assertThat(recovered.capture().session().jobName()).isEmpty();
+        assertThat(policies.conversationHeld(old)).isTrue();assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
     }
     @Test void captureInspectionIsScopedBoundedAndNeverChangesBlockedAnalysisOrUnknownSends() {
         unknownVisual("visual:old");var source=independentCapture(false,true);

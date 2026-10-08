@@ -267,6 +267,12 @@ public class HrAssistantStore {
                 """, conversationId, fingerprint);
     }
 
+    public void requireCurrentOrUnseenSource(Long profileId,long conversationId,String source) {
+        String current=jdbcTemplate.queryForObject("SELECT last_inbound_fingerprint FROM hr_conversation WHERE id=? AND profile_id=?",String.class,conversationId,profileId);
+        if(current!=null && !current.isBlank() && !current.equals(source))
+            throw new StaleProposalException("会话已有更新来源，不能使用旧快照复核");
+    }
+
     @Transactional(readOnly = true)
     public boolean hasProposalForSource(long conversationId, String sourceFingerprint) {
         Long count = jdbcTemplate.queryForObject("""
@@ -293,6 +299,10 @@ public class HrAssistantStore {
     public boolean hasHandledSource(long conversationId, String sourceFingerprint, boolean reconsiderHistory) {
         if (!reconsiderHistory) return hasProposalForSource(conversationId,sourceFingerprint);
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id WHERE p.conversation_id=? AND p.source_fingerprint=? AND NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY') AND NOT (p.status='EXPIRED' AND EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status='STALE' AND c.outcome='EXPIRED_UNSENT') AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=p.id AND c.status IN ('LEASED','COMPLETE')))",Integer.class,conversationId,sourceFingerprint)>0;
+    }
+
+    public boolean hasHandledManualReviewSource(long conversationId,String sourceFingerprint) {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal p LEFT JOIN hr_autopilot_decision d ON d.proposal_id=p.id WHERE p.conversation_id=? AND p.source_fingerprint=? AND NOT (p.status='SKIPPED' AND COALESCE(d.action_type,'')='HISTORY')",Integer.class,conversationId,sourceFingerprint)>0;
     }
 
     public boolean hasUnchangedBackgroundSuggestion(Long profileId,long conversationId,String sourceFingerprint,int currentPolicyVersion) {
