@@ -26,10 +26,10 @@ public final class HrConversationPolicy {
 
     private static final Pattern GREETING = Pattern.compile(
             "(?i)(?:你好|您好|哈喽|嗨|hi|hello|在吗|在么|在不在|你在吗|您在吗|"
-                    + "(?:现在)?(?:方便|可以)(?:简单)?(?:聊聊|聊几句|沟通)(?:吗|么)?)+");
+                    + "(?:现在)?(?:方便|可以)(?:简单)?(?:聊聊|聊几句|沟通)(?:吗|么)?)");
     private static final Pattern CLOSING = Pattern.compile(
-            "(?:好|好的|好呀|好啊|好哦|嗯|嗯嗯|收到|收到啦|明白|明白了|了解|了解了|"
-                    + "谢谢|谢谢你|谢谢您|感谢|感谢你|感谢您|辛苦了|辛苦你了|辛苦您了)+");
+            "(?:好呀|好啊|好哦|好的|好|嗯|收到啦|收到|明白了|明白|了解了|了解|"
+                    + "谢谢你|谢谢您|谢谢|感谢你|感谢您|感谢|辛苦你了|辛苦您了|辛苦了)");
     private static final Pattern COURTESY = Pattern.compile(
             "(?i)(?:你好|您好|哈喽|嗨|hi|hello|好|好的|好呀|好啊|好哦|嗯|嗯嗯|"
                     + "(?:我)?在(?:的|呢)?|我在这|收到(?:啦|了)?|明白(?:了)?|了解(?:了)?|"
@@ -93,10 +93,21 @@ public final class HrConversationPolicy {
         for (ChatMessage message : capture.messages().subList(first, capture.messages().size())) {
             if (!"文本".equals(message.type()) || !message.media().isEmpty()) return false;
             String value = normalize(message.text());
-            if (value.isEmpty() || !pattern.matcher(value).matches()) return false;
+            if (value.isEmpty() || !matchesTokens(value, pattern)) return false;
             content = true;
         }
         return content;
+    }
+
+    /** Consume tokens once, avoiding exponential backtracking on overlapping courtesy words. */
+    private static boolean matchesTokens(String value, Pattern pattern) {
+        var matcher = pattern.matcher(value);
+        int offset = 0;
+        while (offset < value.length()) {
+            if (!matcher.region(offset, value.length()).lookingAt()) return false;
+            offset = matcher.end();
+        }
+        return true;
     }
 
     private static List<String> questions(String text) {

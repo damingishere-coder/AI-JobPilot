@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class HrConversationPolicyTest {
     private ChatCapture capture(ChatMessage... messages) {
@@ -48,8 +49,15 @@ class HrConversationPolicyTest {
 
     @Test void entireClosingRoundIsQuietButAQuestionFollowedByThanksStillNeedsAnAnswer() {
         assertThat(HrConversationPolicy.closingRound(capture(self("三年运营经验"), hr("好的"), hr("谢谢你")))).isTrue();
+        assertThat(HrConversationPolicy.closingRound(capture(self("三年运营经验"), hr("嗯嗯，收到啦，谢谢您")))).isTrue();
         assertThat(HrConversationPolicy.closingRound(capture(self("你好"), hr("做过淘宝吗？"), hr("谢谢")))).isFalse();
         assertThat(HrConversationPolicy.closingRound(capture(hr("谢谢")))).isFalse();
+    }
+
+    @Test void repeatedCourtesyWithUnexpectedSuffixFinishesPromptlyAndIsNotAClosingRound() {
+        var longMessage = capture(self("你好"), hr("嗯嗯".repeat(5_000) + "请介绍经历"));
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(1), () ->
+                assertThat(HrConversationPolicy.closingRound(longMessage)).isFalse());
     }
 
     @Test void mediaAndIncompleteReadsCannotBeMistakenForClosingCourtesy() {
