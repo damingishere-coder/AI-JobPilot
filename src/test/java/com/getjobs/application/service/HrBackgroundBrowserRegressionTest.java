@@ -164,6 +164,46 @@ class HrBackgroundBrowserRegressionTest {
         }
     }
 
+    @Test void nativeDivSendControlWithContenteditableSubmitsExactlyOnce() {
+        try(Playwright pw=Playwright.create();Browser browser=pw.chromium().launch(new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
+                .setArgs(List.of("--disable-background-networking","--host-resolver-rules=MAP * ~NOTFOUND")));BrowserContext context=browser.newContext()) {
+            Page chat=fixture(context);
+            chat.evaluate("""
+                ()=>{const old=document.querySelector('#send'),handler=old.onclick,send=document.createElement('div');
+                  send.id='send';send.className='send-message';send.textContent='发送';send.onclick=handler;old.replaceWith(send);
+                  const input=document.querySelector('#chat-input'),editor=document.createElement('div');editor.id='chat-input';
+                  editor.contentEditable='true';editor.style.cssText='width:200px;height:70px';input.replaceWith(editor);
+                  window.syntheticEnter=0;editor.addEventListener('keydown',()=>syntheticEnter++);
+                  const outside=document.createElement('button');outside.textContent='发送';document.body.append(outside);}
+                """);
+            Map<?,?> ping=call(chat,Map.of("type","BOSS_HR_HOST_PAGE_PING"));
+            call(chat,Map.of("type","BOSS_HR_HOST_BIND","protocol",PROTOCOL,"hostGeneration","generation","watchSessionId","watch","documentId",ping.get("documentId"),"explicitResume",true));
+            Map<?,?> sent=send(chat,ping,Map.of("messages",List.of(Map.of("from","对方","type","文本","text","您好","time","","messageId","inbound"))),"generation");
+            assertThat(sent.get("outcome")).isEqualTo("SENT");assertThat(chat.evaluate("fixtureClicks")).isEqualTo(1);
+            assertThat(chat.evaluate("fixtureDispatches")).isEqualTo(1);assertThat(chat.evaluate("syntheticEnter")).isEqualTo(0);
+            assertThat(chat.locator("[data-mid='outbound'] .text").textContent()).isEqualTo("您好！\n谢谢联系。");
+        }
+    }
+
+    @Test void missingAmbiguousAndDisabledControlsNeverTriggerSyntheticEnterOrAClick() {
+        try(Playwright pw=Playwright.create();Browser browser=pw.chromium().launch(new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
+                .setArgs(List.of("--disable-background-networking","--host-resolver-rules=MAP * ~NOTFOUND")));BrowserContext context=browser.newContext()) {
+            for(String mode:List.of("missing","duplicate","disabled")) {
+                Page chat=fixture(context);chat.evaluate("""
+                    mode=>{const send=document.querySelector('#send');if(mode==='missing')send.remove();
+                      if(mode==='duplicate')send.after(send.cloneNode(true));if(mode==='disabled')send.setAttribute('aria-disabled','true');
+                      window.syntheticEnter=0;document.querySelector('#chat-input').addEventListener('keydown',()=>syntheticEnter++);}
+                    """,mode);
+                Map<?,?> ping=call(chat,Map.of("type","BOSS_HR_HOST_PAGE_PING"));
+                call(chat,Map.of("type","BOSS_HR_HOST_BIND","protocol",PROTOCOL,"hostGeneration","generation","watchSessionId","watch","documentId",ping.get("documentId"),"explicitResume",true));
+                Map<?,?> sent=send(chat,ping,Map.of("messages",List.of(Map.of("from","对方","type","文本","text","您好","time","","messageId","inbound"))),"generation");
+                assertThat(sent.get("outcome")).as(mode).isEqualTo("FAILED_SAFE");assertThat(chat.evaluate("fixtureClicks")).isEqualTo(0);assertThat(chat.evaluate("syntheticEnter")).isEqualTo(0);
+                if(!mode.equals("disabled")){assertThat(chat.locator("textarea").inputValue()).isEmpty();assertThat(chat.evaluate("fixtureDispatches")).isEqualTo(0);}
+                chat.close();
+            }
+        }
+    }
+
     private Map<?,?> send(Page page,Map<?,?> ping,Map<?,?> capture,String generation) {
         Map<String,Object> command=new java.util.LinkedHashMap<>();
         command.putAll(Map.of("commandId","command","leaseToken","lease","uid","101-0","hrName","合成HR",
@@ -197,7 +237,7 @@ class HrBackgroundBrowserRegressionTest {
               window.fixtureClicks=0;window.fixtureDispatches=0;window.fixtureReports=[];
               document.querySelector('#send').onclick=()=>{
                 fixtureClicks++;const row=document.createElement('li');row.className='message-item item-myself';row.dataset.mid='outbound';
-                const text=document.createElement('span');text.className='text';text.textContent=document.querySelector('textarea').value;row.append(text);document.querySelector('.im-list').append(row);bind();
+                const text=document.createElement('span');text.className='text';const input=document.querySelector('#chat-input');text.textContent='value' in input?input.value:input.textContent;row.append(text);document.querySelector('.im-list').append(row);bind();
               };
               window.chrome={runtime:{onMessage:{addListener:fn=>window.fixtureListener=fn},sendMessage:(message,reply)=>{
                 if(message.type==='BOSS_HR_HOST_GUARD'){reply({success:true,watchActive:true,policyVersion:2});return;}
