@@ -232,6 +232,13 @@ public class HrAssistantController {
         });
     }
 
+    @GetMapping("/proposals/{id}/delivery")
+    public ResponseEntity<?> deliveryEvidence(@PathVariable long id) {
+        String requestId=UUID.randomUUID().toString();
+        try {return ResponseEntity.ok(envelope(true,"","",requestId,store.inspectDelivery(profileService.getCurrentProfileId(),id)));}
+        catch(Throwable error){return requestFailure(error,requestId);}
+    }
+
     @GetMapping("/settings")
     public ResponseEntity<?> settings() {
         return execute(() -> store.loadSettings(profileService.getCurrentProfileId()));

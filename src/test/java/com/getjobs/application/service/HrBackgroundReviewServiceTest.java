@@ -114,4 +114,16 @@ class HrBackgroundReviewServiceTest {
         assertThat(actions.complete(1L,"watch",command.commandId(),command.leaseToken(),"SENT","真实页面回执",null,
                 new ChatCapture("after",0,source.session(),after,true,true),true).status()).isEqualTo("SENT_CONFIRMED");
     }
+
+    @Test void deliveryDiagnosticsReadOnlyReturnsScopedEvidenceWithoutLeasesOrChangingUnknown() {
+        var proposal=review.prepare(1L,"account",id,request());
+        store.queueSendCommand(1L,proposal.id(),1,"watch");var command=store.claimSendCommand(1L,"watch");
+        store.dispatchSendCommand(1L,"watch",command.commandId(),command.leaseToken(),source);
+        store.completeSendCommand(1L,"watch",command.commandId(),command.leaseToken(),"RESULT_UNKNOWN","发送动作已触发但未确认相同本人出站消息",null);
+        var commands=db.queryForList("SELECT * FROM hr_send_command");var proposals=db.queryForList("SELECT * FROM hr_reply_proposal");
+        var view=store.inspectDelivery(1L,proposal.id());
+        assertThat(view).containsEntry("status","SEND_UNKNOWN");assertThat(view.toString()).contains("发送动作已触发但未确认相同本人出站消息").doesNotContain(command.leaseToken(),command.commandId(),"evidence_cipher");
+        assertThatThrownBy(()->store.inspectDelivery(2L,proposal.id())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(db.queryForList("SELECT * FROM hr_send_command")).isEqualTo(commands);assertThat(db.queryForList("SELECT * FROM hr_reply_proposal")).isEqualTo(proposals);
+    }
 }

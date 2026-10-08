@@ -30,6 +30,7 @@ import java.util.Collections;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -512,6 +513,22 @@ public class HrAssistantStore {
                 .filter(item -> item.id() == proposalId)
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("未找到 HR 回复任务"));
+    }
+
+    /** Scoped read-only delivery evidence. Never leases, retries or resolves a send. */
+    @Transactional(readOnly=true)
+    public java.util.Map<String,Object> inspectDelivery(Long profileId,long proposalId) {
+        var proposal=requireProposal(profileId,proposalId);
+        var commands=jdbcTemplate.queryForList("SELECT command_id,status,outcome,dispatch_at,created_at,updated_at,evidence_cipher FROM hr_send_command WHERE profile_id=? AND proposal_id=? ORDER BY created_at,command_id",profileId,proposalId);
+        var evidence=commands.stream().map(row->{
+            var view=new java.util.LinkedHashMap<String,Object>();
+            for(String key:List.of("status","outcome","dispatch_at","created_at","updated_at"))view.put(key,row.get(key));
+            String cipher=Objects.toString(row.get("evidence_cipher"),"");
+            view.put("evidenceAvailable",!cipher.isBlank());
+            view.put("evidence",cipher.isBlank()?"":crypto.decrypt(cipher,"send-command:"+row.get("command_id")));
+            return view;
+        }).toList();
+        return java.util.Map.of("proposalId",proposalId,"status",proposal.status().name(),"commands",evidence);
     }
 
     @Transactional(readOnly = true)
