@@ -45,6 +45,7 @@ export default function LiepinPage() {
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
   const [isCustomCity, setIsCustomCity] = useState(false) // 是否手动输入城市
   const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [actionError, setActionError] = useState('')
   const [isDelivering, setIsDelivering] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
@@ -190,20 +191,24 @@ export default function LiepinPage() {
 
   const handleStartDelivery = async () => {
     try {
+      setActionError('')
       setIsDelivering(true)
       const response = await fetch(`${API_BASE}/api/liepin/start`, {
         method: 'POST',
       })
       const data = await response.json()
+      if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`)
 
       if (data.success) {
         // 启动成功：不弹框
       } else {
         // 启动失败：不弹框
+        setActionError(data.message || '猎聘采集启动失败，请重试')
         console.warn('启动失败：', data.message)
         setIsDelivering(false)
       }
     } catch (error) {
+      setActionError(error instanceof Error ? error.message : '猎聘采集启动失败')
       console.error('Failed to start delivery:', error)
       // 启动失败：不弹框
       setIsDelivering(false)
@@ -222,9 +227,11 @@ export default function LiepinPage() {
         setIsDelivering(false)
       } else {
         // 停止失败：不弹框
+        setActionError(data.message || '猎聘停止请求失败，任务可能仍在运行')
         console.warn('停止失败：', data.message)
       }
     } catch (error) {
+      setActionError(error instanceof Error ? error.message : '猎聘停止请求失败，任务可能仍在运行')
       console.error('Failed to stop delivery:', error)
       // 停止失败：不弹框
     }
@@ -293,10 +300,12 @@ export default function LiepinPage() {
         }
       />
 
+      <p className="rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground">实验平台 · 当前入口仅采集岗位，不会自动投递。</p>
+      {actionError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{actionError}</p>}
       <Tabs defaultValue="config" className="w-full">
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="config">平台配置</TabsTrigger>
-          <TabsTrigger value="analytics">投递分析</TabsTrigger>
+          <TabsTrigger value="analytics">岗位结果</TabsTrigger>
         </TabsList>
 
         <TabsContent value="config" className="space-y-6 mt-6">

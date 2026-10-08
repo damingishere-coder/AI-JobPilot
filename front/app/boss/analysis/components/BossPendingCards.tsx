@@ -192,8 +192,8 @@ export function BossPendingCards({
           <Button size="sm" variant="outline" onClick={onResetToPendingFilters}>
             <BiFilterAlt className="mr-1" /> 只看待确认
           </Button>
-          <Button size="sm" variant="success" onClick={onConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch}>
-            <BiBriefcase className="mr-1" /> {actingAiBatch ? "投递中..." : "一键投递AI推荐"}
+          <Button size="sm" variant="success" title="全部 AI 推荐待确认；不受当前列表筛选影响；下一步预览话术并确认" onClick={onConfirmAiRecommendedBatch} disabled={actingAiBatch || actingBatch}>
+            <BiBriefcase className="mr-1" /> {actingAiBatch ? "投递中..." : "预览全部 AI 推荐"}
           </Button>
         </div>
       </div>

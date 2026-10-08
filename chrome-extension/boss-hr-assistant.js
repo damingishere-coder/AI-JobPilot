@@ -122,7 +122,7 @@
     if(latestPolicy?.enabled && latestPolicy.blockers?.length && latestHost?.state!=="STOPPED") rendered.appendChild(element("div","status error",latestPolicy.blockers.join("；")));
     const actions=element("div","actions");
     const settings=element("a","btn primary",latestHost?.intentEnabled?"托管设置 / 修改范围":"前往工作台开启托管");
-    settings.href="http://127.0.0.1:6866/env-config";settings.target="_blank";settings.rel="noopener noreferrer";
+    settings.href="http://127.0.0.1:6866/hr";settings.target="_blank";settings.rel="noopener noreferrer";
     actions.appendChild(settings);
     const paused=latestHost?.state==="PAUSED" || latestHost?.state==="BLOCKED";
     const control=button(paused?"恢复后台托管":"暂停后台托管","btn");

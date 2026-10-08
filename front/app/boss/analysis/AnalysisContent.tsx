@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { BiBarChart, BiBriefcase, BiTrash } from "react-icons/bi"
 
+import { WorkspaceDataStatus, workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 import PageHeader from "@/app/components/PageHeader"
 import { DeliveryRecovery } from "@/components/communication/DeliveryRecovery"
 import { Button } from "@/components/ui/button"
@@ -37,6 +38,7 @@ export default function AnalysisContent({
 }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false)
   const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
+  const [detailedTable, setDetailedTable] = useState(false)
   const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [showDialog, setShowDialog] = useState(false)
   const [dialogTitle, setDialogTitle] = useState("")
@@ -61,6 +63,9 @@ export default function AnalysisContent({
   } = useBossFilters()
 
   const {
+    loadError,
+    loaded,
+    lastUpdatedAt,
     items,
     total,
     page,
@@ -78,6 +83,7 @@ export default function AnalysisContent({
   } = useBossJobs({ filters, buildFilterParams, requestedScanRunId: focusScanRunId })
 
   const {
+    statsError,
     stats,
     dashboardStats,
     loadingDashboardStats,
@@ -92,6 +98,7 @@ export default function AnalysisContent({
     pendingCount: analysisPendingCount,
     processingCount: analysisProcessingCount,
     loading: loadingAnalysisTasks,
+    loaded: analysisTasksLoaded,
     retryingTaskId,
     error: analysisTaskError,
     pollRevision,
@@ -246,7 +253,7 @@ export default function AnalysisContent({
     loadList(1, size)
     refreshStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters])
+  }, [filters, focusScanRunId])
 
   useEffect(() => {
     setSelectedManualJobIds(new Set())
@@ -258,7 +265,7 @@ export default function AnalysisContent({
       {showHeader && (
         <PageHeader
           title="Boss 投递分析"
-          subtitle="基于 boss_data 表的统计图与列表分析"
+          subtitle="查看岗位匹配，审核话术并确认投递"
           icon={<BiBarChart size={28} />}
           actions={
             <Button size="sm" variant="destructive" onClick={clearAnalysisAndSelection} disabled={clearingAnalysis}>
@@ -268,7 +275,8 @@ export default function AnalysisContent({
         />
       )}
 
-      <BossKpiCards stats={dashboardStats} loading={loadingDashboardStats} />
+      <WorkspaceDataStatus error={loadError || statsError} loading={loadingList} updatedAt={lastUpdatedAt} hasData={items.length > 0} onRetry={() => { void loadList(page, size); void refreshStats() }} />
+      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">岗位概况与统计</summary><div className="mt-4"><BossKpiCards stats={dashboardStats} loading={loadingDashboardStats} /></div></details>
 
       <Card>
         <CardHeader>
@@ -278,6 +286,10 @@ export default function AnalysisContent({
               <CardDescription>当前 Boss 岗位库明细</CardDescription>
             </div>
             <BatchActionBar
+              disabled={loadingList || !!loadError || !!statsError}
+              scopeLabel={activeScanRunId ? "本次扫描" : "当前档案全部历史"}
+              onToggleTable={() => setDetailedTable(value => !value)}
+              detailedTable={detailedTable}
               exporting={exporting}
               reloading={reloading}
               clearingAnalysis={clearingAnalysis}
@@ -293,15 +305,14 @@ export default function AnalysisContent({
               onConfirmBatch={handleConfirmBatch}
             />
           </div>
-          <BossThresholdSettings onApplied={async () => {
+          <details className="mt-4 rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">AI 判定阈值</summary><BossThresholdSettings onApplied={async () => {
             setSelectedManualJobIds(new Set())
             await Promise.all([loadList(1, size), refreshStats()])
-          }} />
+          }} /></details>
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-xs text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-100">
             <span className="font-semibold">AI分析队列</span>
-            <span>排队中 {analysisPendingCount}</span>
-            <span>处理中 {analysisProcessingCount}</span>
-            {loadingAnalysisTasks ? <span className="text-muted-foreground">读取中...</span> : null}
+            {analysisTasksLoaded ? <><span>{analysisTaskError ? '上次记录：' : ''}排队中 {analysisPendingCount}</span><span>处理中 {analysisProcessingCount}</span></> : <span className="text-muted-foreground">{analysisTaskError ? '队列读取失败' : '队列读取中…'}</span>}
+            {loadingAnalysisTasks && analysisTasksLoaded ? <span className="text-muted-foreground">读取中...</span> : null}
             {analysisQueueSize > 0 ? <span className="text-muted-foreground">页面可见时每 3 秒自动刷新</span> : null}
             {analysisTaskError ? <span className="text-red-600 dark:text-red-300">{analysisTaskError}</span> : null}
           </div>
@@ -313,6 +324,9 @@ export default function AnalysisContent({
             draftFilters={draftFilters}
             itemsLength={items.length}
             total={total}
+            loading={loadingList}
+            loaded={loaded}
+            error={loadError}
             onToggleOpen={() => setFiltersOpen((open) => !open)}
             onDraftChange={setDraftFilters}
             onToggleStatus={toggleDraftStatus}
@@ -320,7 +334,7 @@ export default function AnalysisContent({
             onReset={resetFilters}
           />
 
-          <BossPendingCards
+          <details className="mb-4 rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">待确认岗位审核卡片（{workspaceCountLabel(pendingJobs.length, loadingList, loaded, loadError)}）</summary>{loaded && !loadError && <BossPendingCards
             itemsLength={items.length}
             loadingList={loadingList}
             pendingJobs={pendingJobs}
@@ -338,9 +352,12 @@ export default function AnalysisContent({
             onEditGreeting={(job) => openGreetingDialog(job, false)}
             onSkipJob={handleSkipJob}
             onBlacklistCompany={handleBlacklistCompany}
-          />
+          />}
 
+          </details>
+          <div className="mb-3 rounded-lg bg-muted/40 px-3 py-2 text-sm">当前列表范围：{activeScanRunId ? "本次扫描" : "当前档案全部历史"} · 已应用 {activeFilterCount} 项筛选 · {workspaceCountLabel(total, loadingList, loaded, loadError)}。批量操作会先预览话术，再由你确认。</div>
           <BossJobTable
+            compact={!detailedTable}
             items={items}
             total={total}
             page={page}
@@ -349,6 +366,8 @@ export default function AnalysisContent({
             inputSize={inputSize}
             showDetailColumns={showDetailColumns}
             loadingList={loadingList}
+            loaded={loaded}
+            loadError={loadError}
             actingJobId={actingJobId}
             actingManualBatch={actingManualBatch}
             selectedManualJobIds={selectedManualJobIds}

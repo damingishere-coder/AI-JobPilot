@@ -13,6 +13,7 @@ import {
   type FilterState,
 } from "../types"
 import { deliveryStatusLabel } from "../utils"
+import { workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 
 export function BossFilterPanel({
   filtersOpen,
@@ -20,6 +21,9 @@ export function BossFilterPanel({
   draftFilters,
   itemsLength,
   total,
+  loading = false,
+  loaded = true,
+  error = '',
   onToggleOpen,
   onDraftChange,
   onToggleStatus,
@@ -31,6 +35,9 @@ export function BossFilterPanel({
   draftFilters: FilterState
   itemsLength: number
   total: number
+  loading?: boolean
+  loaded?: boolean
+  error?: string
   onToggleOpen: () => void
   onDraftChange: (updater: (prev: FilterState) => FilterState) => void
   onToggleStatus: (status: string) => void
@@ -53,7 +60,7 @@ export function BossFilterPanel({
           {filtersOpen ? <BiChevronUp /> : <BiChevronDown />}
         </button>
         <div className="text-xs text-muted-foreground">
-          当前显示 {itemsLength} 条，本页/总数 {total} 条
+          {loading || !loaded ? workspaceCountLabel(total, loading, loaded, error) : `${error ? '上次记录：' : ''}当前显示 ${itemsLength} 条，总数 ${total} 条`}
         </div>
       </div>
 

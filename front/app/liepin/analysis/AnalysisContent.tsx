@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
+import { useExperimentalAnalysisSync } from "@/app/discover/useExperimentalAnalysisSync"
+import { WorkspaceDataStatus, readWorkspaceResponse, workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 import PageHeader from "@/app/components/PageHeader"
 import { API_BASE } from "@/lib/api"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
@@ -235,18 +237,23 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [minK, setMinK] = useState<string>("")
   const [maxK, setMaxK] = useState<string>("")
   const [keyword, setKeyword] = useState<string>("")
-  const [loadingList, setLoadingList] = useState(false)
+  const [loadingList, setLoadingList] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [recoveringJobId, setRecoveringJobId] = useState<number | null>(null)
   const [analyzingJobId, setAnalyzingJobId] = useState<number | null>(null)
   const [detailJob, setDetailJob] = useState<LiepinJob | null>(null)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
 
-  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
+  const [appliedFilters, setAppliedFilters] = useState({ statuses: [] as string[], location: "", experience: "", degree: "", minK: "", maxK: "", keyword: "" })
+  const [listError, setListError] = useState("")
+  const [statsError, setStatsError] = useState("")
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const listSequence = useRef(0)
+  const statsSequence = useRef(0)
+  const applyFilters = () => setAppliedFilters({ statuses: [...statuses], location: location.trim(), experience, degree, minK, maxK, keyword: keyword.trim() })
+  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败", "LIST_COLLECTED"]
 
-  useEffect(() => {
-    loadStats()
-  }, [])
+
 
   useEffect(() => { setInputPage(page) }, [page])
   useEffect(() => { setInputSize(size) }, [size])
@@ -264,6 +271,8 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   }
 
   const loadList = async (toPage = page, toSize = size) => {
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
+    const sequence = ++listSequence.current
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
     if (location) params.set("location", location)
@@ -278,19 +287,24 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     try {
       setLoadingList(true)
       const res = await fetch(`${API_BASE}/api/liepin/list?${params.toString()}`)
-      const data: PagedResult = await res.json()
+      const data = await readWorkspaceResponse<PagedResult>(res, "猎聘岗位读取")
+      if (!Array.isArray(data.items)) throw new Error("猎聘岗位数据格式异常")
+      if (sequence !== listSequence.current) return
+      setListError(""); setLastUpdatedAt(Date.now())
       setItems(data.items || [])
       setTotal(data.total || 0)
       setPage(data.page || toPage)
       setSize(data.size || toSize)
     } catch (e) {
-      console.error("fetch liepin list failed", e)
+      if (sequence === listSequence.current) setListError(e instanceof Error ? e.message : "猎聘岗位读取失败")
     } finally {
-      setLoadingList(false)
+      if (sequence === listSequence.current) setLoadingList(false)
     }
   }
 
   const loadStats = async () => {
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
+    const sequence = ++statsSequence.current
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
     if (location) params.set("location", location)
@@ -303,18 +317,24 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     try {
       setLoadingStats(true)
       const res = await fetch(`${API_BASE}/api/liepin/stats?${params.toString()}`)
-      const data: StatsResponse = await res.json()
+      const data = await readWorkspaceResponse<StatsResponse>(res, "猎聘统计读取")
+      if (!data.kpi || !data.charts) throw new Error("猎聘统计数据格式异常")
+      if (sequence !== statsSequence.current) return
+      setStatsError("")
       setStats(data)
     } catch (e) {
-      console.error("fetch liepin stats failed", e)
+      if (sequence === statsSequence.current) setStatsError(e instanceof Error ? e.message : "猎聘统计读取失败")
     } finally {
-      setLoadingStats(false)
+      if (sequence === statsSequence.current) setLoadingStats(false)
     }
   }
 
-  useEffect(() => { loadList(1, size) }, [])
+  useEffect(() => { void loadList(1, size); void loadStats() }, [appliedFilters])
+
+  const analysisBusy = useExperimentalAnalysisSync("liepin", async () => { await loadList(page, size); await loadStats() })
 
   const exportCSV = async () => {
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
     try {
       setExporting(true)
       const baseParams = new URLSearchParams()
@@ -590,10 +610,13 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
 
   return (
     <div className="space-y-8">
+      <WorkspaceDataStatus loading={loadingList || loadingStats} error={listError || statsError} updatedAt={lastUpdatedAt} hasData={items.length > 0} onRetry={() => { void loadList(page, size); void loadStats() }} />
+      {analysisBusy && <p role="status" className="text-sm text-primary">AI 分析中，结果每 5 秒更新。</p>}
+      <p className="text-sm text-muted-foreground">实验平台 · 只读采集。条件编辑后点击“应用筛选”；分页与导出使用已应用条件。</p>
       {showHeader && (
         <PageHeader
           icon={<BiBriefcase className="text-2xl" />}
-          title="猎聘投递分析"
+          title="猎聘岗位结果"
           subtitle="统计分析猎聘平台的岗位投递数据"
           iconClass="text-white"
           accentBgClass="bg-orange-500"
@@ -616,7 +639,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
           <Card key={k.title} className="border-white/20">
             <CardContent className="pt-6">
               <p className="text-sm font-medium text-muted-foreground mb-1">{k.title}</p>
-              <p className="text-3xl font-bold text-primary">{k.value}</p>
+              <p className="text-3xl font-bold text-primary">{stats ? k.value : loadingStats ? '读取中…' : '读取失败'}</p>
             </CardContent>
           </Card>
         ))}
@@ -642,7 +665,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                         setStatuses((prev) => e.target.checked ? [...prev, s] : prev.filter((x) => x !== s))
                       }}
                     />
-                    {s}
+                    {s === "LIST_COLLECTED" ? "已采集待分析" : s}
                   </label>
                 ))}
               </div>
@@ -688,7 +711,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
-            <Button onClick={() => { loadList(1, size); loadStats(); }} className="app-button-success px-4">
+            <Button onClick={applyFilters} className="app-button-primary px-4">
               <BiRefresh className="mr-1" /> 应用筛选
             </Button>
             <Button onClick={exportCSV} disabled={exporting} className="app-button-primary px-4">
@@ -698,6 +721,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         </CardContent>
       </Card>
 
+      <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">展开岗位统计</summary>
       {/* 图表 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
@@ -799,6 +823,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
         {/* 已按需求移除 HR 活跃度图表卡片 */}
       </div>
 
+      </details>
       {/* 列表 */}
       <Card>
         <CardHeader>
@@ -823,6 +848,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                 </tr>
               </thead>
               <tbody>
+                {!items.length && <tr><td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">{loadingList ? '正在读取岗位…' : listError ? '岗位读取失败，请重新加载。' : lastUpdatedAt === null ? '正在读取岗位…' : '当前范围暂无岗位，可调整筛选或查看采集记录。'}</td></tr>}
                 {(items || []).map((it) => (
                   <tr key={it.jobId} className="border-t border-white/10">
                     <td className="py-2 px-3 whitespace-nowrap">
@@ -840,7 +866,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
                     <td className="py-2 px-3 whitespace-nowrap">{it.jobEduReq || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">{it.hrName || ""}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
-                      <span className={badgeClass("delivery", deliveryStatusOf(it))}>{deliveryStatusOf(it)}</span>
+                      <span className={badgeClass("delivery", deliveryStatusOf(it))}>{deliveryStatusOf(it) === "LIST_COLLECTED" ? "已采集待分析" : deliveryStatusOf(it)}</span>
                       <div className="mt-1 text-xs text-muted-foreground">AI {it.aiScore ?? "-"} · {it.aiDecision || "未分析"}</div>
                       {["未投递", "AI分析失败", "LIST_COLLECTED"].includes(deliveryStatusOf(it)) && (
                         <div className="mt-2">
@@ -931,7 +957,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
               }}
               className="w-20"
             />
-            <span className="text-sm text-muted-foreground">共 {total} 条</span>
+            <span className="text-sm text-muted-foreground">{workspaceCountLabel(total, loadingList, lastUpdatedAt !== null, listError)}</span>
             <div className="ml-auto flex items-center gap-2">
               <Button onClick={() => loadList(page - 1 > 0 ? page - 1 : 1, size)} disabled={loadingList || page <= 1} className="rounded-lg bg-white/80">
                 上一页

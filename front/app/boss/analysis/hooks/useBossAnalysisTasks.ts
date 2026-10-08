@@ -11,6 +11,7 @@ export function useBossAnalysisTasks() {
   const [pendingCount, setPendingCount] = useState(0)
   const [processingCount, setProcessingCount] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
   const [retryingTaskId, setRetryingTaskId] = useState<number | null>(null)
   const [error, setError] = useState("")
   const [visible, setVisible] = useState(true)
@@ -41,6 +42,7 @@ export function useBossAnalysisTasks() {
         setPendingCount(payload.pendingCount ?? bossTasks.filter((task) => task.status === "PENDING").length)
         setProcessingCount(payload.processingCount ?? bossTasks.filter((task) => task.status === "LEASED").length)
         setError("")
+        setLoaded(true)
         if (snapshotSignature.current !== null && snapshotSignature.current !== nextSignature) {
           setPollRevision((revision) => revision + 1)
         }
@@ -119,6 +121,7 @@ export function useBossAnalysisTasks() {
     pendingCount,
     processingCount,
     loading,
+    loaded,
     retryingTaskId,
     error,
     pollRevision,

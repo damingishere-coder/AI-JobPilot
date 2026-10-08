@@ -38,7 +38,7 @@ export function ProfileScopeProvider({ children }: { children: ReactNode }) {
       const profiles = Array.isArray(envelope.data) ? envelope.data : []
       const next = { profiles, current: envelope.current || profiles.find(item => item.isActive === 1) || profiles[0] || null }
       if (sequence === request.current) {
-        if (!acceptChange && currentRef.current && next.current?.id !== currentRef.current.id && hasUnsavedChanges()) {
+        if (!acceptChange && next.current?.id !== currentRef.current?.id && hasUnsavedChanges()) {
           setConflicted(true)
           setError('档案已在其他窗口改变。当前草稿已保留，请放弃修改后刷新档案再继续。')
           return { profiles, current: currentRef.current }

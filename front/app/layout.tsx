@@ -1,8 +1,8 @@
 "use client";
 
 import "./globals.css";
-import Sidebar from "./components/Sidebar";
-import ContentArea from "./components/ContentArea";
+import AppShell from "./components/AppShell";
+import { ProfileScopeProvider } from "./components/ProfileScope";
 import { ThemeProvider } from "next-themes";
 
 export default function RootLayout({
@@ -21,18 +21,13 @@ export default function RootLayout({
           type="image/svg+xml"
         />
       </head>
-      <body suppressHydrationWarning className="bg-[#f7faff] dark:bg-blacksection">
+      <body suppressHydrationWarning>
         <ThemeProvider
           attribute="class"
           defaultTheme="light"
           enableSystem={false}
         >
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <ContentArea>
-              {children}
-            </ContentArea>
-          </div>
+          <ProfileScopeProvider><AppShell>{children}</AppShell></ProfileScopeProvider>
         </ThemeProvider>
       </body>
     </html>
