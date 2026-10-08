@@ -42,6 +42,7 @@
     const day = messageDay(item.lastTime, timestamp), today = shanghaiDay(timestamp);
     if (day !== null && (day > today || day < today - cursor.historyDays * DAY_MS)) return false;
     if (cursor.catalogOnly) return false;
+    if (cursor.unreadOnly && !Number(item.unreadCount || 0)) return false;
     if (previous?.signature === previewSignature(item,timestamp) && Number(item.unreadCount || 0) <= previous.unreadCount) return false;
     // Unknown dates cannot make an unobserved, read historical chat current.
     return day !== null || Number(item.unreadCount || 0) > 0 || Boolean(previous);
@@ -347,7 +348,8 @@
           const catalog = state.patrolVersion!==PATROL_VERSION || !state.baselineComplete;
           const reconcile = catalog || !state.lastReconcileAt || now()-state.lastReconcileAt>=1800000;
           state = await update({ cursor: {stage:"LIST",scope:reconcile?"ALL":"UNREAD",scrollTop:0,queue:[],seen:[],baseline:!state.baselineComplete,
-            catalogOnly:catalog && p.historyMode==="NEW_ONLY",historyDays:p.historyDays,policyKey,patrolVersion:PATROL_VERSION,
+            catalogOnly:catalog && p.historyMode==="NEW_ONLY" && !state.baselineComplete,
+            unreadOnly:catalog && p.historyMode==="NEW_ONLY" && state.baselineComplete,historyDays:p.historyDays,policyKey,patrolVersion:PATROL_VERSION,
             scanId:uuid(),reconcile},operation:null },state);
         }
         const cursor = state.cursor;

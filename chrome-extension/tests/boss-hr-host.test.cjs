@@ -82,6 +82,13 @@ test('a saved pre-upgrade full capture queue is rebuilt before opening its old t
   await h.host.update({patrolVersion:0,previews:{},cursor:{stage:'CAPTURE',scope:'ALL',queue:[{uid:'old'}],seen:['old']}});
   await h.host.tick();await h.finish();assert.deepEqual(h.opened,[]);
 });
+test('upgrading a completed NEW_ONLY baseline preserves recent unread without opening read history',async()=>{
+  const h=patrolHarness([],{policy:{historyMode:'NEW_ONLY'}});await h.start();await h.finish();
+  h.setItems([patrolItem('unhandled','今天',{unreadCount:1}),patrolItem('read-history','今天'),patrolItem('old-unread','09-08',{unreadCount:1})]);
+  await h.host.update({patrolVersion:0,previews:{},cursor:{stage:'CAPTURE',scope:'ALL',queue:[{uid:'unhandled'}],seen:['unhandled']}});
+  await h.host.tick();await h.finish();assert.deepEqual(h.opened,['unhandled']);
+  assert.equal(h.messages.findLast(m=>m.type==='BOSS_HR_HOST_SCAN_STEP').cursor.baseline,false);
+});
 test('narrowing history policy discards a now-expired queued target without opening it',async()=>{
   const h=patrolHarness([patrolItem('twenty-days','09-18')],{policy:{historyDays:30}});
   await h.start();assert.equal(h.store[KEY].cursor.queue.length,1);
