@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { opportunityApi, type OpportunityDetail } from '@/lib/opportunities'
+import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 export const feedbackTypes: Record<string, string> = {
   RECRUITER_REPLIED: 'HR 已回复', CHATTING: '继续沟通', PHONE_SCREEN: '电话沟通', INTERVIEW_INVITED: '收到面试邀请',
@@ -11,7 +12,7 @@ export const feedbackTypes: Record<string, string> = {
 type Conversation = { id: number; hrName: string; companyName: string; jobName: string; candidate: boolean; linked: number; linked_count: number }
 type Message = { from: string; text: string; time: string; type: string }
 
-export default function FeedbackSection({ detail, onSaved }: { detail: OpportunityDetail; onSaved: () => void }) {
+export default function FeedbackSection({ detail, onSaved }: { detail: OpportunityDetail; onSaved: () => void | Promise<void> }) {
   const [conversations, setConversations] = useState<Conversation[] | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [type, setType] = useState('RECRUITER_REPLIED')
@@ -25,6 +26,8 @@ export default function FeedbackSection({ detail, onSaved }: { detail: Opportuni
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<{ signature: string; key: string } | null>(null)
+  const [saved, setSaved] = useState('')
+  useUnsavedChanges(`opportunity:${detail.id}:feedback`, busy || Boolean(occurred || until || attempt || conversation || resumeVersion || note || type !== 'RECRUITER_REPLIED'))
   async function run(action: () => Promise<unknown>) {
     setBusy(true); setError('')
     try { await action() } catch (e) { setError(e instanceof Error ? e.message : '操作失败') } finally { setBusy(false) }
@@ -34,14 +37,22 @@ export default function FeedbackSection({ detail, onSaved }: { detail: Opportuni
     const command = pending?.signature === signature ? pending : { signature, key: crypto.randomUUID() }
     setPending(command)
     await opportunityApi(`/${detail.id}${path}`, { ...value, version: detail.version, eventKey: command.key })
-    onSaved()
+    await onSaved()
+    setPending(null)
+    if (path === '/feedback') {
+      setType('RECRUITER_REPLIED'); setOccurred(''); setUntil(''); setAttempt(''); setConversation(''); setResumeVersion(''); setNote(''); setSaved('真实反馈已记录')
+    } else if (path === '/conversations') {
+      setConversations(await opportunityApi<Conversation[]>(`/${detail.id}/conversations`))
+      setMessages([])
+      setSaved('会话关联已更新')
+    }
   }
   const confirmed = detail.applications.filter(a => a.state === 'CONFIRMED')
   const versions = Array.from(new Set(detail.analyses.map(a => a.resume_version_id).filter((id): id is number => id !== null)))
   return <section className="space-y-4 border-t pt-4" aria-label="结果反馈与会话关联">
     <h3 className="font-medium">记录真实反馈</h3>
     <p className="text-sm text-muted-foreground">请根据你实际观察的结果保存。收到面试邀请不等于已安排面试；AI 消息分类不会自动确认为结果。</p>
-    <div className="grid gap-3 md:grid-cols-2">
+    <fieldset disabled={busy} className="grid gap-3 md:grid-cols-2">
       <label>反馈类型<select className="mt-1 block w-full rounded border bg-background p-2" value={type} onChange={e => setType(e.target.value)}>{Object.entries(feedbackTypes).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
       <label>发生时间（不确定可留空）<input type="datetime-local" className="mt-1 block w-full rounded border bg-background p-2" value={occurred} onChange={e => setOccurred(e.target.value)} /></label>
       {absence && <label>已核对结果的截止时间<input type="datetime-local" required className="mt-1 block w-full rounded border bg-background p-2" value={until} onChange={e => setUntil(e.target.value)} /></label>}
@@ -49,8 +60,9 @@ export default function FeedbackSection({ detail, onSaved }: { detail: Opportuni
       <label>关联会话<select className="mt-1 block w-full rounded border bg-background p-2" value={conversation} onChange={e => setConversation(e.target.value)}><option value="">无 / 尚未关联</option>{conversations?.filter(c => c.linked).map(c => <option key={c.id} value={c.id}>会话 #{c.id} · {c.hrName || '历史名称已清理'}</option>)}</select></label>
       <label>平台实际发送的简历<select disabled={!attempt} className="mt-1 block w-full rounded border bg-background p-2" value={resumeVersion} onChange={e => setResumeVersion(e.target.value)}><option value="">尚未核实，版本未知</option>{versions.map(id => <option key={id} value={id}>我已核实：实际发送版本 #{id}</option>)}</select><span className="text-xs text-muted-foreground">仅在核实网站实际发送版本后选择，不能从分析版本推断。</span></label>
       <label>反馈备注<textarea maxLength={1000} className="mt-1 block w-full rounded border bg-background p-2" value={note} onChange={e => setNote(e.target.value)} /></label>
-    </div>
+    </fieldset>
     {error && <p role="alert" className="text-red-600">{error}</p>}
+    {saved && <p role="status" className="text-sm text-emerald-600">{saved}</p>}
     <Button disabled={busy || (absence && (!until || !attempt))} onClick={() => run(() => save('/feedback', {
       type, occurredAt: occurred ? new Date(occurred).toISOString() : null, observedUntil: absence && until ? new Date(until).toISOString() : null,
       attemptId: attempt ? Number(attempt) : null, conversationId: conversation ? Number(conversation) : null,

@@ -89,13 +89,14 @@ test("legacy workbench routes preserve access to the separated HR, profile, and 
   assert.match(settingsPage, /<EnvironmentSettings\s*\/>/);
   assert.match(settingsPage, /<HrAssistantSettingsCard\s+mode="connection"\s*\/>/);
   assert.doesNotMatch(settingsPage, /mode="workspace"|HrAutopilotSettings/);
-  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'communication'\) && <div>/);
-  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'connection'\) && <div>/);
+  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'communication'\) && <fieldset disabled=\{saving\}/);
+  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'connection'\) && <fieldset disabled=\{saving\}/);
 });
 
 test("sensitive HR settings remain in the workbench instead of the BOSS overlay", () => {
   const assistant = source("chrome-extension/boss-hr-assistant.js");
   const workbench = source("front/app/env-config/HrAssistantSettingsCard.tsx");
+  assert.match(assistant, /settings\.href="http:\/\/127\.0\.0\.1:6866\/hr";settings\.target="_blank";settings\.rel="noopener noreferrer"/);
   assert.doesNotMatch(assistant, /沟通资料与 QQ 通知|hr-settings|qqTargetType|napcatToken/);
   for (const relativePath of ["chrome-extension/boss-hr-assistant.js", "chrome-extension/boss-hr-bridge.js", "chrome-extension/boss-hr-support.js"]) {
     assert.doesNotMatch(source(relativePath), /hr-assistant\/settings|communicationProfile|qqTarget|qqOperator|napcatToken|napcatWsUrl/i);

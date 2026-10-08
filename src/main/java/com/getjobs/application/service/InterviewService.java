@@ -24,14 +24,33 @@ public class InterviewService {
     public static final Set<String> PREPARATION=Set.of("TIME_LOCATION","JOB_RESUME","PROJECT_STORIES","QUESTIONS");
 
     public Map<String,Object> list(Long opportunityId,int page,int size) {
+        return list(opportunityId,page,size,null,null);
+    }
+    public Map<String,Object> list(Long opportunityId,int page,int size,String view,String q) {
         long profile=profiles.getCurrentProfileId();
         int safePage=Math.max(1,Math.min(10001,page)),limit=Math.max(1,Math.min(100,size));
         List<Object> parameters=new ArrayList<>(List.of(profile));
         String filter=" WHERE i.profile_id=?";
         if(opportunityId!=null) { owned(opportunityId,profile); filter+=" AND i.opportunity_id=?";parameters.add(opportunityId); }
-        long total=jdbc.queryForObject("SELECT COUNT(*) FROM interview i"+filter,Long.class,parameters.toArray());
+        Instant now=Instant.now();
+        if(view!=null&&!view.isBlank()&&!view.equals("ALL")) {
+            switch(view) {
+                case "UPCOMING" -> { filter+=" AND i.status='SCHEDULED' AND julianday(i.scheduled_at)>=julianday(?)";parameters.add(now.toString()); }
+                case "PENDING" -> filter+=" AND i.status='PENDING'";
+                case "PREPARE" -> { filter+=" AND i.status='SCHEDULED' AND julianday(i.scheduled_at)>=julianday(?) AND julianday(i.scheduled_at)<julianday(?) AND json_array_length(i.preparation_json)<4";parameters.add(now.toString());parameters.add(now.plus(java.time.Duration.ofDays(7)).toString()); }
+                case "CHECK" -> { filter+=" AND i.status='SCHEDULED' AND julianday(i.scheduled_at)<julianday(?)";parameters.add(now.toString()); }
+                case "HISTORY" -> filter+=" AND i.status IN('COMPLETED','CANCELLED')";
+                default -> throw new IllegalArgumentException("面试视图无效");
+            }
+        }
+        if(q!=null&&!q.isBlank()) {
+            if(q.trim().length()>200) throw new IllegalArgumentException("搜索关键词最多 200 字");
+            filter+=" AND instr(lower(COALESCE(o.job_name,'')||' '||COALESCE(o.company_name,'')),lower(?))>0";parameters.add(q.trim());
+        }
+        String from=" FROM interview i JOIN opportunity o ON o.id=i.opportunity_id AND o.profile_id=i.profile_id";
+        long total=jdbc.queryForObject("SELECT COUNT(*)"+from+filter,Long.class,parameters.toArray());
         parameters.add(limit);parameters.add((safePage-1)*limit);
-        var rows=jdbc.queryForList("SELECT i.*,o.job_name,o.company_name,o.archived,o.version AS opportunity_version FROM interview i JOIN opportunity o ON o.id=i.opportunity_id"+filter+
+        var rows=jdbc.queryForList("SELECT i.*,o.job_name,o.company_name,o.archived,o.version AS opportunity_version"+from+filter+
             " ORDER BY CASE i.status WHEN 'SCHEDULED' THEN 0 WHEN 'PENDING' THEN 1 ELSE 2 END,i.scheduled_at,i.id DESC LIMIT ? OFFSET ?",parameters.toArray());
         for(var row:rows) {
             row.put("note",crypto.decrypt((String)row.remove("note_cipher"),aad(profile,((Number)row.get("id")).longValue())));

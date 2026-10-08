@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import FeedbackSection from './FeedbackSection'
 import { opportunityApi, type OpportunityDetail } from '@/lib/opportunities'
+import { hasUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 vi.mock('@/lib/opportunities', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/opportunities')>(), opportunityApi: vi.fn() }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
@@ -38,4 +39,19 @@ it('records only an explicitly selected outcome and leaves sent resume version u
   fireEvent.click(screen.getByText('确认记录反馈'))
   await waitFor(() => expect(saved).toHaveBeenCalledOnce())
   expect(opportunityApi).toHaveBeenCalledWith('/8/feedback', expect.objectContaining({ type: 'INTERVIEW_INVITED', actualSentResumeVersionId: null, occurredAt: null, attemptId: null }))
+})
+it('protects an in-flight feedback save and freezes fields until its submitted snapshot is recorded', async () => {
+  let finish!: (value: unknown) => void
+  const pending = new Promise(resolve => { finish = resolve })
+  vi.mocked(opportunityApi).mockReturnValue(pending)
+  render(<FeedbackSection detail={detail} onSaved={vi.fn()} />)
+  expect(hasUnsavedChanges()).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: '确认记录反馈' }))
+  expect(screen.getByLabelText('反馈备注')).toBeDisabled()
+  expect(screen.getByLabelText('反馈类型')).toBeDisabled()
+  expect(hasUnsavedChanges()).toBe(true)
+  await act(async () => { finish({ success: true }); await pending })
+  await screen.findByText('真实反馈已记录')
+  expect(screen.getByLabelText('反馈备注')).toBeEnabled()
+  expect(hasUnsavedChanges()).toBe(false)
 })

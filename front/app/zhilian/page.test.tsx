@@ -20,7 +20,7 @@ it('配置页不再嵌入分析；启动后提供带档案与批次的独立结�
   await screen.findByText('Chrome 智联可用')
   expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   expect(screen.queryByText('岗位列表')).not.toBeInTheDocument()
-  expect(screen.getByRole('link', { name: '智联分析' })).toHaveAttribute('href', '/zhilian/analysis')
+  expect(screen.getByRole('link', { name: '全部岗位结果' })).toHaveAttribute('href', '/zhilian/analysis')
   const start = await screen.findByRole('button', { name: '开始扫描' })
   await waitFor(() => expect(start).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: '20' }))

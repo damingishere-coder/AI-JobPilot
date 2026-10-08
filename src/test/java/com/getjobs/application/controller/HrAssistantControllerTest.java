@@ -37,6 +37,72 @@ class HrAssistantControllerTest {
     }
 
     @Test
+    void paginatedReadsAreProfileScopedAndTheOriginalProposalArrayContractRemainsAvailable() throws Exception {
+        when(profiles.getCurrentProfileId()).thenReturn(4L);
+        when(store.listProposals(4L, true)).thenReturn(java.util.List.of());
+        when(store.pageProposals(4L, "history", "SEND_UNKNOWN", "公司", 2, 25))
+                .thenReturn(new HrAssistantStore.ProposalPage(4L, "history", "SEND_UNKNOWN", "公司", 2, 25, 30, 2, java.util.List.of()));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/proposals").param("includeClosed", "true"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data").isArray());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/proposals/page")
+                        .param("profileId", "4").param("view", "history").param("status", "SEND_UNKNOWN").param("q", "公司").param("page", "2").param("size", "25"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.success").value(true))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value(""))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.requestId").isNotEmpty())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.profileId").value(4))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.items").isArray())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(30))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.page").value(2));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/proposals/page").param("profileId", "9"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("STALE_STATE"));
+        verify(store).listProposals(4L, true);
+        verify(store).pageProposals(4L, "history", "SEND_UNKNOWN", "公司", 2, 25);
+        org.mockito.Mockito.verifyNoMoreInteractions(store);
+        verifyNoInteractions(watcher, actions, events);
+    }
+
+    @Test
+    void paginatedReadValidationFailureKeepsThePublicEnvelopeWithoutCallingMutations() throws Exception {
+        when(profiles.getCurrentProfileId()).thenReturn(4L);
+        when(store.pageProposals(4L, "pending", "INVALID", "", 1, 10))
+                .thenThrow(new IllegalArgumentException("回复记录状态不合法"));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/proposals/page")
+                        .param("view", "pending").param("status", "INVALID"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.success").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("INVALID_REQUEST"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.message").value("回复记录状态不合法"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.requestId").isNotEmpty())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data").doesNotExist());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/proposals/page"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isMethodNotAllowed());
+        verify(store).pageProposals(4L, "pending", "INVALID", "", 1, 10);
+        org.mockito.Mockito.verifyNoMoreInteractions(store);
+        verifyNoInteractions(watcher, actions, events);
+    }
+
+    @Test
+    void autopilotReadIncludesItsProfileIdentityWithoutChangingThePolicyOrCallingActions() throws Exception {
+        var policies = mock(com.getjobs.application.service.HrAutopilotStore.class);
+        controller.setAutopilot(policies);
+        when(profiles.getCurrentProfileId()).thenReturn(4L);
+        when(policies.policy(4L)).thenReturn(com.getjobs.application.service.HrAutopilotStore.Policy.defaults());
+        when(store.loadSettings(4L)).thenReturn(new SettingsView(4L, CommunicationProfile.empty(), false, "",
+                QqTargetType.PRIVATE, "", "", false, false, 30, true));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.profileId").value(4))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.enabled").value(false));
+        verifyNoInteractions(actions, events);
+    }
+
+    @Test
     void startsTheExactChromeTabOnlyWithFreshLocalActionToken() {
         HrAssistantController.WatchStartRequest request = new HrAssistantController.WatchStartRequest();
         request.setTabId(77);
@@ -105,6 +171,12 @@ class HrAssistantControllerTest {
         when(profiles.getCurrentProfileId()).thenThrow(new IllegalStateException("当前人物档案不可用"));
         var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/autopilot"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isServiceUnavailable())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.success").value(false))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("SERVICE_UNAVAILABLE"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.requestId").isNotEmpty())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data").doesNotExist());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/proposals/page"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isServiceUnavailable())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.success").value(false))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("SERVICE_UNAVAILABLE"))

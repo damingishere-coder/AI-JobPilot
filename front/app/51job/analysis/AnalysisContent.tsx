@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useExperimentalAnalysisSync } from "@/app/discover/useExperimentalAnalysisSync"
+import { WorkspaceDataStatus, readWorkspaceResponse, workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 import PageHeader from "@/app/components/PageHeader"
 import { API_BASE } from "@/lib/api"
 import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
@@ -111,21 +113,30 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
   const [minK,setMinK]=useState<string>("")
   const [maxK,setMaxK]=useState<string>("")
   const [keyword,setKeyword]=useState<string>("")
-  const [loadingList,setLoadingList]=useState(false)
+  const [loadingList,setLoadingList]=useState(true)
   const [reloading,setReloading]=useState(false)
   const [exporting,setExporting]=useState(false)
   const [recoveringJobId,setRecoveringJobId]=useState<number|null>(null)
   const [analyzingJobId,setAnalyzingJobId]=useState<number|null>(null)
 
-  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败"]
+  const [appliedFilters, setAppliedFilters] = useState({ statuses: [] as string[], location: "", experience: "", degree: "", minK: "", maxK: "", keyword: "" })
+  const [listError, setListError] = useState("")
+  const [statsError, setStatsError] = useState("")
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const listSequence = useRef(0)
+  const statsSequence = useRef(0)
+  const applyFilters = () => setAppliedFilters({ statuses: [...statuses], location: location.trim(), experience, degree, minK, maxK, keyword: keyword.trim() })
+  const statusOptions = ["待确认", "AI分析中", "AI不匹配", "AI分析失败", "未投递", "投递确认中", "投递结果待确认", "已投递", "投递失败", "LIST_COLLECTED"]
 
-  useEffect(()=>{ loadStats() },[])
+
   useEffect(()=>{ setInputPage(page) },[page])
   useEffect(()=>{ setInputSize(size) },[size])
 
   const formatDateOnly = (s?:string)=>{ if (!s) return ""; const d = new Date(s); if (!isNaN(d.getTime())){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}` } return s.slice(0,10) }
 
   const loadList = async (toPage=page, toSize=size)=>{
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
+    const sequence = ++listSequence.current
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
     if (location) params.set("location", location)
@@ -136,10 +147,20 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     if (keyword) params.set("keyword", keyword)
     params.set("page", String(toPage))
     params.set("size", String(toSize))
-    try{ setLoadingList(true); const res = await fetch(`${API_BASE}/api/51job/list?${params.toString()}`); const data:PagedResult51 = await res.json(); setItems(data.items||[]); setTotal(data.total||0); setPage(data.page||toPage); setSize(data.size||toSize) }catch(e){ console.error("fetch list failed",e) } finally { setLoadingList(false) }
+    try {
+      setLoadingList(true)
+      const res = await fetch(`${API_BASE}/api/51job/list?${params.toString()}`)
+      const data = await readWorkspaceResponse<PagedResult51>(res, "51job 岗位读取")
+      if (!Array.isArray(data.items)) throw new Error("51job 岗位数据格式异常")
+      if (sequence !== listSequence.current) return
+      setItems(data.items); setTotal(data.total || 0); setPage(data.page || toPage); setSize(data.size || toSize); setListError(""); setLastUpdatedAt(Date.now())
+    } catch (error) { if (sequence === listSequence.current) setListError(error instanceof Error ? error.message : "51job 岗位读取失败") }
+    finally { if (sequence === listSequence.current) setLoadingList(false) }
   }
 
   const loadStats = async ()=>{
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
+    const sequence = ++statsSequence.current
     const params = new URLSearchParams()
     if (statuses.length) params.set("statuses", statuses.join(","))
     if (location) params.set("location", location)
@@ -148,10 +169,18 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     if (minK) params.set("minK", String(Number(minK)))
     if (maxK) params.set("maxK", String(Number(maxK)))
     if (keyword) params.set("keyword", keyword)
-    try{ setLoadingStats(true); const res = await fetch(`${API_BASE}/api/51job/stats?${params.toString()}`); const data:StatsResponse = await res.json(); setStats(data) }catch(e){ console.error("fetch stats failed",e) } finally { setLoadingStats(false) }
+    try {
+      setLoadingStats(true)
+      const res = await fetch(`${API_BASE}/api/51job/stats?${params.toString()}`)
+      const data = await readWorkspaceResponse<StatsResponse>(res, "51job 统计读取")
+      if (!data.kpi || !data.charts) throw new Error("51job 统计数据格式异常")
+      if (sequence !== statsSequence.current) return
+      setStats(data); setStatsError("")
+    } catch (error) { if (sequence === statsSequence.current) setStatsError(error instanceof Error ? error.message : "51job 统计读取失败") }
+    finally { if (sequence === statsSequence.current) setLoadingStats(false) }
   }
 
-  useEffect(()=>{ loadList(1,size) },[])
+  useEffect(() => { void loadList(1, size); void loadStats() }, [appliedFilters])
 
   const onReload = async ()=>{
     try{ setReloading(true); const res=await fetch(`${API_BASE}/api/51job/reload`); const data=await res.json(); console.log("reload",data); await loadList(1,size); await loadStats() }catch(e){ console.error("reload failed",e) } finally { setReloading(false) }
@@ -196,7 +225,10 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     finally{ setAnalyzingJobId(null) }
   }
 
+  const analysisBusy = useExperimentalAnalysisSync("51job", async () => { await loadList(page, size); await loadStats() })
+
   const exportCSV = async ()=>{
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
     try{ setExporting(true)
       const baseParams = new URLSearchParams()
       if (statuses.length) baseParams.set("statuses", statuses.join(","))
@@ -223,14 +255,17 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
 
   return (
     <div className="space-y-8">
+      <WorkspaceDataStatus loading={loadingList || loadingStats} error={listError || statsError} updatedAt={lastUpdatedAt} hasData={items.length > 0} onRetry={() => { void loadList(page, size); void loadStats() }} />
+      {analysisBusy && <p role="status" className="text-sm text-primary">AI 分析中，结果每 5 秒更新。</p>}
+      <p className="text-sm text-muted-foreground">实验平台 · 只读采集。条件编辑后点击“应用筛选”；分页与导出使用已应用条件。</p>
       {showHeader && (
-        <PageHeader title="51job 投递分析" subtitle="基于 job51_data 表的统计图与列表分析" icon={<BiBarChart size={28} />} />
+        <PageHeader title="51job 岗位结果" subtitle="实验平台的只读采集与 AI 匹配结果" icon={<BiBarChart size={28} />} />
       )}
 
       {/* KPI 卡片 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {kpiCards.map((c,idx)=> (
-          <Card key={idx} className="border"><CardHeader><CardTitle className="text-sm">{c.title}</CardTitle><CardDescription className="text-xl font-semibold">{c.value}</CardDescription></CardHeader></Card>
+          <Card key={idx} className="border"><CardHeader><CardTitle className="text-sm">{c.title}</CardTitle><CardDescription className="text-xl font-semibold">{stats ? c.value : loadingStats ? '读取中…' : '读取失败'}</CardDescription></CardHeader></Card>
         ))}
       </div>
 
@@ -247,7 +282,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
                 <label key={s} className={`group inline-flex items-center gap-2 text-sm rounded-lg px-3 py-1.5 transition-all border backdrop-blur-sm ${statuses.includes(s)?"border-cyan-300/60 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 text-cyan-900 dark:text-cyan-200 shadow":"border-white/20 bg-white/8 text-foreground/80 hover:bg-white/12"}`}>
                   <input type="checkbox" checked={statuses.includes(s)} onChange={(e)=>{ setStatuses(prev=> e.target.checked ? Array.from(new Set([...prev,s])) : prev.filter(x=>x!==s) ) }} className="sr-only peer" />
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-md border border-white/30 bg-white/10 shadow-inner transition-all peer-checked:bg-cyan-400/60 peer-checked:border-cyan-300/80"></span>
-                  {s}
+                  {s === "LIST_COLLECTED" ? "已采集待分析" : s}
                 </label>
               ))}
             </div>
@@ -263,13 +298,14 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
             <div><Label>关键词</Label><Input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="公司/岗位/HR" /></div>
           </div>
           <div className="mt-4 flex gap-3">
-            <Button onClick={async()=>{ await loadList(1,size); await loadStats() }} disabled={loadingList}><BiBarChart className="mr-2" /> 应用筛选</Button>
+            <Button onClick={applyFilters} disabled={loadingList}><BiBarChart className="mr-2" /> 应用筛选</Button>
             <Button variant="success" onClick={exportCSV} disabled={exporting}><BiDownload className="mr-2" /> {exporting?"导出中...":"导出CSV"}</Button>
             <Button variant="outline" onClick={onReload} disabled={reloading}><BiRefresh className="mr-2" /> 刷新数据</Button>
           </div>
         </CardContent>
       </Card>
 
+      <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">展开岗位统计</summary>
       {/* 图表区 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card><CardHeader><CardTitle className="text-base flex items-center gap-2"><BiPieChart /> 投递状态分布</CardTitle><CardDescription>已投递/未投递占比</CardDescription></CardHeader><CardContent>{stats?(<ChartCanvas type="pie" labels={stats.charts.byStatus.map(x=>x.name)} data={stats.charts.byStatus.map(x=>x.value)} />):(<div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>)}</CardContent></Card>
@@ -280,6 +316,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
         <Card><CardHeader><CardTitle className="text-base flex items-center gap-2"><BiLineChart /> 薪资区间分布</CardTitle><CardDescription>基于中位数K的桶聚合</CardDescription></CardHeader><CardContent>{stats?(<ChartCanvas type="line" labels={stats.charts.salaryBuckets.map(x=>x.bucket)} data={stats.charts.salaryBuckets.map(x=>x.value)} color="#ef4444" />):(<div className="h-64 flex items-center justify-center border-2 border-dashed rounded-lg text-muted-foreground">加载中...</div>)}</CardContent></Card>
       </div>
 
+      </details>
       {/* 列表 */}
       <Card>
         <CardHeader>
@@ -308,7 +345,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
               </thead>
               <tbody>
                 {items.length===0 ? (
-                  <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20"><div className="flex flex-col items-center gap-3"><BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" /><p className="text-sm">暂无数据</p></div></td></tr>
+                  <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20"><div className="flex flex-col items-center gap-3"><BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" /><p className="text-sm">{loadingList ? '正在读取岗位…' : listError ? '岗位读取失败，请重新加载。' : lastUpdatedAt === null ? '正在读取岗位…' : '当前范围暂无岗位，可调整筛选或查看采集记录。'}</p></div></td></tr>
                 ) : (
                   items.map((it,idx)=> (
                     <tr key={it.jobId} className={`group transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0 ${idx%2===0?'bg-white dark:bg-blacksection hover:bg-blue-50/50 dark:hover:bg-blue-950/20':'bg-gray-50/50 dark:bg-gray-900/20 hover:bg-blue-50/50 dark:hover:bg-blue-950/20'}`}>
@@ -320,7 +357,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
                       <td className="px-4 py-3 text-sm leading-6 whitespace-nowrap align-top"><div className="truncate" title={it.degree||'-'}>{it.degree||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 align-top"><div className="truncate" title={it.hrName||'-'}>{it.hrName||'-'}</div></td>
                       <td className="px-4 py-3 text-sm leading-6 align-top">
-                        <span className={`whitespace-nowrap px-2 py-1 rounded-full text-xs ${ (it.deliveryStatus||'').includes('已投递') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300' }`}>{it.deliveryStatus||'-'}</span>
+                        <span className={`whitespace-nowrap px-2 py-1 rounded-full text-xs ${ (it.deliveryStatus||'').includes('已投递') ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300' }`}>{it.deliveryStatus === "LIST_COLLECTED" ? "已采集待分析" : it.deliveryStatus || "-"}</span>
                         <div className="mt-1 text-xs text-muted-foreground">AI {it.aiScore??'-'} · {it.aiDecision||'未分析'}</div>
                         {["未投递","AI分析失败","LIST_COLLECTED"].includes((it.deliveryStatus||"").trim()) && (
                           <div className="mt-2"><Button size="sm" variant="outline" disabled={analyzingJobId===it.id} onClick={()=>analyzeJob(it)}>{analyzingJobId===it.id?"入队中...":"AI 分析"}</Button></div>
@@ -350,7 +387,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
 
           <div className="mt-4 flex items-center gap-3">
             <Button variant="outline" onClick={()=>loadList(Math.max(1,page-1), size)} disabled={loadingList || page<=1}>上一页</Button>
-            <div className="text-sm">第 {page} 页 / 共 {Math.max(1, Math.ceil(total/size))} 页</div>
+            <div className="text-sm">{loadingList || lastUpdatedAt === null ? (listError && !loadingList ? '页数读取失败' : '页数读取中…') : `第 ${page} 页 / 共 ${Math.max(1, Math.ceil(total/size))} 页`}</div>
             <Button variant="outline" onClick={()=>loadList(page+1, size)} disabled={loadingList || page>=Math.ceil(total/size)}>下一页</Button>
             <div className="flex items-center gap-2 ml-4">
               <Label className="text-sm">页码</Label>
@@ -364,7 +401,7 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
               </select>
               <span className="text-sm text-muted-foreground">条</span>
             </div>
-            <div className="ml-auto text-sm text-muted-foreground">共 {total} 条</div>
+            <div className="ml-auto text-sm text-muted-foreground">{workspaceCountLabel(total, loadingList, lastUpdatedAt !== null, listError)}</div>
           </div>
         </CardContent>
       </Card>

@@ -12,8 +12,9 @@ import java.util.Map;
 public class InterviewController {
     private final InterviewService interviews;
     private final LocalActionTokenService tokens;
-    @GetMapping("/api/interviews") public Object list(@RequestParam(required=false) Long opportunityId,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size) {
-        return interviews.list(opportunityId,page,size);
+    @GetMapping("/api/interviews") public Object list(@RequestParam(required=false) Long opportunityId,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size,
+            @RequestParam(required=false) String view,@RequestParam(required=false) String q) {
+        return interviews.list(opportunityId,page,size,view,q);
     }
     @PostMapping("/api/opportunities/{id}/interviews") public ResponseEntity<?> save(@PathVariable long id,@RequestBody InterviewService.Save request,
             @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token) {

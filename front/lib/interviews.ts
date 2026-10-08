@@ -10,8 +10,11 @@ export type Interview = {
   mode: string; status: string; preparation: string[]; note: string; version: number; opportunity_version: number;
   job_name: string; company_name: string; archived: number;
 }
-export async function loadInterviews(opportunityId?: number, page = 1, size = 20, signal?: AbortSignal): Promise<{ items: Interview[]; total: number; profileId: number }> {
+export const interviewViews: Record<string, string> = { ALL: '全部面试', UPCOMING: '即将面试', PENDING: '待安排', PREPARE: '七天内待准备', CHECK: '过期待核实', HISTORY: '历史记录' }
+export async function loadInterviews(opportunityId?: number, page = 1, size = 20, signal?: AbortSignal, view = 'ALL', q = ''): Promise<{ items: Interview[]; total: number; profileId: number }> {
   const query = new URLSearchParams({ page: String(page), size: String(size) })
+  query.set('view', view)
+  if (q.trim()) query.set('q', q.trim())
   if (opportunityId) query.set('opportunityId', String(opportunityId))
   const response = await fetch(`${API_BASE}/api/interviews?${query}`, { cache: 'no-store', signal })
   const data = await response.json().catch(() => { throw new Error('面试数据读取失败，请稍后刷新') })

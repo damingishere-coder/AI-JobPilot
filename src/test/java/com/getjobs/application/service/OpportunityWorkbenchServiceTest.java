@@ -30,7 +30,11 @@ class OpportunityWorkbenchServiceTest {
         var service=new OpportunityWorkbenchService(jdbc,profiles,Clock.fixed(Instant.parse("2026-09-14T02:00:00Z"),ZoneOffset.UTC));
         var summary=service.summary();
         @SuppressWarnings("unchecked") var counts=(List<Map<String,Object>>)summary.get("counts");
-        for(var row:counts) assertThat(service.list((String)row.get("bucket"),null,false,1,100).get("total")).isEqualTo(row.get("count"));
+        for(var row:counts) {
+            assertThat(service.list((String)row.get("bucket"),null,false,1,100).get("total")).isEqualTo(row.get("count"));
+            if(Boolean.TRUE.equals(row.get("actionRequired")) && ((Number)row.get("count")).longValue()>0)
+                assertThat(row.get("preview")).isEqualTo(service.list((String)row.get("bucket"),null,false,1,3).get("items"));
+        }
         assertThat(service.list("DISCOVERED_TODAY",null,false,1,20)).containsEntry("total",3L);
         assertThat(service.list("UNKNOWN",null,false,1,20)).containsEntry("total",1L);
         assertThat(service.list("AWAITING_REPLY",null,false,1,20)).containsEntry("total",1L);
@@ -39,6 +43,26 @@ class OpportunityWorkbenchServiceTest {
         jdbc.update("UPDATE opportunity SET archived=1 WHERE job_key='unknown'");
         assertThat(service.list("UNKNOWN",null,false,1,20)).containsEntry("total",0L);
         assertThat(service.list("UNKNOWN",null,true,1,20)).containsEntry("total",1L);
+    }
+    @Test void filtersApplyBeforePaginationAndOnlyExposeKnownJobMetadata() {
+        var source=new DriverManagerDataSource("jdbc:sqlite:"+directory.resolve("filters.db"));
+        Flyway.configure().dataSource(source).locations("classpath:db/migration").load().migrate();
+        var jdbc=new JdbcTemplate(source);
+        jdbc.update("INSERT INTO profile(id,name,is_active) VALUES(1,'fixture',1),(2,'other',0)");
+        jdbc.update("INSERT INTO boss_data(id,profile_id,encrypt_id,job_name,company_name,salary,location,delivery_status) VALUES(1,1,'found','采购经理','合成公司','15-20K','上海','待确认'),(2,2,'foreign','采购经理','合成公司','30-40K','北京','待确认')");
+        jdbc.update("INSERT INTO opportunity(profile_id,platform,job_key,job_name,company_name) VALUES(1,'zhilian','other','测试岗位','另一公司')");
+        var profiles=mock(ProfileService.class);when(profiles.getCurrentProfileId()).thenReturn(1L);
+        var service=new OpportunityWorkbenchService(jdbc,profiles);
+        var result=service.list(null,null,false,1,1,"boss","采购","NOT_REQUESTED");
+        assertThat(result).containsEntry("total",1L).containsEntry("profileId",1L);
+        @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)result.get("items");
+        assertThat(rows.getFirst()).containsEntry("salary","15-20K").containsEntry("location","上海").containsEntry("job_name","采购经理");
+        assertThat(rows.getFirst()).doesNotContainKeys("note_cipher","next_action_cipher","job_snapshot");
+        assertThat(service.list(null,null,false,1,20,null,"%","NOT_REQUESTED")).containsEntry("total",0L);
+        assertThat(service.list(null,null,false,1,20,"zhilian","采购",null)).containsEntry("total",0L);
+        assertThatThrownBy(()->service.list(null,null,false,1,20,"boss' OR 1=1",null,null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->service.list(null,null,false,1,20,null,null,"INVALID")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->service.list(null,null,false,1,20,null,"q".repeat(201),null)).hasMessageContaining("200");
     }
     @Test void reviewingKnownMessagesDoesNotHideLaterMessagesOrConfirmRecruitingResults() {
         var source=new DriverManagerDataSource("jdbc:sqlite:"+directory.resolve("review.db"));

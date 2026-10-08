@@ -22,6 +22,14 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
+it('首次读取完成前不显示零条或待确认空结果', () => {
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+  render(<AnalysisContent profileId={4} />)
+  expect(screen.getByText('正在加载岗位…')).toBeInTheDocument()
+  expect(screen.queryByText(/共 0 条/)).not.toBeInTheDocument()
+  expect(screen.queryByText('当前筛选下没有待确认岗位。')).not.toBeInTheDocument()
+})
+
 it('列表和统计使用相同档案、批次和筛选；点击岗位先打开确认框', async () => {
   const fetcher = vi.fn(async (url: string) => response(url.includes('/stats?') ? stats : list()))
   vi.stubGlobal('fetch', fetcher)
@@ -30,6 +38,7 @@ it('列表和统计使用相同档案、批次和筛选；点击岗位先打开�
   expect(fetcher.mock.calls.every(([url]) => new URL(url, "http://127.0.0.1:6866").searchParams.get('profileId') === '4')).toBe(true)
   expect(fetcher.mock.calls.every(([url]) => new URL(url, "http://127.0.0.1:6866").searchParams.get('scanRunId') === 'run-4')).toBe(true)
   fireEvent.change(screen.getByPlaceholderText('公司或岗位关键词'), { target: { value: '开发' } })
+  fireEvent.click(screen.getByRole('button', { name: '应用筛选' }))
   await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.includes('keyword=')).length).toBe(2))
   fireEvent.click(screen.getAllByRole('button', { name: 'Chrome投递' })[0])
   expect(screen.getByText('投递确认对话框')).toBeInTheDocument()
@@ -44,6 +53,30 @@ it('HTTP 失败显示重试，不把失败伪装成空库', async () => {
   expect(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument()
 })
 
+it('未应用的草稿不改变分页和批量预览范围', async () => {
+  const fetcher = vi.fn(async (url: string) => response(url.endsWith('/confirm-batch/preview') ? { success: true, items: [] } : url.includes('/stats?') ? stats : list()))
+  vi.stubGlobal('fetch', fetcher)
+  render(<AnalysisContent profileId={4} activeScanRunId="run-4" />)
+  await waitFor(() => expect(screen.getAllByText('测试岗位').length).toBeGreaterThan(0))
+  fireEvent.change(screen.getByPlaceholderText('公司或岗位关键词'), { target: { value: '已应用关键词' } })
+  fireEvent.click(screen.getByRole('button', { name: '应用筛选' }))
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('keyword='))).toBe(true))
+  const previousReads = fetcher.mock.calls.length
+  fireEvent.change(screen.getByPlaceholderText('公司或岗位关键词'), { target: { value: '未应用草稿' } })
+  expect(fetcher.mock.calls.length).toBe(previousReads)
+  fireEvent.click(screen.getByRole('button', { name: '跳转' }))
+  await waitFor(() => expect(fetcher.mock.calls.length).toBeGreaterThan(previousReads))
+  const readUrl = fetcher.mock.calls.filter(([url]) => url.includes('/list?')).at(-1)![0]
+  expect(new URL(readUrl, 'http://localhost').searchParams.get('keyword')).toBe('已应用关键词')
+  await waitFor(() => expect(screen.getByRole('button', { name: '预览当前筛选待确认' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: '预览当前筛选待确认' }))
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith('/confirm-batch/preview'))).toBe(true))
+  const preview = fetcher.mock.calls.find(([url]) => url.endsWith('/confirm-batch/preview'))!
+  const init = (preview as unknown as [string, RequestInit])[1]
+  expect(JSON.parse(String(init.body))).toMatchObject({ keyword: '已应用关键词', scanRunId: 'run-4' })
+  expect(sendChromeBridgeMessage).not.toHaveBeenCalled()
+})
+
 it('较早筛选请求的迟到响应不会覆盖新结果', async () => {
   const pending: Array<(data: ReturnType<typeof response>) => void> = []
   vi.stubGlobal('fetch', vi.fn((url: string) => {
@@ -52,6 +85,7 @@ it('较早筛选请求的迟到响应不会覆盖新结果', async () => {
   }))
   render(<AnalysisContent profileId={4} />)
   fireEvent.change(screen.getByPlaceholderText('公司或岗位关键词'), { target: { value: '新' } })
+  fireEvent.click(screen.getByRole('button', { name: '应用筛选' }))
   await waitFor(() => expect(screen.getAllByText('新筛选结果').length).toBeGreaterThan(0))
   await act(async () => { pending[0](response(list('旧筛选结果'))); pending[1](response(stats)) })
   expect(screen.queryByText('旧筛选结果')).not.toBeInTheDocument()

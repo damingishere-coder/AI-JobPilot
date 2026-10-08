@@ -48,6 +48,31 @@ afterEach(() => {
 })
 
 describe('BOSS HR settings in environment config', () => {
+  it.each(['communication', 'connection'] as const)('freezes the %s fields until a deferred save finishes', async mode => {
+    let resolveSave!: (response: Response) => void
+    const pending = new Promise<Response>(resolve => { resolveSave = resolve })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/action-token')) return jsonResponse({ success: true, data: { token: 'local-action-token' } })
+      if (init?.method === 'PUT') return pending
+      return jsonResponse({ success: true, data: settings() })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<HrAssistantSettingsCard mode={mode} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    const field = await screen.findByLabelText(mode === 'communication' ? '期望薪资' : 'NapCat WebSocket')
+    const draft = mode === 'communication' ? '30-35K' : 'ws://127.0.0.1:4567'
+    fireEvent.change(field, { target: { value: draft } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 BOSS HR 设置' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true))
+    expect(field).toBeDisabled()
+    expect(screen.getByRole('group', { name: mode === 'communication' ? 'HR 沟通资料' : 'QQ 通知连接设置' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '保存中…' })).toBeDisabled()
+    resolveSave(jsonResponse({ success: true, data: settings(mode === 'communication' ? { communicationProfile: { ...communicationProfile, expectedSalary: draft } } : { napcatWsUrl: draft }) }))
+    await screen.findByText('BOSS HR 设置已加密保存。')
+    expect(field).toBeEnabled()
+    expect(field).toHaveValue(draft)
+  })
+
   it.each(['connection', 'communication'] as const)('其他窗口切档后拒绝保存 %s 并保留当前输入', async mode => {
     let reads = 0
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
@@ -87,7 +112,7 @@ describe('BOSS HR settings in environment config', () => {
   })
 
   it('opens the HR workspace on human decisions without exposing connection or sharing fields', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => jsonResponse({ success: true, data: String(input).endsWith('/settings') ? settings() : String(input).includes('/proposals') ? [] : {} })))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => jsonResponse({ success: true, data: String(input).endsWith('/settings') ? settings() : String(input).includes('/proposals/page') ? { profileId: 1, view: 'pending', status: 'ALL', q: '', page: 1, size: 10, total: 0, totalPages: 1, items: [] } : { profileId: 1 } })))
     render(<HrAssistantSettingsCard mode="workspace" />)
     fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
     expect(await screen.findByRole('tab', { name: '待我处理' })).toHaveAttribute('aria-selected', 'true')

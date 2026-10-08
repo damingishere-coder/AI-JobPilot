@@ -93,21 +93,52 @@ public class OpportunityWorkbenchService {
         List<Map<String,Object>> counts=new ArrayList<>();
         for(Bucket bucket:Bucket.values()) {
             long count=((Number)totals.get("count_"+bucket.ordinal())).longValue();
-            counts.add(Map.of("bucket",bucket.name(),"label",bucket.label,"count",count,"actionRequired",bucket.action));
+            counts.add(Map.of("bucket",bucket.name(),"label",bucket.label,"count",count,"actionRequired",bucket.action,
+                "preview",bucket.action && count>0 ? listAt(profile,instant,bucket,null,false,1,3,null,null,null,count).get("items") : List.of()));
         }
         return Map.of("profileId",profile,"generatedAt",instant.toString(),"day",instant.atZone(ZONE).toLocalDate().toString(),"timezone",ZONE.toString(),"counts",counts);
     }
     public Map<String,Object> list(String bucketName,String stage,boolean archived,int page,int size) {
-        Bucket bucket=Bucket.valueOf(bucketName);
-        long profile=profiles.getCurrentProfileId();Instant instant=clock.instant();
+        return list(bucketName,stage,archived,page,size,null,null,null);
+    }
+    public Map<String,Object> list(String bucketName,String stage,boolean archived,int page,int size,String platform,String q,String applicationStatus) {
+        Bucket bucket=bucketName==null || bucketName.isBlank()?null:Bucket.valueOf(bucketName);
+        return listAt(profiles.getCurrentProfileId(),clock.instant(),bucket,stage,archived,page,size,platform,q,applicationStatus,null);
+    }
+    private Map<String,Object> listAt(long profile,Instant instant,Bucket bucket,String stage,boolean archived,int page,int size,String platform,String q,String applicationStatus,Long knownTotal) {
         int safePage=Math.max(1,Math.min(10001,page)),limit=Math.max(1,Math.min(100,size));
-        var parameters=args(profile,bucket,instant);
-        String filter=" FROM facts WHERE "+condition(bucket)+" AND archived=?";parameters.add(archived?1:0);
+        var parameters=bucket==null?new ArrayList<Object>(List.of(profile)):args(profile,bucket,instant);
+        String filter=" FROM facts WHERE "+(bucket==null?"1=1":condition(bucket))+" AND archived=?";parameters.add(archived?1:0);
         if(stage!=null&&!stage.isBlank()){filter+=" AND stage=?";parameters.add(OpportunityStage.valueOf(stage).name());}
-        long total=jdbc.queryForObject(FACTS+"SELECT COUNT(*)"+filter,Long.class,parameters.toArray());
+        if(platform!=null&&!platform.isBlank()) {
+            if(!Set.of("boss","zhilian","liepin","51job").contains(platform)) throw new IllegalArgumentException("平台筛选无效");
+            filter+=" AND platform=?";parameters.add(platform);
+        }
+        if(applicationStatus!=null&&!applicationStatus.isBlank()) {
+            if(!Set.of("NOT_REQUESTED","REQUESTED","CONFIRMED","FAILED","UNKNOWN").contains(applicationStatus)) throw new IllegalArgumentException("投递状态筛选无效");
+            filter+=" AND application_status=?";parameters.add(applicationStatus);
+        }
+        if(q!=null&&!q.isBlank()) {
+            String term=q.trim();if(term.length()>200) throw new IllegalArgumentException("搜索关键词最多 200 字");
+            filter+=" AND instr(lower(COALESCE(job_name,'')||' '||COALESCE(company_name,'')),lower(?))>0";parameters.add(term);
+        }
+        long total=knownTotal!=null?knownTotal:jdbc.queryForObject(FACTS+"SELECT COUNT(*)"+filter,Long.class,parameters.toArray());
         parameters.add(limit);parameters.add((safePage-1)*limit);
-        var items=jdbc.queryForList(FACTS+"SELECT id,platform,job_key,job_name,company_name,stage,interest,archived,follow_up_at,version,created_at,updated_at,application_status"+
+        var items=jdbc.queryForList(FACTS+"SELECT id,platform,job_key,job_name,company_name,stage,interest,archived,follow_up_at,version,created_at,updated_at,application_status,match_score,"+
+            "CASE WHEN json_valid(job_snapshot) THEN json_extract(job_snapshot,'$.salary') END AS salary,"+
+            "CASE WHEN json_valid(job_snapshot) THEN json_extract(job_snapshot,'$.location') END AS location,"+
+            interviewColumn(bucket,instant,"scheduled_at")+" AS interview_at,"+interviewColumn(bucket,instant,"timezone")+" AS interview_timezone,"+interviewColumn(bucket,instant,"round_number")+" AS interview_round,"+
+            interviewColumn(bucket,instant,"json_array_length(i.preparation_json)")+" AS interview_prepared"+
             filter+" ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?",parameters.toArray());
-        return Map.of("items",items,"total",total,"page",safePage,"size",limit,"bucket",bucket.name(),"scopeLabel",bucket.label);
+        for(var item:items) item.put("task_summary",bucket==null?"":bucket.label);
+        return Map.of("items",items,"total",total,"page",safePage,"size",limit,"bucket",bucket==null?"":bucket.name(),"scopeLabel",bucket==null?"全部机会":bucket.label,"profileId",profile);
+    }
+    private static String interviewColumn(Bucket bucket,Instant instant,String field) {
+        String condition="i.status='SCHEDULED'";
+        if(bucket==Bucket.INTERVIEW_PREPARE) condition+=" AND json_array_length(i.preparation_json)<4 AND julianday(i.scheduled_at)>=julianday('"+instant+"') AND julianday(i.scheduled_at)<julianday('"+instant.plus(Duration.ofDays(7))+"')";
+        if(bucket==Bucket.INTERVIEW_CHECK) condition+=" AND julianday(i.scheduled_at)<julianday('"+instant+"')";
+        if(bucket==Bucket.INTERVIEW_SCHEDULED) condition+=" AND julianday(i.scheduled_at)>=julianday('"+instant+"')";
+        String column=field.startsWith("json_")?field:"i."+field;
+        return "(SELECT "+column+" FROM interview i WHERE i.opportunity_id=facts.id AND i.profile_id=facts.profile_id AND "+condition+" ORDER BY i.scheduled_at,i.id LIMIT 1)";
     }
 }

@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
+import { BossCompactRows } from "./BossCompactRows"
+import { workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 import type { BossJob, JobAnalysisTask } from "../types"
 import { badgeClass, canManualDeliverAiNotMatch, deliveryStatusLabel, failureReasonText, formatAiReasonDetail, formatDateOnly, parseAiReason } from "../utils"
 
@@ -17,7 +19,10 @@ export function BossJobTable({
   inputPage,
   inputSize,
   showDetailColumns,
+  compact = true,
   loadingList,
+  loaded = true,
+  loadError = '',
   actingJobId,
   actingManualBatch,
   selectedManualJobIds,
@@ -43,7 +48,10 @@ export function BossJobTable({
   inputPage: number | string
   inputSize: number | string
   showDetailColumns: boolean
+  compact?: boolean
   loadingList: boolean
+  loaded?: boolean
+  loadError?: string
   actingJobId: number | null
   actingManualBatch: boolean
   selectedManualJobIds: ReadonlySet<number>
@@ -77,6 +85,9 @@ export function BossJobTable({
             <span className="ml-2 text-muted-foreground">
               本页可选 {manualSelectableJobs.length} 条，已选 {selectedManualCount} 条
             </span>
+            <Button size="sm" variant="ghost" disabled={actingManualBatch} onClick={() => onToggleAllManualJobs(manualSelectableJobs.map(job => job.id), !allManualSelected)}>
+              {allManualSelected ? "取消本页人工选择" : "全选本页可人工投递"}
+            </Button>
           </div>
           <Button
             size="sm"
@@ -90,7 +101,7 @@ export function BossJobTable({
         </div>
       )}
 
-      <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
+      {compact ? <BossCompactRows loaded={loaded} loading={loadingList} error={loadError} items={items} actingJobId={actingJobId} actingManualBatch={actingManualBatch} selectedManualJobIds={selectedManualJobIds} analysisTaskByJobId={analysisTaskByJobId} retryingAnalysisTaskId={retryingAnalysisTaskId} onOpenText={onOpenText} onConfirmJob={onConfirmJob} onReconcileJob={onReconcileJob} onRetryJob={onRetryJob} onRetryAnalysisJob={onRetryAnalysisJob} onSkipJob={onSkipJob} onToggleManualJob={onToggleManualJob} /> : <div className="w-full overflow-x-auto rounded-lg border border-stroke/30 dark:border-strokedark/30 shadow-sm">
         <table className={`${showDetailColumns ? "min-w-[2060px]" : "min-w-[1460px]"} w-full table-fixed bg-white dark:bg-blacksection`}>
           <thead>
             <tr className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-b-2 border-blue-200 dark:border-blue-800">
@@ -153,7 +164,7 @@ export function BossJobTable({
                 <td colSpan={showDetailColumns ? 25 : 19} className="px-4 py-12 text-center text-muted-foreground bg-gray-50 dark:bg-gray-900/20">
                   <div className="flex flex-col items-center gap-3">
                     <BiBriefcase className="text-4xl text-gray-300 dark:text-gray-600" />
-                    <p className="text-sm">当前还没有入库岗位；请查看 Boss 页进度日志里的采集数量、详情缺失和提交结果。</p>
+                    <p className="text-sm">{loadingList ? '正在读取岗位…' : loadError ? '岗位读取失败，请重新加载。' : !loaded ? '正在读取岗位…' : '当前范围没有入库岗位，请查看采集任务或调整筛选。'}</p>
                   </div>
                 </td>
               </tr>
@@ -317,11 +328,11 @@ export function BossJobTable({
             )}
           </tbody>
         </table>
-      </div>
+      </div>}
 
-      <div className="mt-4 flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <Button variant="outline" onClick={() => onLoadList(Math.max(1, page - 1), size)} disabled={loadingList || page <= 1}>上一页</Button>
-        <div className="text-sm">第 {page} 页 / 共 {totalPages} 页</div>
+        <div className="text-sm">{loadingList || !loaded ? (loadError && !loadingList ? '页数读取失败' : '页数读取中…') : `第 ${page} 页 / 共 ${totalPages} 页`}</div>
         <Button variant="outline" onClick={() => onLoadList(page + 1, size)} disabled={loadingList || page >= totalPages}>下一页</Button>
         <div className="flex items-center gap-2 ml-4">
           <Label className="text-sm">页码</Label>
@@ -354,7 +365,7 @@ export function BossJobTable({
           </Select>
           <span className="text-sm text-muted-foreground">条</span>
         </div>
-        <div className="ml-auto text-sm text-muted-foreground">共 {total} 条</div>
+        <div className="ml-auto text-sm text-muted-foreground">{workspaceCountLabel(total, loadingList, loaded, loadError)}</div>
       </div>
     </>
   )

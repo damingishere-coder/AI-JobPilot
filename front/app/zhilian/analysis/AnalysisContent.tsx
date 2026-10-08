@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { GreetingDraftDialog, type GreetingJob } from "@/components/communication/GreetingDraftDialog"
+import { WorkspaceDataStatus, workspaceCountLabel } from "@/app/discover/WorkspaceDataStatus"
 import PageHeader from "@/app/components/PageHeader"
 import { API_BASE, readApiResponse } from "@/lib/api"
 import { sendChromeBridgeMessage } from "@/lib/chromeBridge"
@@ -642,6 +643,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   const [minK, setMinK] = useState<number | string>("")
   const [maxK, setMaxK] = useState<number | string>("")
   const [keyword, setKeyword] = useState<string>("")
+  const [appliedFilters, setAppliedFilters] = useState({ statuses: [] as string[], location: "", experience: "", degree: "", minK: "" as number | string, maxK: "" as number | string, keyword: "" })
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const applyFilters = () => setAppliedFilters({ statuses: [...statuses], location: location.trim(), experience, degree, minK, maxK, keyword: keyword.trim() })
+  const resetFilters = () => { setStatuses([]); setLocation(""); setExperience(""); setDegree(""); setMinK(""); setMaxK(""); setKeyword(""); setAppliedFilters({ statuses: [], location: "", experience: "", degree: "", minK: "", maxK: "", keyword: "" }) }
 
   const [exporting, setExporting] = useState(false)
   const [clearingAnalysis, setClearingAnalysis] = useState(false)
@@ -657,6 +662,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
 	  const statusOptions = ["待确认", "投递确认中", "投递结果待确认", "AI分析中", "未投递", "已投递", "已过滤", "投递失败", "AI不匹配", "AI分析失败", "采集信息不足", "已跳过", "LIST_COLLECTED"]
 
   const loadList = async (toPage = page, toSize = size) => {
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
     const sequence = ++requestSequence.current
     setLoadingStats(true)
     try {
@@ -685,17 +691,15 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
       setItems(data.items); setTotal(data.total)
       setPage(data.page || toPage); setSize(data.size || toSize)
       setInputPage(data.page || toPage); setInputSize(data.size || toSize)
-      setStats(nextStats); setLoadError("")
+      setStats(nextStats); setLoadError(""); setLastUpdatedAt(Date.now())
     } catch (cause) {
       if (alive.current && sequence === requestSequence.current) {
-        setItems([]); setStats(null)
         setLoadError(cause instanceof Error ? cause.message : "分析数据加载失败，请重试。")
       }
     } finally {
       if (alive.current && sequence === requestSequence.current) setLoadingStats(false)
     }
   }
-  const loadStats = () => loadList(page, size)
   const hasPending = Boolean(stats?.charts.byStatus.some(row => ["AI分析中", "LIST_COLLECTED"].includes(row.name) && row.value > 0))
   const working = useZhilianAnalysisSync(profileId, () => loadList(page, size), hasPending)
 
@@ -732,9 +736,10 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   useEffect(() => {
     loadList(1, size)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statuses.join(","), location, experience, degree, minK, maxK, keyword, activeScanRunId, profileId])
+  }, [appliedFilters, activeScanRunId, profileId])
 
   const exportCSV = async () => {
+    const { statuses, location, experience, degree, minK, maxK, keyword } = appliedFilters
     try {
       setExporting(true)
       const baseParams = new URLSearchParams({ profileId: String(profileId) })
@@ -820,12 +825,12 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
   }
 
   const currentBatchFilters = () => ({
-    location: location || undefined,
-    experience: experience || undefined,
-    degree: degree || undefined,
-    minK: minK ? Number(minK) : undefined,
-    maxK: maxK ? Number(maxK) : undefined,
-    keyword: keyword || undefined,
+    location: appliedFilters.location || undefined,
+    experience: appliedFilters.experience || undefined,
+    degree: appliedFilters.degree || undefined,
+    minK: appliedFilters.minK ? Number(appliedFilters.minK) : undefined,
+    maxK: appliedFilters.maxK ? Number(appliedFilters.maxK) : undefined,
+    keyword: appliedFilters.keyword || undefined,
     scanRunId: activeScanRunId || undefined,
   })
 
@@ -1044,22 +1049,22 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
         />
       )}
 
-      {loadError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{loadError} <Button variant="outline" onClick={() => loadList(page, size)}>重新加载</Button></div>}
+      <WorkspaceDataStatus loading={loadingStats} error={loadError} updatedAt={lastUpdatedAt} hasData={items.length > 0} onRetry={() => void loadList(page, size)} />
       {working && <p role="status" className="text-sm text-blue-700">扫描或 AI 分析进行中，结果每 5 秒自动更新。</p>}
-      {!loadError && <div className="space-y-4">
+      {!loadError && <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">岗位概况与统计</summary><div className="mt-4 space-y-4">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
           {kpiCards.map((c, idx) => (
             <Card key={idx} className="border">
               <CardHeader>
                 <CardTitle className="text-sm">{c.title}</CardTitle>
-                <CardDescription className="text-xl font-semibold">{c.value}</CardDescription>
+                <CardDescription className="text-xl font-semibold">{stats ? c.value : loadingStats ? '读取中…' : '读取失败'}</CardDescription>
               </CardHeader>
             </Card>
           ))}
         </div>
 
         <OverviewPanel stats={dashboardStats} loading={loadingDashboardStats} />
-      </div>}
+      </div></details>}
 
       {jobNotice && <p role="status" className="rounded-lg border bg-muted/40 p-4 text-sm">{jobNotice}</p>}
 
@@ -1081,7 +1086,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
                   {s === "LIST_COLLECTED" ? "已采集待分析" : s}
                 </button>
               ))}
-              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={() => { setStatuses([]); setLocation(""); setExperience(""); setDegree(""); setMinK(""); setMaxK(""); setKeyword("") }}>重置筛选</button>
+              <button className="px-3 py-1.5 rounded-full text-xs border" onClick={resetFilters}>重置筛选</button>
             </div>
           </div>
         </CardHeader>
@@ -1113,12 +1118,13 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
             </div>
           </div>
 
-          <div className="mt-4 flex items-center gap-3">
-            <Button variant="default" onClick={() => loadStats()} disabled={loadingStats}>
-              <BiRefresh className="mr-1" /> 刷新统计
+          <p className="mt-4 text-sm text-muted-foreground">筛选编辑后点击“应用筛选”。分页、导出与批量预览均使用已应用条件；当前范围为{activeScanRunId ? "本次扫描" : "当前档案全部历史"}，{workspaceCountLabel(total, loadingStats, lastUpdatedAt !== null, loadError)}。</p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Button variant="default" onClick={applyFilters}>
+              <BiRefresh className="mr-1" /> 应用筛选
             </Button>
             <Button variant="outline" onClick={() => loadList(1, size)}>
-              <BiBriefcase className="mr-1" /> 刷新列表
+              <BiBriefcase className="mr-1" /> 刷新结果
             </Button>
             <Button variant="destructive" onClick={clearAnalysisData} disabled={clearingAnalysis}>
               <BiTrash className="mr-1" /> {clearingAnalysis ? "归档中..." : "归档列表"}
@@ -1127,7 +1133,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
               <BiDownload className="mr-1" /> 导出CSV
             </Button>
             <Button variant="destructive" onClick={handleConfirmBatch} disabled={actingBatch || loadingStats || !!loadError}>
-              <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "投递当前筛选待确认"}
+              <BiBriefcase className="mr-1" /> {actingBatch ? "投递中..." : "预览当前筛选待确认"}
             </Button>
           </div>
         </CardContent>
@@ -1160,7 +1166,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
 
         {pendingJobs.length === 0 ? (
           <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            当前筛选下没有待确认岗位。
+            {loadingStats ? '正在读取待确认岗位…' : loadError ? '待确认岗位读取失败，请重新加载。' : lastUpdatedAt === null ? '正在读取待确认岗位…' : '当前筛选下没有待确认岗位。'}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -1191,7 +1197,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
                 <th className="w-[270px]">岗位 / 公司</th><th className="w-[180px]">薪资与要求</th><th className="w-[310px]">匹配分析</th><th className="w-[140px]">投递状态</th><th className="w-[200px]">操作</th>
               </tr></thead>
               <tbody>
-                {!items.length && <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">{loadError ? "数据加载失败，请点击重新加载。" : loadingStats ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : statuses.length || location || experience || degree || minK || maxK || keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
+                {!items.length && <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">{loadingStats ? "正在加载岗位…" : loadError ? "数据加载失败，请点击重新加载。" : lastUpdatedAt === null ? "正在加载岗位…" : working ? "正在采集或分析岗位，结果稍后会自动显示。" : appliedFilters.statuses.length || appliedFilters.location || appliedFilters.experience || appliedFilters.degree || appliedFilters.minK || appliedFilters.maxK || appliedFilters.keyword ? "当前筛选没有匹配岗位，请调整或重置筛选。" : activeScanRunId ? "本次扫描尚无岗位，可以切换到全部岗位查看历史结果。" : "当前档案暂无智联岗位，请返回智联配置开始扫描。"}</td></tr>}
                 {items.map((it, idx) => (
                   <tr key={`${it.jobId}-${idx}`} className={`border-t align-top [&>td]:px-4 [&>td]:py-5 ${it.deliveryStatus === "已投递" ? "bg-emerald-50/60 dark:bg-emerald-950/20" : "odd:bg-muted/10 hover:bg-blue-50/40 dark:hover:bg-blue-950/20"}`}>
                     <td>
@@ -1275,7 +1281,7 @@ export default function AnalysisContent({ showHeader = false, refreshSignal = 0,
             <Button variant="outline" onClick={() => loadList(Number(page), Number(size))}>
               跳转
             </Button>
-            <div className="text-sm text-muted-foreground">共 {total} 条</div>
+            <div className="text-sm text-muted-foreground">{workspaceCountLabel(total, loadingStats, lastUpdatedAt !== null, loadError)}</div>
           </div>
         </CardContent>
       </Card>

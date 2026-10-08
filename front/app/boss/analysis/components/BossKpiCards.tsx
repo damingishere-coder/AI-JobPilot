@@ -66,9 +66,9 @@ function OverviewPanel({ stats, loading }: { stats: StatsResponse | null; loadin
         <CardDescription>基于当前 Boss 岗位库生成的投递进度、AI 判断、岗位画像与数据质量概况</CardDescription>
       </CardHeader>
       <CardContent>
-        {loading && !stats ? (
+        {!stats ? (
           <div className="flex h-40 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-            加载中...
+            {loading ? '统计读取中…' : '统计尚未加载成功，请重新加载。'}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
@@ -159,7 +159,7 @@ export function BossKpiCards({
           <Card key={card.title} className="border">
             <CardHeader>
               <CardTitle className="text-sm">{card.title}</CardTitle>
-              <CardDescription className="text-xl font-semibold">{card.value}</CardDescription>
+              <CardDescription className="text-xl font-semibold">{stats ? card.value : loading ? '读取中…' : '读取失败'}</CardDescription>
             </CardHeader>
           </Card>
         ))}

@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import InterviewForm from './InterviewForm'
 import { opportunityApi } from '@/lib/opportunities'
+import { hasUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 vi.mock('@/lib/opportunities', async original => ({ ...await original<typeof import('@/lib/opportunities')>(), opportunityApi: vi.fn() }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
@@ -28,4 +29,21 @@ it('preserves uncertain save identity, UTC time, preparation and opportunity ver
   expect(calls[0]).toEqual(calls[1])
   expect(calls[0][0]).toBe('/8/interviews')
   expect(calls[0][1]).toMatchObject({ opportunityVersion: 3, status: 'SCHEDULED', scheduledAt: new Date('2030-01-02T10:00').toISOString(), preparation: ['JOB_RESUME'] })
+})
+it('freezes interview fields and keeps navigation protected during an unchanged pending save', async () => {
+  let finish!: (value: unknown) => void
+  const pending = new Promise(resolve => { finish = resolve })
+  vi.mocked(opportunityApi).mockReturnValue(pending)
+  const saved = vi.fn()
+  render(<InterviewForm opportunityId={8} opportunityVersion={3} onSaved={saved} onClose={vi.fn()} />)
+  expect(hasUnsavedChanges()).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: '确认保存面试' }))
+  expect(screen.getByLabelText('面试备注')).toBeDisabled()
+  expect(screen.getByLabelText('面试状态')).toBeDisabled()
+  expect(screen.getByLabelText('复习 JD 与投递简历')).toBeDisabled()
+  expect(hasUnsavedChanges()).toBe(true)
+  await act(async () => { finish({ success: true }); await pending })
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce())
+  expect(screen.getByLabelText('面试备注')).toBeEnabled()
+  expect(hasUnsavedChanges()).toBe(false)
 })

@@ -262,7 +262,7 @@ export default function HrAssistantSettingsCard({ mode = 'legacy' }: { mode?: Mo
           <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <span>{loadError}</span>
             {currentProfile ? (
-              <Button type="button" size="sm" variant="ghost" onClick={() => void loadSettings(currentProfile)} disabled={loading}>
+              <Button type="button" size="sm" variant="ghost" onClick={() => void loadSettings(currentProfile)} disabled={loading || saving}>
                 <BiRefresh className="mr-1" />重新加载
               </Button>
             ) : null}
@@ -281,7 +281,7 @@ export default function HrAssistantSettingsCard({ mode = 'legacy' }: { mode?: Mo
               {(tab === 'status' || tab === 'rules') && <div className="flex flex-wrap gap-4 text-sm"><Link className="text-primary underline" href="/profiles">编辑沟通资料</Link><Link className="text-primary underline" href="/settings">检查 QQ 通道</Link>{tab === 'status' && <button className="text-primary underline" onClick={() => setTab('rules')}>核对托管规则</button>}</div>}
             </>}
             {(mode === 'legacy' || mode === 'workspace') && <div id={mode === 'workspace' ? 'hr-autopilot-panel' : undefined} role={mode === 'workspace' ? 'tabpanel' : undefined} aria-labelledby={mode === 'workspace' ? `hr-tab-${tab}` : undefined} hidden={mode === 'workspace' && tab !== 'status' && tab !== 'rules'}><HrAutopilotSettings key={currentProfile.id} profileId={Number(currentProfile.id)} settingsRevision={settingsRevision} settingsDirty={dirty || saving || loading} onDirtyChange={setRulesDirty} showActivity={mode === 'legacy'} view={mode === 'workspace' ? tab === 'rules' ? 'rules' : 'status' : 'all'} /></div>}
-            {(mode === 'legacy' || mode === 'communication') && <div>
+            {(mode === 'legacy' || mode === 'communication') && <fieldset disabled={saving} aria-label="HR 沟通资料" className="m-0 min-w-0 border-0 p-0">
               <h3 className="mb-3 text-sm font-semibold">沟通资料</h3>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <Field label="期望薪资" id="hrExpectedSalary" value={form.communicationProfile.expectedSalary} onChange={(value) => updateCommunication('expectedSalary', value)} />
@@ -295,9 +295,9 @@ export default function HrAssistantSettingsCard({ mode = 'legacy' }: { mode?: Mo
                   <Textarea id="hrForbiddenClaims" value={form.communicationProfile.forbiddenClaims} onChange={(event) => updateCommunication('forbiddenClaims', event.target.value)} />
                 </div>
               </div>
-            </div>}
+            </fieldset>}
 
-            {(mode === 'legacy' || mode === 'connection') && <div>
+            {(mode === 'legacy' || mode === 'connection') && <fieldset disabled={saving} aria-label="QQ 通知连接设置" className="m-0 min-w-0 border-0 p-0">
               <h3 className="mb-3 text-sm font-semibold">NapCat 与 QQ 通知</h3>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="space-y-2 md:col-span-2">
@@ -342,7 +342,7 @@ export default function HrAssistantSettingsCard({ mode = 'legacy' }: { mode?: Mo
                 仅将需要人工决策或处理的事项通知到上述 QQ 目标
               </label>
               <p className="mt-2 text-xs text-muted-foreground">Token、目标 QQ/群号和操作人 QQ 使用本机加密存储，页面不会读取或回显原值。普通对话可按授权自动回复，关键事项通过 QQ 通知；电话和简历需要各自明确授权。</p>
-            </div>}
+            </fieldset>}
 
             {mode !== 'workspace' && <div className="flex flex-wrap items-center justify-between gap-3">
               <span role="status" aria-live="polite" className="text-sm text-muted-foreground">{loading ? '正在加载…' : status}</span>

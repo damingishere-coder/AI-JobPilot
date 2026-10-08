@@ -21,6 +21,8 @@ describe('Boss delivery history', () => {
 
     render(<BossDeliveryHistory />)
 
+    expect(screen.getByText('BOSS 投递历史与验证证据（技术详情）').closest('details')).not.toHaveAttribute('open')
+
     expect(await screen.findByText('岗位 JD 定制')).toBeInTheDocument()
     expect(screen.getByText('精确话术已确认')).toBeInTheDocument()
     expect(screen.getByText(/岗位强调数据分析/)).toBeInTheDocument()

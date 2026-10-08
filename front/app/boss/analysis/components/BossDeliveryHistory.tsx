@@ -38,7 +38,8 @@ function outcomeLabel(outcome?: string) {
 
 export function BossDeliveryHistory({ refreshKey = 0 }: { refreshKey?: number }) {
   const [items, setItems] = useState<DeliveryAttempt[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState("")
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -53,6 +54,7 @@ export function BossDeliveryHistory({ refreshKey = 0 }: { refreshKey?: number })
       const data = await response.json()
       if (!Array.isArray(data)) throw new Error("投递历史响应格式不正确")
       setItems(data)
+      setLoaded(true)
     } catch (loadError) {
       if (signal?.aborted) return
       setError(loadError instanceof Error ? loadError.message : "投递历史读取失败")
@@ -68,7 +70,7 @@ export function BossDeliveryHistory({ refreshKey = 0 }: { refreshKey?: number })
   }, [load, refreshKey])
 
   return (
-    <Card>
+    <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">BOSS 投递历史与验证证据（技术详情）</summary><Card className="mt-4">
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -84,7 +86,7 @@ export function BossDeliveryHistory({ refreshKey = 0 }: { refreshKey?: number })
         {error ? <div className="mb-3 text-sm text-destructive">{error}</div> : null}
         {items.length === 0 ? (
           <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-            {loading ? "正在读取投递历史..." : "当前档案暂无投递历史。"}
+            {loading ? "正在读取投递历史..." : error ? "投递历史读取失败，请重试。" : !loaded ? "正在读取投递历史..." : "当前档案暂无投递历史。"}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -123,6 +125,6 @@ export function BossDeliveryHistory({ refreshKey = 0 }: { refreshKey?: number })
           </div>
         )}
       </CardContent>
-    </Card>
+    </Card></details>
   )
 }

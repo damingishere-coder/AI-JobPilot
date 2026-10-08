@@ -7,8 +7,9 @@ import ProfileSwitcher from './ProfileSwitcher'
 import PageHeader from './PageHeader'
 import { Button } from '@/components/ui/button'
 import { API_BASE, friendlyApiError } from '@/lib/api'
+import { opportunityInterviewTime, opportunityTaskTab, platformLabels, type Opportunity } from '@/lib/opportunities'
 
-type Count = { bucket: string; label: string; count: number; actionRequired: boolean }
+type Count = { bucket: string; label: string; count: number; actionRequired: boolean; preview?: Opportunity[] }
 export type Workbench = { profileId: number; generatedAt: string; day: string; timezone: string; counts: Count[] }
 
 export default function CrmWorkbench() {
@@ -53,7 +54,10 @@ export default function CrmWorkbench() {
     {error && <p role="alert" className="rounded border border-red-200 p-4 text-red-600">{error}，未将读取失败记作零。</p>}
     {snapshot && <>
       <p className="text-sm text-muted-foreground">当前档案 · {snapshot.day} · 上海时间 · 截至 {new Date(snapshot.generatedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}；默认统计未归档机会，各分组可能重叠。</p>
-      <div><h2 className="mb-3 text-lg font-semibold">先处理这些事项</h2>{actions.length ? <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{actions.map(card)}</div> : <p className="rounded-xl border bg-card p-5 text-muted-foreground">目前没有到期待处理事项，可以继续发现岗位或检查已投机会的回复。</p>}</div>
+      <div><h2 className="mb-3 text-lg font-semibold">先处理这些事项</h2>{actions.length ? <div className="grid gap-4 lg:grid-cols-2">{actions.map(row => <article key={row.bucket} className="overflow-hidden rounded-xl border bg-card">
+        <Link href={`/opportunities?bucket=${row.bucket}`} aria-label={`${row.label} ${row.count}`} className="flex items-center justify-between gap-3 border-b bg-muted/30 px-4 py-3 text-sm font-medium hover:bg-muted"><span>{row.label}</span><span className="rounded bg-background px-2 py-1">{row.count}</span></Link>
+        {row.preview?.length ? <ul className="divide-y">{row.preview.map(item => <li key={item.id}><Link className="block space-y-1 p-4 hover:bg-muted/50" href={`/opportunities?bucket=${row.bucket}&id=${item.id}&tab=${opportunityTaskTab(row.bucket)}`}><p className="text-sm font-medium">{item.job_name || '历史岗位'} · {item.company_name || '公司未知'}</p><p className="text-xs text-muted-foreground">{platformLabels[item.platform] || item.platform} · {item.location || '地点待核实'}</p>{item.follow_up_at && row.bucket === 'FOLLOW_UP' && <p className="text-xs text-primary">跟进时间：{new Date(item.follow_up_at).toLocaleString('zh-CN')}</p>}{item.interview_at && <p className="text-xs text-primary">第 {item.interview_round} 轮 · {opportunityInterviewTime(item)} · 准备 {item.interview_prepared ?? 0}/4 项</p>}<p className="text-xs text-primary">打开并处理 →</p></Link></li>)}</ul> : <p className="p-4 text-sm text-muted-foreground">打开列表查看需要处理的机会。</p>}
+      </article>)}</div> : <p className="rounded-xl border bg-card p-5 text-muted-foreground">目前没有到期待处理事项，可以继续发现岗位或检查已投机会的回复。</p>}</div>
       <div><h2 className="mb-3 text-lg font-semibold">求职进度</h2><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{progress.map(card)}</div><p className="mt-2 text-xs text-muted-foreground">“今日新发现”排除历史回填；其他分组为当前存量。“较高匹配”沿用现有分数（BOSS ≥75、智联 ≥65），不代表回复概率。“已投待回复”表示尚无确认回复记录，不代表已经检查过。</p></div>
     </>}
     <nav className="flex flex-wrap gap-3" aria-label="下一步入口"><Button asChild><Link href="/opportunities">查看全部机会</Link></Button><Button asChild variant="outline"><Link href="/boss">BOSS 岗位发现</Link></Button><Button asChild variant="outline"><Link href="/zhilian">智联岗位发现</Link></Button><Button asChild variant="outline"><Link href="/ai-config">维护求职档案</Link></Button></nav>

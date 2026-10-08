@@ -143,14 +143,14 @@ class FullPipelineBrowserRegressionTest {
         assertThat(http("/api/boss/jobs/"+row+"/confirm",Map.of("greetingSnapshot","stale preview")).path("success").asBoolean()).isFalse();
         assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
         workbench.navigate(origin+"/boss/analysis");
-        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).first().click();
+        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("审核并发送").setExact(true)).first().click();
         Locator dialog=workbench.getByRole(com.microsoft.playwright.options.AriaRole.DIALOG);
         assertThat(dialog.innerText()).contains("核对最终沟通话术","Java后端工程师");
         assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
         // Cancelling the real Next.js preview leaves no request or platform action.
         dialog.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("取消").setExact(true)).click();
         assertThat(count("SELECT COUNT(*) FROM delivery_attempt")).isZero();
-        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).first().click();
+        workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("审核并发送").setExact(true)).first().click();
         dialog.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("确认并交给 Chrome").setExact(true)).click();
         await(()->tree(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_READ'})")).has("message"));
         JsonNode dispatch=tree(extension.evaluate("async()=>await chrome.runtime.sendMessage({type:'OFFLINE_PIPELINE_READ'})"));
@@ -180,8 +180,11 @@ class FullPipelineBrowserRegressionTest {
         var refreshed=workbench.waitForResponse(response->response.url().startsWith(origin+"/api/boss/list?"),()->workbench.reload());
         assertThat(refreshed.status()).isEqualTo(200);
         workbench.getByRole(com.microsoft.playwright.options.AriaRole.HEADING,new Page.GetByRoleOptions().setName("Boss 投递分析")).waitFor();
+        // Audit cards are collapsed after reload; open the zero-count disclosure before checking its empty state.
+        workbench.getByText("待确认岗位审核卡片（共 0 条）",new Page.GetByTextOptions().setExact(true)).click();
         workbench.getByText("当前筛选下没有待确认岗位。",new Page.GetByTextOptions().setExact(true)).waitFor();
         assertThat(workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).count()).isZero();
+        assertThat(workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("审核并发送").setExact(true)).count()).isZero();
         assertThat(jdbc.queryForObject("SELECT state FROM delivery_attempt",String.class)).isEqualTo("CONFIRMED");
         assertThat(jdbc.queryForObject("SELECT delivery_status FROM boss_data",String.class)).isEqualTo("已投递");
         assertThat(jdbc.queryForObject("SELECT stage FROM opportunity",String.class)).isEqualTo("APPLIED");

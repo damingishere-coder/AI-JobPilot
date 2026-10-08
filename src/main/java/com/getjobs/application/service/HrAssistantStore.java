@@ -22,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
@@ -404,6 +406,61 @@ public class HrAssistantStore {
         return queryProposals(profileId, includeClosed, null);
     }
 
+    public record ProposalPage(Long profileId, String view, String status, String q, int page, int size,
+                               long total, int totalPages, List<ProposalView> items) { }
+
+    @Transactional(readOnly = true)
+    public ProposalPage pageProposals(Long profileId, String view, String status, String q, int page, int size) {
+        if (profileId == null) throw new IllegalArgumentException("请先选择人物档案");
+        String selectedView = safe(view).trim().toLowerCase(Locale.ROOT);
+        if (!Set.of("pending", "history").contains(selectedView)) throw new IllegalArgumentException("回复记录视图不合法");
+        String selectedStatus = safe(status).trim().toUpperCase(Locale.ROOT);
+        if (selectedStatus.isEmpty()) selectedStatus = "ALL";
+        if (!"ALL".equals(selectedStatus)) {
+            try { ProposalStatus.valueOf(selectedStatus); }
+            catch (IllegalArgumentException error) { throw new IllegalArgumentException("回复记录状态不合法"); }
+        }
+        String keyword = safe(q).trim();
+        if (keyword.length() > 200) throw new IllegalArgumentException("搜索关键词不能超过 200 个字符");
+        if (page < 1 || size < 1 || size > 100) throw new IllegalArgumentException("页码须从 1 开始，每页数量须在 1 到 100 之间");
+        String predicate = """
+                  FROM hr_reply_proposal p
+                  JOIN hr_conversation c ON c.id=p.conversation_id AND c.profile_id=p.profile_id
+             LEFT JOIN hr_message m ON m.conversation_id=p.conversation_id AND m.fingerprint=p.source_fingerprint
+                 WHERE p.profile_id=?
+                """ + ("pending".equals(selectedView) ? " AND p.status IN ('REVIEW_REQUIRED','SEND_UNKNOWN','BLOCKED')" : "")
+                + ("ALL".equals(selectedStatus) ? "" : " AND p.status=?");
+        List<Object> parameters = new ArrayList<>();
+        parameters.add(profileId);
+        if (!"ALL".equals(selectedStatus)) parameters.add(selectedStatus);
+        String select = "SELECT p.*, c.external_uid_hash, c.hr_name_cipher, c.company_name_cipher, c.job_name_cipher, m.body_cipher AS source_body_cipher ";
+        String ordered = predicate + " ORDER BY p.updated_at DESC, p.id DESC";
+        long total;
+        List<ProposalView> matches = null;
+        if (keyword.isEmpty()) {
+            total = jdbcTemplate.queryForObject("SELECT COUNT(*) " + predicate, Long.class, parameters.toArray());
+        } else {
+            // Search fields are encrypted at rest. Filter only this profile's scoped candidates after decryption;
+            // do not introduce a plaintext index or let the legacy 200-row limit truncate search/count results.
+            String normalized = keyword.toLowerCase(Locale.ROOT);
+            matches = jdbcTemplate.query(select + ordered, (rs, rowNum) -> mapProposalView(rs, profileId), parameters.toArray())
+                    .stream().filter(item -> (item.companyName() + " " + item.hrName() + " " + item.jobName() + " "
+                            + item.sourceMessage() + " " + item.draft()).toLowerCase(Locale.ROOT).contains(normalized)).toList();
+            total = matches.size();
+        }
+        int totalPages = (int) Math.max(1L, (total + size - 1) / size);
+        int currentPage = Math.min(page, totalPages);
+        int offset = (currentPage - 1) * size;
+        List<ProposalView> items;
+        if (matches != null) {
+            items = matches.subList(Math.min(offset, matches.size()), Math.min(offset + size, matches.size()));
+        } else {
+            parameters.add(size); parameters.add(offset);
+            items = jdbcTemplate.query(select + ordered + " LIMIT ? OFFSET ?", (rs, rowNum) -> mapProposalView(rs, profileId), parameters.toArray());
+        }
+        return new ProposalPage(profileId, selectedView, selectedStatus, keyword, currentPage, size, total, totalPages, items);
+    }
+
     private List<ProposalView> listProposalsForId(Long profileId, long id) { return queryProposals(profileId, true, id); }
 
     private List<ProposalView> queryProposals(Long profileId, boolean includeClosed, Long id) {
@@ -415,7 +472,10 @@ public class HrAssistantStore {
                   JOIN hr_conversation c ON c.id=p.conversation_id
              LEFT JOIN hr_message m ON m.conversation_id=p.conversation_id AND m.fingerprint=p.source_fingerprint
                  WHERE p.profile_id=?
-                """ + filter + (id == null ? "" : " AND p.id=" + id) + " ORDER BY p.updated_at DESC LIMIT 200", (rs, rowNum) -> {
+                """ + filter + (id == null ? "" : " AND p.id=" + id) + " ORDER BY p.updated_at DESC LIMIT 200", (rs, rowNum) -> mapProposalView(rs, profileId), profileId);
+    }
+
+    private ProposalView mapProposalView(ResultSet rs, Long profileId) throws SQLException {
             String sourceFingerprint = rs.getString("source_fingerprint");
             String aad = proposalAad(profileId, sourceFingerprint);
             String code = crypto.decrypt(rs.getString("confirmation_code_cipher"), aad + ":code");
@@ -434,7 +494,6 @@ public class HrAssistantStore {
                     crypto.decrypt(rs.getString("summary_cipher"), aad + ":summary"), risk, missing,
                     rs.getDouble("confidence"), rs.getInt("version"), readDateTime(rs.getString("expires_at")),
                     readDateTime(rs.getString("updated_at")), isHighValue(classification, risk, missing));
-        }, profileId);
     }
 
     @Transactional(readOnly = true)

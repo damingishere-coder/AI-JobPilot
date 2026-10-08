@@ -43,3 +43,12 @@ it('loads once in a hidden tab but skips background polling', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
   expect(fetch).toHaveBeenCalledTimes(1)
 })
+it('opens concrete interview preparation tasks in the matching detail tab with their time and round', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ profileId: 1, day: '2026-09-14', generatedAt: '2026-09-14T01:00:00Z', counts: [{ bucket: 'INTERVIEW_PREPARE', label: '七天内面试待准备', count: 1, actionRequired: true, preview: [{ id: 7, job_name: '合成采购岗', company_name: '虚构公司', platform: 'boss', location: '上海', interview_round: 2, interview_at: '2030-01-01T01:00:00Z', interview_prepared: 1 }] }] }) }))
+  render(<CrmWorkbench />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  const link = screen.getByRole('link', { name: /合成采购岗/ })
+  expect(link).toHaveAttribute('href', '/opportunities?bucket=INTERVIEW_PREPARE&id=7&tab=interviews')
+  expect(link).toHaveTextContent('第 2 轮')
+  expect(link).toHaveTextContent('准备 1/4 项')
+})

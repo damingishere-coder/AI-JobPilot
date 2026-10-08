@@ -25,6 +25,25 @@ class InterviewServiceTest {
         profiles=mock(ProfileService.class);when(profiles.getCurrentProfileId()).thenReturn(1L);
         interviews=new InterviewService(jdbc,profiles,new DataSourceTransactionManager(source),new HrAssistantCryptoService(directory.resolve("fixture.key")),new ObjectMapper());
     }
+    @Test void viewsSeparateUpcomingPreparationPendingPastChecksAndHistoryWithoutWriting() {
+        jdbc.update("UPDATE opportunity SET job_name='采购经理',company_name='合成公司' WHERE id=1");
+        String future=java.time.Instant.now().plus(java.time.Duration.ofDays(1)).toString();
+        String past=java.time.Instant.now().minus(java.time.Duration.ofDays(1)).toString();
+        interviews.save(1,save(null,0,"view-pending",1,null,"PENDING"));
+        interviews.save(1,save(null,0,"view-future",2,future,"SCHEDULED"));
+        interviews.save(1,save(null,0,"view-past",3,past,"SCHEDULED"));
+        interviews.save(1,save(null,0,"view-history",4,past,"COMPLETED"));
+        int events=jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event",Integer.class);
+        for(String view:List.of("UPCOMING","PENDING","PREPARE","CHECK","HISTORY")) {
+            assertThat(interviews.list(null,1,20,view,"采购")).containsEntry("total",1L);
+            assertThat(interviews.list(null,1,20,view,"%合成")).containsEntry("total",0L);
+        }
+        assertThat(interviews.list(null,1,20,"ALL",null)).containsEntry("total",4L);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM opportunity_event",Integer.class)).isEqualTo(events);
+        assertThatThrownBy(()->interviews.list(null,1,20,"INVALID",null)).hasMessageContaining("视图");
+        when(profiles.getCurrentProfileId()).thenReturn(2L);
+        assertThat(interviews.list(null,1,20,"ALL","采购")).containsEntry("total",0L);
+    }
     long version() { return jdbc.queryForObject("SELECT version FROM opportunity WHERE id=1",Long.class); }
     InterviewService.Save save(Long id,long version,String key,int round,String when,String status) {
         return new InterviewService.Save(id,version,version(),key,round,when,"Asia/Shanghai","ONLINE",status,List.of("JOB_RESUME"),"PRIVATE-INTERVIEW-NOTE");
