@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "1.10.3";
+  const SCRIPT_BUILD = "2026-10-08-hr-new-incoming-v2";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -199,12 +199,15 @@
     const snapshot=support.itemSnapshot(located.unique);
     const opened=await openConversation(located.unique,snapshot,message.deadlineAt);
     if (!opened.success) return {...opened,retryable:true};
-    const read=await readContext(message.deadlineAt);
+    const legacy=(message.legacyAnchors || []).find(anchor=>anchor.conversationId===message.target.legacyAnchorId);
+    const read=await readContext(message.deadlineAt,legacy?.capture);
     if (!read.messages.length || (!message.target.legacyAnchorId && read.messages.at(-1)?.from!=="对方")) return {success:true,capture:null,observedAt:Date.now()};
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
     const session=support.currentSession(document,snapshot);
     session.lastMessage=support.latestInbound(read.messages)?.text || "";delete session.surfaceText;
-    const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.scope==="ALL" || cursor.baseline===true,contextComplete:read.complete};
+    // ALL describes traversal, not age. Completed baseline sources are already
+    // durable in the backend; a changed incoming source must remain eligible.
+    const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.baseline===true,contextComplete:read.complete};
     await hydrateMedia(capture.messages,message.deadlineAt);
     await guard();
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
@@ -600,16 +603,35 @@
     const result=await hostMessage("BOSS_HR_HOST_DISPATCH",{commandId:command.commandId,leaseToken:command.leaseToken,beforeCapture:hostCapture(command,messages,complete)});
     return result?.success===true;
   }
-  async function readContext(deadlineAt = Infinity) {
+  function legacyRoundMatches(messages, expected) {
+    const normalize=value=>support.normalizeText(value).replace(/\s+/g, "");
+    let count=0;
+    for(let offset=0;offset+expected.length<=messages.length;offset++) {
+      if((offset>0 && messages[offset-1].from==="对方") || (offset+expected.length<messages.length && messages[offset+expected.length].from==="对方")) continue;
+      if(expected.every((message,index)=> {
+        const observed=messages[offset+index];
+        return observed.from===message.from && normalize(observed.type)===normalize(message.type)
+          && normalize(observed.time)===normalize(message.time) && normalize(observed.text)===normalize(message.text);
+      })) count++;
+    }
+    return count;
+  }
+  async function readContext(deadlineAt = Infinity, legacyCapture = null) {
     let messages=support.readMessages(document);
     const pane=document.querySelector(".chat-conversation .im-list");
     let scroller=pane?.parentElement;
     for(let i=0;i<4 && scroller && scroller.scrollHeight<=scroller.clientHeight+10;i++) scroller=scroller.parentElement;
     const hasBoundary=items=>items.filter(m=>m.from==="本人").length>=2;
+    let legacyEnd=legacyCapture?.messages?.length || 0;
+    while(legacyEnd>0 && legacyCapture.messages[legacyEnd-1].from!=="对方") legacyEnd--;
+    let legacyStart=legacyEnd;
+    while(legacyStart>0 && legacyCapture.messages[legacyStart-1].from==="对方") legacyStart--;
+    const legacyRound=legacyCapture?.contextComplete===true?legacyCapture.messages.slice(legacyStart,legacyEnd):[];
+    const legacyComplete=items=>!legacyCapture || (legacyRound.length>0 && legacyRoundMatches(items,legacyRound)===1);
     const rowCount=()=>Array.from(document.querySelectorAll(".chat-conversation .im-list > .message-item"))
       .filter(node=>!node.classList.contains("item-system")).length;
     let lostBoundary=rowCount()!==messages.length;
-    for(let i=0;i<8 && !hasBoundary(messages) && scroller;i++) {
+    for(let i=0;i<(legacyCapture?40:8) && (!hasBoundary(messages) || !legacyComplete(messages)) && scroller;i++) {
       if (Date.now()>=deadlineAt) break;
       await guard();
       const count=messages.length;
@@ -625,7 +647,7 @@
     // Keep the latest round plus a preceding complete exchange; virtual-list gaps remain incomplete.
     const beginning=Array.from(document.querySelectorAll(".chat-conversation .history-tip,.chat-conversation .load-more"))
       .some(node=>/没有更多消息|已加载全部|沟通从这里开始/.test(node.textContent||""));
-    const complete=!lostBoundary && (hasBoundary(messages) || (beginning && messages.length>0));
+    const complete=!lostBoundary && legacyComplete(messages) && (hasBoundary(messages) || (beginning && messages.length>0));
     const lastSelf=messages.findLastIndex(message=>message.from==="本人");
     const round=messages.slice(lastSelf+1);
     const roundIds=round.map(message=>message.messageId);

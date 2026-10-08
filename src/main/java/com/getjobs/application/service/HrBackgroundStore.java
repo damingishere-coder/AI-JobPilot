@@ -43,8 +43,9 @@ public class HrBackgroundStore {
         if(!accountHash(profile,account).equals(row.get("account_hash")))
             throw new HrAssistantStore.StaleProposalException("采集编号对应的正文或账号已变化，未覆盖原快照");
         boolean upgrade=false;
+        ChatCapture previous=null;
         if(inserted==0 && capture.contextComplete() && row.get("payload_cipher") instanceof String oldCipher && !oldCipher.isBlank()) {
-            var previous=decode(crypto.decrypt(oldCipher,"background-capture:"+row.get("id")));
+            previous=decode(crypto.decrypt(oldCipher,"background-capture:"+row.get("id")));
             upgrade=!previous.contextComplete() && compatibleIdentity(previous.session(),capture.session())
                     && sourceRound(previous).equals(sourceRound(capture));
         }
@@ -53,13 +54,51 @@ public class HrBackgroundStore {
                 && ("PENDING".equals(row.get("status")) || ("BLOCKED".equals(row.get("status")) && "AUTHORIZATION_CHANGED".equals(row.get("error_code"))));
         boolean freshSuggestion=inserted==0 && capture.contextComplete() && "DONE".equals(row.get("status"))
                 && unchangedSuggestion(profile,capture,version);
-        if(upgrade || freshAuthorization || freshSuggestion) {
+        boolean freshIdentity=inserted==0 && previous!=null && capture.contextComplete() && completeIdentity(capture.session())
+                && "BLOCKED".equals(row.get("status")) && "LEGACY_IDENTITY_UNRESOLVED".equals(row.get("error_code"))
+                && identityHash(profile,previous.session()).equals(identityHash(profile,capture.session()))
+                && identityDependencyResolved(profile,capture);
+        if(upgrade || freshAuthorization || freshSuggestion || freshIdentity) {
             String originalId=row.get("id").toString();
+            // A source observed during the initial baseline stays historical even
+            // when a later complete read or identity retry comes from a live scan.
+            if(previous==null && row.get("payload_cipher") instanceof String oldCipher && !oldCipher.isBlank())
+                previous=decode(crypto.decrypt(oldCipher,"background-capture:"+originalId));
+            if(previous!=null && previous.historical() && !capture.historical())
+                encoded=encode(new ChatCapture(capture.captureId(),capture.unreadCount(),capture.session(),capture.messages(),true,capture.contextComplete()));
             db.update("UPDATE hr_background_capture SET payload_cipher=?,payload_hash=?,policy_version=?,status='PENDING',error_code='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     crypto.encrypt(encoded,"background-capture:"+originalId),digest,version,originalId);
             return new CaptureAck(true,capture.captureId(),true,"PENDING");
         }
         return new CaptureAck(true,capture.captureId(),inserted==0,row.get("status").toString());
+    }
+
+    /** Storage retries analysis only after identity evidence changes; never resolve or send here. */
+    private boolean identityDependencyResolved(Long profile,ChatCapture capture) {
+        String uidHash=crypto.blindIndex(capture.session().uid(),"conversation:"+profile);
+        var aliases=db.queryForList("SELECT identity_hash FROM hr_chrome_conversation_alias WHERE profile_id=? AND chrome_uid_hash=?",String.class,profile,uidHash);
+        if(!aliases.isEmpty())return aliases.size()==1 && identityHash(profile,capture.session()).equals(aliases.getFirst());
+        var matches=new ArrayList<Long>();
+        var sources=new ArrayList<Long>();
+        for(Long candidate:db.queryForList("SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss_visual'",Long.class,profile)) {
+            try {
+                var baseline=policies.context(profile,candidate);
+                if(sameVisualIdentity(capture.session(),baseline.session())) {
+                    matches.add(candidate);
+                    if(baseline.contextComplete() && completeIdentity(baseline.session())
+                            && !uniqueSourceRound(capture.messages(),baseline.messages()).isEmpty())sources.add(candidate);
+                }
+            }catch(IdentityHeldException ambiguity){return false;}
+            catch(RuntimeException unavailable){ /* The worker retains its original fail-closed checks. */ }
+        }
+        if(!matches.isEmpty())return matches.size()==1 && sources.size()==1
+                && db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias WHERE profile_id=? AND conversation_id=?",Integer.class,profile,sources.getFirst())==0;
+        if(db.queryForObject("SELECT COUNT(*) FROM hr_conversation WHERE profile_id=? AND platform='boss' AND external_uid_hash=?",Integer.class,profile,uidHash)>0)return true;
+        return db.queryForObject("""
+                SELECT COUNT(DISTINCT c.id) FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
+                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
+                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
+                """,Integer.class,profile)==0;
     }
 
     private boolean unchangedSuggestion(Long profile,ChatCapture capture,int version) {
@@ -140,7 +179,7 @@ public class HrBackgroundStore {
         for(Long candidate:visualIds) {
             try {
                 ChatCapture baseline=policies.context(profile,candidate);
-                if(identityHash.equals(identityHash(profile,baseline.session()))) {
+                if(sameVisualIdentity(identity,baseline.session())) {
                     identityMatches.add(candidate);
                     if(completeIdentity(identity) && baseline.contextComplete() && observed.contextComplete()
                             && !uniqueSourceRound(observed.messages(),baseline.messages()).isEmpty())sourceMatches.add(candidate);
@@ -188,6 +227,18 @@ public class HrBackgroundStore {
     private String identityHash(Long profile,ChatSession identity) {
         if(identity==null)return "";
         return crypto.blindIndex(normalize(identity.hrName())+"|"+normalize(identity.companyName())+"|"+normalize(identity.jobName()),"hr-background-identity:"+profile);
+    }
+    private static boolean sameVisualIdentity(ChatSession observed,ChatSession baseline) {
+        return baseline!=null && normalize(observed.hrName()).equals(normalize(baseline.hrName()))
+                && normalize(observed.companyName()).equals(normalize(baseline.companyName()))
+                && canonicalJob(observed.jobName()).equals(canonicalJob(baseline.jobName()));
+    }
+    private static String canonicalJob(String job) {
+        // Older visual snapshots sometimes concatenate the short job title and
+        // its expanded title. Remove only an exact repeated leading title;
+        // different roles still require their own complete identity evidence.
+        String value=normalize(job);
+        return value.length()>200?value:value.replaceFirst("^(.{4,}?)\\1", "$1");
     }
     private static List<ChatMessage> uniqueSourceRound(List<ChatMessage> observed,List<ChatMessage> baseline) {
         int end=baseline.size();while(end>0 && !baseline.get(end-1).inbound())end--;

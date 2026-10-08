@@ -9,8 +9,12 @@
   const ALARM = "getjobs-boss-hr-background";
   const CHAT_URL = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
   const TYPES = new Set(["START", "STATUS", "PAUSE", "RESUME", "STOP", "VIEW"].map(value => "BOSS_HR_HOST_" + value));
-  function create({ chrome, request, ensureContent, now = Date.now, uuid = () => crypto.randomUUID() }) {
-    let queue = Promise.resolve(), tickPromise = null, controlPromise = null;
+  function create({ chrome, request, ensureContent, now = Date.now, uuid = () => crypto.randomUUID(), setTimer = setTimeout, clearTimer = clearTimeout }) {
+    let queue = Promise.resolve(), tickPromise = null, controlPromise = null, continuationTimer = null, continuationSteps = 0;
+    function clearContinuation() {
+      if (continuationTimer !== null) clearTimer(continuationTimer);
+      continuationTimer = null;
+    }
     const read = async () => (await chrome.storage.local.get(KEY))[KEY] || null;
     const update = (changes, expected = null) => {
       const next = queue.then(async () => {
@@ -60,9 +64,11 @@
         ...publicState, hrBackgroundProtocol: PROTOCOL } };
     }
     async function stop(reason = "用户停止", disabled = true, origin = "USER") {
+      clearContinuation();
       const state = await read();
       await update({ intentEnabled: !disabled && Boolean(state?.intentEnabled), paused: !disabled, state: disabled ? "STOPPED" : "PAUSED",
         pauseReason: reason, pauseOrigin:origin,errorCode: "", message: reason, watchSessionId: "", nextScanAt: null,controlRevision:Number(state?.controlRevision || 0)+1 });
+      clearContinuation();
       if(disabled || origin!=="REMOTE")await chrome.alarms.clear(ALARM);
       else await alarm();
       if(origin!=="REMOTE" && state?.profileId)await request("/api/hr-assistant/autopilot/pause",{...context(state),method:"POST",body:{transport:"CHROME_BACKGROUND"}}).catch(()=>{});
@@ -133,6 +139,7 @@
           const resumed=await request("/api/hr-assistant/autopilot/resume",{...context(previous || {}),method:"POST",body:{transport:"CHROME_BACKGROUND"}});
           if(!resumed.success)throw fault(resumed.errorType || "HR_POLICY_RESUME_FAILED",resumed.message || "后台托管规则尚未恢复");
         }
+        clearContinuation();
         await update({ intentEnabled: true, paused: false, state: "STARTING", pauseReason: "", errorCode: "", message: "正在后台校验登录和托管规则",
           profileId, hostGeneration:message.type==="BOSS_HR_HOST_RESUME" && previous?.intentEnabled ? previous.hostGeneration : uuid(),
           browserSessionId:message.type==="BOSS_HR_HOST_RESUME" && previous?.intentEnabled ? previous.browserSessionId : uuid(),watchSessionId: "", pageDocumentId: "", lastPageSeenAt: null,
@@ -234,9 +241,11 @@
       if (!heartbeat.success) throw fault(heartbeat.errorType || "HR_HEARTBEAT_REJECTED", heartbeat.message || "页面心跳未确认", !heartbeat.httpStatus || heartbeat.httpStatus >= 500);
       return update({lastPageSeenAt:heartbeatPage.observedAt},state);
     }
-    async function tick() {
+    async function tick(origin = "alarm") {
       if (tickPromise) return tickPromise;
-      let owner=null;
+      clearContinuation();
+      if (origin !== "continuation") continuationSteps = 0;
+      let owner=null, successfulReadCursor=false;
       tickPromise = (async () => {
         let state = await read();
         owner=state;
@@ -327,6 +336,7 @@
           else await update({ cursor: null, operation: null, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
             lastReconcileAt: cursor.reconcile ? now() : state.lastReconcileAt },state);
         }
+        successfulReadCursor = true;
       })().catch(async error => {
         if(error.errorCode==="HR_HOST_CANCELLED")return;
         const state = await read();
@@ -340,7 +350,28 @@
           await reportFault(state,error.errorCode);
           await restoreTab(state);
         }
-      }).finally(() => { tickPromise = null; });
+      }).finally(async () => {
+        const finished = tickPromise;
+        const current = await read().catch(() => null);
+        if (tickPromise !== finished) return;
+        tickPromise = null;
+        // Continue only a successfully saved read cursor. Alarms remain the
+        // durable fallback when a worker sleeps, a burst ends, or a read fails.
+        if (!successfulReadCursor || !current?.intentEnabled || current.paused || current.state !== "RUNNING" || current.operation
+          || !["LIST", "CAPTURE"].includes(current.cursor?.stage) || current.hostGeneration !== owner?.hostGeneration
+          || current.controlRevision !== owner?.controlRevision || continuationSteps >= 20) return;
+        continuationSteps++;
+        const scheduled = setTimer(async () => {
+          if (continuationTimer !== scheduled) return;
+          const continued = await read().catch(() => null);
+          if (continuationTimer !== scheduled) return;
+          continuationTimer = null;
+          if (!continued?.intentEnabled || continued.paused || continued.hostGeneration !== current.hostGeneration
+            || continued.controlRevision !== current.controlRevision) return;
+          return tick("continuation").catch(() => {});
+        }, 1000);
+        continuationTimer = scheduled;
+      });
       return tickPromise;
     }
     async function content(message, sender) {
