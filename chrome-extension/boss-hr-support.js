@@ -266,6 +266,12 @@
     return `${simpleHash(snapshot.uid)}-${simpleHash([snapshot.uid, snapshot.lastMessage, snapshot.lastTime].join("|"))}`;
   }
 
+  async function previewKey(snapshot, cryptoApi = globalThis.crypto) {
+    const input = new TextEncoder().encode(JSON.stringify([snapshot.uid, normalizeText(snapshot.lastMessage)]));
+    const digest = await cryptoApi.subtle.digest("SHA-256", input);
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+  }
+
   async function sourceCaptureId(uid, messages, accountIdentity, cryptoApi = globalThis.crypto) {
     let end=messages.length;
     while(end>0 && messages[end-1].from!=="对方") end--;
@@ -282,6 +288,6 @@
   return {
     normalizeText, pageSafety, unreadTotal, unreadTab, allTab, chatItems, badgeCount, stableUid,
     itemSnapshot, findByUid, currentSession, readMessages, latestInbound, messagesMatch,
-    simpleHash, captureId, sourceCaptureId
+    simpleHash, captureId, sourceCaptureId, previewKey
   };
 });

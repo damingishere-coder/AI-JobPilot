@@ -9,6 +9,43 @@
   const ALARM = "getjobs-boss-hr-background";
   const CHAT_URL = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
   const TYPES = new Set(["START", "STATUS", "PAUSE", "RESUME", "STOP", "VIEW"].map(value => "BOSS_HR_HOST_" + value));
+  const PATROL_VERSION = 1;
+  const DAY_MS = 86400000;
+  const shanghaiDay = timestamp => Math.floor((timestamp + 8 * 3600000) / DAY_MS) * DAY_MS;
+  function messageDay(value, timestamp) {
+    const text = String(value || "").trim(), today = shanghaiDay(timestamp);
+    const full = text.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})(?:日)?(?:[ T].*)?$/);
+    const short = text.match(/^(\d{1,2})[-/月](\d{1,2})(?:日)?(?: .*)?$/);
+    if (full || short) {
+      let year = full ? Number(full[1]) : new Date(today).getUTCFullYear();
+      const month = Number(full ? full[2] : short[1]), day = Number(full ? full[3] : short[2]);
+      let date = Date.UTC(year, month - 1, day);
+      if (short && date > today) date = Date.UTC(--year, month - 1, day);
+      const parsed = new Date(date);
+      return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day ? date : null;
+    }
+    if (/^(?:今天\s*)?(?:[01]?\d|2[0-3]):[0-5]\d$/.test(text) || text === "今天") return today;
+    if (/^昨天(?:\s+(?:[01]?\d|2[0-3]):[0-5]\d)?$/.test(text)) return today - DAY_MS;
+    if (/^前天(?:\s+(?:[01]?\d|2[0-3]):[0-5]\d)?$/.test(text)) return today - 2 * DAY_MS;
+    return null;
+  }
+  function previewSignature(item, timestamp) {
+    const day = messageDay(item.lastTime, timestamp);
+    const time = String(item.lastTime || "").match(/\b\d{1,2}:\d{2}\b/)?.[0] || "";
+    return JSON.stringify([item.previewKey, day === null ? item.lastTime : day, time]);
+  }
+  function remember(previews, item, timestamp) {
+    return {...previews, [item.uid]: {signature:previewSignature(item,timestamp),unreadCount:Number(item.unreadCount || 0),
+      lastDirection:item.lastDirection || "",observedAt:timestamp}};
+  }
+  function eligible(item, previous, cursor, timestamp) {
+    const day = messageDay(item.lastTime, timestamp), today = shanghaiDay(timestamp);
+    if (day !== null && (day > today || day < today - cursor.historyDays * DAY_MS)) return false;
+    if (cursor.catalogOnly) return false;
+    if (previous?.signature === previewSignature(item,timestamp) && Number(item.unreadCount || 0) <= previous.unreadCount) return false;
+    // Unknown dates cannot make an unobserved, read historical chat current.
+    return day !== null || Number(item.unreadCount || 0) > 0 || Boolean(previous);
+  }
   function create({ chrome, request, ensureContent, now = Date.now, uuid = () => crypto.randomUUID(), setTimer = setTimeout, clearTimer = clearTimeout }) {
     let queue = Promise.resolve(), tickPromise = null, controlPromise = null, continuationTimer = null, continuationSteps = 0;
     function clearContinuation() {
@@ -146,6 +183,7 @@
           accountBindingConfirmed: message.accountBindingConfirmed === true || previous?.accountBindingConfirmed === true,
           accountIdentity: !reauthorize && previous?.profileId === profileId ? previous.accountIdentity || "" : "", accountName: !reauthorize && previous?.profileId === profileId ? previous.accountName || "" : "",
           cursor: !reauthorize && previous?.profileId===profileId ? previous.cursor || null : null, baselineComplete:!reauthorize && Boolean(previous?.baselineComplete),lastReconcileAt:reauthorize?null:previous?.lastReconcileAt || null,
+          previews:!reauthorize && previous?.profileId===profileId ? previous.previews || {} : {},patrolVersion:!reauthorize ? previous?.patrolVersion || 0 : 0,
           operation: null, retryCount: 0, retryAt: 0, nextScanAt: now(), workbenchWindowId: sender?.tab?.windowId,
           explicitResume: true, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
           expectedAccountName: String(message.expectedAccountName || (!reauthorize && previous?.expectedAccountName) || "") },
@@ -288,7 +326,7 @@
         await active(state);
         if (command) {
           const deadlineAt = Math.min(now() + 45000, Number(command.leaseDeadlineEpochMs) - 5000);
-          await update({ operation: { kind: "SEND", phase: "CLAIMED", commandId: command.commandId,leaseToken:command.leaseToken,deadlineAt,
+          await update({ operation: { kind: "SEND", phase: "CLAIMED", commandId: command.commandId,uid:command.uid,leaseToken:command.leaseToken,deadlineAt,
             startedAt: now(),watchSessionId:state.watchSessionId,hostGeneration:state.hostGeneration,pageDocumentId:state.pageDocumentId,
             accountIdentity:state.accountIdentity,tabId:state.tabId,pageObservedAt:state.lastPageSeenAt } },state);
           try {
@@ -300,22 +338,40 @@
           } catch { await update({ state: "RECOVERING", message: "发送回执待核验，不会重发" },state).catch(()=>{}); }
           return;
         }
+        const policyKey=JSON.stringify([p.historyMode,p.historyDays]);
+        // Old queues lack list evidence. Rebuild them before opening any saved target.
+        if(state.cursor && (state.cursor.patrolVersion!==PATROL_VERSION || state.cursor.policyKey!==policyKey))
+          state=await update({cursor:null,operation:null,nextScanAt:0},state);
         if (!state.cursor && Number(state.nextScanAt || 0) > now()) return;
-        if (!state.cursor) state = await update({ cursor: { stage: "LIST", scope: legacyAnchors.length || !state.baselineComplete || !state.lastReconcileAt || now()-state.lastReconcileAt>=1800000?"ALL":"UNREAD", scrollTop: 0, queue: [], seen: [], baseline: !state.baselineComplete,
-          scanId: uuid(), reconcile: !state.lastReconcileAt || now() - state.lastReconcileAt >= 1800000 }, operation: null },state);
+        if (!state.cursor) {
+          const catalog = state.patrolVersion!==PATROL_VERSION || !state.baselineComplete;
+          const reconcile = catalog || !state.lastReconcileAt || now()-state.lastReconcileAt>=1800000;
+          state = await update({ cursor: {stage:"LIST",scope:reconcile?"ALL":"UNREAD",scrollTop:0,queue:[],seen:[],baseline:!state.baselineComplete,
+            catalogOnly:catalog && p.historyMode==="NEW_ONLY",historyDays:p.historyDays,policyKey,patrolVersion:PATROL_VERSION,
+            scanId:uuid(),reconcile},operation:null },state);
+        }
         const cursor = state.cursor;
         await update({ operation: { kind: cursor.stage, phase: "READING", startedAt: now(), deadlineAt: now() + 20000 } },state);
-        const response = await timeout(chrome.tabs.sendMessage(state.tabId, { source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_HOST_SCAN_STEP",
+        const target=cursor.queue[0] || null, targetDay=target?messageDay(target.lastTime,now()):null;
+        const expiredTarget=cursor.stage==="CAPTURE" && targetDay!==null
+          && (targetDay>shanghaiDay(now()) || targetDay<shanghaiDay(now())-p.historyDays*DAY_MS);
+        const response = expiredTarget?{success:true,patrolVersion:PATROL_VERSION,capture:null,observation:target}
+          :await timeout(chrome.tabs.sendMessage(state.tabId, { source: "GET_JOBS_BACKGROUND", type: "BOSS_HR_HOST_SCAN_STEP",
           protocol: PROTOCOL, hostGeneration: state.hostGeneration, documentId: ready.page.documentId, watchSessionId: state.watchSessionId,
           cursor, legacyAnchors, target: cursor.queue[0] || null, deadlineAt: now() + 20000 }), 22000);
         const latest = await read();
         if (!latest?.intentEnabled || latest.paused || latest.hostGeneration !== state.hostGeneration) return;
         if (!response?.success) throw fault(response?.errorCode || "HR_CAPTURE_READ_FAILED", response?.message || "会话读取未就绪", response?.retryable === true);
+        if(response.patrolVersion!==PATROL_VERSION) throw fault("HR_PATROL_PROTOCOL_MISMATCH","请重新加载最新版 Chrome Bridge 并刷新托管聊天页");
         if (cursor.stage === "LIST") {
-          const seen = new Set(cursor.seen), targets = cursor.queue.slice();
+          const seen = new Set(cursor.seen), targets = cursor.queue.slice();let previews=state.previews || {};
           for (const item of response.targets || []) if (item.uid && !seen.has(item.uid)) {
             seen.add(item.uid);
-            const target={uid:item.uid,captureId:item.captureId,legacyAnchorId:item.legacyAnchorId || null};
+            if(!item.previewKey || !Number.isFinite(item.unreadCount) || typeof item.lastTime!=="string")
+              throw fault("HR_LIST_EVIDENCE_MISSING","联系人摘要或时间未读完整，请刷新托管聊天页");
+            const previous=Object.hasOwn(previews,item.uid)?previews[item.uid]:null;
+            if(!eligible(item,previous,cursor,now())) {previews=remember(previews,item,now());continue;}
+            const target={...item,legacyAnchorId:item.legacyAnchorId || null};
             if (Number.isFinite(item.listScrollTop) && item.listScrollTop>=0) target.listScrollTop=item.listScrollTop;
             targets.push(target);
           }
@@ -324,7 +380,7 @@
           const stalled=response.hasMore && seen.size===cursor.seen.length && Number(response.nextScrollTop)===Number(cursor.scrollTop);
           const stalledSteps=stalled?Number(cursor.stalledSteps || 0)+1:0;
           if(stalledSteps>=3) throw fault("HR_LIST_SCROLL_STALLED", "联系人列表滚动未前进，已暂停并保留采集进度，请检查页面后恢复");
-          await update({ cursor: { ...cursor, queue: targets, seen: [...seen], scrollTop: response.nextScrollTop,
+          await update({ previews,cursor: { ...cursor, queue: targets, seen: [...seen], scrollTop: response.nextScrollTop,
             stalledSteps,
             stage: response.hasMore ? "LIST" : "CAPTURE" }, operation: null },state);
         } else {
@@ -336,9 +392,12 @@
             if (!saved.success || !apiData(saved)?.accepted || apiData(saved).captureId !== capture.captureId)
               throw fault(saved.errorType || "HR_CAPTURE_ACK_MISSING", saved.message || "采集未确认保存，保留游标稍后重读", !saved.httpStatus || saved.httpStatus>=500);
           }
+          const observation=response.observation;
+          const previews=observation && observation.uid===cursor.queue[0]?.uid && observation.previewKey
+            ?remember(state.previews || {},observation,now()):state.previews || {};
           const remaining = cursor.queue.slice(1);
-          if (remaining.length) await update({ cursor: { ...cursor, queue: remaining }, operation: null,listRechecks:0 },state);
-          else await update({ cursor: null, operation: null,listRechecks:0, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
+          if (remaining.length) await update({previews,cursor: { ...cursor, queue: remaining }, operation: null,listRechecks:0 },state);
+          else await update({previews,patrolVersion:PATROL_VERSION,cursor: null, operation: null,listRechecks:0, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
             lastReconcileAt: cursor.reconcile ? now() : state.lastReconcileAt },state);
         }
         successfulReadCursor = true;
@@ -407,7 +466,9 @@
             || (outcome==="SENT" && receiptStatus!=="SENT_CONFIRMED");
           const current=await read();
           if(!live || current?.operation?.commandId!==message.commandId || current.hostGeneration!==message.hostGeneration)return {success:true};
-          await update({ operation: null, state: !current.intentEnabled?"STOPPED":failed ? "BLOCKED" : (current.paused ? "PAUSED" : "RUNNING"), paused:current.intentEnabled?(failed || current.paused):false,
+          const previews=!failed && message.observation?.lastDirection==="本人" && message.observation?.uid===live.uid && message.observation?.previewKey
+            ?remember(current.previews || {},message.observation,now()):current.previews || {};
+          await update({previews,operation: null, state: !current.intentEnabled?"STOPPED":failed ? "BLOCKED" : (current.paused ? "PAUSED" : "RUNNING"), paused:current.intentEnabled?(failed || current.paused):false,
             errorCode: current.intentEnabled && failed ? "SEND_RESULT_UNKNOWN" : current.errorCode || "",
             message: !current.intentEnabled || current.paused ? current.message : failed ? "发送待人工核验，不会重发" : "后台托管中" },
             {...current,allowDisabled:true,allowPaused:true}).catch(()=>{});

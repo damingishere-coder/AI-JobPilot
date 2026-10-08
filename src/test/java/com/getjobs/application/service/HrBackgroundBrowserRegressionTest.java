@@ -15,6 +15,63 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HrBackgroundBrowserRegressionTest {
     private static final String PROTOCOL="2026-09-30-hr-background-v1";
 
+    @Test void patrolFiltersBeforeOpeningAndReadsChangedIncomingInProductionDom() {
+        try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
+                new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
+                        .setArgs(List.of("--disable-background-networking","--host-resolver-rules=MAP * ~NOTFOUND")));
+             BrowserContext context=browser.newContext()) {
+            Page chat=fixture(context);
+            chat.addScriptTag(new Page.AddScriptTagOptions().setPath(Path.of("chrome-extension","boss-hr-host.js")));
+            chat.evaluate("""
+                ()=>{
+                  const card=document.querySelector('.friend-content'),open=card.onclick;
+                  window.patrolOpens=0;window.oldOpens=0;window.patrolCaptures=[];window.patrolNow=Date.now();
+                  card.onclick=()=>{patrolOpens++;open();};
+                  const wrapper=document.createElement('div');wrapper.className='friend-content-warp';
+                  wrapper.innerHTML='<div class="friend-content"><span class="name-box"><span class="name-text">旧HR</span><span>旧公司</span></span><span class="last-msg-text">两个月前的消息</span><time>1900-01-01</time></div>';
+                  wrapper.__vue__={$el:wrapper,$props:{source:{friendId:'102',friendSource:0,uniqueId:'102-0',name:'旧HR',brandName:'旧公司'}}};
+                  wrapper.firstChild.onclick=()=>oldOpens++;document.querySelector('.user-list').append(wrapper);
+                  const storage={};let session=null;
+                  const chrome={storage:{local:{get:async key=>({[key]:storage[key]}),set:async value=>Object.assign(storage,structuredClone(value))}},
+                    alarms:{create:async()=>{},clear:async()=>{}},tabs:{query:async()=>[{id:1,windowId:1,url:location.href,status:'complete'}],
+                      get:async()=>({id:1,windowId:1,url:location.href,status:'complete'}),update:async()=>{},
+                      sendMessage:async(id,payload)=>new Promise(resolve=>fixtureListener(payload,{},resolve))},windows:{}};
+                  const response=data=>({success:true,httpStatus:200,data:{data}});
+                  const request=async(path,config)=>{
+                    if(path.endsWith('/autopilot'))return response({enabled:true,paused:false,replyMode:'AUTO',authorizationValid:true,historyMode:'RECENT',historyDays:15});
+                    if(path.endsWith('/status'))return response(session || {watching:false});
+                    if(path.endsWith('/watch/start')){session={watching:true,watchSessionId:'watch',hostGeneration:config.body.hostGeneration,pageDocumentId:config.body.pageDocumentId,profileId:1};return response(session);}
+                    if(path.endsWith('/watch/heartbeat'))return response({});
+                    if(path.endsWith('/watch/legacy-anchors'))return response([{conversationId:132,status:'READ_ONLY'}]);
+                    if(path.endsWith('/send-commands/claim'))return response(null);
+                    if(path.endsWith('/watch/captures')){patrolCaptures.push(config.body.captures[0]);return response({accepted:true,captureId:config.body.captures[0].captureId});}
+                    throw Error('unexpected endpoint '+path);
+                  };
+                  window.patrolHost=GetJobsBossHrHost.create({chrome,request,ensureContent:async()=>{},now:()=>patrolNow,setTimer:()=>1,clearTimer:()=>{}});
+                  return patrolHost.control({type:'BOSS_HR_HOST_START',expectedProfileId:1,hrBackgroundProtocol:'2026-09-30-hr-background-v1',accountBindingConfirmed:true},{tab:{windowId:1}});
+                }
+                """);
+            chat.evaluate("()=>patrolHost.tick()");
+            assertThat(chat.evaluate("patrolOpens")).as("host state: %s",chat.evaluate("()=>patrolHost.read()")).isEqualTo(1);
+            assertThat(chat.evaluate("oldOpens")).isEqualTo(0);
+            assertThat(chat.evaluate("patrolCaptures.length")).isEqualTo(1);
+            chat.evaluate("patrolNow+=31*60000");
+            chat.evaluate("()=>patrolHost.tick()");chat.evaluate("()=>patrolHost.tick()");
+            assertThat(chat.evaluate("patrolOpens")).isEqualTo(1);
+            assertThat(chat.evaluate("oldOpens")).isEqualTo(0);
+            chat.evaluate("""
+                ()=>{patrolNow+=31*60000;document.querySelector('.last-msg-text').textContent='新提问';
+                  const row=document.querySelector('.im-list .message-item');row.querySelector('.text').textContent='新提问';
+                  row.dataset.mid='new-inbound';row.__vue__.$props.message.mid='new-inbound';}
+                """);
+            chat.evaluate("()=>patrolHost.tick()");chat.evaluate("()=>patrolHost.tick()");
+            assertThat(chat.evaluate("patrolOpens")).isEqualTo(2);
+            assertThat(chat.evaluate("oldOpens")).isEqualTo(0);
+            assertThat(chat.evaluate("patrolCaptures.length")).isEqualTo(2);
+            assertThat(chat.evaluate("fixtureDispatches")).isEqualTo(0);
+        }
+    }
+
     @Test void isolatedPageReadsAndSendsOneExactReplyWithoutChangingOtherPage() {
         try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
                 new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)

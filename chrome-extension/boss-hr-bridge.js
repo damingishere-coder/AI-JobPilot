@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "2026-10-08-hr-locator-v3";
+  const SCRIPT_BUILD = "2026-10-08-hr-patrol-v1";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -87,7 +87,7 @@
         sendResponse({success:false,errorCode:"HR_HOST_STALE_PAGE",message:"后台页面绑定或操作状态已变化"}); return;
       }
       operationActive=true;
-      hostReadStep(message).then(sendResponse).catch(error=>sendResponse({...failure("HR_CAPTURE_READ_FAILED",error),retryable:true})).finally(()=>{operationActive=false;});
+      hostReadStep(message).then(result=>sendResponse({...result,patrolVersion:1})).catch(error=>sendResponse({...failure("HR_CAPTURE_READ_FAILED",error),retryable:true})).finally(()=>{operationActive=false;});
       return true;
     }
     if (message.type === "BOSS_HR_PREPARE_REVIEW") {
@@ -121,6 +121,8 @@
             // complete history solely because the outgoing text matched.
             const receipt=await readContext(Date.now());
             result.observedCapture=hostCapture(message.command,receipt.messages,receipt.complete);
+            const card=support.findByUid(document,message.command.uid).unique;
+            if(card) result.observation=await patrolObservation(support.itemSnapshot(card),receipt.messages.at(-1)?.from);
           }
           const reported=await hostMessage("BOSS_HR_HOST_RESULT",{commandId:message.command.commandId,leaseToken:message.command.leaseToken,...result,
             hostGeneration:message.command.hostGeneration,documentId:message.command.pageDocumentId,watchSessionId:message.command.watchSessionId}).catch(()=>({success:false}));
@@ -186,10 +188,10 @@
         list=findScrollableList(items[0]);
       }
       const snapshots=items.map(support.itemSnapshot).filter(item=>item.uid && (cursor.scope==="ALL" || item.unreadCount));
-      const targets=snapshots.map(item=>({uid:item.uid,captureId:support.captureId(item),listScrollTop:list?.scrollTop || 0,legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
+      const targets=await Promise.all(snapshots.map(async item=>({...await patrolObservation(item),captureId:support.captureId(item),listScrollTop:list?.scrollTop || 0,legacyAnchorId:(message.legacyAnchors || []).find(anchor=> {
         const expected=anchor.capture?.session;
         return expected?.hrName && expected.companyName && support.normalizeText(expected.hrName)===item.hrName && support.normalizeText(expected.companyName)===item.companyName;
-      })?.conversationId || null}));
+      })?.conversationId || null})));
       const hasMore=Boolean(list && list.scrollTop+list.clientHeight<list.scrollHeight-2);
       return {success:true,targets,hasMore,actualScrollTop:list?.scrollTop || 0,nextScrollTop:hasMore?Math.min(list.scrollHeight-list.clientHeight,list.scrollTop+Math.max(240,Math.floor(list.clientHeight*.85))):0,observedAt:Date.now()};
     }
@@ -201,8 +203,10 @@
     if (!opened.success) return {...opened,retryable:true};
     const legacy=(message.legacyAnchors || []).find(anchor=>anchor.conversationId===message.target.legacyAnchorId);
     const read=await readContext(message.deadlineAt,legacy?.capture);
-    if (!read.messages.length || (!message.target.legacyAnchorId && read.messages.at(-1)?.from!=="对方")) return {success:true,capture:null,observedAt:Date.now()};
+    if (!read.messages.length) return {success:false,errorCode:"HR_CHAT_MESSAGES_MISSING",message:"未读取到聊天正文，保留进度稍后重试",retryable:true};
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
+    const observation=await patrolObservation(support.itemSnapshot(located.unique),read.messages.at(-1)?.from);
+    if (read.messages.at(-1)?.from!=="对方") return {success:true,capture:null,observation,observedAt:Date.now()};
     const session=support.currentSession(document,snapshot);
     session.lastMessage=support.latestInbound(read.messages)?.text || "";delete session.surfaceText;
     // ALL describes traversal, not age. Completed baseline sources are already
@@ -211,7 +215,12 @@
     await hydrateMedia(capture.messages,message.deadlineAt);
     await guard();
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
-    return {success:true,capture,observedAt:Date.now()};
+    return {success:true,capture,observation,observedAt:Date.now()};
+  }
+
+  async function patrolObservation(snapshot,lastDirection="") {
+    return {uid:snapshot.uid,previewKey:await support.previewKey(snapshot),lastTime:snapshot.lastTime || "",
+      unreadCount:Number(snapshot.unreadCount || 0),lastDirection};
   }
 
   async function scan(message) {

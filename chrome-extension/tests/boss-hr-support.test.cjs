@@ -73,3 +73,13 @@ test("capture ids stay stable for a static page and change with a new inbound pr
   assert.equal(support.captureId(base), support.captureId({ ...base }));
   assert.notEqual(support.captureId(base), support.captureId({ ...base, lastMessage: "新消息" }));
 });
+
+test("preview hashes preserve text changes without storing chat text or relative date labels", async () => {
+  const crypto = require('node:crypto').webcrypto;
+  const base = {uid:'friend-1',lastMessage:'私人聊天摘要',lastTime:'今天'};
+  const key = await support.previewKey(base,crypto);
+  assert.match(key,/^[a-f0-9]{64}$/);
+  assert.equal(key,await support.previewKey({...base,lastTime:'昨天'},crypto));
+  assert.notEqual(key,await support.previewKey({...base,lastMessage:'新问题'},crypto));
+  assert.notEqual(key,await support.previewKey({...base,uid:'friend-2'},crypto));
+});
