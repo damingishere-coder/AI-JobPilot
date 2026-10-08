@@ -115,7 +115,7 @@ class ConfigServiceTest {
         assertThat(configs)
                 .containsEntry("AI_PROVIDER", "codex")
                 .containsEntry("CODEX_PATH", "codex")
-                .containsEntry("CODEX_MODEL", "gpt-6-astra")
+                .containsEntry("CODEX_MODEL", "gpt-6.1-sol")
                 .containsEntry("AI_REQUEST_TIMEOUT_SECONDS", "120")
                 .containsEntry("API_KEY", "");
     }

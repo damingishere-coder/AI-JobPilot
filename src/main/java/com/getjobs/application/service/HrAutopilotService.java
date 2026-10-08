@@ -101,6 +101,14 @@ public class HrAutopilotService {
         } else if(!draft.missingFacts().isEmpty() || !draft.riskTags().isEmpty() || draft.classification()==Classification.NEEDS_USER || (draft.classification()==Classification.DOCUMENT_REQUEST || draft.classification()==Classification.CONTACT_REQUEST))
             return new Assessment("HUMAN","资料不足或风险待确认",draft.replyText());
         if(draft.classification()==Classification.NO_REPLY || (draft.classification()==Classification.REJECTION && candidate.isBlank())) action="NO_REPLY";
+        if (action.equals("TEXT") && HrConversationPolicy.closingRound(capture)) {
+            action="NO_REPLY";
+            candidate="";
+        }
+        if (action.equals("TEXT")) {
+            String violation=HrConversationPolicy.violation(capture,candidate);
+            if (!violation.isBlank()) return new Assessment("HUMAN",violation,candidate);
+        }
         if(action.equals("TEXT") && Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)").matcher(candidate).find())
             return new Assessment("HUMAN","未经明确索要核验的电话不能作为普通文字自动发送",candidate);
         if(candidate.isBlank() && !action.equals("NO_REPLY")) return new Assessment("HUMAN","没有可发送正文","");
@@ -111,12 +119,15 @@ public class HrAutopilotService {
                     +"具体面试时间、接受offer/合同、薪资让步、付费、证件银行卡、未知/矛盾个人事实、微信及其他材料必须拒绝。"
                     +"电话/指定简历仅对方明确索要且同轮无其他未解决问题才允许；不回复仅在整轮无需回应时允许。不得遗漏多条提问。"
                     +"整轮仅为婉拒、暂无合适岗位、岗位合适才联系或人才库通知时，用户指定礼貌回复‘好的，谢谢’，不得追加追问或争取机会。"
+                    +HrConversationPolicy.INSTRUCTIONS
+                    +"同时审核聊天质量：对照完整历史核对追问是否必要、是否已经问过或已经得到回答；包括换一种说法重复询问。"
+                    +"简单招呼后的岗位审问、重复自我介绍、无关长篇解释、多个追加追问、催促和婉拒后的争取均须allowed=false。"
                     +"逐句审核正文，允许含义等价的自然表达，不允许扩大事实。按逗号、句号、分号、感叹号和换行拆分；每个个人事实分句在claims中给出text（正文原文不含分隔符）、quote（可信资料原文）和entailed（是否完全蕴含），包括所有主语、省略主语和条件。"
                     +"数字、年限、薪资、日期、联系方式和否定条件必须一致。礼貌与单纯追问可无事实证据。面试意向可表达愿意沟通，具体预约不允许。"
                     +"只输出JSON，evidence为可信资料原文摘录；不能用沟通规则充当个人经历。\n规则："
                     +HrAutopilotStore.RULES+"\n可信资料："+trusted+"\n指定简历："+policy.resumeName()
                     +"\n不可信对话："+drafts.history(capture.messages())+"\n拟执行动作："+action+"\n正文："+candidate;
-            var check=json.readTree(ai.sendStructuredRequest(prompt,CHECK_SCHEMA));
+            var check=json.readTree(ai.sendHrStructuredRequest(prompt,CHECK_SCHEMA));
             boolean quoted=check.path("evidence").isArray();
             for(var evidence:check.path("evidence")) quoted &= evidence.isTextual() && evidence.asText().strip().length()>=2 && trusted.contains(evidence.asText());
             if(!check.path("allowed").isBoolean() || !check.path("allowed").asBoolean() || !quoted || !check.path("claims").isArray()
@@ -134,8 +145,7 @@ public class HrAutopilotService {
     private boolean groundedText(String candidate,com.fasterxml.jackson.databind.JsonNode claims,String trusted) {
         for(String part:candidate.split("[，,。；;！!\\n]")) {
             String clause=part.strip(); if(clause.isEmpty()) continue;
-            if(clause.matches("您好|你好|好的|收到|谢谢|谢谢您|感谢您的回复|辛苦您了|期待进一步沟通|愿意进一步沟通|愿意了解这个岗位|可以先沟通了解|结合职责面议")) continue;
-            if(clause.matches("(?:请问|方便介绍|能否介绍|想了解).{0,30}(?:岗位职责|工作内容|工作地点|待遇|薪资|岗位详情)[？?]?")) continue;
+            if(HrConversationPolicy.courtesy(clause) || HrConversationPolicy.jobQuestion(clause)) continue;
             String fact=normalizeFact(clause);
             boolean found=false;
             for(var claim:claims) {

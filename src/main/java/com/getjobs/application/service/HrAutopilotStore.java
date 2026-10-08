@@ -14,7 +14,7 @@ import java.util.*;
 public class HrAutopilotStore {
     public static final String PROTOCOL = "2026-09-30-hr-background-v1";
     public static final String BOSS_RESUME = "BOSS_NATIVE";
-    public static final String RULES = "基于当前档案中已确认的简历与沟通资料回答，可主动询问岗位职责、地点和待遇；不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
+    public static final String RULES = "先回应HR本轮问题，自然简短，通常一两句；简单招呼不追加岗位追问，仅在影响当前交流时追问一个必要问题，已问或已回答的不再问。纯结束语无需回复，婉拒仅回复“好的，谢谢”后结束，不催促、不因对方未回而继续发送。基于当前档案中已确认的简历与沟通资料回答，不编造、不自动拒绝。具体预约、薪资让步、接受Offer/合同、付费、证件银行卡、微信和其他材料、未知或矛盾事实、读取不完整必须人工决定。电话和指定简历分别授权，且仅对方明确索要时提供。按确认的历史范围处理待回复会话。";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final HrAssistantCryptoService crypto;

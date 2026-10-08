@@ -17,13 +17,13 @@ class HrMediaServiceTest {
             new ChatMessage("对方","图片","","","m2",List.of(new MediaContent("附件",mime,"data:"+mime+";base64,dGVzdA==","",status,"伪造解析")))),false,true);
     }
     @Test void imageNeedsRealExtractionRatherThanClientReadStatus() {
-        when(ai.readImages(anyList(),anyString())).thenReturn("工作地点：深圳");
+        when(ai.readHrImages(anyList(),anyString())).thenReturn("工作地点：深圳");
         var result=service.resolve(capture("image/png","READABLE"));
         assertThat(result.messages().getLast().media().getFirst().extractedText()).isEqualTo("工作地点：深圳");
-        assertThat(HrMediaService.complete(result)).isTrue();verify(ai).readImages(anyList(),anyString());
+        assertThat(HrMediaService.complete(result)).isTrue();verify(ai).readHrImages(anyList(),anyString());
     }
     @Test void providerFailureIsExplicitAndDoesNotDiscardOriginal() {
-        when(ai.readImages(anyList(),anyString())).thenThrow(new IllegalStateException("offline"));
+        when(ai.readHrImages(anyList(),anyString())).thenThrow(new IllegalStateException("offline"));
         var result=service.resolve(capture("image/png","CAPTURED"));
         assertThat(HrMediaService.complete(result)).isFalse();
         assertThat(result.messages().getLast().media().getFirst().dataUrl()).isEqualTo("data:image/png;base64,dGVzdA==");
@@ -38,7 +38,7 @@ class HrMediaServiceTest {
         assertThat(HrMediaService.complete(service.resolve(capture("application/pdf","CAPTURED")))).isFalse();
     }
     @Test void unreadableOrCroppedImageNeedsHuman() {
-        when(ai.readImages(anyList(),anyString())).thenReturn("UNREADABLE");
+        when(ai.readHrImages(anyList(),anyString())).thenReturn("UNREADABLE");
         assertThat(HrMediaService.complete(service.resolve(capture("image/png","CAPTURED")))).isFalse();
     }
 }
