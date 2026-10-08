@@ -405,13 +405,18 @@ public class HrAssistantController {
             @RequestParam(defaultValue = "") String q,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size) {
-        return execute(() -> {
+        String requestId = UUID.randomUUID().toString();
+        try {
             Long currentProfileId = profileService.getCurrentProfileId();
             if (profileId != null && !profileId.equals(currentProfileId)) {
                 throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新读取回复记录");
             }
-            return store.pageProposals(currentProfileId, view, status, q, page, size);
-        });
+            // Keep this GET on a direct read path, separate from the mutation dispatcher.
+            return ResponseEntity.ok(envelope(true, "", "", requestId,
+                    store.pageProposals(currentProfileId, view, status, q, page, size)));
+        } catch (Throwable error) {
+            return requestFailure(error, requestId);
+        }
     }
 
     @PostMapping("/proposals/{id}/revise")
