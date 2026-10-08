@@ -18,7 +18,8 @@ it('explains manual review and AI failure without enabling an empty draft or ren
   const operations: string[] = []
   runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-assistant.js'), 'utf8'), {
     document, location: { pathname: '/web/geek/chat' },
-    window: { top: window, self: window, setInterval: vi.fn() },
+    window: { top: window, self: window, setInterval: vi.fn(),
+      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) },
     chrome: { runtime: { sendMessage: (message: { operation: string }, respond: (value: object) => void) => {
       operations.push(message.operation)
       respond({ success: true, data: { success: true, data: message.operation === 'hr-status' ? { watching: false } : proposals } })
@@ -44,7 +45,8 @@ it('keeps the same focused editor and unsaved text across status polling', async
   const proposal = { id: 9, version: 1, classification: 'REPLY', highValue: false, riskTags: [], draft: '已保存', status: 'REVIEW_REQUIRED' }
   runInNewContext(readFileSync(require.resolve('../../chrome-extension/boss-hr-assistant.js'), 'utf8'), {
     document, location: { pathname: '/web/geek/chat' },
-    window: { top: window, self: window, setInterval: (callback: () => void) => { tick = callback } },
+    window: { top: window, self: window, setInterval: (callback: () => void) => { tick = callback },
+      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) },
     chrome: { runtime: { sendMessage: (message: { operation: string }, respond: (value: object) => void) => {
       respond({ success: true, data: { success: true, data: message.operation === 'hr-status' ? { watching: true } : [{ ...proposal }] } })
     } } },
