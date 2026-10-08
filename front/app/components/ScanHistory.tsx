@@ -3,17 +3,18 @@ import { useEffect, useRef, useState } from 'react'
 import { scanCommand, scanUrl, type ScanPlatform } from '@/lib/scan-runs'
 
 type Command = {id:string;kind:string;status:string;error_code:string}
-type Run = {created_at?:number;stop_reason?:string;errorMessage?:string;run_id:string;state:string;desired?:string;keyword?:string;stage?:string;accepted:number;error_code?:string;
+export type ScanHistoryRun = {platform?:ScanPlatform;profile_id?:number;created_at?:number;stop_reason?:string;errorMessage?:string;run_id:string;state:string;desired?:string;keyword?:string;stage?:string;accepted:number;error_code?:string;
   backgroundConnected?:boolean;pageConnected?:boolean;page_seen_at?:number;extension_version?:string;content_version?:string;
   historyComplete:boolean;keywordReceipts?:{keyword:string;accepted:number}[];counters?:Record<string,number>;commands?:Command[];analysis?:{status:string;count:number}[]}
 type Event = {id:number;created_at:number;kind:string;payload:Record<string,unknown>}
 const states:Record<string,string>={STARTING:'正在启动',RUNNING:'扫描中',PAUSED:'已暂停',BLOCKED:'已阻塞',COMPLETE:'扫描完成',PARTIAL:'部分完成',FAILED:'失败',STOPPED:'已停止',LEGACY:'未记录完整过程'}
 const errors:Record<string,string>={BACKEND_UNAVAILABLE:'后端连接中断',LOG_QUEUE_FULL:'日志缓冲已满',SCAN_TAB_CLOSED:'扫描页面已关闭',FILTER_NOT_APPLIED:'官网筛选未生效',EXTENSION_RELOAD_REQUIRED:'扩展需要重新加载',START_FAILED:'启动结果未确认',SETUP_NOT_READY:'启动前检查未通过',CHECKPOINT_MISSING:'恢复断点不存在',UNRECOGNIZED_LAYOUT:'未识别岗位页面结构',SCAN_STORAGE_FAILED:'扩展本地记录保存失败'}
 const time=(v?:number)=>v?new Date(v).toLocaleString():'尚未联系'
-export default function ScanHistory({platform,profileId}:{platform:ScanPlatform;profileId?:number}) {
-  const [runs,setRuns]=useState<Run[]>([]),[selected,setSelected]=useState(''),[events,setEvents]=useState<Event[]>([])
+export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPlatform;profileId?:number;onRuns?:(platform:ScanPlatform,profileId:number,runs:ScanHistoryRun[])=>void}) {
+  const [runs,setRuns]=useState<ScanHistoryRun[]>([]),[selected,setSelected]=useState(''),[events,setEvents]=useState<Event[]>([])
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[errorsOnly,setErrorsOnly]=useState(false)
   const cursor=useRef(0)
+  const onRunsRef=useRef(onRuns);onRunsRef.current=onRuns
   const current=runs.find(r=>r.run_id===selected)||runs[0]
   useEffect(()=>{setSelected('');setRuns([]);setEvents([]);cursor.current=0},[platform,profileId])
   useEffect(()=>{
@@ -23,7 +24,7 @@ export default function ScanHistory({platform,profileId}:{platform:ScanPlatform;
       try {
         const response=await fetch(scanUrl(platform,profileId!),{cache:'no-store'})
         if(!response.ok)throw new Error('暂时无法读取后端扫描记录；当前显示的是上次结果。')
-        const data:unknown=await response.json();if(!Array.isArray(data))throw new Error('后端扫描记录接口版本不兼容。');if(!stopped){setRuns(data);setError('')}
+        const data:unknown=await response.json();if(!Array.isArray(data))throw new Error('后端扫描记录接口版本不兼容。');if(!stopped){setRuns(data);setError('');onRunsRef.current?.(platform,profileId!,data)}
       }catch(e){if(!stopped)setError(e instanceof Error?e.message:'读取失败')}
       if(!stopped)timer=setTimeout(poll,document.hidden?15000:3000)
     }
