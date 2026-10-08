@@ -92,7 +92,7 @@ public class CodexCliService {
     }
 
     String run(String content, List<Path> imagePaths, String outputSchema, Map<String, String> config) {
-        String model = value(config, "CODEX_MODEL", "gpt-6-astra");
+        String model = value(config, "CODEX_MODEL", AiService.DEFAULT_MODEL);
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
         long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
 

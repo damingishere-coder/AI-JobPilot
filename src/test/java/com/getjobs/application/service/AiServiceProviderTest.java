@@ -8,12 +8,16 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ExtendWith(MockitoExtension.class)
 class AiServiceProviderTest {
@@ -82,5 +86,39 @@ class AiServiceProviderTest {
 
         assertThat(service.extractResumeFromImage(image, "image/png")).isEqualTo("候选人简历文本");
         verify(codexCliService).extractResumeFromImage(image, "image/png", config);
+    }
+
+    @Test void hrGenerationAndAuditUseGpt61WithoutChangingOtherRequests() {
+        var global = Map.of("AI_PROVIDER", "codex", "CODEX_MODEL", "gpt-6-astra", "CODEX_PATH", "codex");
+        var hr = new java.util.HashMap<>(global);
+        hr.put("CODEX_MODEL", "gpt-6.1-sol");
+        when(configService.getAiConfigs()).thenReturn(global);
+        when(codexCliService.generateStructuredText(anyString(), eq("{}"), eq(hr))).thenReturn("{}");
+        when(codexCliService.generateText("岗位分析", global)).thenReturn("分析");
+        assertThat(service.sendHrStructuredRequest("HR草稿", "{}")).isEqualTo("{}");
+        assertThat(service.sendHrStructuredRequest("HR审核", "{}")).isEqualTo("{}");
+        assertThat(service.sendRequest("岗位分析")).isEqualTo("分析");
+        verify(codexCliService).generateStructuredText("HR草稿", "{}", hr);
+        verify(codexCliService).generateStructuredText("HR审核", "{}", hr);
+        verify(codexCliService).generateText("岗位分析", global);
+        assertThat(global.get("CODEX_MODEL")).isEqualTo("gpt-6-astra");
+    }
+
+    @Test void hrImageReadingUsesTheSameDedicatedModel() {
+        var global = Map.of("AI_PROVIDER", "codex", "CODEX_MODEL", "gpt-6-astra");
+        var hr = Map.of("AI_PROVIDER", "codex", "CODEX_MODEL", "gpt-6.1-sol");
+        var bytes = new byte[]{1, 2, 3};
+        when(configService.getAiConfigs()).thenReturn(global);
+        when(codexCliService.reviewResumeImages(any(), any(), eq("聊天图片"), eq(hr))).thenReturn("问题");
+        assertThat(service.readHrImages(List.of(new AiService.ResumeImage(bytes,"image/png")), "聊天图片")).isEqualTo("问题");
+        verify(codexCliService).reviewResumeImages(any(), eq(List.of("image/png")), eq("聊天图片"), eq(hr));
+        assertThat(global.get("CODEX_MODEL")).isEqualTo("gpt-6-astra");
+    }
+
+    @Test void hrCannotSilentlyFallBackToAnotherProviderOrModel() {
+        when(configService.getAiConfigs()).thenReturn(Map.of("AI_PROVIDER", "api", "MODEL", "other-model"));
+        assertThatThrownBy(()->service.sendHrStructuredRequest("HR草稿", "{}"))
+                .hasMessageContaining("不切换到其他模型");
+        verifyNoInteractions(codexCliService);
     }
 }

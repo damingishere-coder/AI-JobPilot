@@ -42,6 +42,8 @@ import java.time.format.DateTimeParseException;
 @RequiredArgsConstructor
 @DependsOn("profileService")
 public class AiService {
+    public static final String DEFAULT_MODEL = "gpt-6.1-sol";
+    public static final String HR_MODEL = DEFAULT_MODEL;
     @org.springframework.beans.factory.annotation.Autowired
     private GreetingPolicy greetingPolicy = new GreetingPolicy("", 0L);
     private static final int DEFAULT_API_TIMEOUT_SECONDS = 120;
@@ -137,6 +139,21 @@ public class AiService {
         return sendStructuredRequest(content,outputSchema,null);
     }
 
+    /** Keep HR generation, audit and image reading on the same model without mutating shared configuration. */
+    public String sendHrStructuredRequest(String content, String outputSchema) {
+        if (outputSchema == null || outputSchema.isBlank())
+            throw new IllegalArgumentException("结构化输出 Schema 不能为空");
+        return codexCliService.generateStructuredText(content, outputSchema, hrConfig());
+    }
+
+    private Map<String, String> hrConfig() {
+        var config = new java.util.HashMap<>(configService.getAiConfigs());
+        if (!"codex".equalsIgnoreCase(config.get("AI_PROVIDER")))
+            throw new IllegalStateException("HR 专用 GPT-6.1 需要 Codex CLI；当前调用方式不支持，已停止处理，不切换到其他模型");
+        config.put("CODEX_MODEL", HR_MODEL);
+        return config;
+    }
+
     public String sendStructuredRequest(String content, String outputSchema, String expectedProviderIdentity) {
         if (outputSchema == null || outputSchema.isBlank()) {
             throw new IllegalArgumentException("结构化输出 Schema 不能为空");
@@ -229,8 +246,15 @@ public class AiService {
 
     /** Uses the existing provider and exactly one remote request, without fallback. */
     public String readImages(List<ResumeImage> images, String prompt) {
+        return readImages(images, prompt, configService.getAiConfigs());
+    }
+
+    public String readHrImages(List<ResumeImage> images, String prompt) {
+        return readImages(images, prompt, hrConfig());
+    }
+
+    private String readImages(List<ResumeImage> images, String prompt, Map<String, String> cfg) {
         if (images == null || images.isEmpty()) throw new IllegalArgumentException("图片不能为空");
-        var cfg = configService.getAiConfigs();
         if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
             return codexCliService.reviewResumeImages(
                     images.stream().map(ResumeImage::bytes).toList(),

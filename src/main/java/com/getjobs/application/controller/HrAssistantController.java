@@ -162,6 +162,7 @@ public class HrAssistantController {
         result.put("replyMode",p.replyMode()); result.put("sharePhone",p.sharePhone()); result.put("shareResume",p.shareResume());
         result.put("historyMode",p.historyMode()); result.put("historyDays",p.historyDays());
         result.put("protocol",com.getjobs.application.service.HrAutopilotStore.PROTOCOL);
+        result.put("aiModel",com.getjobs.application.service.AiService.HR_MODEL);
         result.put("communicationProfile",store.loadSettings(id).communicationProfile());
         result.put("activity",autopilot.activity(id));
         result.put("blockers",watchService.dutyBlockers(id));

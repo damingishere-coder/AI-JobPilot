@@ -40,7 +40,7 @@ class HrBackgroundWatchServiceTest {
         when(qq.isConnected()).thenReturn(true);when(drafts.hasResume(1L)).thenReturn(true);
         when(drafts.history(anyList())).thenReturn("完整来源");when(drafts.trustedFacts(eq(1L),any())).thenReturn("已确认资料");
         when(drafts.generateWithFacts(eq(1L),anyLong(),any(),anyList(),anyString())).thenReturn(reply());
-        when(ai.sendStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[],\"reason\":\"礼貌回复\",\"claims\":[]}");
+        when(ai.sendHrStructuredRequest(anyString(),anyString())).thenReturn("{\"allowed\":true,\"evidence\":[],\"reason\":\"礼貌回复\",\"claims\":[]}");
         var media=mock(HrMediaService.class);when(media.resolve(any())).thenAnswer(call->call.getArgument(0));
         var auto=new HrAutopilotService(policies,hr,drafts,ai,json,media);
         var profiles=mock(ProfileService.class);var profile=new ProfileEntity();profile.setId(1L);profile.setName("测试账号");
