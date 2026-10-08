@@ -34,6 +34,23 @@ class BrowserRuntimeRegressionTest {
         Path background = extension.resolve("background.js");
         Files.writeString(background, "globalThis.fetch = async () => { throw new Error('OFFLINE_REGRESSION_NETWORK_DENIED'); };\n"
             + Files.readString(background));
+        if (testInfo.getTestMethod().orElseThrow().getName().equals("bossScanFromChatOpensSearchInSeparateWindow")) {
+            Files.writeString(background, """
+              \nconst fixtureCreateScanTab=chrome.tabs.create.bind(chrome.tabs);
+              chrome.tabs.create=options=>{
+                if(options.url!=='https://www.zhipin.com/web/geek/jobs')throw new Error('UNEXPECTED_SCAN_URL');
+                return fixtureCreateScanTab({...options,url:'about:blank'});
+              };
+              chrome.runtime.onMessage.addListener((message,sender,reply)=>{
+                if(message.type!=='OFFLINE_SCAN_REQUEST')return;
+                chrome.tabs.query({}).then(tabs=>{
+                  const owner=tabs.find(t=>t.url==='http://localhost:6866/offline-regression');
+                  return handlePageMessage(message.payload,{tab:owner});
+                }).then(reply,error=>reply({fixtureError:error.message}));
+                return true;
+              });
+              """, StandardOpenOption.APPEND);
+        }
         if (testInfo.getTestMethod().orElseThrow().getName().equals("bossColdPreflightNavigatesAndSendsOneMultilineGreetingAcrossDocuments")) {
             // Test-only bridge into the real MV3 worker; never copied to production.
             Files.writeString(background, """
@@ -206,6 +223,37 @@ class BrowserRuntimeRegressionTest {
             .isEqualTo(List.of("1","1"));
         assertThat(worker.evaluate("async() => {const receipts=await chrome.runtime.sendMessage({type:'OFFLINE_REGRESSION_REQUEST',receipts:true});return receipts.length > 0 && receipts.every(r=>r.outcome==='CONFIRMED' && r.greetingOutcome==='CONFIRMED') }"))
             .isEqualTo(true);
+    }
+
+    @Test void bossScanFromChatOpensSearchInSeparateWindow() {
+        String workbench = "http://localhost:6866/offline-regression";
+        String chatUrl = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
+        context.route(workbench, route -> route.fulfill(new Route.FulfillOptions().setContentType("text/html")
+            .setBody("<!doctype html><title>Offline workbench</title>")));
+        context.route("https://www.zhipin.com/**", route -> route.fulfill(new Route.FulfillOptions().setContentType("text/html")
+            .setBody("<!doctype html><title>Offline BOSS</title><p>synthetic fixture</p>")));
+        page.navigate(workbench);
+        Page chat = context.newPage();
+        chat.navigate(chatUrl);
+        Object chatWindow = worker.evaluate("async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url).windowId", chatUrl);
+        Page search = context.waitForPage(() -> worker.evaluate("""
+            ()=>{window.fixtureScan=chrome.runtime.sendMessage({type:'OFFLINE_SCAN_REQUEST',payload:{type:'BOSS_SCAN_START',
+              platform:'boss',profileId:4,runId:'offline-scan',config:{keywords:['synthetic'],city:'101010100'}}});}
+            """));
+        // Attach routing to the new blank tab before allowing its first navigation.
+        search.navigate("https://www.zhipin.com/web/geek/jobs");
+        Object result = worker.evaluate("()=>window.fixtureScan");
+        assertThat(((Map<?,?>)result).get("success")).as("scan start: %s", result).isEqualTo(true);
+        search.waitForURL(java.util.regex.Pattern.compile("https://www\\.zhipin\\.com/web/geek/jobs\\?.*query=synthetic.*"));
+        assertThat(chat.url()).isEqualTo(chatUrl);
+        assertThat(worker.evaluate("async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url).windowId", chatUrl))
+            .isEqualTo(chatWindow);
+        assertThat(worker.evaluate("async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url).windowId", search.url()))
+            .isNotEqualTo(chatWindow);
+        Object stopped = worker.evaluate("""
+            ()=>chrome.runtime.sendMessage({type:'OFFLINE_SCAN_REQUEST',payload:{type:'BOSS_SCAN_STOP',platform:'boss',profileId:4}})
+            """);
+        assertThat(((Map<?,?>)stopped).get("success")).isEqualTo(true);
     }
 
     @Test void bossGreetingKeepsNewlinesInTheRealContenteditable() throws Exception {
