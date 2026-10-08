@@ -40,6 +40,91 @@ class HrAssistantStoreTest {
     }
 
     @Test
+    void pageQueryReachesHistoryBeyondTheLegacyLimitAndClampsOversizedPages() {
+        long conversation = store.upsertConversation(1L, new ChatSession("paged-history", "", "HR", "历史公司", "岗位", "HR", "你好", "今天"));
+        java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
+        for (int index = 0; index < 235; index++) {
+            ids.add(store.createProposal(1L, conversation, "history-source-" + index,
+                    new AiDraft(Classification.REPLY, index == 0 ? "Older Needle% 回复" : "历史回复 " + index,
+                            "摘要", List.of(), List.of(), 1)));
+        }
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='SENT_CONFIRMED',updated_at=datetime('2026-10-01','+' || id || ' seconds') WHERE profile_id=1");
+        assertThat(store.listProposals(1L, true)).hasSize(200).noneMatch(item -> item.id().equals(ids.getFirst()));
+        java.util.ArrayList<Long> readIds = new java.util.ArrayList<>();
+        for (int page = 1; page <= 3; page++) {
+            var result = store.pageProposals(1L, "history", "ALL", "", page, 100);
+            assertThat(result.total()).isEqualTo(235);
+            assertThat(result.totalPages()).isEqualTo(3);
+            assertThat(result.page()).isEqualTo(page);
+            readIds.addAll(result.items().stream().map(item -> item.id()).toList());
+        }
+        assertThat(readIds).hasSize(235).doesNotHaveDuplicates().containsExactlyElementsOf(ids.reversed());
+        var overflow = store.pageProposals(1L, "history", "ALL", "", Integer.MAX_VALUE, 100);
+        assertThat(overflow.page()).isEqualTo(3);
+        assertThat(overflow.items()).hasSize(35);
+        var search = store.pageProposals(1L, "history", "SENT_CONFIRMED", " needle% ", 1, 10);
+        assertThat(search.total()).isEqualTo(1);
+        assertThat(search.items()).singleElement().satisfies(item -> assertThat(item.id()).isEqualTo(ids.getFirst()));
+        assertThat(count("hr_send_command")).isZero();
+    }
+
+    @Test
+    void pageQuerySharesStatusViewAndLiteralSearchPredicatesWithoutCrossingProfiles() {
+        jdbcTemplate.update("INSERT INTO profile(id,name,is_active) VALUES (2,'other',0)");
+        long first = queryFixture(1L, "first", "Alpha% 公司", "HrKEY", "RoleKEY", "第一条", "您好", "REVIEW_REQUIRED");
+        long second = queryFixture(1L, "second", "其他公司", "HR乙", "岗位乙", "第二条", "ALPHA% 回复", "REVIEW_REQUIRED");
+        long unknown = queryFixture(1L, "unknown", "未知公司", "HR丙", "岗位丙", "SourceKEY 消息", "好的", "SEND_UNKNOWN");
+        queryFixture(1L, "blocked", "待处理公司", "HR丁", "岗位丁", "待处理", "核对", "BLOCKED");
+        queryFixture(1L, "sent", "已发公司", "HR戊", "岗位戊", "已完成", "确认", "SENT_CONFIRMED");
+        long foreign = queryFixture(2L, "foreign", "Alpha% 公司", "HrKEY", "RoleKEY", "SourceKEY 消息", "ALPHA% 回复", "REVIEW_REQUIRED");
+        assertThat(store.pageProposals(1L, "pending", "ALL", "", 1, 10).total()).isEqualTo(4);
+        assertThat(store.pageProposals(1L, "history", "ALL", "", 1, 10).total()).isEqualTo(5);
+        var page = store.pageProposals(1L, "pending", "review_required", " Alpha% ", 99, 1);
+        assertThat(page.status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(page.q()).isEqualTo("Alpha%");
+        assertThat(page.total()).isEqualTo(2);
+        assertThat(page.page()).isEqualTo(2);
+        assertThat(page.items()).singleElement().satisfies(item -> {
+            assertThat(item.id()).isEqualTo(first);
+            assertThat(item.profileId()).isEqualTo(1L);
+        });
+        assertThat(store.pageProposals(1L, "history", "ALL", "%", 1, 10).total()).isEqualTo(2);
+        assertThat(store.pageProposals(1L, "history", "ALL", "_", 99, 10))
+                .satisfies(empty -> { assertThat(empty.total()).isZero(); assertThat(empty.page()).isEqualTo(1); assertThat(empty.items()).isEmpty(); });
+        assertThat(store.pageProposals(1L, "pending", "SENT_CONFIRMED", "", 1, 10).items()).isEmpty();
+        assertThat(store.pageProposals(1L, "history", "SENT_CONFIRMED", "", 1, 10).total()).isEqualTo(1);
+        for (String keyword : List.of("hrkey", "rolekey", "第一条")) {
+            assertThat(store.pageProposals(1L, "history", "ALL", keyword, 1, 10).items())
+                    .singleElement().satisfies(item -> assertThat(item.id()).isEqualTo(first));
+        }
+        assertThat(store.pageProposals(1L, "history", "ALL", "sourcekey", 1, 10).items())
+                .singleElement().satisfies(item -> assertThat(item.id()).isEqualTo(unknown));
+        assertThat(store.pageProposals(2L, "pending", "ALL", "alpha%", 1, 10).items())
+                .singleElement().satisfies(item -> assertThat(item.id()).isEqualTo(foreign));
+        assertThat(store.getProposalView(1L, second).version()).isEqualTo(1);
+        assertThat(count("hr_send_command")).isZero();
+    }
+
+    @Test
+    void pageQueryRejectsInvalidViewsStatusesAndPagination() {
+        assertThatThrownBy(() -> store.pageProposals(1L, "unknown", "ALL", "", 1, 10)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.pageProposals(1L, "history", "unsafe", "", 1, 10)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.pageProposals(1L, "history", "ALL", "", 0, 10)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.pageProposals(1L, "history", "ALL", "", 1, 101)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.pageProposals(1L, "history", "ALL", "x".repeat(201), 1, 10)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private long queryFixture(long profileId, String uid, String company, String hr, String job, String source, String draft, String status) {
+        long conversation = store.upsertConversation(profileId, new ChatSession(uid, "", hr, company, job, "HR", source, "今天"));
+        var message = new ChatMessage("对方", "文本", source, "今天");
+        store.saveMessage(conversation, message, 30);
+        String fingerprint = store.sourceFingerprint(conversation, message);
+        long proposal = store.createProposal(profileId, conversation, fingerprint, new AiDraft(Classification.REPLY, draft, "摘要", List.of(), List.of(), 1));
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status=?,updated_at='2026-10-01 00:00:00' WHERE id=?", status, proposal);
+        return proposal;
+    }
+
+    @Test
     void encryptsConversationDraftConfirmationAndSendEvidenceAtRest() {
         CommunicationProfile communication = new CommunicationProfile(
                 "期望薪资二十五K", "深圳南山", "两周到岗", "周三下午", "QQ", "礼貌", "不透露身份证");

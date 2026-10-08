@@ -6,6 +6,8 @@ import ProfileSwitcher from '@/app/components/ProfileSwitcher'
 import { Button } from '@/components/ui/button'
 import { strategyApi, type StrategySnapshot } from '@/lib/strategy'
 import StrategyReport from './StrategyReport'
+import PageHeader from '@/app/components/PageHeader'
+import { BiBarChart } from 'react-icons/bi'
 
 type SnapshotList = { profileId: number; items: { id: number; window_days: number; cutoff: string }[] }
 export default function StrategyPage() {
@@ -14,6 +16,7 @@ export default function StrategyPage() {
   const [snapshot, setSnapshot] = useState<StrategySnapshot | null>(null)
   const [windowDays, setWindowDays] = useState(90)
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
   const [pending, setPending] = useState<{ days: number; key: string } | null>(null)
@@ -22,6 +25,7 @@ export default function StrategyPage() {
   useEffect(() => {
     if (!profileId) return
     const controller = new AbortController()
+    setLoading(true); setError('')
     strategyApi<SnapshotList>('/snapshots', undefined, controller.signal).then(async list => {
       if (controller.signal.aborted) return
       if (list.profileId !== profileId) throw new Error('档案已在其他窗口改变，请刷新档案列表')
@@ -30,7 +34,7 @@ export default function StrategyPage() {
       const selected = first ? await strategyApi<StrategySnapshot>(`/snapshots/${first.id}`, undefined, controller.signal) : null
       if (selected && selected.profile_id !== profileId) throw new Error('快照与当前档案不一致，请刷新')
       if (!controller.signal.aborted) { setSnapshot(selected); setError('') }
-    }).catch(e => { if (!controller.signal.aborted) setError(e.message) })
+    }).catch(e => { if (!controller.signal.aborted) setError(e.message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [profileId, revision])
   async function run(action: () => Promise<StrategySnapshot>) {
@@ -45,14 +49,14 @@ export default function StrategyPage() {
     setPending(command)
     await run(async () => { const value = await strategyApi<StrategySnapshot>('/snapshots', { windowDays, requestKey: command.key }); if (activeProfile.current === value.profile_id) { setPending(null); setSnapshots(items => [{ id: value.id, window_days: value.window_days, cutoff: value.cutoff }, ...items.filter(i => i.id !== value.id)].slice(0, 20)) } return value })
   }
-  return <main className="mx-auto max-w-6xl space-y-5 p-6">
-    <h1 className="text-2xl font-semibold">求职策略</h1><p className="text-sm text-muted-foreground">根据真实反馈复盘下一步方向。统计在本机完成，生成快照不会调用 AI。</p>
+  return <section className="space-y-5">
+    <PageHeader title="求职策略" subtitle="根据真实反馈复盘方向，保留每次统计与审阅的依据" icon={<BiBarChart />} actions={<Button asChild variant="outline"><Link href="/opportunities?view=recommended">查看推荐机会</Link></Button>} />
     <ProfileSwitcher onProfileChange={profileChanged} />
-    <Button asChild variant="outline"><Link href="/strategy/ranking">预览三维推荐与求职偏好</Link></Button>
-    <div className="flex flex-wrap gap-3"><label>统计窗口<select disabled={busy} className="ml-2 rounded border bg-background p-2" value={windowDays} onChange={e => setWindowDays(Number(e.target.value))}><option value={90}>最近 90 天</option><option value={30}>最近 30 天</option></select></label><Button disabled={busy || !profileId} onClick={create}>生成本地统计快照</Button><Button variant="outline" disabled={busy} onClick={() => setRevision(v => v + 1)}>刷新已有快照</Button></div>
+    <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4"><label className="text-sm">统计窗口<select disabled={busy || loading} className="mt-1 block rounded border bg-background p-2" value={windowDays} onChange={e => setWindowDays(Number(e.target.value))}><option value={90}>最近 90 天</option><option value={30}>最近 30 天</option></select></label><Button disabled={busy || loading || !profileId} onClick={create}>生成本地统计快照</Button><Button variant="outline" disabled={busy || loading} onClick={() => setRevision(v => v + 1)}>刷新已有快照</Button><p className="pb-2 text-xs text-muted-foreground">统计在本机完成，不调用 AI</p></div>
     {snapshots.length > 0 && <label className="block">查看快照<select disabled={busy} className="ml-2 rounded border bg-background p-2" value={snapshot?.id || ''} onChange={e => run(() => strategyApi<StrategySnapshot>(`/snapshots/${e.target.value}`))}><option value="" disabled>选择快照</option>{snapshots.map(item => <option key={item.id} value={item.id}>#{item.id} · {item.window_days} 天 · {new Date(item.cutoff).toLocaleString('zh-CN')}</option>)}</select></label>}
     {busy && <p role="status">正在处理统计…</p>}{error && <p role="alert" className="text-red-600">{error}</p>}
-    {!snapshot && !error && <p className="rounded border p-5 text-muted-foreground">尚未展示统计快照。新数据不会自动改写旧结论，可主动生成一次本地统计。</p>}
+    {loading && <p role="status" className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">正在读取已有统计快照…</p>}
+    {!loading && !snapshot && !error && <p className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">尚无统计快照。可以先生成一次本地统计，查看目前的样本和观察覆盖。新数据不会自动改写已有结论。</p>}
     {snapshot && <StrategyReport key={snapshot.id} snapshot={snapshot} busy={busy} onDecide={(insightId, decision) => run(() => strategyApi(`/snapshots/${snapshot.id}/decision`, { version: snapshot.version, insightId, decision }))} />}
-  </main>
+  </section>
 }

@@ -17,8 +17,9 @@ public class OpportunityController {
     private final OpportunityWorkbenchService workbench;
 
     @GetMapping public Object list(@RequestParam(required=false) String stage,@RequestParam(required=false) String bucket,@RequestParam(defaultValue="false") boolean archived,
-            @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size) {
-        return bucket==null || bucket.isBlank()?opportunities.list(stage,archived,page,size):workbench.list(bucket,stage,archived,page,size);
+            @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size,
+            @RequestParam(required=false) String platform,@RequestParam(required=false) String q,@RequestParam(required=false) String applicationStatus) {
+        return workbench.list(bucket,stage,archived,page,size,platform,q,applicationStatus);
     }
     @GetMapping("/{id}") public Object detail(@PathVariable long id) { return opportunities.detail(id); }
     @GetMapping("/{id}/events") public Object events(@PathVariable long id,@RequestParam long before,@RequestParam(defaultValue="50") int size) { return opportunities.eventPage(id,before,size); }

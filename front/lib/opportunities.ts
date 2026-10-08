@@ -22,6 +22,20 @@ export const eventSourceLabel = (source: string) => ({ USER: '用户记录', COL
 export type Opportunity = {
   id: number; profile_id?: number; platform: string; job_name: string; company_name: string; stage: string;
   interest: string; archived: number; version: number; application_status?: string; follow_up_at: string | null;
+  salary?: string | null; location?: string | null; match_score?: number | null; task_summary?: string;
+  interview_at?: string | null; interview_timezone?: string | null; interview_round?: number | null; interview_prepared?: number | null;
+}
+
+export const platformLabels: Record<string, string> = { boss: 'BOSS 直聘', zhilian: '智联招聘', liepin: '猎聘', '51job': '前程无忧' }
+export function opportunityInterviewTime(row: Opportunity) {
+  if (!row.interview_at) return '时间尚未确认'
+  return `${new Date(row.interview_at).toLocaleString('zh-CN', row.interview_timezone ? { timeZone: row.interview_timezone, hour12: false } : { hour12: false })}（${row.interview_timezone || '本机时区'}）`
+}
+export function opportunityTaskTab(bucket: string): 'overview' | 'feedback' | 'interviews' | 'records' {
+  if (bucket.startsWith('INTERVIEW')) return 'interviews'
+  if (bucket === 'HR_REVIEW' || bucket === 'AWAITING_REPLY' || bucket === 'REPLIED' || bucket === 'CHATTING') return 'feedback'
+  if (['UNKNOWN', 'FAILED', 'RUNNING', 'WAITING_CONFIRM'].includes(bucket)) return 'records'
+  return 'overview'
 }
 export type OpportunityEvent = {
   id: number; type: string; source: string; occurred_at: string | null; observed_at: string; reason: string;

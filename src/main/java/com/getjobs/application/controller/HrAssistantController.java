@@ -154,6 +154,7 @@ public class HrAssistantController {
 
     private Map<String,Object> autopilotView(Long id) {
         var result=new java.util.LinkedHashMap<String,Object>();
+        result.put("profileId", id);
         var p=autopilot.policy(id);
         result.put("version",p.version()); result.put("enabled",p.enabled()); result.put("paused",p.paused());
         result.put("resumeName",p.resumeName()); result.put("resumeSha256",p.resumeSha256()); result.put("facts",p.facts());
@@ -394,6 +395,23 @@ public class HrAssistantController {
     @GetMapping("/proposals")
     public ResponseEntity<?> proposals(@RequestParam(defaultValue = "false") boolean includeClosed) {
         return execute(() -> store.listProposals(profileService.getCurrentProfileId(), includeClosed));
+    }
+
+    @GetMapping("/proposals/page")
+    public ResponseEntity<?> proposalPage(
+            @RequestParam(required = false) Long profileId,
+            @RequestParam(defaultValue = "history") String view,
+            @RequestParam(defaultValue = "ALL") String status,
+            @RequestParam(defaultValue = "") String q,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return execute(() -> {
+            Long currentProfileId = profileService.getCurrentProfileId();
+            if (profileId != null && !profileId.equals(currentProfileId)) {
+                throw new HrAssistantStore.StaleProposalException("当前人物档案已变化，请重新读取回复记录");
+            }
+            return store.pageProposals(currentProfileId, view, status, q, page, size);
+        });
     }
 
     @PostMapping("/proposals/{id}/revise")

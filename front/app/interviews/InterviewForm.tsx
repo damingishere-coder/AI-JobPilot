@@ -5,9 +5,10 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { localDateTimeInput, opportunityApi } from '@/lib/opportunities'
 import { interviewModes, interviewPreparation, interviewStatuses, type Interview } from '@/lib/interviews'
+import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 export default function InterviewForm({ opportunityId, opportunityVersion, initial, nextRound = 1, onSaved, onClose }: {
-  opportunityId: number; opportunityVersion: number; initial?: Interview; nextRound?: number; onSaved: () => void; onClose: () => void;
+  opportunityId: number; opportunityVersion: number; initial?: Interview; nextRound?: number; onSaved: () => void | Promise<void>; onClose: () => void;
 }) {
   const [round, setRound] = useState(initial?.round_number || nextRound)
   const [time, setTime] = useState(localDateTimeInput(initial?.scheduled_at || null))
@@ -18,6 +19,9 @@ export default function InterviewForm({ opportunityId, opportunityVersion, initi
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<{ body: string; key: string } | null>(null)
+  const signature = JSON.stringify({ round, time, status, mode, preparation, note })
+  const [savedSignature, setSavedSignature] = useState(signature)
+  useUnsavedChanges(`opportunity:${opportunityId}:interview:${initial?.id || 'new'}`, busy || signature !== savedSignature)
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
   async function save() {
     if (status === 'SCHEDULED' && !time) { setError('已安排面试必须填写确认时间'); return }
@@ -27,11 +31,12 @@ export default function InterviewForm({ opportunityId, opportunityVersion, initi
       const body = JSON.stringify(value)
       const command = pending?.body === body ? pending : { body, key: crypto.randomUUID() }
       setPending(command)
-      await opportunityApi(`/${opportunityId}/interviews`, { ...value, eventKey: command.key }); onSaved()
+      await opportunityApi(`/${opportunityId}/interviews`, { ...value, eventKey: command.key }); await onSaved(); setSavedSignature(signature)
     } catch (e) { setError(e instanceof Error ? e.message : '保存失败，请刷新核对') }
     finally { setBusy(false) }
   }
   return <section className="space-y-4 rounded-lg border p-4" aria-label="编辑面试记录">
+    <fieldset disabled={busy} className="space-y-4">
     <h3 className="font-medium">{initial ? '更新面试记录' : '新增面试轮次'}</h3>
     <p className="text-sm text-muted-foreground">只有双方确认时间后才选择“已安排”。这里只保存本机记录，不向 HR 发送消息或写入日历。</p>
     <div className="grid gap-3 md:grid-cols-2">
@@ -45,5 +50,6 @@ export default function InterviewForm({ opportunityId, opportunityVersion, initi
     <label className="block">面试备注<textarea maxLength={4000} value={note} onChange={e => setNote(e.target.value)} className="mt-1 block w-full rounded border bg-background p-2" /></label>
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <div className="flex gap-2"><Button disabled={busy} onClick={save}>确认保存面试</Button><Button variant="outline" disabled={busy} onClick={onClose}>关闭编辑</Button></div>
+    </fieldset>
   </section>
 }
