@@ -32,7 +32,10 @@ class HrBackgroundStoreTest {
                 List.of(new ChatMessage("本人","文本","您好","昨天"),new ChatMessage("对方","文本",text,"今天")),false,true);
     }
     long unknownVisual(String uid) {
-        var observed=capture(uid,"old", "采购", "请介绍经验");
+        return unknownVisual(uid,"采购");
+    }
+    long unknownVisual(String uid,String job) {
+        var observed=capture(uid,"old", job, "请介绍经验");
         long conversation=hr.upsertVisualConversation(1L,observed.session());
         for(var message:observed.messages())hr.saveMessage(conversation,message,30);
         String source=hr.sourceFingerprint(conversation,observed.messages().getLast());hr.updateLastInbound(conversation,source);
@@ -67,6 +70,7 @@ class HrBackgroundStoreTest {
         var reread=new ChatCapture(full.captureId(),4,full.session(),expanded,false,true);
         assertThat(background.accept(1L,"测试",2,reread).duplicate()).isTrue();
         var task=background.claim(1L,"测试",2);assertThat(task.capture().contextComplete()).isTrue();assertThat(task.capture().messages()).hasSize(3);
+        assertThat(task.capture().historical()).isTrue();
         background.finish(task.id(),"");
         assertThat(background.accept(1L,"测试",2,full).queueStatus()).isEqualTo("DONE");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_background_capture",Integer.class)).isEqualTo(1);
@@ -152,6 +156,42 @@ class HrBackgroundStoreTest {
         assertThatThrownBy(()->background.resolveConversation(1L,capture("real-platform-uid","new","采购主管","请介绍经验")))
                 .isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
     }
+    @Test void freshIdentityRetryWaitsForLegacyMappingAndNeverUnfreezesUnknown() {
+        long old=unknownVisual("visual:old");
+        var session=new ChatSession("new-uid","","其他HR","其他公司","销售","","新的提问","今天");
+        var capture=new ChatCapture("held-new",1,session,List.of(new ChatMessage("对方","文本","新的提问","今天")),false,true);
+        background.accept(1L,"测试",2,capture);
+        var task=background.claim(1L,"测试",2);
+        assertThatThrownBy(()->background.resolveConversation(1L,capture)).isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        assertThat(background.accept(1L,"测试",2,capture).queueStatus()).isEqualTo("BLOCKED");
+        assertThat(background.claim(1L,"测试",2)).isNull();
+        assertThat(background.resolveConversation(1L,capture("old-platform-uid","old-read","采购","请介绍经验"))).isEqualTo(old);
+        assertThat(policies.conversationHeld(old)).isTrue();
+        assertThat(background.accept(1L,"测试",2,capture).queueStatus()).isEqualTo("PENDING");
+        task=background.claim(1L,"测试",2);
+        long independent=background.resolveConversation(1L,task.capture());
+        assertThat(independent).isNotEqualTo(old);
+        background.finish(task.id(),"");
+        assertThat(background.accept(1L,"测试",2,capture).queueStatus()).isEqualTo("DONE");
+        assertThat(db.queryForObject("SELECT status FROM hr_reply_proposal WHERE conversation_id=?",String.class,old)).isEqualTo("SEND_UNKNOWN");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
+    @Test void identityRetryKeepsHistoricalScopeAndRejectsChangedOrIncompleteEvidence() {
+        var source=capture("uid","identity-retry","采购","问题");
+        var historical=new ChatCapture(source.captureId(),source.unreadCount(),source.session(),source.messages(),true,true);
+        background.accept(1L,"测试",2,historical);var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        assertThatThrownBy(()->background.accept(1L,"其他账号",2,source)).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        assertThatThrownBy(()->background.accept(1L,"测试",2,capture("other-uid",source.captureId(),"采购","问题"))).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        assertThatThrownBy(()->background.accept(1L,"测试",2,capture("uid",source.captureId(),"销售","问题"))).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        assertThatThrownBy(()->background.accept(1L,"测试",2,capture("uid",source.captureId(),"采购","更改的问题"))).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        var incomplete=new ChatCapture(source.captureId(),source.unreadCount(),source.session(),source.messages(),false,false);
+        assertThat(background.accept(1L,"测试",2,incomplete).queueStatus()).isEqualTo("BLOCKED");
+        assertThat(background.accept(1L,"测试",2,source).queueStatus()).isEqualTo("PENDING");
+        task=background.claim(1L,"测试",2);assertThat(task.capture().historical()).isTrue();
+        background.finish(task.id(),"IDENTITY_NOT_VERIFIED");
+        assertThat(background.accept(1L,"测试",2,source).queueStatus()).isEqualTo("BLOCKED");
+    }
     @Test void nameAloneOrPartialRoundNeverLinksAndExistingUnrelatedPlatformUidCanContinue() {
         unknownVisual("visual:old");
         assertThatThrownBy(()->background.resolveConversation(1L,capture("uid","c","销售","请介绍经验")))
@@ -162,6 +202,41 @@ class HrBackgroundStoreTest {
         long unrelated=hr.upsertConversation(1L,different);
         var observed=new ChatCapture("other",1,different,List.of(new ChatMessage("对方","文本","问题","今天")),false,true);
         assertThat(background.resolveConversation(1L,observed)).isEqualTo(unrelated);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
+    }
+    @Test void duplicatedVisualJobTitleStillRequiresTheUniqueCompleteOriginalRound() {
+        long old=unknownVisual("visual:old","AI产品经理AI产品经理（广告方向）");
+        assertThatThrownBy(()->background.resolveConversation(1L,capture("real-uid","partial","AI产品经理（广告方向）","新的问题")))
+                .isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        assertThatThrownBy(()->background.resolveConversation(1L,capture("real-uid","different","AI产品经理（其他方向）","请介绍经验")))
+                .isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        assertThat(background.resolveConversation(1L,capture("real-uid","complete","AI产品经理（广告方向）","请介绍经验"))).isEqualTo(old);
+        assertThat(policies.conversationHeld(old)).isTrue();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_conversation",Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT status FROM hr_reply_proposal WHERE conversation_id=?",String.class,old)).isEqualTo("SEND_UNKNOWN");
+    }
+    @Test void jobNormalizationDoesNotReplaceMissingOrDifferentContactIdentity() {
+        unknownVisual("visual:old","AI产品经理AI产品经理（广告方向）");
+        var source=capture("real-uid","complete","AI产品经理（广告方向）","请介绍经验");
+        for(var identity:List.of(
+                new ChatSession("real-uid","","其他HR","测试公司",source.session().jobName(),"","请介绍经验","今天"),
+                new ChatSession("real-uid","","测试HR","其他公司",source.session().jobName(),"","请介绍经验","今天"))) {
+            assertThatThrownBy(()->background.resolveConversation(1L,new ChatCapture(source.captureId(),1,identity,source.messages(),false,true)))
+                    .isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        }
+        unknownVisual("visual:short","采购采购");
+        assertThatThrownBy(()->background.resolveConversation(1L,capture("short-uid","short","采购","请介绍经验")))
+                .isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
+    }
+    @Test void unchangedAmbiguousVisualIdentityDoesNotKeepRetryingAfterGlobalHoldDisappears() {
+        long first=unknownVisual("visual:first"),second=unknownVisual("visual:second");
+        db.update("UPDATE hr_reply_proposal SET status='SENT_CONFIRMED' WHERE conversation_id IN (?,?)",first,second);
+        var source=capture("real-uid","ambiguous","采购","请介绍经验");
+        background.accept(1L,"测试",2,source);var task=background.claim(1L,"测试",2);
+        background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        assertThat(background.accept(1L,"测试",2,source).queueStatus()).isEqualTo("BLOCKED");
+        assertThat(background.claim(1L,"测试",2)).isNull();
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
     }
     @Test void twoIdenticalVisualIdentitiesStayReadOnlyRatherThanGuessing() {
