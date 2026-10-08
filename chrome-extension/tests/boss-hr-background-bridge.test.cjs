@@ -104,7 +104,7 @@ test("production list reader uses the overflow scroller, keeps selected parent f
     crypto:{randomUUID:()=>"document"},chrome:{runtime:{onMessage:{addListener:fn=>listener=fn},sendMessage:(message,reply)=>reply({success:true,watchActive:true})}},
     sessionStorage:{getItem:()=>null,removeItem:()=>{}},Event:class {},setTimeout:fn=>setTimeout(fn,0),clearTimeout,Date,
     GetJobsBossHrSupport:{normalizeText:value=>String(value || "").trim(),pageSafety:()=>({safe:true}),allTab:()=>filter,
-      chatItems:()=>[item],itemSnapshot:()=>({uid:"u1"}),captureId:()=>"preview"}});
+      chatItems:()=>[item],itemSnapshot:()=>({uid:"u1",lastTime:"今天",unreadCount:0}),captureId:()=>"preview",previewKey:async()=>"preview-key"}});
   const call=message=>new Promise(resolve=>listener({source:"GET_JOBS_BACKGROUND",...message},{},resolve));
   const page=await call({type:"BOSS_HR_HOST_PAGE_PING"});
   assert.equal(page.accountName,"合成求职者");assert.equal(page.accountIdentity,"geek:合成求职者");

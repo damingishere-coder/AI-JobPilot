@@ -4,6 +4,128 @@ const {create,PROTOCOL,KEY,ALARM}=require("../boss-hr-host.js");
 const crypto=require("node:crypto").webcrypto;
 const support=require("../boss-hr-support.js");
 const URL_CHAT="https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
+const PATROL_NOW=Date.parse('2026-10-08T02:00:00Z');
+function patrolHarness(items,options={}) {
+  const opened=[];
+  let policy={enabled:true,paused:false,authorizationValid:true,replyMode:'AUTO',historyMode:'RECENT',historyDays:15,...options.policy};
+  const h=harness({time:PATROL_NOW,store:options.store,
+    request:async(path,config)=> {
+      if(options.request){const result=await options.request(path,config);if(result)return result;}
+      if(path.endsWith('/autopilot'))return {success:true,httpStatus:200,data:{data:policy}};
+      if(path.endsWith('/watch/legacy-anchors'))return {success:true,httpStatus:200,data:{data:options.legacy || []}};
+    },scan:message=> {
+      if(message.cursor.stage==='LIST')return {success:true,targets:items.filter(item=>message.cursor.scope==='ALL' || item.unreadCount),hasMore:false,nextScrollTop:0};
+      if(!message.target)return {success:true,capture:null};
+      opened.push(message.target.uid);
+      const item=items.find(item=>item.uid===message.target.uid);
+      const observation={...item,unreadCount:0,lastDirection:item.lastDirection || '对方'};
+      return {success:true,observation,capture:observation.lastDirection==='本人'?null:{captureId:'round-'+item.previewKey,unreadCount:1,
+        session:{uid:item.uid},messages:[{from:'对方',text:'合成新消息',type:'文本'}],contextComplete:true}};
+    }});
+  return {...h,opened,setItems:value=>{items=value;},setPolicy:value=>{policy={...policy,...value};},
+    finish:async()=>{for(let step=0;h.store[KEY].cursor && step<25;step++)await h.host.tick();assert.equal(h.store[KEY].cursor,null);}};
+}
+const patrolItem=(uid,lastTime,changes={})=>({uid,lastTime,previewKey:uid+'-preview',unreadCount:0,...changes});
+
+test('RECENT baseline opens only the authorized fifteen-day range, including its calendar boundary',async()=>{
+  const h=patrolHarness([patrolItem('two-months','2026-08-08',{unreadCount:1}),patrolItem('month','09-08'),
+    patrolItem('expired','09-22',{unreadCount:1}),patrolItem('boundary','09-23'),patrolItem('recent','今天')]);
+  await h.start();await h.finish();
+  assert.deepEqual(h.opened,['boundary','recent']);
+  assert.equal(h.requests.filter(r=>r.path.endsWith('/watch/captures')).length,2);
+});
+test('NEW_ONLY baseline catalogs previews without opening old unread or recent conversations',async()=>{
+  const h=patrolHarness([patrolItem('old','09-08',{unreadCount:2}),patrolItem('recent','今天',{unreadCount:1})],{policy:{historyMode:'NEW_ONLY'}});
+  await h.start();await h.finish();assert.deepEqual(h.opened,[]);
+  h.setTime(PATROL_NOW+60001);await h.host.tick();await h.finish();assert.deepEqual(h.opened,[]);
+  assert.equal(h.requests.some(r=>r.path.endsWith('/watch/captures')),false);
+  assert.equal(Object.keys(h.store[KEY].previews).length,2);
+});
+test('an old contact with a new incoming message is eligible immediately after NEW_ONLY cataloging',async()=>{
+  const h=patrolHarness([patrolItem('old-contact','09-08')],{policy:{historyMode:'NEW_ONLY'}});
+  await h.start();await h.finish();
+  h.setItems([patrolItem('old-contact','今天',{previewKey:'new-question',unreadCount:1})]);
+  h.setTime(PATROL_NOW+60001);await h.host.tick();await h.finish();
+  assert.deepEqual(h.opened,['old-contact']);assert.equal(h.messages.findLast(m=>m.type==='BOSS_HR_HOST_SCAN_STEP').cursor.baseline,false);
+});
+test('legacy unknown records do not force ALL or reopen unchanged recent conversations',async()=>{
+  const h=patrolHarness([patrolItem('recent','今天')],{legacy:[{conversationId:132,status:'READ_ONLY'}]});
+  await h.start();await h.finish();
+  h.setTime(PATROL_NOW+60001);await h.host.tick();await h.finish();
+  assert.equal(h.messages.findLast(m=>m.type==='BOSS_HR_HOST_SCAN_STEP' && m.cursor.stage==='LIST').cursor.scope,'UNREAD');
+  h.setTime(PATROL_NOW+1800001);await h.host.tick();await h.finish();
+  assert.deepEqual(h.opened,['recent']);assert.equal(h.store[KEY].paused,false);
+});
+test('answered conversations stay closed until a new HR preview arrives even without an unread badge',async()=>{
+  const h=patrolHarness([patrolItem('answered','今天',{lastDirection:'本人'})]);
+  await h.start();await h.finish();
+  h.setTime(PATROL_NOW+1800001);await h.host.tick();await h.finish();assert.deepEqual(h.opened,['answered']);
+  h.setItems([patrolItem('answered','今天',{previewKey:'fresh-HR-question'})]);
+  h.setTime(PATROL_NOW+3600002);await h.host.tick();await h.finish();assert.deepEqual(h.opened,['answered','answered']);
+});
+test('relative date labels changing overnight do not reopen an unchanged preview',async()=>{
+  const h=patrolHarness([patrolItem('answered','今天 10:00',{lastDirection:'本人'})]);
+  await h.start();await h.finish();
+  h.setItems([patrolItem('answered','昨天 10:00',{lastDirection:'本人'})]);
+  h.setTime(PATROL_NOW+86400000);await h.host.tick();await h.finish();assert.deepEqual(h.opened,['answered']);
+});
+test('worker restart and explicit resume retain completed preview evidence',async()=>{
+  const items=[patrolItem('answered','今天',{lastDirection:'本人'})],h=patrolHarness(items);
+  await h.start();await h.finish();await h.host.control({type:'BOSS_HR_HOST_PAUSE'},h.sender);
+  const next=patrolHarness(items,{store:h.store});next.setTime(PATROL_NOW+1800001);
+  await next.host.control({type:'BOSS_HR_HOST_RESUME',expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},next.sender);await next.finish();
+  assert.deepEqual(next.opened,[]);assert.equal(next.store[KEY].previews.answered.lastDirection,'本人');
+});
+test('a saved pre-upgrade full capture queue is rebuilt before opening its old target',async()=>{
+  const h=patrolHarness([patrolItem('old','09-08')],{policy:{historyMode:'NEW_ONLY'}});
+  await h.start();await h.finish();
+  await h.host.update({patrolVersion:0,previews:{},cursor:{stage:'CAPTURE',scope:'ALL',queue:[{uid:'old'}],seen:['old']}});
+  await h.host.tick();await h.finish();assert.deepEqual(h.opened,[]);
+});
+test('upgrading a completed NEW_ONLY baseline preserves recent unread without opening read history',async()=>{
+  const h=patrolHarness([],{policy:{historyMode:'NEW_ONLY'}});await h.start();await h.finish();
+  h.setItems([patrolItem('unhandled','今天',{unreadCount:1}),patrolItem('read-history','今天'),patrolItem('old-unread','09-08',{unreadCount:1})]);
+  await h.host.update({patrolVersion:0,previews:{},cursor:{stage:'CAPTURE',scope:'ALL',queue:[{uid:'unhandled'}],seen:['unhandled']}});
+  await h.host.tick();await h.finish();assert.deepEqual(h.opened,['unhandled']);
+  assert.equal(h.messages.findLast(m=>m.type==='BOSS_HR_HOST_SCAN_STEP').cursor.baseline,false);
+});
+test('narrowing history policy discards a now-expired queued target without opening it',async()=>{
+  const h=patrolHarness([patrolItem('twenty-days','09-18')],{policy:{historyDays:30}});
+  await h.start();assert.equal(h.store[KEY].cursor.queue.length,1);
+  h.setPolicy({historyDays:15});await h.host.tick();await h.finish();assert.deepEqual(h.opened,[]);
+});
+test('unknown read historical dates and explicit future dates do not cause baseline browsing',async()=>{
+  const h=patrolHarness([patrolItem('unknown','很久以前'),patrolItem('invalid','2026-02-30'),patrolItem('future','2026-10-09',{unreadCount:1})]);
+  await h.start();await h.finish();assert.deepEqual(h.opened,[]);
+});
+test('new unread count can reveal another identical message while stable unread previews are skipped',async()=>{
+  const h=patrolHarness([patrolItem('same-text','今天',{unreadCount:1})]);
+  await h.start();await h.finish();
+  h.setTime(PATROL_NOW+60001);await h.host.tick();await h.finish();assert.deepEqual(h.opened,['same-text','same-text']);
+  h.setItems([patrolItem('same-text','今天')]);h.setTime(PATROL_NOW+1800001);await h.host.tick();await h.finish();
+  assert.deepEqual(h.opened,['same-text','same-text']);
+});
+test('missing preview evidence blocks before any conversation is opened',async()=>{
+  const h=harness({rawTargets:true,scan:()=>({success:true,targets:[{uid:'incomplete'}],hasMore:false})});
+  await h.start();assert.equal(h.store[KEY].errorCode,'HR_LIST_EVIDENCE_MISSING');
+  assert.equal(h.messages.filter(m=>m.type==='BOSS_HR_HOST_SCAN_STEP' && m.cursor.stage==='CAPTURE').length,0);
+});
+test('an old content bridge cannot silently bypass patrol filtering',async()=>{
+  const h=harness({scan:()=>({success:true,patrolVersion:0,targets:[],hasMore:false})});
+  await h.start();assert.equal(h.store[KEY].errorCode,'HR_PATROL_PROTOCOL_MISMATCH');assert.equal(h.store[KEY].paused,true);
+});
+test('queued calendar-boundary targets expire before opening after midnight in Shanghai',async()=>{
+  const h=patrolHarness([patrolItem('boundary','09-23')]);await h.start();
+  assert.equal(h.store[KEY].cursor.queue.length,1);
+  h.setTime(Date.parse('2026-10-08T16:01:00Z'));await h.finish();assert.deepEqual(h.opened,[]);
+});
+for(const lastDirection of ['本人','对方'])test('confirmed send remembers only an outgoing preview, observed '+lastDirection,async()=>{
+  const h=harness();await h.start();await h.host.tick();
+  const s=h.store[KEY];await h.host.update({operation:{kind:'SEND',commandId:'c',uid:'u1',leaseToken:'l'}});
+  await h.host.content({type:'BOSS_HR_HOST_RESULT',hostGeneration:s.hostGeneration,documentId:s.pageDocumentId,commandId:'c',leaseToken:'l',outcome:'SENT',
+    observation:{uid:'u1',previewKey:'after-send',lastTime:'今天',unreadCount:0,lastDirection}},{tab:{id:s.tabId,url:URL_CHAT}});
+  assert.equal(h.store[KEY].previews.u1.signature.includes('after-send'),lastDirection==='本人');
+});
 test("three unchanged list steps pause and preserve the queue without claiming baseline completion",async()=>{
   const h=harness({scan:()=>({success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:true,nextScrollTop:704})});
   await h.start();
@@ -20,7 +142,7 @@ function harness(options={}) {
   let timerId=0;
   const tabs=options.tabs || [{id:99,windowId:8,url:"http://127.0.0.1:6866/env-config",active:true,status:"complete"}];
   const windows=options.windows || [{id:8,type:"normal",incognito:false}];
-  let clock=1_000_000,pageTime=clock,session=null,sequence=0;
+  let clock=options.time || 1_000_000,pageTime=clock,session=null,sequence=0;
   const page={success:true,protocol:PROTOCOL,documentId:"document-1",accountIdentity:"geek:合成用户",accountName:"合成用户",accountRole:"GEEK",accountIdentityStable:false,
     safety:{safe:true},userPaused:false,operation:{active:false},...options.page};
   const chrome={storage:{local:{get:async key=>({[key]:store[key]}),set:async obj=>Object.assign(store,structuredClone(obj))}},
@@ -33,8 +155,11 @@ function harness(options={}) {
       sendMessage:async(id,message)=>{messages.push(message);
         if(message.type==="BOSS_HR_HOST_PAGE_PING")return {...page,observedAt:++pageTime};
         if(message.type==="BOSS_HR_HOST_BIND" && message.explicitResume)page.userPaused=false;
-        if(message.type==="BOSS_HR_HOST_SCAN_STEP")return options.scan?options.scan(message):message.cursor.stage==="LIST"?{success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:false,nextScrollTop:0}
-          :{success:true,observedAt:++pageTime,capture:{captureId:"whole-round",unreadCount:1,session:{uid:"u1"},messages:[{from:"对方",type:"文本",text:"您好",messageId:"in-1"}],contextComplete:true}};
+        if(message.type==="BOSS_HR_HOST_SCAN_STEP") {
+          const result=options.scan?await options.scan(message):message.cursor.stage==="LIST"?{success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:false,nextScrollTop:0}
+            :message.target?{success:true,observedAt:++pageTime,observation:{...message.target,lastDirection:"对方",unreadCount:0},capture:{captureId:"whole-round",unreadCount:1,session:{uid:"u1"},messages:[{from:"对方",type:"文本",text:"您好",messageId:"in-1"}],contextComplete:true}}:{success:true,capture:null};
+          return {patrolVersion:1,...result,...(result.targets && !options.rawTargets?{targets:result.targets.map(item=>({previewKey:item.uid+"-preview",lastTime:"今天",unreadCount:1,...item}))}:{})};
+        }
         if(message.type==="BOSS_HR_SEND_V2" && options.send)return options.send(message);
         return {success:true};}}};
   const response=data=>({success:true,httpStatus:200,data:{success:true,data}});
@@ -358,7 +483,7 @@ for(const replyMode of ["AUTO","REVIEW"])for(const historyMode of ["RECENT","NEW
     await h.start();assert.equal(h.store[KEY].state,"RUNNING");
     assert.ok(h.requests.some(item=>item.path.endsWith("/watch/start")));
     await h.host.tick();
-    assert.ok(h.requests.some(item=>item.path.endsWith("/watch/captures")));
+    assert.equal(h.requests.some(item=>item.path.endsWith("/watch/captures")),historyMode==="RECENT");
     assert.equal(h.created[0].active,false);
     assert.equal(h.focused.length,0);
     assert.ok(h.updates.every(item=>!("active" in item.config)));
