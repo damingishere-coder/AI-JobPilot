@@ -6,7 +6,7 @@
 
 ## 运行要求与状态
 
-- Chrome Bridge 1.10.8、Chrome 132 或以上，以及本地 Backend 服务。
+- Chrome Bridge 1.10.9、Chrome 132 或以上，以及本地 Backend 服务。
 - 托管使用专用 BOSS 聊天标签。自动创建标签时不激活标签、不聚焦窗口，也不使用桌面鼠标键盘；可以继续在其他标签或应用工作。
 - Chrome、电脑和 Backend 必须保持运行。后台标签被冻结、卸载、退出登录或遇到验证时会暂停；必须先恢复该标签或完成登录，再点击恢复。
 - 扩展 `RUNNING` 和后端 `CHROME_BACKGROUND` 的真实页面心跳均正常时，工作台才显示托管中。扩展 Service Worker 定时器本身不代表网页在线。

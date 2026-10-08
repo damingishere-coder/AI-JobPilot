@@ -1432,7 +1432,11 @@ async function handlePageMessageInternal(message, sender) {
   if (isScanStartMessage(message.type)) {
     tab = await ensureIndependentScanWindow(platform, tab);
   }
-  await waitForSupportedTab(tab.id, config);
+  tab = await waitForSupportedTab(tab.id, config);
+  if (isScanStartMessage(message.type) && !isUsableScanTab(platform, tab)) {
+    return { success: false, errorCode: "HR_CHAT_PROTECTED",
+      message: "BOSS扫描页面跳转到了聊天页。请打开BOSS岗位搜索页后重新开始扫描。" };
+  }
   await ensureContentScript(tab.id, config.contentScript);
   if (!isNoFocusPlatformMessage(message.type) && !isScanStartMessage(message.type)) {
     await chrome.tabs.update(tab.id, { active: true });
@@ -2431,19 +2435,28 @@ async function resolvePlatformTab(platform, message) {
 
 async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requestedProfileId = 0) {
   const registered = await getRegisteredScanTab(platform, requestedRunId, requestedProfileId);
-  if (registered) return registered;
+  if (isUsableScanTab(platform, registered)) return registered;
 
-  const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId);
+  const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId, { scanOnly: true });
   if (running) return running;
 
   const dedicated = await getIndependentScanTab(platform);
-  if (dedicated) return dedicated;
+  if (isUsableScanTab(platform, dedicated)) return dedicated;
 
   if (platform === "zhilian") {
     const pageStatus = await queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", platform }, null);
     if (pageStatus.chromePageReady && pageStatus.tabId) return await chrome.tabs.get(pageStatus.tabId);
   }
-  return await findOrCreatePlatformTab(platform, startUrl, { active: false });
+  const scanStartUrl = platform === "boss" && (!startUrl || isBossChatUrl(startUrl))
+    ? "https://www.zhipin.com/web/geek/jobs" : startUrl;
+  return await findOrCreatePlatformTab(platform, scanStartUrl, { active: false, scanOnly: true });
+}
+
+function isUsableScanTab(platform, tab) {
+  if (!tab || !isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG[platform])) return false;
+  // Chat documents deliberately reject job navigation. Keep HR tabs in place,
+  // including stale scan registrations and tabs currently redirecting to chat.
+  return platform !== "boss" || (!isBossChatUrl(tab.url || "") && !isBossChatUrl(tab.pendingUrl || ""));
 }
 
 async function getIndependentScanTab(platform) {
@@ -2513,6 +2526,7 @@ async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
   const found = tabs
     .filter((tab) => !excludedTabIds.has(tab.id))
     .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
+    .filter((tab) => !options.scanOnly || isUsableScanTab(platform, tab))
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (found) return found;
   // Chrome otherwise inserts into its last focused window, which may belong to the other scan.
@@ -2529,12 +2543,13 @@ async function findPlatformTab(platform) {
     .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
 }
 
-async function findRunningPlatformTab(platform, requestedRunId = "", requestedProfileId = 0) {
+async function findRunningPlatformTab(platform, requestedRunId = "", requestedProfileId = 0, options = {}) {
   const profileId = normalizeProfileId(requestedProfileId);
   if (!profileId) return null;
   const config = PLATFORM_CONFIG[platform];
   const tabs = (await chrome.tabs.query({}))
-    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config));
+    .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
+    .filter((tab) => !options.scanOnly || isUsableScanTab(platform, tab));
 
   for (const tab of tabs) {
     if (!tab.id) continue;

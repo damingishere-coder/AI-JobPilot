@@ -806,6 +806,56 @@ function startScan(context, platform) {
   { tab: { id: 10, url: "http://127.0.0.1:6866/zhilian" } });
 }
 
+test("Boss start opens a jobs tab when only HR chats are available", async () => {
+  const chatUrl = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
+  const h = loadBackground({ tabs: [
+    { id: 7, windowId: 3, url: chatUrl, status: "complete", lastAccessed: 100 },
+    { id: 10, windowId: 1, url: "http://127.0.0.1:6866/discover", status: "complete" }
+  ] });
+  assert.equal((await startScan(h.context, "boss")).success, true);
+  const chat = h.tabList.find(tab => tab.id === 7);
+  const scan = h.tabList.find(tab => tab.id === h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss.tabId);
+  assert.notEqual(scan.id, chat.id);
+  assert.equal(scan.url, "https://www.zhipin.com/web/geek/jobs");
+  assert.notEqual(scan.windowId, chat.windowId);
+  assert.equal(chat.url, chatUrl);
+  assert.equal(chat.windowId, 3);
+  assert.ok(!h.sentMessages.some(entry => entry.tabId === 7 && entry.message.type === "BOSS_SCAN_START"));
+});
+
+for (const source of ["registered", "running", "dedicated", "pending"]) {
+  test(`Boss scan skips a ${source} chat tab and preserves the existing jobs tab`, async () => {
+    const chatUrl = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
+    const h = loadBackground({ tabs: [
+      { id: 7, windowId: 3, url: source === "pending" ? "https://www.zhipin.com/" : chatUrl,
+        ...(source === "pending" ? { pendingUrl: chatUrl } : {}), status: "complete", lastAccessed: 100 },
+      { id: 8, windowId: 4, url: "https://www.zhipin.com/web/geek/jobs", status: "complete", lastAccessed: 10 }
+    ], statuses: source === "running"
+      ? { 7: { success: true, isRunning: true, hasStoredTask: true, runId: "boss-run", profileId: 4 } } : {} });
+    if (source === "registered") await h.context.registerScanSession("boss", 7, "boss-run", 10, "", 4);
+    if (source === "dedicated") h.storage.__GET_JOBS_SCAN_WINDOW_boss__ = { tabId: 7, windowId: 3 };
+    const selected = await h.context.findScanPlatformTab("boss", undefined, "boss-run", 4);
+    assert.equal(selected.id, 8);
+    assert.equal(h.tabList.length, 2);
+    assert.equal(h.tabUpdates.length, 0);
+    assert.equal(h.windowCreates.length, 0);
+  });
+}
+
+test("Boss page redirecting to chat during preparation never receives a scan start", async () => {
+  const h = independentScanFixture();
+  const waitForTab = h.context.waitForSupportedTab;
+  h.context.waitForSupportedTab = async (...args) => {
+    h.tabList.find(tab => tab.id === args[0]).url = "https://www.zhipin.com/web/geek/chat";
+    return await waitForTab(...args);
+  };
+  const result = await startScan(h.context, "boss");
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, "HR_CHAT_PROTECTED");
+  assert.equal(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__?.boss, undefined);
+  assert.ok(!h.sentMessages.some(entry => entry.message.type === "BOSS_SCAN_START"));
+});
+
 test("simultaneous starts keep both scan tabs active in distinct windows and preserve the workbench", async () => {
   const { context, tabList, windowCreates, tabUpdates, storage } = independentScanFixture();
   const results = await Promise.all([startScan(context, "boss"), startScan(context, "zhilian")]);
