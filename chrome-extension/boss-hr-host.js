@@ -147,7 +147,7 @@
           accountIdentity: !reauthorize && previous?.profileId === profileId ? previous.accountIdentity || "" : "", accountName: !reauthorize && previous?.profileId === profileId ? previous.accountName || "" : "",
           cursor: !reauthorize && previous?.profileId===profileId ? previous.cursor || null : null, baselineComplete:!reauthorize && Boolean(previous?.baselineComplete),lastReconcileAt:reauthorize?null:previous?.lastReconcileAt || null,
           operation: null, retryCount: 0, retryAt: 0, nextScanAt: now(), workbenchWindowId: sender?.tab?.windowId,
-          explicitResume: true, needsAccountConfirmation: false, legacyAnchorsChecked: false,controlRevision:Number(previous?.controlRevision || 0)+1,
+          explicitResume: true, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
           expectedAccountName: String(message.expectedAccountName || (!reauthorize && previous?.expectedAccountName) || "") },
           {...(previous || {}),exists:Boolean(previous),allowDisabled:true,allowPaused:true});
         await alarm();
@@ -313,7 +313,12 @@
         if (!response?.success) throw fault(response?.errorCode || "HR_CAPTURE_READ_FAILED", response?.message || "会话读取未就绪", response?.retryable === true);
         if (cursor.stage === "LIST") {
           const seen = new Set(cursor.seen), targets = cursor.queue.slice();
-          for (const item of response.targets || []) if (item.uid && !seen.has(item.uid)) { seen.add(item.uid); targets.push({ uid: item.uid, captureId: item.captureId,legacyAnchorId:item.legacyAnchorId || null }); }
+          for (const item of response.targets || []) if (item.uid && !seen.has(item.uid)) {
+            seen.add(item.uid);
+            const target={uid:item.uid,captureId:item.captureId,legacyAnchorId:item.legacyAnchorId || null};
+            if (Number.isFinite(item.listScrollTop) && item.listScrollTop>=0) target.listScrollTop=item.listScrollTop;
+            targets.push(target);
+          }
           targets.sort((a,b)=>Number(Boolean(b.legacyAnchorId))-Number(Boolean(a.legacyAnchorId)));
           if (seen.size > 1000) throw fault("HR_LIST_LIMIT", "会话列表超过安全范围，请人工检查");
           const stalled=response.hasMore && seen.size===cursor.seen.length && Number(response.nextScrollTop)===Number(cursor.scrollTop);
@@ -332,8 +337,8 @@
               throw fault(saved.errorType || "HR_CAPTURE_ACK_MISSING", saved.message || "采集未确认保存，保留游标稍后重读", !saved.httpStatus || saved.httpStatus>=500);
           }
           const remaining = cursor.queue.slice(1);
-          if (remaining.length) await update({ cursor: { ...cursor, queue: remaining }, operation: null },state);
-          else await update({ cursor: null, operation: null, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
+          if (remaining.length) await update({ cursor: { ...cursor, queue: remaining }, operation: null,listRechecks:0 },state);
+          else await update({ cursor: null, operation: null,listRechecks:0, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
             lastReconcileAt: cursor.reconcile ? now() : state.lastReconcileAt },state);
         }
         successfulReadCursor = true;
@@ -342,9 +347,13 @@
         const state = await read();
         if (!state?.intentEnabled || state.paused || state.hostGeneration!==owner?.hostGeneration || state.controlRevision!==owner?.controlRevision) return;
         const retries = Number(state.retryCount || 0) + 1;
+        const listRechecks=Number(state.listRechecks || 0);
+        const recheckList=error.errorCode==="BOSS_CHAT_NOT_FOUND" && state.cursor?.stage==="CAPTURE" && listRechecks<2;
+        if(error.errorCode==="BOSS_CHAT_NOT_FOUND" && !recheckList) error.retryable=false;
         await update({ state: error.retryable ? "RECOVERING" : "BLOCKED", paused: !error.retryable,
           pauseReason: error.retryable ? "" : error.errorCode, errorCode: error.errorCode || "HR_HOST_FAILED", message: String(error.message || error).slice(0, 300),
-          retryCount: retries, retryAt: now() + [60000, 120000, 300000][Math.min(retries - 1, 2)], operation: state.operation?.kind === "SEND" ? state.operation : null },state).catch(()=>null);
+          retryCount: retries, retryAt: now() + [60000, 120000, 300000][Math.min(retries - 1, 2)], operation: state.operation?.kind === "SEND" ? state.operation : null,
+          ...(recheckList?{listRechecks:listRechecks+1,cursor:{...state.cursor,stage:"LIST",scrollTop:0,queue:[],seen:[],stalledSteps:0}}:{}) },state).catch(()=>null);
         const current=await read();
         if (!error.retryable && current?.hostGeneration===state.hostGeneration && current.controlRevision===state.controlRevision && current.intentEnabled) {
           await reportFault(state,error.errorCode);
@@ -410,6 +419,23 @@
         return {success:false,errorCode:"HR_HOST_STALE_PAGE"};
       if (message.type === "BOSS_HR_HOST_MANUAL_PAUSE") return stop("专用聊天页检测到手动操作", false);
       if (!state.intentEnabled || state.paused) return { success: false, errorCode: "HR_HOST_PAUSED" };
+      if (message.type === "BOSS_HR_HOST_WAIT") {
+        if (message.watchSessionId!==state.watchSessionId || message.accountIdentity!==state.accountIdentity
+          || !["LIST","CAPTURE","SEND"].includes(state.operation?.kind)
+          || !Number.isFinite(state.operation.deadlineAt)
+          || !Number.isInteger(message.delayMs) || message.delayMs<1 || message.delayMs>3000)
+          return {success:false,errorCode:"HR_HOST_WAIT_REJECTED"};
+        if (now()+message.delayMs>=state.operation.deadlineAt)
+          return {success:false,errorCode:"BOSS_CHAT_LOCATE_TIMEOUT"};
+        // Page timers may be throttled while the dedicated chat tab is hidden.
+        // This short asynchronous reply keeps the wait in the extension worker.
+        await new Promise(resolve=>setTimer(resolve,message.delayMs));
+        const current=await active(state);
+        return {success:current.watchSessionId===message.watchSessionId && current.pageDocumentId===message.documentId
+          && current.accountIdentity===message.accountIdentity && current.operation?.kind===state.operation.kind
+          && current.operation?.deadlineAt===state.operation.deadlineAt && current.operation?.commandId===state.operation.commandId
+          && now()<state.operation.deadlineAt};
+      }
       if (message.type === "BOSS_HR_HOST_GUARD") {
         if(message.accountIdentity!==state.accountIdentity)return {success:false,errorCode:"BOSS_ACCOUNT_CHANGED",watchActive:false};
         if(message.commandId && (state.operation?.kind!=="SEND" || state.operation.commandId!==message.commandId))

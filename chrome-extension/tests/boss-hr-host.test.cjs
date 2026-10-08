@@ -62,6 +62,51 @@ function harness(options={}) {
     continue:async()=>{const entry=timers.entries().next().value;if(!entry)return false;timers.delete(entry[0]);await entry[1].fn();return true;},
     setTime:value=>{clock=value;pageTime=value;},setSession:value=>{session=value;}};
 }
+test('queued read targets retain the observed viewport across worker restarts',async()=>{
+  const h=harness({scan:message=>({success:true,targets:[{uid:'u1',captureId:'preview',listScrollTop:14000}],hasMore:false,nextScrollTop:0})});
+  await h.start();assert.equal(h.store[KEY].cursor.queue[0].listScrollTop,14000);
+  await h.host.initialize();assert.equal(h.store[KEY].cursor.queue[0].listScrollTop,14000);
+});
+
+test('missing read targets trigger bounded list rechecks while preserving baseline policy',async()=>{
+  const h=harness({scan:message=>message.cursor.stage==='LIST'?{success:true,targets:[{uid:'lost',captureId:'preview'}],hasMore:false,nextScrollTop:0}
+    :{success:false,errorCode:'BOSS_CHAT_NOT_FOUND',retryable:true}});
+  await h.start();
+  for(let attempt=0;attempt<2;attempt++) {
+    await h.host.tick();assert.equal(h.store[KEY].cursor.stage,'LIST');assert.equal(h.store[KEY].cursor.baseline,true);
+    assert.equal(h.store[KEY].listRechecks,attempt+1);assert.equal(h.store[KEY].paused,false);
+    h.setTime(1_100_000+attempt*100000);await h.host.tick();
+  }
+  await h.host.tick();assert.equal(h.store[KEY].state,'BLOCKED');assert.equal(h.store[KEY].errorCode,'BOSS_CHAT_NOT_FOUND');
+  assert.equal(h.requests.filter(r=>r.path.endsWith('/watch/captures')).length,0);
+  assert.equal(h.messages.filter(m=>m.type==='BOSS_HR_SEND_V2').length,0);
+});
+
+test('short background waits check the actual page binding and cancel after pause',async()=>{
+  const h=harness();await h.start();await h.continue();
+  const state=h.store[KEY];state.operation={kind:'CAPTURE',deadlineAt:1_020_000};
+  const sender={tab:{id:state.tabId,url:URL_CHAT},frameId:0};
+  const message={type:'BOSS_HR_HOST_WAIT',hostGeneration:state.hostGeneration,documentId:state.pageDocumentId,
+    watchSessionId:state.watchSessionId,accountIdentity:state.accountIdentity,delayMs:3000};
+  const delayed=h.host.content(message,sender);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal([...h.timers.values()][0].ms,3000);await h.continue();assert.equal((await delayed).success,true);
+  const cancelled=h.host.content(message,sender);const rejected=assert.rejects(cancelled,/托管已停止/);
+  await new Promise(resolve=>setImmediate(resolve));await h.host.control({type:'BOSS_HR_HOST_PAUSE'},h.sender);
+  await h.continue();await rejected;
+});
+
+test('background waits reject stale identity, invalid duration and exhausted work deadlines',async()=>{
+  const h=harness();await h.start();await h.continue();
+  const state=h.store[KEY];state.operation={kind:'CAPTURE',deadlineAt:1_020_000};
+  const sender={tab:{id:state.tabId,url:URL_CHAT},frameId:0};
+  const message={type:'BOSS_HR_HOST_WAIT',hostGeneration:state.hostGeneration,documentId:state.pageDocumentId,
+    watchSessionId:state.watchSessionId,accountIdentity:state.accountIdentity,delayMs:500};
+  for(const change of [{delayMs:0},{delayMs:3001},{delayMs:'500'},{watchSessionId:'old'},{accountIdentity:'other'}])
+    assert.equal((await h.host.content({...message,...change},sender)).success,false);
+  h.setTime(1_019_800);assert.equal((await h.host.content(message,sender)).errorCode,'BOSS_CHAT_LOCATE_TIMEOUT');
+  assert.equal(h.timers.size,0);
+});
+
 test('a saved capture cursor continues promptly without waiting for the next thirty-second alarm',async()=>{
   const h=harness();await h.start();
   assert.equal(h.timers.size,1);assert.equal([...h.timers.values()][0].ms,1000);

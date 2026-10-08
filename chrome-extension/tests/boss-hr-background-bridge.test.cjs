@@ -112,6 +112,7 @@ test("production list reader uses the overflow scroller, keeps selected parent f
   const scan=scrollTop=>call({type:"BOSS_HR_HOST_SCAN_STEP",hostGeneration:"generation",documentId:"document",cursor:{stage:"LIST",scope:"ALL",scrollTop}});
   const next=await scan(14000);
   assert.equal(next.success,true);assert.equal(next.actualScrollTop,14000);assert.equal(next.nextScrollTop,14704);assert.equal(next.hasMore,true);
+  assert.equal(next.targets[0].listScrollTop,14000);
   await new Promise(resolve=>setTimeout(resolve,0));
   const bottom=await scan(20000);
   assert.equal(bottom.actualScrollTop,14813);assert.equal(bottom.hasMore,false);
