@@ -292,6 +292,11 @@ public class HrAssistantController {
                 request.getScanId(), request.getTotalUnread(), request.getCaptures()));
     }
 
+    @GetMapping("/watch/captures")
+    public ResponseEntity<?> inspectCaptures(@RequestParam(defaultValue="20") int size) {
+        return execute(()->watchService.inspectBackgroundCaptures(size));
+    }
+
     @PostMapping("/watch/captures")
     public ResponseEntity<?> captures(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
                                        @RequestBody ScanResultsRequest request) {

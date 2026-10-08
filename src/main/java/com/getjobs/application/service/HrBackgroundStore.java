@@ -94,11 +94,7 @@ public class HrBackgroundStore {
         if(!matches.isEmpty())return matches.size()==1 && sources.size()==1
                 && db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias WHERE profile_id=? AND conversation_id=?",Integer.class,profile,sources.getFirst())==0;
         if(db.queryForObject("SELECT COUNT(*) FROM hr_conversation WHERE profile_id=? AND platform='boss' AND external_uid_hash=?",Integer.class,profile,uidHash)>0)return true;
-        return db.queryForObject("""
-                SELECT COUNT(DISTINCT c.id) FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
-                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
-                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
-                """,Integer.class,profile)==0;
+        return independentOfUnresolvedVisualIdentities(profile,capture);
     }
 
     private boolean unchangedSuggestion(Long profile,ChatCapture capture,int version) {
@@ -123,6 +119,21 @@ public class HrBackgroundStore {
         String accountHash=accountHash(profile,account);
         db.update("UPDATE hr_background_capture SET status='BLOCKED',error_code='AUTHORIZATION_CHANGED',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND account_hash=? AND status='PENDING' AND policy_version<>?",profile,accountHash,version);
         var ids=db.queryForList("SELECT id FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status='PENDING' ORDER BY created_at,rowid LIMIT 1",String.class,profile,accountHash,version);
+        if(ids.isEmpty()) {
+            // Recover only stored analysis whose identity dependency is now proven.
+            // Payload, account, authorization, and historical scope remain immutable;
+            // any later send still requires the real page's fresh whole source round.
+            for(var row:db.queryForList("SELECT id,payload_cipher FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status='BLOCKED' AND error_code='LEGACY_IDENTITY_UNRESOLVED' ORDER BY created_at,rowid",profile,accountHash,version)) {
+                try {
+                    String id=row.get("id").toString();
+                    var capture=decode(crypto.decrypt(Objects.toString(row.get("payload_cipher"),""),"background-capture:"+id));
+                    if(!capture.contextComplete() || !completeIdentity(capture.session()) || !identityDependencyResolved(profile,capture))continue;
+                    if(db.update("UPDATE hr_background_capture SET status='PENDING',error_code='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='BLOCKED' AND error_code='LEGACY_IDENTITY_UNRESOLVED'",id)==1) {
+                        ids=List.of(id);break;
+                    }
+                }catch(RuntimeException unavailable){ /* Missing evidence stays held. */ }
+            }
+        }
         if(ids.isEmpty())return null;
         String id=ids.getFirst();
         if(db.update("UPDATE hr_background_capture SET status='PROCESSING',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PENDING'",id)!=1)return null;
@@ -138,6 +149,58 @@ public class HrBackgroundStore {
     }
     public int pending(Long profile) {
         return db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND status IN ('PENDING','PROCESSING')",Integer.class,profile);
+    }
+
+    /** Read-only evidence for the active profile; inspection never retries analysis or a send. */
+    public List<Map<String,Object>> inspectCaptures(Long profile,int size) {
+        var rows=db.queryForList("SELECT id,status,error_code,created_at,updated_at,payload_cipher FROM hr_background_capture WHERE profile_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?",profile,Math.max(1,Math.min(size,50)));
+        return rows.stream().map(row->{
+            var result=new LinkedHashMap<String,Object>();
+            for(String key:List.of("id","status","error_code","created_at","updated_at"))result.put(key,row.get(key));
+            try {
+                String cipher=Objects.toString(row.get("payload_cipher"),"");
+                if(!cipher.isBlank())result.put("capture",decode(crypto.decrypt(cipher,"background-capture:"+row.get("id"))));
+            }catch(RuntimeException unavailable){ /* Retain metadata when expired or unreadable. */ }
+            result.put("contextAvailable",result.containsKey("capture"));
+            return (Map<String,Object>)result;
+        }).toList();
+    }
+
+    public Map<String,Object> captureDiagnostics(Long profile,int version) {
+        int blocked=db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND policy_version=? AND status='BLOCKED'",Integer.class,profile,version);
+        return Map.of("blockedCaptures",blocked,"unresolvedLegacyIdentities",unresolvedVisualIdentities(profile).size(),
+                "message",blocked>0?"有 "+blocked+" 条聊天记录处理受阻，尚未发送回复。":"");
+    }
+
+    private List<Long> unresolvedVisualIdentities(Long profile) {
+        return db.queryForList("""
+                SELECT DISTINCT c.id FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
+                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
+                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
+                """,Long.class,profile);
+    }
+
+    /** Different people at different companies can proceed without releasing any old UNKNOWN. */
+    private boolean independentOfUnresolvedVisualIdentities(Long profile,ChatCapture observed) {
+        var unresolved=unresolvedVisualIdentities(profile);
+        if(unresolved.isEmpty())return true;
+        if(!observed.contextComplete() || !completeIdentity(observed.session()))return false;
+        int end=observed.messages().size();while(end>0 && !observed.messages().get(end-1).inbound())end--;
+        int start=end;while(start>0 && observed.messages().get(start-1).inbound())start--;
+        var round=observed.messages().subList(start,end);
+        if(round.isEmpty() || round.stream().anyMatch(m->Objects.toString(m.messageId(),"").isBlank())
+                || round.stream().map(ChatMessage::messageId).distinct().count()!=round.size())return false;
+        for(Long id:unresolved) {
+            try {
+                var baseline=policies.context(profile,id);
+                if(!baseline.contextComplete() || !completeIdentity(baseline.session())
+                        || baseline.messages().stream().noneMatch(ChatMessage::inbound)
+                        || normalize(observed.session().hrName()).equals(normalize(baseline.session().hrName()))
+                        || normalize(observed.session().companyName()).equals(normalize(baseline.session().companyName()))
+                        || !uniqueSourceRound(observed.messages(),baseline.messages()).isEmpty())return false;
+            }catch(RuntimeException unavailable){return false;}
+        }
+        return true;
     }
 
     public List<Map<String,Object>> legacyAnchors(Long profile) {
@@ -204,14 +267,9 @@ public class HrBackgroundStore {
         }
         var direct=db.queryForList("SELECT id FROM hr_conversation WHERE profile_id=? AND platform='boss' AND external_uid_hash=?",Long.class,profile,uidHash);
         if(!direct.isEmpty())return direct.getFirst();
-        // A new UID cannot sidestep an old unknown visual identity. Existing
-        // verified platform UIDs are unaffected; unresolved new identities stay read-only.
-        Integer unresolved=db.queryForObject("""
-                SELECT COUNT(DISTINCT c.id) FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
-                WHERE c.profile_id=? AND c.platform='boss_visual' AND p.status IN ('SEND_UNKNOWN','BLOCKED')
-                  AND NOT EXISTS (SELECT 1 FROM hr_chrome_conversation_alias a WHERE a.profile_id=c.profile_id AND a.conversation_id=c.id)
-                """,Integer.class,profile);
-        if(unresolved!=null && unresolved>0)throw new IdentityHeldException();
+        // Ambiguous or incomplete new UIDs remain held. Verified unrelated
+        // identities do not clear, alias, or replay the old unknown conversation.
+        if(!independentOfUnresolvedVisualIdentities(profile,observed))throw new IdentityHeldException();
         return hr.upsertConversation(profile,identity);
     }
 

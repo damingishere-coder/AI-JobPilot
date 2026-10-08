@@ -101,6 +101,23 @@ class HrBackgroundControllerTest {
         assertThat(watcher.status().watching()).isFalse();assertThat(policies.policy(1L).sharePhone()).isFalse();
         assertThat(store.loadSettings(1L).communicationProfile()).isEqualTo(changed);
     }
+    @Test void captureInspectionUsesCurrentProfileWithoutRenewingThePageOrClaimingWork() throws Exception {
+        var queue=new HrBackgroundStore(db,new HrAssistantCryptoService(dir.resolve("test.key").toString()),new ObjectMapper(),store,policies);
+        watcher.setBackground(queue);
+        db.update("INSERT INTO profile(id,name,is_active) VALUES (2,'其他',0)");
+        var current=new ChatCapture("current",1,new ChatSession("current-uid","","HR","公司","岗位","","当前问题","今天"),List.of(new ChatMessage("对方","文本","当前问题","今天")),false,true);
+        queue.accept(1L,"本人",policies.policy(1L).version(),current);queue.accept(2L,"其他",2,new ChatCapture("other",1,current.session(),List.of(new ChatMessage("对方","文本","其他私有问题","今天")),false,true));
+        var before=db.queryForList("SELECT * FROM hr_background_capture");var pageBefore=ReflectionTestUtils.getField(watcher,"pageObservedAt");
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/hr-assistant/watch/captures").param("size","999").param("profileId","2"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.length()").value(1))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].capture.captureId").value("current"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].status").value("PENDING"));
+        assertThat(db.queryForList("SELECT * FROM hr_background_capture")).isEqualTo(before);
+        assertThat(ReflectionTestUtils.getField(watcher,"pageObservedAt")).isEqualTo(pageBefore);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
     @Test void disablingIsAlwaysAvailableAndLateReceiptKeepsTheAlreadyDispatchedLease() {
         var capture=new ChatCapture("c",1,new ChatSession("uid","","HR","公司","采购","","你好","今天"),List.of(new ChatMessage("对方","文本","你好","今天")),false,true);
         long conversation=store.upsertConversation(1L,capture.session());store.saveMessage(conversation,capture.messages().getFirst(),30);

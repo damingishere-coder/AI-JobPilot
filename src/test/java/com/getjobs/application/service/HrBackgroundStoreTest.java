@@ -204,6 +204,90 @@ class HrBackgroundStoreTest {
         assertThat(background.resolveConversation(1L,observed)).isEqualTo(unrelated);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
     }
+    ChatCapture independentCapture(boolean historical,boolean complete) {
+        var identity=new ChatSession("independent-uid","","另一位HR","另一家公司","另一岗位","","请介绍新岗位意向","今天");
+        return new ChatCapture("independent-source",1,identity,List.of(
+                new ChatMessage("本人","文本","您好","昨天","independent-self",List.of()),
+                new ChatMessage("对方","文本","请介绍新岗位意向","今天","independent-inbound",List.of())),historical,complete);
+    }
+    @Test void verifiedIndependentNewContactProceedsWithoutAliasingOrReleasingUnknown() {
+        long old=unknownVisual("visual:old");
+        var source=independentCapture(false,true);
+        long fresh=background.resolveConversation(1L,source);
+        assertThat(fresh).isNotEqualTo(old);
+        assertThat(db.queryForObject("SELECT platform FROM hr_conversation WHERE id=? AND profile_id=1",String.class,fresh)).isEqualTo("boss");
+        assertThat(policies.conversationHeld(old)).isTrue();
+        assertThat(db.queryForObject("SELECT status FROM hr_reply_proposal WHERE conversation_id=?",String.class,old)).isEqualTo("SEND_UNKNOWN");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_chrome_conversation_alias",Integer.class)).isZero();
+    }
+    @Test void unchangedHeldIndependentSnapshotRetriesOnlyAnalysisAndPreservesHistoricalScope() {
+        long old=unknownVisual("visual:old");var source=independentCapture(true,true);
+        background.accept(1L,"测试",2,source);var first=background.claim(1L,"测试",2);
+        background.finish(first.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        var reread=new ChatCapture(source.captureId(),1,source.session(),source.messages(),false,true);
+        assertThat(background.accept(1L,"测试",2,reread).queueStatus()).isEqualTo("PENDING");
+        var retry=background.claim(1L,"测试",2);assertThat(retry.id()).isEqualTo(first.id());assertThat(retry.capture().historical()).isTrue();
+        assertThat(background.resolveConversation(1L,retry.capture())).isNotEqualTo(old);background.finish(retry.id(),"");
+        assertThat(background.accept(1L,"测试",2,reread).queueStatus()).isEqualTo("DONE");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        assertThat(policies.conversationHeld(old)).isTrue();
+    }
+    @Test void incompleteOrOverlappingNewIdentityAndOldSourceStillStayHeld() {
+        long old=unknownVisual("visual:old");var source=independentCapture(false,true);var s=source.session();
+        var sameName=new ChatSession(s.uid(),"","测试HR",s.companyName(),s.jobName(),"",s.lastMessage(),s.lastTime());
+        var sameCompany=new ChatSession(s.uid(),"",s.hrName(),"测试公司",s.jobName(),"",s.lastMessage(),s.lastTime());
+        var missingJob=new ChatSession(s.uid(),"",s.hrName(),s.companyName(),"","",s.lastMessage(),s.lastTime());
+        var withoutIds=source.messages().stream().map(m->new ChatMessage(m.from(),m.type(),m.text(),m.time())).toList();
+        var duplicateIds=List.of(source.messages().getFirst(),source.messages().getLast(),source.messages().getLast());
+        var oldRound=policies.context(1L,old).messages();
+        for(var ambiguous:List.of(independentCapture(false,false),
+                new ChatCapture("same-name",1,sameName,source.messages(),false,true),
+                new ChatCapture("same-company",1,sameCompany,source.messages(),false,true),
+                new ChatCapture("missing-job",1,missingJob,source.messages(),false,true),
+                new ChatCapture("missing-ids",1,s,withoutIds,false,true),
+                new ChatCapture("duplicate-ids",1,s,duplicateIds,false,true),
+                new ChatCapture("same-old-round",1,s,oldRound.stream().map(m->new ChatMessage(m.from(),m.type(),m.text(),m.time(),"old-"+m.from(),List.of())).toList(),false,true))) {
+            assertThatThrownBy(()->background.resolveConversation(1L,ambiguous)).isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        }
+        var baseline=policies.context(1L,old);
+        policies.context(old,new ChatCapture(baseline.captureId(),1,baseline.session(),baseline.messages(),false,false));
+        assertThatThrownBy(()->background.resolveConversation(1L,source)).isInstanceOf(HrBackgroundStore.IdentityHeldException.class);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_conversation",Integer.class)).isEqualTo(1);
+        assertThat(policies.conversationHeld(old)).isTrue();
+    }
+    @Test void aStoredIndependentIdentityBlockRecoversOnlyAnalysisUnderTheOriginalAccountAndAuthorization() {
+        long old=unknownVisual("visual:old");var source=independentCapture(true,true);
+        background.accept(1L,"测试",2,source);var first=background.claim(1L,"测试",2);background.finish(first.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        var held=db.queryForMap("SELECT * FROM hr_background_capture WHERE id=?",first.id());
+        assertThat(background.claim(1L,"其他账号",2)).isNull();assertThat(background.claim(1L,"测试",3)).isNull();
+        var retry=background.claim(1L,"测试",2);assertThat(retry.id()).isEqualTo(first.id());assertThat(retry.capture()).isEqualTo(source);
+        assertThat(retry.capture().historical()).isTrue();
+        assertThat(db.queryForMap("SELECT * FROM hr_background_capture WHERE id=?",first.id()))
+                .containsEntry("payload_cipher",held.get("payload_cipher")).containsEntry("policy_version",held.get("policy_version")).containsEntry("account_hash",held.get("account_hash"));
+        assertThat(background.resolveConversation(1L,retry.capture())).isNotEqualTo(old);background.finish(retry.id(),"");
+        assertThat(background.claim(1L,"测试",2)).isNull();
+        assertThat(policies.conversationHeld(old)).isTrue();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        var ambiguous=capture("ambiguous","blocked","采购","另一问题");background.accept(1L,"测试",2,ambiguous);
+        var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        assertThat(background.claim(1L,"测试",2)).isNull();
+    }
+    @Test void captureInspectionIsScopedBoundedAndNeverChangesBlockedAnalysisOrUnknownSends() {
+        unknownVisual("visual:old");var source=independentCapture(false,true);
+        background.accept(1L,"测试",2,source);var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        background.accept(2L,"其他",2,capture("other-uid","private","采购","其他档案私有消息"));
+        var before=db.queryForList("SELECT * FROM hr_background_capture");var proposals=db.queryForList("SELECT * FROM hr_reply_proposal");
+        assertThat(background.inspectCaptures(1L,999)).hasSize(1).allSatisfy(row->{
+            assertThat(row).doesNotContainKey("payload_cipher");assertThat(row.get("capture")).isEqualTo(source);assertThat(row.get("status")).isEqualTo("BLOCKED");
+        });
+        assertThat(background.captureDiagnostics(1L,2)).containsEntry("blockedCaptures",1).containsEntry("unresolvedLegacyIdentities",1);
+        assertThat(background.captureDiagnostics(1L,3)).containsEntry("blockedCaptures",0);
+        assertThat(db.queryForList("SELECT * FROM hr_background_capture")).isEqualTo(before);
+        assertThat(db.queryForList("SELECT * FROM hr_reply_proposal")).isEqualTo(proposals);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        db.update("UPDATE hr_background_capture SET payload_cipher='' WHERE id=?",task.id());
+        assertThat(background.inspectCaptures(1L,0).getFirst()).containsEntry("contextAvailable",false).doesNotContainKey("capture");
+    }
     @Test void duplicatedVisualJobTitleStillRequiresTheUniqueCompleteOriginalRound() {
         long old=unknownVisual("visual:old","AI产品经理AI产品经理（广告方向）");
         assertThatThrownBy(()->background.resolveConversation(1L,capture("real-uid","partial","AI产品经理（广告方向）","新的问题")))

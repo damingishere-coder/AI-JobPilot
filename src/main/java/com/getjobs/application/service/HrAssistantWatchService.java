@@ -365,6 +365,19 @@ public class HrAssistantWatchService {
         return profileGuard.locked(this::statusLocked);
     }
 
+    public java.util.List<java.util.Map<String,Object>> inspectBackgroundCaptures(int size) {
+        return profileGuard.locked(()->{
+            if(background==null)throw new IllegalStateException("后台采集服务不可用");
+            return background.inspectCaptures(profileService.getCurrentProfileId(),size);
+        });
+    }
+
+    private java.util.Map<String,Object> backgroundActivity(Long profile) {
+        var result=new java.util.LinkedHashMap<String,Object>(autopilot.progressStatus(profile));
+        if(background!=null && isBackground())result.put("background",background.captureDiagnostics(profile,autopilot.policy(profile).version()));
+        return result;
+    }
+
     public List<String> dutyBlockers(Long profileId) {
         var result=new ArrayList<String>(autopilot==null?List.of("托管服务不可用"):autopilot.blockers(profileId));
         if(autopilot!=null && "AUTO".equals(autopilot.policy(profileId).replyMode()) && !napCatGateway.isConnected()) result.add("QQ 决策通道未连接");
@@ -386,7 +399,7 @@ public class HrAssistantWatchService {
                 currentProfile == null ? "" : currentProfile.getName(), profileGuard.isBlocked(),
                 isReviewTrial()?"TRIAL_REVIEW":autopilot==null || currentProfile==null?"REVIEW":autopilot.policy(currentProfile.getId()).replyMode(),
                 autopilot==null || currentProfile==null?List.of():dutyBlockers(currentProfile.getId()),
-                autopilot==null || currentProfile==null?java.util.Map.of():autopilot.progressStatus(currentProfile.getId()),
+                autopilot==null || currentProfile==null?java.util.Map.of():backgroundActivity(currentProfile.getId()),
                 watching.get() && reviewReady, trialProposalIds.size(),
                 active==null?"CHROME_BRIDGE":active.transport(),
                 !watching.get()?backgroundBlocker.equals("USER_STOPPED")?"STOPPED":backgroundBlocker.isBlank()?"STOPPED":"PAUSED":

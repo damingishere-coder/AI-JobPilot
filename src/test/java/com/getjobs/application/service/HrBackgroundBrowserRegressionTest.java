@@ -15,6 +15,49 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HrBackgroundBrowserRegressionTest {
     private static final String PROTOCOL="2026-09-30-hr-background-v1";
 
+    @Test void productionPanelRendersAnalysisBlockerAcrossCollapseAndClearsItAfterReadRecovery() {
+        try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
+                new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
+                        .setArgs(List.of("--disable-background-networking","--host-resolver-rules=MAP * ~NOTFOUND")));
+             BrowserContext context=browser.newContext(new Browser.NewContextOptions().setViewportSize(1280,900))) {
+            Page page=fixture(context);
+            page.evaluate("""
+                ()=>{
+                  const attach=Element.prototype.attachShadow;
+                  Element.prototype.attachShadow=function(options){return attach.call(this,{...options,mode:'open'});};
+                  window.panelWarning='有 2 条聊天记录处理受阻，尚未发送回复。';
+                  chrome.runtime.sendMessage=(message,reply)=>{
+                    const binding={watchSessionId:'watch',hostGeneration:'generation',pageDocumentId:'document'};
+                    const status={transport:'CHROME_BACKGROUND',watching:true,currentProfileId:1,currentProfileName:'合成档案',...binding,
+                      activity:{background:{blockedCaptures:panelWarning?2:0,message:panelWarning}}};
+                    const host={transport:'CHROME_BACKGROUND',state:'RUNNING',intentEnabled:true,profileId:1,...binding};
+                    const policy={enabled:true,authorizationValid:true,replyMode:'AUTO',historyMode:'NEW_ONLY',historyDays:15};
+                    const data=message.operation==='hr-status'?status:message.operation==='hr-background-status'?host:
+                      message.operation==='hr-autopilot'?policy:[];
+                    reply({success:true,data:{success:true,data}});
+                  };
+                }
+                """);
+            page.addScriptTag(new Page.AddScriptTagOptions().setPath(Path.of("chrome-extension","boss-hr-assistant.js")));
+            page.waitForFunction("()=>document.getElementById('getjobs-boss-hr-assistant')?.shadowRoot?.textContent.includes('巡检中，部分回复受阻')");
+            var root=page.locator("#getjobs-boss-hr-assistant");
+            assertThat(root.locator(".error").innerText()).contains("尚未发送");
+            assertThat(root.locator(".dot.on").count()).isZero();
+            assertThat(root.locator("details.records").getAttribute("open")).isNull();
+            String imagePath=System.getenv("BOSS_PANEL_TEST_IMAGE");
+            if(imagePath!=null && !imagePath.isBlank())page.screenshot(new Page.ScreenshotOptions().setPath(Path.of(imagePath)));
+            root.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("收起").setExact(true)).click();
+            assertThat(root.locator(".body").isVisible()).isFalse();
+            root.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("展开").setExact(true)).click();
+            assertThat(root.locator(".error").isVisible()).isTrue();
+            page.evaluate("panelWarning=''");
+            root.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Locator.GetByRoleOptions().setName("立即刷新").setExact(true)).click();
+            page.waitForFunction("()=>document.getElementById('getjobs-boss-hr-assistant').shadowRoot.textContent.includes('后台托管：运行中')");
+            assertThat(root.locator(".error").count()).isZero();
+            assertThat(page.evaluate("fixtureDispatches")).isEqualTo(0);
+        }
+    }
+
     @Test void patrolFiltersBeforeOpeningAndReadsChangedIncomingInProductionDom() {
         try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
                 new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
