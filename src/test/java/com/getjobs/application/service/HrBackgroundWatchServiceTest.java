@@ -73,6 +73,22 @@ class HrBackgroundWatchServiceTest {
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_background_capture",Integer.class)).isEqualTo(2);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isEqualTo(1);
     }
+    @Test void blockedAnalysisIsVisibleWhileTheRealPageRemainsWatching() throws Exception {
+        var old=new ChatCapture("old",1,new ChatSession("visual:old","","测试HR","测试公司","采购","","旧问题","昨天"),List.of(new ChatMessage("对方","文本","旧问题","昨天")),false,true);
+        long conversation=hr.upsertVisualConversation(1L,old.session());for(var m:old.messages())hr.saveMessage(conversation,m,30);
+        String source=hr.sourceFingerprint(conversation,old.messages().getLast());hr.updateLastInbound(conversation,source);policies.context(conversation,old);
+        long proposal=hr.createProposal(1L,conversation,source,reply());hr.markFinal(proposal,ProposalStatus.SEND_UNKNOWN,"原回执未知");
+        var status=start();watcher.acceptCapture(status.watchSessionId(),77,"blocked",List.of(capture("new")),observation());
+        watcher.processBackgroundCaptures();
+        waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE status='BLOCKED'",Integer.class)==1);
+        var current=watcher.status();assertThat(current.watching()).isTrue();assertThat(current.phase()).isEqualTo("WATCHING");
+        assertThat(((java.util.Map<?,?>)current.activity().get("background")).get("blockedCaptures")).isEqualTo(1);
+        assertThat(current.activity().get("background").toString()).contains("尚未发送");
+        var pageBefore=ReflectionTestUtils.getField(watcher,"pageObservedAt");watcher.inspectBackgroundCaptures(20);
+        assertThat(ReflectionTestUtils.getField(watcher,"pageObservedAt")).isEqualTo(pageBefore);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        assertThat(policies.conversationHeld(conversation)).isTrue();
+    }
     @Test void replayedOrOldPageAnchorDoesNotKeepAStaleHostClaimingCommands() {
         var status=start();
         assertThatThrownBy(()->watcher.heartbeat(status.watchSessionId(),77,status.chromeBridge().url(),HrAutopilotStore.PROTOCOL,false,0,"",

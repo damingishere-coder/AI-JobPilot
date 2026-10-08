@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PANEL_VERSION = "2026-10-08-hr-background-ui-v3";
+  const PANEL_VERSION = "2026-10-08-hr-background-ui-v4";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_ASSISTANT__ === PANEL_VERSION) return;
   window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__?.();
   window.__GET_JOBS_BOSS_HR_ASSISTANT__ = PANEL_VERSION;
@@ -104,9 +104,10 @@
     const watching=latestHost?.state==="RUNNING" && bound && latestStatus?.watching && latestStatus.transport==="CHROME_BACKGROUND"
       && latestPolicy?.enabled && latestPolicy.authorizationValid===true;
     const labels={STOPPED:"已停止",STARTING:"正在核对账号与页面",RUNNING:"后台连接待核验",PAUSED:"已暂停",RECOVERING:"正在恢复连接",BLOCKED:"需要处理后恢复"};
-    dot.classList.toggle("on",Boolean(watching));
+    const captureWarning=latestStatus?.activity?.background?.message || "";
+    dot.classList.toggle("on",Boolean(watching && !captureWarning));
     const statusBox=element("div","status");
-    statusBox.appendChild(element("strong","",`后台托管：${watching?"运行中":labels[latestHost?.state] || "状态未确认"}`));
+    statusBox.appendChild(element("strong","",`后台托管：${watching?(captureWarning?"巡检中，部分回复受阻":"运行中"):labels[latestHost?.state] || "状态未确认"}`));
     statusBox.appendChild(element("div","",`当前档案：${latestStatus?.currentProfileName || "未读取"}`));
     if(latestHost?.intentEnabled) statusBox.appendChild(element("div","",`已核验账号：${latestHost.accountName || "等待核验"}`));
     if(watching) {
@@ -114,7 +115,7 @@
       const progress=latestHost.operation?.kind==="SEND"?"正在核验或发送已审核回复":cursor?.stage==="LIST"?`浏览联系人，已发现 ${cursor.seen?.length || 0} 个`:cursor?.stage==="CAPTURE"?`检查待回复会话，剩余 ${cursor.queue?.length || 0} 个`:"等待下一次巡检";
       statusBox.appendChild(element("div","",progress));
     }
-    const error=actionError || (!latestHost?latestStatus?.lastError:latestHost.state==="BLOCKED"?latestHost.message:latestHost.state==="RECOVERING"?latestHost.message:"");
+    const error=actionError || latestStatus?.lastError || (latestHost?.state==="BLOCKED" || latestHost?.state==="RECOVERING"?latestHost.message:"") || captureWarning;
     if(error) statusBox.appendChild(element("div","error",error));
     rendered.appendChild(statusBox);
     const automatic=latestPolicy?.enabled && latestPolicy.replyMode==="AUTO";

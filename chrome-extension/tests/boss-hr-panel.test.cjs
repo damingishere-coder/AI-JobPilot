@@ -47,6 +47,21 @@ test('panel shows the saved 15 day policy and shared status, with collapsed reco
   const message=h.operations.find(message=>message.operation==='hr-background-pause');assert.equal(message.body.expectedProfileId,4);
   assert.equal(h.operations.some(message=>message.operation==='hr-start'),false);
 });
+test('a running host exposes blocked capture analysis and clears its warning after recovery',async()=>{
+  const message='有 2 条聊天记录处理受阻，尚未发送回复。';
+  const h=await harness({statusState:{activity:{background:{blockedCaptures:2,message}}}});
+  assert.ok(h.nodes().some(node=>node.textContent==='后台托管：巡检中，部分回复受阻'));
+  assert.ok(h.nodes().some(node=>node.className==='error' && node.textContent===message));
+  assert.equal(h.nodes().find(node=>node.className==='dot').classList.contains('on'),false);
+  assert.equal(h.nodes().find(node=>node.textContent==='暂停后台托管').disabled,false);
+  h.setStatus({activity:{background:{blockedCaptures:0,message:''}}});await h.tick();
+  assert.ok(h.nodes().some(node=>node.textContent==='后台托管：运行中'));
+  assert.equal(h.nodes().some(node=>node.textContent===message),false);
+});
+test('backend errors remain visible while the host still reports running',async()=>{
+  const h=await harness({statusState:{lastError:'实际后台核验失败'}});
+  assert.ok(h.nodes().some(node=>node.className==='error' && node.textContent==='实际后台核验失败'));
+});
 test('different backend binding is never shown as running',async()=>{
   const h=await harness({mismatch:true});
   assert.equal(h.nodes().some(node=>node.textContent==='后台托管：运行中'),false);

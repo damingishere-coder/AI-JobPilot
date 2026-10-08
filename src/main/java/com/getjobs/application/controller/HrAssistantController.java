@@ -292,6 +292,15 @@ public class HrAssistantController {
                 request.getScanId(), request.getTotalUnread(), request.getCaptures()));
     }
 
+    @GetMapping("/watch/captures")
+    public ResponseEntity<?> inspectCaptures(@RequestParam(defaultValue="20") int size) {
+        String requestId=UUID.randomUUID().toString();
+        try {
+            // Keep inspection outside the mutation action dispatcher.
+            return ResponseEntity.ok(envelope(true,"","",requestId,watchService.inspectBackgroundCaptures(size)));
+        }catch(Throwable error){return requestFailure(error,requestId);}
+    }
+
     @PostMapping("/watch/captures")
     public ResponseEntity<?> captures(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
                                        @RequestBody ScanResultsRequest request) {
