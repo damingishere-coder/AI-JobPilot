@@ -1,11 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { BiPlus, BiRefresh, BiTrash, BiUserCircle } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { API_BASE, type ApiEnvelope, friendlyApiError, readApiResponse } from '@/lib/api'
+import { confirmNavigation } from '@/lib/use-unsaved-changes'
+import { useProfileScope } from './ProfileScope'
 
 type ApiResponse = ApiEnvelope<unknown> & {
   current?: unknown
@@ -70,9 +72,16 @@ type ProfileSwitcherProps = {
   beforeSwitch?: () => boolean
   compact?: boolean
   disabled?: boolean
+  management?: boolean
+  presentation?: 'global' | 'embedded'
 }
 
-export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact = false, disabled = false }: ProfileSwitcherProps) {
+export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact = false, disabled = false, management = false, presentation = 'embedded' }: ProfileSwitcherProps) {
+  const scope = useProfileScope()
+  const guardId = useId()
+  const callback = useRef(onProfileChange)
+  callback.current = onProfileChange
+  const notified = useRef<string | undefined>(undefined)
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [currentId, setCurrentId] = useState('')
   const [newName, setNewName] = useState('')
@@ -83,6 +92,10 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
     setLoading(true)
     setLoadError('')
     try {
+      if (scope) {
+        await scope.refresh()
+        return
+      }
       const response = await fetch(`${API_BASE}/api/profiles`)
       const result = await parseApiResponse(response, '档案加载失败')
       const list = Array.isArray(result.data) ? result.data as Profile[] : []
@@ -103,33 +116,50 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
   }
 
   useEffect(() => {
-    loadProfiles()
+    if (!scope) void loadProfiles()
+    // Standalone rendering remains supported by component tests and legacy integrations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (!scope) return
+    setProfiles(scope.profiles); setCurrentId(scope.current ? String(scope.current.id) : '')
+    setLoading(scope.loading || scope.switching); setLoadError(scope.error)
+    const identity = scope.current ? String(scope.current.id) : 'none'
+    if (!scope.loading && identity !== notified.current) { notified.current = identity; callback.current?.(scope.current) }
+  }, [scope])
+
+  useEffect(() => {
+    if (!scope || !beforeSwitch || presentation === 'global') return
+    return scope.registerGuard(guardId, beforeSwitch)
+  }, [scope, guardId, beforeSwitch, presentation])
+
   const activateProfile = async (id: string, skipBeforeSwitch = false) => {
-    if (disabled || !id || id === currentId) return
-    if (!skipBeforeSwitch && beforeSwitch && !beforeSwitch()) return
+    if (disabled || loading || scope?.loading || !id || id === currentId) return
+    if (!skipBeforeSwitch && !(scope ? scope.beginSwitch() : (beforeSwitch ? beforeSwitch() : confirmNavigation()))) return
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/profiles/${id}/activate`, { method: 'POST' })
       const result = await parseApiResponse(response, '档案切换失败')
       setCurrentId(id)
-      await loadProfiles(false)
-      if (result.data) {
+      if (scope) await scope.refresh(true)
+      else await loadProfiles(false)
+      if (!scope && result.data) {
         onProfileChange?.(result.data as Profile)
       }
     } catch (error) {
       alert(error instanceof Error ? error.message : '档案切换失败')
     } finally {
       setLoading(false)
+      if (!skipBeforeSwitch) scope?.endSwitch()
     }
   }
 
   const createProfile = async () => {
-    if (disabled) return
+    if (disabled || loading || scope?.loading || scope?.switching) return
     const name = newName.trim()
     if (!name) return
-    if (beforeSwitch && !beforeSwitch()) return
+    if (!(scope ? scope.beginSwitch() : (beforeSwitch ? beforeSwitch() : confirmNavigation()))) return
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/profiles`, {
@@ -148,6 +178,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       alert(error instanceof Error ? error.message : '档案创建失败')
     } finally {
       setLoading(false)
+      scope?.endSwitch()
     }
   }
 
@@ -163,8 +194,9 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
     if (disabled || !currentId || loading) return
     const current = profiles.find((profile) => String(profile.id) === currentId)
     if (!current) return
+    if (!(scope ? scope.beginSwitch() : confirmNavigation())) return
     const firstConfirm = window.confirm(`确认删除档案「${current.name}」？系统会先检查关联数据，不会静默删除已有配置或岗位。`)
-    if (!firstConfirm) return
+    if (!firstConfirm) { scope?.endSwitch(); return }
 
     setLoading(true)
     try {
@@ -184,19 +216,23 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       } else {
         alert(result.message || '档案已删除')
       }
-      await loadProfiles()
+      if (scope) await scope.refresh(true)
+      else await loadProfiles()
     } catch (error) {
       alert(error instanceof Error ? error.message : '档案删除失败')
     } finally {
       setLoading(false)
+      scope?.endSwitch()
     }
   }
+
+  if (scope && presentation === 'embedded' && !management) return null
 
   return (
     <div className={`flex flex-wrap items-center gap-2 ${compact ? '' : 'rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/5'}`}>
       <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
         <BiUserCircle className="text-lg text-blue-500" />
-        <span>当前档案</span>
+        <span className="workspace-profile-caption">当前档案</span>
       </div>
       <Select
         value={currentId}
@@ -210,7 +246,7 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
           </option>
         ))}
       </Select>
-      <Input
+      {(management || !scope) && <><Input
         value={newName}
         onChange={(event) => setNewName(event.target.value)}
         onKeyDown={(event) => {
@@ -228,9 +264,9 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
       </Button>
       <Button type="button" size="sm" variant="destructive" onClick={deleteProfile} disabled={loading || disabled || !currentId} title="删除当前档案">
         <BiTrash className="mr-1" /> 删除
-      </Button>
-      <Button type="button" size="sm" variant="ghost" onClick={() => void loadProfiles()} disabled={loading || disabled} title="刷新档案列表">
-        <BiRefresh className="mr-1" /> 刷新
+      </Button></>}
+      <Button type="button" size="sm" variant="ghost" onClick={() => void loadProfiles()} disabled={loading || disabled} title="刷新档案列表" aria-label="刷新档案列表">
+        <BiRefresh /> {presentation !== 'global' && '刷新'}
       </Button>
       {loadError ? (
         <span role="status" aria-live="polite" className="text-xs font-medium text-amber-700 dark:text-amber-300">

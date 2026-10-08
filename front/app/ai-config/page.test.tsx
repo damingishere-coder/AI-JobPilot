@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import AiConfigPage from './page'
+import AiConfigPage from './ProfileEditor'
 
 vi.mock('@/app/components/ProfileSwitcher', () => ({
   default: ({ onProfileChange, disabled }: { onProfileChange: (profile: { id: number; name: string } | null) => void; disabled?: boolean }) => (
@@ -32,6 +32,7 @@ function readyResponse() {
 
 function profileResponse(url: string, id: number, name: string) {
   const profile = { id, name }
+  if (url.endsWith('/api/profiles/current')) return jsonResponse({ success: true, data: profile })
   const payload = url.includes('/api/boss/config')
     ? { success: true, currentProfile: profile, hasProfile: true, config: { enableAi: 1, sayHi: `${name} hi`, nativeGreetingDisabledConfirmed: 1 } }
     : url.includes('/api/ai/resume')
@@ -43,6 +44,45 @@ function profileResponse(url: string, id: number, name: string) {
 }
 
 describe('AI config profile snapshot', () => {
+  it.each(['保存配置', '确认保存并生成AI配置', 'AI启用开关'])('其他窗口切档后拒绝%s并保留简历草稿', async (action) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      void _init
+      const url = String(input)
+      if (url.includes('/api/ready')) return Promise.resolve(readyResponse())
+      if (url.endsWith('/api/profiles/current')) return Promise.resolve(jsonResponse({ success: true, data: { id: 2, name: 'B' } }))
+      return Promise.resolve(profileResponse(url, 1, 'A'))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AiConfigPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '切换A' }))
+    await screen.findByText('当前正在编辑：A')
+    fireEvent.change(screen.getByLabelText('简历文本'), { target: { value: 'A 尚未保存的简历' } })
+    fireEvent.click(screen.getByRole(action === 'AI启用开关' ? 'switch' : 'button', { name: action }))
+    await screen.findByText(/当前档案已在其他窗口切换，已停止保存/)
+    expect(screen.getByLabelText('简历文本')).toHaveValue('A 尚未保存的简历')
+    expect(screen.getByRole('switch', { name: 'AI启用开关' })).toHaveAttribute('aria-checked', 'true')
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST' || init?.method === 'PUT')).toBe(false)
+  })
+
+  it('分段保存之间发生切档时停止后续写入并保留未保存简历', async () => {
+    let activeId = 1
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/ready')) return Promise.resolve(readyResponse())
+      if (url.endsWith('/api/profiles/current')) return Promise.resolve(jsonResponse({ success: true, data: { id: activeId } }))
+      if (url.endsWith('/api/ai/config') && init?.method === 'POST') activeId = 2
+      return Promise.resolve(profileResponse(url, 1, 'A'))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AiConfigPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '切换A' }))
+    await screen.findByText('当前正在编辑：A')
+    fireEvent.change(screen.getByLabelText('简历文本'), { target: { value: '未保存简历' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存配置' }))
+    await screen.findByText(/已保存：话术配置.*当前档案已在其他窗口切换/)
+    expect(screen.getByLabelText('简历文本')).toHaveValue('未保存简历')
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST' || init?.method === 'PUT')).toHaveLength(1)
+  })
   it('后端就绪后才显示档案入口', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       if (String(input).includes('/api/ready')) return Promise.resolve(readyResponse())
@@ -114,6 +154,7 @@ describe('AI config profile snapshot', () => {
 
   it('加载并保存关闭 BOSS 平台默认话术确认', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      void _init
       const url = String(input)
       if (url.includes('/api/ready')) return Promise.resolve(readyResponse())
       return Promise.resolve(profileResponse(url, 1, 'A'))
