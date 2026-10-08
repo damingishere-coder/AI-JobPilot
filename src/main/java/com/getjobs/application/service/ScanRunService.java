@@ -92,10 +92,15 @@ public class ScanRunService {
             if(!existing.isEmpty()) {
                 var old=existing.getFirst();
                 if(!p.equals(old.get("platform"))||profile!=n(old.get("profile_id"))||!run.equals(old.get("run_id"))||!kind.equals(old.get("kind"))) fail("COMMAND_ID_CONFLICT");
+                if("STOP".equals(kind) && "PENDING".equals(old.get("status"))) restoreStopConstraint(p,profile,run);
                 return detail(p,profile,run);
             }
             var same=jdbc.queryForList("SELECT id FROM scan_command WHERE platform=? AND profile_id=? AND run_id=? AND kind=? AND status='PENDING'",p,profile,run,kind);
-            if(!same.isEmpty() || ("STOP".equals(kind) && "STOPPED".equals(r.get("state"))) || ("PAUSE".equals(kind) && "PAUSED".equals(r.get("state")))) return detail(p,profile,run);
+            if(!same.isEmpty()) {
+                if("STOP".equals(kind)) restoreStopConstraint(p,profile,run);
+                return detail(p,profile,run);
+            }
+            if(("STOP".equals(kind) && "STOPPED".equals(r.get("state"))) || ("PAUSE".equals(kind) && "PAUSED".equals(r.get("state")))) return detail(p,profile,run);
             if(TERMINAL.contains(r.get("state"))||"STOPPED".equals(r.get("desired"))) fail("SCAN_TERMINAL");
             int epoch=(int)n(r.get("epoch"));
             if("RESUME".equals(kind)) {
@@ -108,6 +113,10 @@ public class ScanRunService {
             jdbc.update("UPDATE scan_run SET desired=?,epoch=?,last_seq=CASE WHEN epoch<>? THEN 0 ELSE last_seq END,updated_at=? WHERE platform=? AND profile_id=? AND run_id=?",switch(kind){case "PAUSE"->"PAUSED";case "STOP"->"STOPPED";default->"RESUMING";},epoch,epoch,now,p,profile,run);
             return detail(p,profile,run);
         });
+    }
+    private void restoreStopConstraint(String p,long profile,String run) {
+        // Repair older pending STOP records without inventing executor acknowledgement.
+        jdbc.update("UPDATE scan_run SET desired='STOPPED',updated_at=? WHERE platform=? AND profile_id=? AND run_id=? AND desired<>'STOPPED'",System.currentTimeMillis(),p,profile,run);
     }
     public synchronized Map<String,Object> sync(String p,long profile,String run,Map<String,Object> body) {
         return tx.execute(status->{
@@ -122,7 +131,8 @@ public class ScanRunService {
                     String kind=cmds.getFirst().get("kind").toString();
                     jdbc.update("UPDATE scan_command SET status=?,error_code=?,updated_at=? WHERE id=?",ok?"ACKNOWLEDGED":"FAILED",code(ack.get("errorCode")),now,id);
                     String next=ok?switch(kind){case "STOP"->"STOPPED";case "PAUSE"->"PAUSED";default->"RUNNING";}:"BLOCKED";
-                    jdbc.update("UPDATE scan_run SET state=?,desired=?,updated_at=? WHERE platform=? AND profile_id=? AND run_id=?",next,ok?next:"PAUSED",now,p,profile,run);
+                    String desired=ok?next:("STOP".equals(kind)?"STOPPED":"PAUSED");
+                    jdbc.update("UPDATE scan_run SET state=?,desired=?,updated_at=? WHERE platform=? AND profile_id=? AND run_id=?",next,desired,now,p,profile,run);
                 }
             }
             var accepted=new ArrayList<String>();
@@ -144,7 +154,7 @@ public class ScanRunService {
                     // Requests are not execution evidence. Only page acknowledgements may complete control transitions.
                     if(TERMINAL.contains(latest.get("state"))||!"RUNNING".equals(latest.get("desired"))) state=latest.get("state").toString();
                     String desired=Objects.toString(latest.get("desired"));
-                    if("BLOCKED".equals(state)||"PAUSED".equals(state)) desired="PAUSED";
+                    if("RUNNING".equals(desired) && ("BLOCKED".equals(state)||"PAUSED".equals(state))) desired="PAUSED";
                     jdbc.update("UPDATE scan_run SET state=?,desired=?,stage=?,keyword=?,error_code=?,stop_reason=?,counters=?,last_seq=?,updated_at=? WHERE platform=? AND profile_id=? AND run_id=?",state,desired,safe.getOrDefault("stage",latest.get("stage")),safe.getOrDefault("keyword",latest.get("keyword")),safe.getOrDefault("errorCode",latest.get("error_code")),safe.getOrDefault("stopReason",latest.get("stop_reason")),mergeCounters(latest.get("counters"),safe.get("counters")),seq,now,p,profile,run);
                 }
             }

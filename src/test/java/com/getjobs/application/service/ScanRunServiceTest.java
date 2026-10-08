@@ -72,6 +72,44 @@ class ScanRunServiceTest {
         scans.sync("boss",4,"r1",Map.of("epoch",1,"ack",Map.of("id","stop-offline","ok",true)));
         assertEquals("STARTING",scans.detail("boss",4,"r2").get("state"));
     }
+    @Test void lateProgressCannotUndoStopOfBlockedOrPausedRuns(){
+        for(String platform:List.of("boss","zhilian")) {
+            if(platform.equals("zhilian")) scans.register(platform,4,"r1");
+            String oldState=platform.equals("boss")?"BLOCKED":"PAUSED";
+            scans.sync(platform,4,"r1",Map.of("epoch",1,"events",List.of(event("blocked",1,1,oldState))));
+            scans.command(platform,4,"r1","STOP",platform+"-stop");
+            restart();
+            scans.sync(platform,4,"r1",Map.of("epoch",1,"events",List.of(event("late-paused",1,2,"PAUSED"))));
+            assertEquals("STOPPED",scans.detail(platform,4,"r1").get("desired"));
+            assertEquals(oldState,scans.detail(platform,4,"r1").get("state"));
+            assertFalse(scans.accepts(platform,4,"r1",1L));
+            assertEquals("PENDING",db.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-stop"));
+            scans.register(platform,4,"r2");
+        }
+    }
+    @Test void failedStopAckKeepsOldRunFencedAndFailureVisible(){
+        scans.command("boss",4,"r1","STOP","stop-failed");
+        sync(1,List.of(),Map.of("id","stop-failed","ok",false,"errorCode","CHECKPOINT_SAVE_FAILED"));
+        assertEquals("STOPPED",detail().get("desired"));
+        assertEquals("BLOCKED",detail().get("state"));
+        assertFalse(scans.accepts("boss",4,"r1",1L));
+        assertEquals("FAILED",db.queryForObject("SELECT status FROM scan_command WHERE id='stop-failed'",String.class));
+        assertTrue(detail().get("commands").toString().contains("CHECKPOINT_SAVE_FAILED"));
+        scans.register("boss",4,"r2");
+    }
+    @Test void repeatedStopRepairsOldPendingConstraintWithoutInventingAck(){
+        scans.command("boss",4,"r1","STOP","original-stop");
+        for(String id:List.of("original-stop","new-stop-id")) {
+            db.update("UPDATE scan_run SET desired='PAUSED',state='BLOCKED' WHERE platform='boss' AND run_id='r1'");
+            restart();
+            scans.command("boss",4,"r1","STOP",id);
+            assertEquals("STOPPED",detail().get("desired"));
+            assertEquals("BLOCKED",detail().get("state"));
+            assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM scan_command",Integer.class));
+            assertEquals("PENDING",db.queryForObject("SELECT status FROM scan_command WHERE id='original-stop'",String.class));
+        }
+        scans.register("boss",4,"r2");
+    }
     @Test void terminalSnapshotKeepsItsStageAndCountersWhileArchivingLateEvents(){
         var complete=event("complete",1,1,"COMPLETE");complete.put("stage","complete");complete.put("keyword","final");
         sync(1,List.of(complete),Map.of());sync(1,List.of(event("late-error",1,2,"FAILED")),Map.of());
