@@ -1,0 +1,415 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { BiSave, BiKey, BiLinkExternal, BiCodeAlt, BiInfoCircle } from 'react-icons/bi'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import PageHeader from '@/app/components/PageHeader'
+import { API_BASE } from '@/lib/api'
+import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
+
+export default function EnvConfig() {
+  const [envConfig, setEnvConfig] = useState({
+    hookUrl: '',
+    aiProvider: 'codex',
+    codexPath: 'codex',
+    codexModel: 'gpt-6-astra',
+    codexTimeoutSeconds: '300',
+    apiTimeoutSeconds: '120',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    botIsSend: 0,
+  })
+
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [sensitiveConfigured, setSensitiveConfigured] = useState({ hookUrl: false, apiKey: false })
+  const [sensitiveDirty, setSensitiveDirty] = useState({ hookUrl: false, apiKey: false })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [showSaveDialog, setShowSaveDialog] = useState(false)
+  const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  useUnsavedChanges('system-environment-settings', dirty)
+
+  // 从数据库加载配置
+  const fetchConfig = async () => {
+    try {
+      setLoading(true)
+      setLoadError('')
+      const response = await fetch(`${API_BASE}/api/config`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error('获取配置失败')
+      }
+
+      const result = await response.json()
+
+      if (result.success && result.data) {
+        setEnvConfig({
+          hookUrl: '',
+          aiProvider: result.data.AI_PROVIDER === 'api' || result.data.AI_PROVIDER === 'remote' ? 'api' : 'codex',
+          codexPath: result.data.CODEX_PATH || 'codex',
+          codexModel: result.data.CODEX_MODEL || 'gpt-6-astra',
+          codexTimeoutSeconds: result.data.CODEX_TIMEOUT_SECONDS || '300',
+          apiTimeoutSeconds: result.data.AI_REQUEST_TIMEOUT_SECONDS || '120',
+          baseUrl: result.data.BASE_URL || '',
+          apiKey: '',
+          model: result.data.MODEL || '',
+          botIsSend: (() => {
+            const raw = result.data.BOT_IS_SEND
+            const val = String(raw ?? '').trim().toLowerCase()
+            return val === '1' || val === 'true' ? 1 : 0
+          })(),
+        })
+        setSensitiveConfigured({
+          hookUrl: result.sensitive?.HOOK_URL === true,
+          apiKey: result.sensitive?.API_KEY === true,
+        })
+        setSensitiveDirty({ hookUrl: false, apiKey: false })
+        setDirty(false)
+      } else {
+        throw new Error(result.message || '获取配置失败')
+      }
+    } catch (error) {
+      console.error('获取配置失败:', error)
+      setLoadError('获取配置失败，请检查后端服务是否正常运行')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchConfig()
+  }, [])
+
+  const handleSave = async (silent: boolean = false) => {
+    try {
+      setSaving(true)
+
+      const configMap: Record<string, string> = {
+        AI_PROVIDER: envConfig.aiProvider,
+        CODEX_PATH: envConfig.codexPath,
+        CODEX_MODEL: envConfig.codexModel,
+        CODEX_TIMEOUT_SECONDS: envConfig.codexTimeoutSeconds,
+        AI_REQUEST_TIMEOUT_SECONDS: envConfig.apiTimeoutSeconds,
+        BASE_URL: envConfig.baseUrl,
+        MODEL: envConfig.model,
+        BOT_IS_SEND: String(envConfig.botIsSend ?? 0),
+      }
+      if (sensitiveDirty.hookUrl && envConfig.hookUrl.trim()) {
+        configMap.HOOK_URL = envConfig.hookUrl.trim()
+      }
+      if (sensitiveDirty.apiKey && envConfig.apiKey.trim()) {
+        configMap.API_KEY = envConfig.apiKey.trim()
+      }
+
+      const response = await fetch(`${API_BASE}/api/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(configMap),
+      })
+
+      if (!response.ok) {
+        throw new Error('保存配置失败')
+      }
+
+      const result = await response.json()
+
+      if (result.success) {
+        setDirty(false)
+        setSensitiveConfigured((current) => ({
+          hookUrl: sensitiveDirty.hookUrl && envConfig.hookUrl.trim() ? true : current.hookUrl,
+          apiKey: sensitiveDirty.apiKey && envConfig.apiKey.trim() ? true : current.apiKey,
+        }))
+        setSensitiveDirty({ hookUrl: false, apiKey: false })
+        setEnvConfig((current) => ({ ...current, hookUrl: '', apiKey: '' }))
+        if (!silent) {
+          setSaveResult({ success: true, message: '保存成功' })
+          setShowSaveDialog(true)
+        }
+      } else {
+        throw new Error(result.message || '保存配置失败')
+      }
+    } catch (error) {
+      console.error('保存配置失败:', error)
+      if (!silent) {
+        setSaveResult({ success: false, message: '保存配置失败：网络或服务异常。' })
+        setShowSaveDialog(true)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const clearSensitiveConfig = async (key: 'HOOK_URL' | 'API_KEY') => {
+    const label = key === 'HOOK_URL' ? 'Webhook URL' : 'API Key'
+    if (!window.confirm(`确定清除已保存的 ${label} 吗？清除后相关功能将无法使用，直到重新填写。`)) {
+      return
+    }
+
+    try {
+      setSaving(true)
+      const response = await fetch(`${API_BASE}/api/config/${key}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || '清除失败')
+      }
+      if (key === 'HOOK_URL') {
+        setSensitiveConfigured((current) => ({ ...current, hookUrl: result.configured === true }))
+        setSensitiveDirty((current) => ({ ...current, hookUrl: false }))
+        setEnvConfig((current) => ({ ...current, hookUrl: '' }))
+      } else {
+        setSensitiveConfigured((current) => ({ ...current, apiKey: result.configured === true }))
+        setSensitiveDirty((current) => ({ ...current, apiKey: false }))
+        setEnvConfig((current) => ({ ...current, apiKey: '' }))
+      }
+      setSaveResult({ success: true, message: result.message || `${label} 已清除` })
+      setShowSaveDialog(true)
+    } catch (error) {
+      console.error('清除敏感配置失败:', error)
+      setSaveResult({ success: false, message: `${label} 清除失败，请检查后端服务。` })
+      setShowSaveDialog(true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6" onChangeCapture={() => setDirty(true)}>
+      <PageHeader
+        icon={<BiCodeAlt className="text-2xl" />}
+        title="系统设置"
+        subtitle="管理全局 AI 连接、模型与通知通道"
+        actions={
+          <Button
+            onClick={() => handleSave(false)}
+            disabled={loading || saving || Boolean(loadError) || !dirty}
+            size="sm"
+            className="app-button-primary px-4"
+          >
+            <BiSave className="mr-1" /> {saving ? '保存中…' : '保存 AI 与企业微信配置'}
+          </Button>
+        }
+      />
+      {loadError && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><span>{loadError}</span><Button variant="outline" size="sm" disabled={loading} onClick={() => void fetchConfig()}>重新加载</Button></div>}
+      {dirty && <p role="status" className="text-sm text-amber-800">AI 或企业微信配置有未保存修改。</p>}
+      {showSaveDialog && saveResult && <div role={saveResult.success ? 'status' : 'alert'} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm ${saveResult.success ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}><span>{saveResult.message}</span><Button variant="ghost" size="sm" onClick={() => setShowSaveDialog(false)}>关闭提示</Button></div>}
+
+      {loading && (
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardContent className="pt-6">
+            <p className="text-center text-sm text-muted-foreground">加载配置中...</p>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="space-y-6">
+        {/* 企业微信 Webhook */}
+        <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
+          <CardHeader className="flex items-start gap-4">
+            <div className="min-w-0 space-y-2">
+              <CardTitle className="flex items-center gap-2">
+                <BiLinkExternal className="text-primary" />
+                企业微信 Webhook
+              </CardTitle>
+              <CardDescription>配置企业微信群机器人，用于接收通知消息</CardDescription>
+            </div>
+            <div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(envConfig.botIsSend)}
+                aria-label="企业微信发送开关"
+                onClick={() => { setEnvConfig({ ...envConfig, botIsSend: envConfig.botIsSend ? 0 : 1 }); setDirty(true) }}
+                className={`relative inline-flex h-7 w-14 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400/40 border border-white/30 shadow-[inset_0_1px_0_rgba(255,255,255,.25)] ${envConfig.botIsSend ? 'bg-emerald-500/80 hover:bg-emerald-500' : 'bg-white/10 hover:bg-white/15'}`}
+              >
+                <span
+                  className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${envConfig.botIsSend ? 'translate-x-7' : 'translate-x-0'}`}
+                />
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <Label htmlFor="hookUrl">Webhook URL</Label>
+              <Input
+                id="hookUrl"
+                type="password"
+                value={envConfig.hookUrl}
+                onChange={(e) => {
+                  setEnvConfig({ ...envConfig, hookUrl: e.target.value })
+                  setSensitiveDirty({ ...sensitiveDirty, hookUrl: true })
+                }}
+                placeholder={sensitiveConfigured.hookUrl ? '已配置；输入新值可替换' : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key'}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {sensitiveConfigured.hookUrl ? '已配置，页面不会读取或显示原值。' : '尚未配置企业微信 Webhook。'}
+                </p>
+                {sensitiveConfigured.hookUrl && (
+                  <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => clearSensitiveConfig('HOOK_URL')}>
+                    清除已保存值
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* AI 调用方式 */}
+        <Card className="animate-in fade-in slide-in-from-bottom-6 duration-700">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BiCodeAlt className="text-primary" />
+              AI 调用方式
+            </CardTitle>
+            <CardDescription>全局共用：切换人物档案不会改变 AI 调用方式、模型或密钥。本机默认复用 Codex/ChatGPT 登录态；需要时可手动切回远程 API</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-6 space-y-2">
+              <Label htmlFor="aiProvider">当前 Provider</Label>
+              <select
+                id="aiProvider"
+                value={envConfig.aiProvider}
+                onChange={(e) => setEnvConfig({ ...envConfig, aiProvider: e.target.value })}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="codex">Codex CLI（推荐，不使用 API Key）</option>
+                <option value="api">远程 API（DeepSeek/OpenAI-compatible）</option>
+              </select>
+            </div>
+
+            <div hidden={envConfig.aiProvider !== 'codex'} className={envConfig.aiProvider === 'codex' ? 'mb-6 grid grid-cols-1 md:grid-cols-3 gap-6' : 'hidden'}>
+              <div className="space-y-2">
+                <Label htmlFor="codexPath">Codex 可执行文件</Label>
+                <Input id="codexPath" value={envConfig.codexPath} onChange={(e) => setEnvConfig({ ...envConfig, codexPath: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codexModel">Codex 模型</Label>
+                <Input id="codexModel" value={envConfig.codexModel} onChange={(e) => setEnvConfig({ ...envConfig, codexModel: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codexTimeout">单任务超时（秒）</Label>
+                <Input id="codexTimeout" type="number" min="10" max="1800" value={envConfig.codexTimeoutSeconds} onChange={(e) => setEnvConfig({ ...envConfig, codexTimeoutSeconds: e.target.value })} />
+              </div>
+            </div>
+
+            <div hidden={envConfig.aiProvider !== 'api'} className={envConfig.aiProvider === 'api' ? 'grid grid-cols-1 md:grid-cols-2 gap-6' : 'hidden'}>
+              <div className="space-y-2">
+                <Label htmlFor="baseUrl">API Base URL</Label>
+                <Input
+                  id="baseUrl"
+                  type="text"
+                  value={envConfig.baseUrl}
+                  onChange={(e) => setEnvConfig({ ...envConfig, baseUrl: e.target.value })}
+                  placeholder="https://api.deepseek.com"
+                />
+                <p className="text-xs text-muted-foreground">DeepSeek 推荐填写 https://api.deepseek.com；系统会自动调用 /v1/chat/completions</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="model">AI模型</Label>
+                <Input
+                  id="model"
+                  type="text"
+                  value={envConfig.model}
+                  onChange={(e) => setEnvConfig({ ...envConfig, model: e.target.value })}
+                  placeholder="deepseek-chat"
+                />
+                <p className="text-xs text-muted-foreground">DeepSeek 推荐模型 deepseek-chat；也可以填写其他 OpenAI-compatible 模型名</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="apiTimeout">远程 API 总超时（秒）</Label>
+                <Input
+                  id="apiTimeout"
+                  type="number"
+                  min="1"
+                  max="1800"
+                  value={envConfig.apiTimeoutSeconds}
+                  onChange={(e) => setEnvConfig({ ...envConfig, apiTimeoutSeconds: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">默认 120 秒；超时或网络中断不会自动重发，以避免重复计费。</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* API 密钥 */}
+        <Card hidden={envConfig.aiProvider !== 'api'}>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BiKey className="text-primary" />
+              API 密钥
+            </CardTitle>
+            <CardDescription>配置 API 访问密钥，请妥善保管</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <Label htmlFor="apiKey">API Key</Label>
+              <div className="relative">
+                <Input
+                  id="apiKey"
+                  type={showApiKey ? 'text' : 'password'}
+                  value={envConfig.apiKey}
+                  onChange={(e) => {
+                    setEnvConfig({ ...envConfig, apiKey: e.target.value })
+                    setSensitiveDirty({ ...sensitiveDirty, apiKey: true })
+                  }}
+                  placeholder={sensitiveConfigured.apiKey ? '已配置；输入新值可替换' : 'sk-xxxxxxxxxxxxxxxxx'}
+                />
+                <Button
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  variant="ghost"
+                  size="sm"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7"
+                  type="button"
+                >
+                  {showApiKey ? '隐藏' : '显示'}
+                </Button>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {sensitiveConfigured.apiKey ? '已配置，页面不会读取或显示原值。' : '尚未配置远程 API Key。'}
+                </p>
+                {sensitiveConfigured.apiKey && (
+                  <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => clearSensitiveConfig('API_KEY')}>
+                    清除已保存值
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 安全提示 */}
+        <Card className="border-primary/20 bg-primary/5 animate-in fade-in slide-in-from-bottom-8 duration-700">
+          <CardContent className="pt-6">
+            <div className="flex gap-3">
+              <BiInfoCircle className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm text-foreground">
+                  <strong className="font-semibold">提示：</strong> 配置保存在本机项目数据库中。API Key 和 Webhook
+                  只允许写入，页面只显示“是否已配置”，不会读取或回显原值。
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 操作按钮已移至页头右上角 */}
+
+      </div>
+    </div>
+  )
+}

@@ -6,7 +6,27 @@ import { getChromeBridgeStatus, sendChromeBridgeMessage } from '@/lib/chromeBrid
 vi.mock('@/lib/chromeBridge', () => ({ getChromeBridgeStatus: vi.fn(), sendChromeBridgeMessage: vi.fn() }))
 vi.mock('./HrDutyActivity', () => ({ default: () => null }))
 
-const defaultPolicy = { version: 2, enabled: false, paused: false, resumeName: '', resumeSha256: '', facts: '', rules: '按已确认事实回复', replyMode: 'REVIEW', historyMode: 'NEW_ONLY', historyDays: 30, sharePhone: false, shareResume: false, authorizationValid: false, communicationProfile: { expectedSalary: '20–25K' } }
+const defaultPolicy = { version: 2, enabled: false, paused: false, resumeName: '', resumeSha256: '', facts: '', rules: '按已确认事实回复', replyMode: 'AUTO', historyMode: 'RECENT', historyDays: 15, sharePhone: false, shareResume: false, authorizationValid: false, communicationProfile: { expectedSalary: '20–25K' } }
+
+it('preserves a disabled saved REVIEW and NEW_ONLY policy instead of replacing it with automatic historical replies', async () => {
+  const { requests } = setup({ policy: { enabled: false, replyMode: 'REVIEW', historyMode: 'NEW_ONLY', historyDays: 30 } })
+  render(<HrAutopilotSettings profileId={1} />)
+  await screen.findByText(/20–25K/)
+  expect(screen.getByLabelText('回复方式')).toHaveValue('REVIEW')
+  expect(screen.getByLabelText('已有消息处理')).toHaveValue('NEW_ONLY')
+  await confirmAndStart()
+  await waitFor(() => expect(requests).toHaveLength(1))
+  expect(requests[0]).toMatchObject({ replyMode: 'REVIEW', historyMode: 'NEW_ONLY', historyDays: 30 })
+})
+
+it('shows a notification read error instead of reporting zero deliveries', async () => {
+  setup()
+  const original = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) => String(input).endsWith('/deliveries') ? Promise.reject(new Error('通知通道读取失败')) : original(input, init))
+  render(<HrAutopilotSettings profileId={1} />)
+  expect(await screen.findByText(/通知数量尚未确认/)).toBeInTheDocument()
+  expect(screen.queryByText(/QQ 通知：待发送 0/)).not.toBeInTheDocument()
+})
 it('explains the disabled start button and preserves an explicitly selected history window', async () => {
   const { requests } = setup()
   render(<HrAutopilotSettings profileId={1} />)

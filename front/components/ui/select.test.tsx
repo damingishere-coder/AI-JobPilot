@@ -36,3 +36,30 @@ it('小窗口菜单限制高度和宽度，并支持 Escape 关闭', () => {
   fireEvent.keyDown(document, { key: 'Escape' })
   expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
 })
+
+it('键盘跳过禁用选项，Enter 选择后焦点回到触发器', () => {
+  const onChange = vi.fn()
+  render(<Select value="1" onChange={onChange} aria-label="选择城市"><option value="1">深圳</option><option value="2" disabled>广州</option><option value="3">上海</option></Select>)
+  const trigger = screen.getByRole('button', { name: '选择城市' })
+  trigger.focus()
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+  const list = screen.getByRole('listbox')
+  expect(list).toHaveFocus()
+  fireEvent.keyDown(list, { key: 'ArrowDown' })
+  fireEvent.keyDown(list, { key: 'Enter' })
+  expect(onChange).toHaveBeenCalledWith({ target: { value: '3' } })
+  expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  expect(trigger).toHaveFocus()
+})
+
+it('父表单禁用后关闭已打开的菜单，阻止继续选择', () => {
+  const onChange = vi.fn()
+  const renderSelect = (disabled: boolean) => <Select value="1" disabled={disabled} onChange={onChange}><option value="1">深圳</option><option value="2">上海</option></Select>
+  const view = render(renderSelect(false))
+  fireEvent.click(screen.getByRole('button'))
+  expect(screen.getByRole('listbox')).toBeInTheDocument()
+  view.rerender(renderSelect(true))
+  expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  fireEvent.keyDown(screen.getByRole('button'), { key: 'Enter' })
+  expect(onChange).not.toHaveBeenCalled()
+})

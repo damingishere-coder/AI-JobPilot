@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_BASE, localActionFetch, readApiResponse, friendlyApiError } from '@/lib/api'
 import { getChromeBridgeStatus, sendChromeBridgeMessage } from '@/lib/chromeBridge'
 import { Button } from '@/components/ui/button'
 import HrDutyActivity from './HrDutyActivity'
+import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 export const HR_BACKGROUND_PROTOCOL = '2026-09-30-hr-background-v1'
 
@@ -52,7 +53,7 @@ function progressLabel(host: HostStatus | null) {
   return '正在等待下一次巡检'
 }
 
-export default function HrAutopilotSettings({ profileId, settingsDirty = false }: { profileId: number; settingsDirty?: boolean }) {
+export default function HrAutopilotSettings({ profileId, settingsDirty = false, settingsRevision = 0, onDirtyChange, view = 'all', showActivity = true }: { profileId: number; settingsDirty?: boolean; settingsRevision?: number; onDirtyChange?: (dirty: boolean) => void; view?: 'all' | 'status' | 'rules'; showActivity?: boolean }) {
   const [policy, setPolicy] = useState<Policy | null>(null)
   const [confirmed, setConfirmed] = useState(false)
   const [accountConfirmed, setAccountConfirmed] = useState(false)
@@ -61,13 +62,22 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
   const [busy, setBusy] = useState(false)
   const [runtime, setRuntime] = useState<Runtime>({ host: null, watch: null, hostError: '正在检查 Chrome 后台托管连接…', backendError: '' })
   const [deliveries, setDeliveries] = useState<Record<string, number>>({})
+  const [deliveryError, setDeliveryError] = useState('')
+  const [deliveriesLoaded, setDeliveriesLoaded] = useState(false)
+  const [draftDirty, setDraftDirty] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const draftDirtyRef = useRef(false)
+  const appliedRevision = useRef(settingsRevision)
+  useUnsavedChanges(`hr-rules-${profileId}`, draftDirty)
+  useEffect(() => { draftDirtyRef.current = draftDirty; onDirtyChange?.(draftDirty) }, [draftDirty, onDirtyChange])
+  const editPolicy = (patch: Partial<Policy>) => { setPolicy(current => current ? { ...current, ...patch } : current); setConfirmed(false); setDraftDirty(true) }
 
   useEffect(() => {
     let cancelled = false, refreshing = false
-    setPolicy(null); setConfirmed(false); setAccountConfirmed(false); setStatus(''); setStatusPending(false)
+    setPolicy(null); setConfirmed(false); setAccountConfirmed(false); setStatus(''); setStatusPending(false); setDraftDirty(false); draftDirtyRef.current = false
     fetch(`${API_BASE}/api/hr-assistant/autopilot`, { cache: 'no-store' })
       .then(r => readApiResponse<Policy>(r, '托管策略读取失败'))
-      .then(r => { if (!cancelled && r.data) setPolicy({ ...r.data, replyMode: r.data.enabled ? r.data.replyMode : 'AUTO', historyMode: r.data.enabled ? r.data.historyMode : 'RECENT', historyDays: r.data.enabled ? r.data.historyDays || 15 : 15 }) })
+      .then(r => { if (!r.data) throw new Error('托管策略响应为空，请重新读取'); if (!cancelled) setPolicy({ ...r.data, replyMode: r.data.replyMode || 'AUTO', historyMode: r.data.historyMode || 'RECENT', historyDays: r.data.historyDays || 15 }) })
       .catch(e => { if (!cancelled) setStatus(friendlyApiError(e, '托管策略读取失败')) })
     const refresh = async () => {
       if (refreshing) return
@@ -77,12 +87,26 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
     }
     const refreshDeliveries = () => fetch(`${API_BASE}/api/hr-assistant/autopilot/deliveries`, { cache: 'no-store' })
       .then(r => readApiResponse<Record<string, number>>(r, '通知状态读取失败'))
-      .then(r => { if (!cancelled && r.data) setDeliveries(r.data) }).catch(() => {})
+      .then(r => { if (!r.data) throw new Error('通知数量响应为空'); if (!cancelled) { setDeliveries(r.data); setDeliveriesLoaded(true); setDeliveryError('') } }).catch(e => { if (!cancelled) setDeliveryError(friendlyApiError(e, '通知状态读取失败')) })
     void refresh(); void refreshDeliveries()
     const runtimeTimer = setInterval(() => void refresh(), 5000)
     const deliveryTimer = setInterval(() => void refreshDeliveries(), 15000)
     return () => { cancelled = true; clearInterval(runtimeTimer); clearInterval(deliveryTimer) }
-  }, [profileId])
+  }, [profileId, loadAttempt])
+
+  useEffect(() => {
+    if (appliedRevision.current === settingsRevision) return
+    appliedRevision.current = settingsRevision
+    let cancelled = false
+    setConfirmed(false)
+    fetch(`${API_BASE}/api/hr-assistant/autopilot`, { cache: 'no-store' })
+      .then(r => readApiResponse<Policy>(r, '托管资料刷新失败'))
+      .then(r => { if (!cancelled && r.data) setPolicy(current => current && draftDirtyRef.current
+        ? { ...r.data!, replyMode: current.replyMode, historyMode: current.historyMode, historyDays: current.historyDays, sharePhone: current.sharePhone, shareResume: current.shareResume, resumeName: current.resumeName, resumeSha256: current.resumeSha256 }
+        : r.data!) })
+      .catch(e => { if (!cancelled) setStatus(friendlyApiError(e, '托管资料刷新失败')) })
+    return () => { cancelled = true }
+  }, [settingsRevision])
 
   async function savePolicy(enabled: boolean) {
     if (!policy) throw new Error('请先读取当前档案的托管规则。')
@@ -96,6 +120,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
     const result = await readApiResponse<Policy>(response, '托管授权保存失败')
     if (!result.data) throw new Error('托管授权保存结果为空。')
     setPolicy(result.data)
+    setDraftDirty(false)
     return result.data
   }
 
@@ -167,10 +192,10 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
   const startReasons = [settingsDirty ? '先保存下方沟通资料与 QQ 设置' : '', !confirmed ? '勾选资料与托管范围确认' : '', !accountConfirmed ? '勾选 BOSS 账号归属确认' : ''].filter(Boolean)
   const accountLabel = host?.state === 'STOPPED' ? '开启时重新读取并核验账号' : host?.accountName || '尚未核验，开启时从聊天页读取'
 
-  return <section className="min-w-0 space-y-5 rounded-2xl border bg-slate-50/60 p-4 leading-7 sm:p-6">
+  return <section className="min-w-0 space-y-5 rounded-2xl border bg-muted/60 p-4 leading-7 text-foreground sm:p-6">
     <div><h3 className="text-lg font-semibold">BOSS 一键后台托管</h3>
     <p className="mt-1 text-sm text-muted-foreground">复用当前 Chrome 登录。开启后可以切换页面或最小化 Chrome，保留后台聊天标签即可。</p></div>
-    <div role="status" aria-live="polite" className="min-w-0 space-y-2 rounded-xl border bg-white p-4 text-sm">
+    {view !== 'rules' && <div role="status" aria-live="polite" className="min-w-0 space-y-2 rounded-xl border bg-card p-4 text-sm">
       <p className="font-semibold">托管状态：{runtimeLabel}</p>
       {running && <p>当前进度：{progressLabel(host)}</p>}
       <p className="break-all">已核验 BOSS 账号：{accountLabel}</p>
@@ -185,24 +210,25 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
       {runtime.backendError && <p className="text-amber-700">{runtime.backendError}</p>}
       {(host?.pauseReason || host?.message) && <p className="text-amber-700">{host.pauseReason || host.message}</p>}
       {host?.errorCode && <p className="text-muted-foreground">处理原因：{host.errorCode}</p>}
-    </div>
+    </div>}
     {policy && <>
       <p className="text-sm">规则授权：{policy.enabled ? policy.authorizationValid === false ? '资料或规则需重新确认' : '已授权' : '未授权'}。</p>
-      <fieldset className="min-w-0 space-y-4 rounded-xl border bg-white p-4" disabled={busy || active}>
+      <p className="rounded-lg border bg-card p-3 text-sm">本次范围：{policy.replyMode === 'AUTO' ? '普通对话自动回复，关键事项发 QQ' : '所有回复先发 QQ，逐条确认'} · {policy.historyMode === 'NEW_ONLY' ? '仅开启后的新消息' : `最近 ${policy.historyDays} 天待回复`} · 电话{policy.sharePhone ? '已授权' : '未授权'} · 简历{policy.shareResume ? '已授权' : '未授权'}{draftDirty && ' · 规则有未保存修改，将在开启时保存'}</p>
+      {view !== 'status' && <fieldset className="min-w-0 space-y-4 rounded-xl border bg-card p-4" disabled={busy || active}>
         <details><summary className="cursor-pointer text-sm">查看托管规则</summary><p className="whitespace-pre-wrap text-sm leading-6">{policy.rules}</p></details>
         <div className="grid gap-4 lg:grid-cols-2">
-        <label className="grid gap-2 text-sm">回复方式 <select aria-label="回复方式" className="min-w-0 w-full rounded-lg border p-2" value={policy.replyMode} onChange={e => { setPolicy({ ...policy, replyMode: e.target.value }); setConfirmed(false) }}>
+        <label className="grid gap-2 text-sm">回复方式 <select aria-label="回复方式" className="min-w-0 w-full rounded-lg border p-2" value={policy.replyMode} onChange={e => editPolicy({ replyMode: e.target.value })}>
           <option value="AUTO">普通对话自动回复，关键事项发 QQ</option>
           <option value="REVIEW">所有回复先发 QQ，逐条确认</option>
         </select></label>
-        <label className="grid gap-2 text-sm">已有消息 <select aria-label="已有消息处理" className="min-w-0 w-full rounded-lg border p-2" value={policy.historyMode} onChange={e => { setPolicy({ ...policy, historyMode: e.target.value }); setConfirmed(false) }}>
+        <label className="grid gap-2 text-sm">已有消息 <select aria-label="已有消息处理" className="min-w-0 w-full rounded-lg border p-2" value={policy.historyMode} onChange={e => editPolicy({ historyMode: e.target.value })}>
           <option value="RECENT">处理最近 {policy.historyDays} 天待回复会话</option><option value="NEW_ONLY">仅处理开启后的新消息</option>
         </select></label>
-        {policy.historyMode === 'RECENT' && <label className="grid gap-2 text-sm">历史范围 <select aria-label="历史范围天数" className="w-full rounded-lg border p-2" value={policy.historyDays} onChange={e => { setPolicy({ ...policy, historyDays: Number(e.target.value) }); setConfirmed(false) }}>
+        {policy.historyMode === 'RECENT' && <label className="grid gap-2 text-sm">历史范围 <select aria-label="历史范围天数" className="w-full rounded-lg border p-2" value={policy.historyDays} onChange={e => editPolicy({ historyDays: Number(e.target.value) })}>
           {Array.from(new Set([7, 15, 30, policy.historyDays])).sort((a, b) => a - b).map(days => <option key={days} value={days}>最近 {days} 天</option>)}
         </select></label>}
         </div>
-        <p className="rounded-lg bg-slate-50 p-3 text-sm">只处理最后一条仍来自 HR 的待回复会话。你已回复“谢谢”等收尾消息后没有新提问的会话会跳过，不重复发送。</p>
+        <p className="rounded-lg bg-card p-3 text-sm text-foreground">只处理最后一条仍来自 HR 的待回复会话。你已回复“谢谢”等收尾消息后没有新提问的会话会跳过，不重复发送。</p>
         <details><summary className="cursor-pointer text-sm">当前沟通口径</summary><dl className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
           <div><dt className="text-muted-foreground">期望薪资</dt><dd>{policy.communicationProfile?.expectedSalary || '待补充'}</dd></div>
           <div><dt className="text-muted-foreground">地点</dt><dd>{policy.communicationProfile?.workLocation || '待补充'}</dd></div>
@@ -212,13 +238,13 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
         {availabilityConflict && <p className="text-sm text-amber-700">到岗资料同时包含立即到岗和等待 Offer 后的时间，请补充确认。系统保留原资料，相关到岗回复交给你在 QQ 确认。</p>}
         {policy.authorizationValid === false && <p className="text-sm text-amber-700">资料及规则核对完成后，点击一键开启将保存本次授权并启动后台托管。</p>}
         {policy.blockers?.map(reason => <p key={reason} className="text-sm text-amber-700">{reason}</p>)}
-        <label className="flex gap-2 text-sm"><input type="checkbox" checked={policy.sharePhone} onChange={e => { setPolicy({ ...policy, sharePhone: e.target.checked }); setConfirmed(false) }} />HR 明确索要时，允许发送已配置电话</label>
-        <label className="flex gap-2 text-sm"><input type="checkbox" checked={policy.shareResume} onChange={e => { setPolicy({ ...policy, shareResume: e.target.checked }); setConfirmed(false) }} />HR 明确索要简历时，允许使用已授权简历；原生“发简历”仍逐条确认</label>
+        <label className="flex gap-2 text-sm"><input type="checkbox" checked={policy.sharePhone} onChange={e => editPolicy({ sharePhone: e.target.checked })} />HR 明确索要时，允许发送已配置电话</label>
+        <label className="flex gap-2 text-sm"><input type="checkbox" checked={policy.shareResume} onChange={e => editPolicy({ shareResume: e.target.checked })} />HR 明确索要简历时，允许使用已授权简历；原生“发简历”仍逐条确认</label>
         {!active && <>
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />我已核对当前档案资料、QQ 群与操作人、分享授权及已有消息范围，同意按所选模式处理和发送回复。</label>
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={accountConfirmed} onChange={e => setAccountConfirmed(e.target.checked)} />我确认当前 Chrome 的 BOSS 求职者账号属于本档案本人；开启时仍需读取并核验账号。</label>
         </>}
-      </fieldset>
+      </fieldset>}
       {active && accountReconfirmationRequired && <label className="flex items-start gap-2 text-sm"><input type="checkbox" disabled={busy} checked={accountConfirmed} onChange={e => setAccountConfirmed(e.target.checked)} />我已重新核对当前 Chrome 的 BOSS 求职者账号仍属于本档案本人，同意重新绑定并校验恢复。</label>}
       {settingsDirty && <p className="text-sm text-amber-700">请先保存沟通资料与 QQ 设置，再开启或恢复后台托管。</p>}
       {active && <p className="text-sm text-muted-foreground">需修改托管规则时先停止托管；暂停保留当前授权及进度。</p>}
@@ -232,12 +258,14 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false }
       </div>
       <details><summary className="cursor-pointer text-sm text-muted-foreground">运行说明与通知状态</summary>
       <p className="text-sm">电脑休眠、Chrome 关闭、账号退出或页面验证会中断托管。连接恢复时先校验账号、页面和已保存进度；发送结果未知的记录不会自动重发。</p>
-      <p className="text-xs text-muted-foreground">QQ 通知：待发送 {deliveries.PENDING || 0}，已确认 {deliveries.CONFIRMED || 0}，失败 {deliveries.FAILED || 0}，结果未知 {deliveries.UNKNOWN || 0}。结果未知不会自动重发，请核对群内消息。</p>
+      {deliveryError ? <p role="alert" className="text-sm text-amber-800">{deliveryError}；通知数量尚未确认。</p> : !deliveriesLoaded ? <p role="status" className="text-sm">正在读取 QQ 通知状态…</p> : <p className="text-xs text-muted-foreground">QQ 通知：待发送 {deliveries.PENDING || 0}，已确认 {deliveries.CONFIRMED || 0}，失败 {deliveries.FAILED || 0}，结果未知 {deliveries.UNKNOWN || 0}。结果未知不会自动重发，请核对群内消息。</p>}
       <p className="text-sm">普通文字托管无需本地 PDF。电话和简历仅使用各自明确授权；面试安排、薪资承诺、未知事实等事项交给你处理。</p>
       </details>
       {policy.facts && <details><summary className="text-sm">明确记住的个人事实</summary><p className="whitespace-pre-wrap text-sm">{policy.facts}</p></details>}
     </>}
     {status && !(running && statusPending) && <p role="status" className="text-sm">{status}</p>}
-    <HrDutyActivity key={profileId} profileId={profileId} />
+    {!policy && !status && <p role="status" className="text-sm text-muted-foreground">正在读取托管规则…</p>}
+    {!policy && status && <Button type="button" variant="outline" onClick={() => setLoadAttempt(value => value + 1)}>重新读取托管规则</Button>}
+    {showActivity && <HrDutyActivity key={profileId} profileId={profileId} />}
   </section>
 }

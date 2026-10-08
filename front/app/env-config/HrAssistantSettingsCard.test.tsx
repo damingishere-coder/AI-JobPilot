@@ -2,6 +2,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import HrAssistantSettingsCard from './HrAssistantSettingsCard'
+import { hasUnsavedChanges } from '@/lib/use-unsaved-changes'
+
+vi.mock('@/lib/chromeBridge', () => ({ getChromeBridgeStatus: vi.fn(), sendChromeBridgeMessage: vi.fn(async () => ({ success: false, message: '合成扩展未连接' })) }))
 
 vi.mock('@/app/components/ProfileSwitcher', () => ({
   default: ({ onProfileChange }: { onProfileChange: (profile: { id: number; name: string }) => void }) => (
@@ -45,6 +48,89 @@ afterEach(() => {
 })
 
 describe('BOSS HR settings in environment config', () => {
+  it.each(['connection', 'communication'] as const)('其他窗口切档后拒绝保存 %s 并保留当前输入', async mode => {
+    let reads = 0
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _init
+      reads += 1
+      return jsonResponse({ success: true, data: settings({ profileId: reads > 1 ? 2 : 1 }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<HrAssistantSettingsCard mode={mode} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    const field = await screen.findByLabelText(mode === 'connection' ? 'NapCat WebSocket' : '期望薪资')
+    const draft = mode === 'connection' ? 'ws://127.0.0.1:4567' : '30-35K'
+    fireEvent.change(field, { target: { value: draft } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 BOSS HR 设置' }))
+    expect(await screen.findByText('当前档案已变化，请重新加载后再保存')).toBeInTheDocument()
+    expect(field).toHaveValue(draft)
+    expect(hasUnsavedChanges()).toBe(true)
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  })
+
+  it('saves communication without replacing the latest notification connection from another section', async () => {
+    let settingsReads = 0
+    const writes: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/action-token')) return jsonResponse({ success: true, data: { token: 'local-action-token' } })
+      if (init?.method === 'PUT') { writes.push(JSON.parse(String(init.body))); return jsonResponse({ success: true, data: settings() }) }
+      settingsReads += 1
+      return jsonResponse({ success: true, data: settings(settingsReads > 1 ? { qqEnabled: true, napcatWsUrl: 'ws://127.0.0.1:4002', qqTargetType: 'GROUP' } : {}) })
+    }))
+    render(<HrAssistantSettingsCard mode="communication" />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    fireEvent.change(await screen.findByLabelText('期望薪资'), { target: { value: '25-30K' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 BOSS HR 设置' }))
+    await screen.findByText('BOSS HR 设置已加密保存。')
+    expect(writes[0]).toMatchObject({ communicationProfile: { expectedSalary: '25-30K' }, qqEnabled: true, napcatWsUrl: 'ws://127.0.0.1:4002', qqTargetType: 'GROUP', napcatToken: '', qqTarget: '', qqOperator: null })
+  })
+
+  it('opens the HR workspace on human decisions without exposing connection or sharing fields', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => jsonResponse({ success: true, data: String(input).endsWith('/settings') ? settings() : String(input).includes('/proposals') ? [] : {} })))
+    render(<HrAssistantSettingsCard mode="workspace" />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    expect(await screen.findByRole('tab', { name: '待我处理' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByLabelText('NapCat Token')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保存 BOSS HR 设置' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'hr-tab-pending')
+  })
+
+  it('keeps rule drafts and navigation protection after saving the parent communication settings', async () => {
+    const policy = { version: 2, enabled: false, paused: false, resumeName: '', resumeSha256: '', facts: '', rules: '合成规则', replyMode: 'AUTO', historyMode: 'RECENT', historyDays: 15, sharePhone: false, shareResume: false, communicationProfile, authorizationValid: false }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const data = url.endsWith('/action-token') ? { token: 'local-action-token' } : url.endsWith('/settings') ? settings()
+        : url.endsWith('/status') ? { watching: false } : url.includes('/proposals') ? [] : url.endsWith('/deliveries') ? {} : policy
+      return jsonResponse({ success: true, data })
+    }))
+    render(<HrAssistantSettingsCard />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    await screen.findByLabelText('回复方式')
+    fireEvent.change(screen.getByLabelText('回复方式'), { target: { value: 'REVIEW' } })
+    fireEvent.change(screen.getByLabelText('已有消息处理'), { target: { value: 'NEW_ONLY' } })
+    fireEvent.change(screen.getByLabelText('期望薪资'), { target: { value: '25-30K' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 BOSS HR 设置' }))
+    await screen.findByText('BOSS HR 设置已加密保存。')
+    expect(screen.getByLabelText('回复方式')).toHaveValue('REVIEW')
+    expect(screen.getByLabelText('已有消息处理')).toHaveValue('NEW_ONLY')
+    expect(hasUnsavedChanges()).toBe(true)
+    expect(screen.getByText(/规则有未保存修改/)).toBeInTheDocument()
+  })
+
+  it('does not mount visual or three-conversation tools before their disclosure is opened', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); requests.push(url)
+      return jsonResponse({ success: true, data: url.endsWith('/settings') ? settings() : url.includes('/proposals') ? [] : {} })
+    }))
+    render(<HrAssistantSettingsCard />)
+    fireEvent.click(screen.getByRole('button', { name: '选择默认档案' }))
+    await screen.findByDisplayValue('20-25K')
+    expect(requests.some(url => url.includes('/visual/'))).toBe(false)
+    expect(screen.queryByRole('button', { name: '开始三个会话测试' })).not.toBeInTheDocument()
+  })
+
   it('loads the active profile and saves group settings with the local action token', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
