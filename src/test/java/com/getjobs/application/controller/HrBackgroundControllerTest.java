@@ -143,4 +143,29 @@ class HrBackgroundControllerTest {
         assertThat(controller.completeSendCommand(command.commandId(),tokens.issueToken(),result).getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isEqualTo(1);
     }
+
+    @Test void selectedStoredReviewRequiresActionTokenAndFreshRealPageWithoutRenewingHeartbeat() throws Exception {
+        var json=new ObjectMapper();var crypto=new HrAssistantCryptoService(dir.resolve("test.key").toString());
+        var background=new HrBackgroundStore(db,crypto,json,store,policies);watcher.setBackground(background);
+        controller.setBackgroundReview(new HrBackgroundReviewService(background,store,policies));
+        var source=new ChatCapture("selected",1,new ChatSession("uid","","HR","公司","","","在职吗？","今天"),
+                List.of(new ChatMessage("对方","文本","在职吗？","今天","source-id",List.of())),true,true);
+        background.accept(1L,"geek:本人",policies.policy(1L).version(),source);
+        String id=db.queryForObject("SELECT id FROM hr_background_capture",String.class);
+        var request=new HrBackgroundReviewService.ReviewRequest(1L,policies.policy(1L).version(),"目前仍在职。");
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/hr-assistant/watch/captures/"+id+"/review")
+                .contentType("application/json").content(json.writeValueAsString(request)))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+        var observed=ReflectionTestUtils.getField(watcher,"pageObservedAt");
+        ReflectionTestUtils.setField(watcher,"processingBackground",new java.util.concurrent.atomic.AtomicBoolean(true));
+        assertThat(controller.reviewCapture(id,tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        ReflectionTestUtils.setField(watcher,"processingBackground",new java.util.concurrent.atomic.AtomicBoolean(false));
+        assertThat(controller.reviewCapture(id,tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(ReflectionTestUtils.getField(watcher,"pageObservedAt")).isEqualTo(observed);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        ReflectionTestUtils.setField(watcher,"pageObservedAt",System.currentTimeMillis()-120_001);
+        assertThat(controller.reviewCapture(id,tokens.issueToken(),request).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isEqualTo(1);
+    }
 }

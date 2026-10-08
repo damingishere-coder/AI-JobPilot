@@ -54,7 +54,7 @@ public class HrBackgroundStore {
                 && ("PENDING".equals(row.get("status")) || ("BLOCKED".equals(row.get("status")) && "AUTHORIZATION_CHANGED".equals(row.get("error_code"))));
         boolean freshSuggestion=inserted==0 && capture.contextComplete() && "DONE".equals(row.get("status"))
                 && unchangedSuggestion(profile,capture,version);
-        boolean freshIdentity=inserted==0 && previous!=null && capture.contextComplete() && completeIdentity(capture.session())
+        boolean freshIdentity=inserted==0 && previous!=null && capture.contextComplete() && completeContact(capture.session())
                 && "BLOCKED".equals(row.get("status")) && "LEGACY_IDENTITY_UNRESOLVED".equals(row.get("error_code"))
                 && identityHash(profile,previous.session()).equals(identityHash(profile,capture.session()))
                 && identityDependencyResolved(profile,capture);
@@ -127,7 +127,7 @@ public class HrBackgroundStore {
                 try {
                     String id=row.get("id").toString();
                     var capture=decode(crypto.decrypt(Objects.toString(row.get("payload_cipher"),""),"background-capture:"+id));
-                    if(!capture.contextComplete() || !completeIdentity(capture.session()) || !identityDependencyResolved(profile,capture))continue;
+                    if(!capture.contextComplete() || !completeContact(capture.session()) || !identityDependencyResolved(profile,capture))continue;
                     if(db.update("UPDATE hr_background_capture SET status='PENDING',error_code='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='BLOCKED' AND error_code='LEGACY_IDENTITY_UNRESOLVED'",id)==1) {
                         ids=List.of(id);break;
                     }
@@ -172,6 +172,18 @@ public class HrBackgroundStore {
                 "message",blocked>0?"有 "+blocked+" 条聊天记录处理受阻，尚未发送回复。":"");
     }
 
+    /** Select stored evidence under the current account and authorization, never a client-supplied snapshot. */
+    public ChatCapture requireCapturedSource(Long profile,String account,int version,String id) {
+        var rows=db.queryForList("SELECT payload_cipher,status,error_code FROM hr_background_capture WHERE id=? AND profile_id=? AND account_hash=? AND policy_version=?",id,profile,accountHash(profile,account),version);
+        if(rows.size()!=1 || Objects.toString(rows.getFirst().get("payload_cipher"),"").isBlank())
+            throw new HrAssistantStore.StaleProposalException("快照不存在、已过期，或档案、账号、授权已变化");
+        if("PROCESSING".equals(rows.getFirst().get("status")))
+            throw new HrAssistantStore.StaleProposalException("此快照正在分析，请稍后复核");
+        if("BLOCKED".equals(rows.getFirst().get("status")) && !"LEGACY_IDENTITY_UNRESOLVED".equals(rows.getFirst().get("error_code")))
+            throw new HrAssistantStore.StaleProposalException("此快照仍有处理错误，请先重新读取真实页面");
+        return decode(crypto.decrypt(rows.getFirst().get("payload_cipher").toString(),"background-capture:"+id));
+    }
+
     private List<Long> unresolvedVisualIdentities(Long profile) {
         return db.queryForList("""
                 SELECT DISTINCT c.id FROM hr_conversation c JOIN hr_reply_proposal p ON p.conversation_id=c.id
@@ -184,7 +196,7 @@ public class HrBackgroundStore {
     private boolean independentOfUnresolvedVisualIdentities(Long profile,ChatCapture observed) {
         var unresolved=unresolvedVisualIdentities(profile);
         if(unresolved.isEmpty())return true;
-        if(!observed.contextComplete() || !completeIdentity(observed.session()))return false;
+        if(!observed.contextComplete() || !completeContact(observed.session()))return false;
         int end=observed.messages().size();while(end>0 && !observed.messages().get(end-1).inbound())end--;
         int start=end;while(start>0 && observed.messages().get(start-1).inbound())start--;
         var round=observed.messages().subList(start,end);
@@ -281,6 +293,11 @@ public class HrBackgroundStore {
 
     public static boolean completeIdentity(ChatSession session) {
         return session!=null && !normalize(session.hrName()).isEmpty() && !normalize(session.companyName()).isEmpty() && !normalize(session.jobName()).isEmpty();
+    }
+    /** A real platform UID identifies an independent contact even when no job title is displayed. */
+    public static boolean completeContact(ChatSession session) {
+        return session!=null && !normalize(session.uid()).isEmpty() && !session.uid().startsWith("visual:")
+                && !normalize(session.hrName()).isEmpty() && !normalize(session.companyName()).isEmpty();
     }
     private String identityHash(Long profile,ChatSession identity) {
         if(identity==null)return "";

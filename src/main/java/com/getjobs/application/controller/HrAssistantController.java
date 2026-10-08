@@ -301,6 +301,22 @@ public class HrAssistantController {
         }catch(Throwable error){return requestFailure(error,requestId);}
     }
 
+    private com.getjobs.application.service.HrBackgroundReviewService backgroundReview;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setBackgroundReview(com.getjobs.application.service.HrBackgroundReviewService review) { this.backgroundReview=review; }
+
+    @PostMapping("/watch/captures/{id}/review")
+    public ResponseEntity<?> reviewCapture(@PathVariable String id,
+            @RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
+            @RequestBody com.getjobs.application.service.HrBackgroundReviewService.ReviewRequest request) {
+        if(!localActionTokenService.isValid(token))return unauthorized();
+        if(request==null)return badRequest("复核请求不能为空");
+        return execute(()->profileGuard.locked(()->{
+            Long profile=profileService.getCurrentProfileId();
+            return backgroundReview.prepare(profile,watchService.requireBackgroundReviewAccount(profile),id,request);
+        }));
+    }
+
     @PostMapping("/watch/captures")
     public ResponseEntity<?> captures(@RequestHeader(value=LocalActionTokenService.HEADER_NAME,required=false) String token,
                                        @RequestBody ScanResultsRequest request) {
