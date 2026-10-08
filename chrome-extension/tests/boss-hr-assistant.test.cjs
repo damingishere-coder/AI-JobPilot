@@ -67,12 +67,46 @@ test("backend no longer contains the OpenCLI HR runtime classes or settings", ()
   assert.doesNotMatch(watcher, /OpenCli|openCli/);
 });
 
+test("legacy workbench routes preserve access to the separated HR, profile, and connection views", () => {
+  const environmentPage = source("front/app/env-config/page.tsx");
+  const legacyProfilePage = source("front/app/ai-config/page.tsx");
+  const hrPage = source("front/app/hr/page.tsx");
+  const profilesPage = source("front/app/profiles/page.tsx");
+  const settingsPage = source("front/app/settings/page.tsx");
+  const profileEditor = source("front/app/ai-config/ProfileEditor.tsx");
+  const workbench = source("front/app/env-config/HrAssistantSettingsCard.tsx");
+
+  assert.match(environmentPage, /export\s*\{\s*default\s*\}\s*from\s*['"]\.\.\/settings\/page['"]/);
+  assert.match(legacyProfilePage, /export\s*\{\s*default\s*\}\s*from\s*['"]\.\.\/profiles\/page['"]/);
+  for (const page of [hrPage, settingsPage]) {
+    assert.match(page, /import HrAssistantSettingsCard from ['"]\.\.\/env-config\/HrAssistantSettingsCard['"]/);
+  }
+  assert.match(hrPage, /<HrAssistantSettingsCard\s+mode="workspace"\s*\/>/);
+  assert.match(profilesPage, /import ProfileEditor from ['"]\.\.\/ai-config\/ProfileEditor['"]/);
+  assert.match(profilesPage, /<ProfileEditor\s+management\s+showCommunication\s*\/>/);
+  assert.match(profileEditor, /import HrAssistantSettingsCard from ['"]\.\.\/env-config\/HrAssistantSettingsCard['"]/);
+  assert.match(profileEditor, /showCommunication\s*&&\s*<div hidden=\{profileTab !== 'communication'\}><HrAssistantSettingsCard\s+mode="communication"\s*\/>/);
+  assert.match(settingsPage, /<EnvironmentSettings\s*\/>/);
+  assert.match(settingsPage, /<HrAssistantSettingsCard\s+mode="connection"\s*\/>/);
+  assert.doesNotMatch(settingsPage, /mode="workspace"|HrAutopilotSettings/);
+  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'communication'\) && <div>/);
+  assert.match(workbench, /\(mode === 'legacy' \|\| mode === 'connection'\) && <div>/);
+});
+
 test("sensitive HR settings remain in the workbench instead of the BOSS overlay", () => {
   const assistant = source("chrome-extension/boss-hr-assistant.js");
   const workbench = source("front/app/env-config/HrAssistantSettingsCard.tsx");
-  const environmentPage = source("front/app/env-config/page.tsx");
   assert.doesNotMatch(assistant, /沟通资料与 QQ 通知|hr-settings|qqTargetType|napcatToken/);
+  for (const relativePath of ["chrome-extension/boss-hr-assistant.js", "chrome-extension/boss-hr-bridge.js", "chrome-extension/boss-hr-support.js"]) {
+    assert.doesNotMatch(source(relativePath), /hr-assistant\/settings|communicationProfile|qqTarget|qqOperator|napcatToken|napcatWsUrl/i);
+  }
   assert.match(workbench, /BOSS HR 值守与 QQ 通知/);
   assert.match(workbench, /localActionFetch/);
-  assert.match(environmentPage, /<HrAssistantSettingsCard \/>/);
+  assert.match(workbench, /expectedProfileId: currentProfile\.id/);
+  assert.match(workbench, /type="password" value=\{form\.napcatToken\}/);
+  assert.match(workbench, /napcatToken:\s*''/);
+  assert.match(workbench, /setTargetMasked\(settings\.qqTargetMasked \|\| ''\)/);
+  assert.match(workbench, /setOperatorMasked\(settings\.qqOperatorMasked \|\| ''\)/);
+  assert.match(workbench, /setTokenConfigured\(settings\.napcatTokenConfigured === true\)/);
+  assert.doesNotMatch(workbench, /(?:napcatToken|qqTarget|qqOperator):\s*settings\.(?:napcatToken|qqTarget|qqOperator)\b/);
 });
