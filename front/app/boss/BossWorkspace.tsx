@@ -1,6 +1,6 @@
 'use client'
 
-import ScanHistory from '@/app/components/ScanHistory'
+import ScanHistory, { type ScanHistoryRun } from '@/app/components/ScanHistory'
 import { registerScan, scanStartFailed, scanCommand } from '@/lib/scan-runs'
 
 import ScanResult, { readScanResult } from '@/app/zhilian/ScanResult'
@@ -251,6 +251,25 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   const [customSearchJobLimit, setCustomSearchJobLimit] = useState('20')
   const [currentProfile, setCurrentProfile] = useState<CurrentProfile | null>(null)
   const [scanResult, setScanResult] = useScanResult('boss', currentProfile?.id)
+  const scanIdentityRef = useRef({ profileId: currentProfile?.id, runId: activeRunId })
+  scanIdentityRef.current = { profileId: currentProfile?.id, runId: activeRunId }
+  const endedRunsRef = useRef(new Set<string>())
+  const acceptBackendRuns = useCallback((platform: 'boss' | 'zhilian', profileId: number, runs: ScanHistoryRun[]) => {
+    if (platform !== 'boss' || scanIdentityRef.current.profileId !== profileId) return
+    for (const run of runs) {
+      if (run.platform === platform && run.profile_id === profileId && run.historyComplete
+          && ['COMPLETE', 'PARTIAL', 'FAILED', 'STOPPED'].includes(run.state)) {
+        endedRunsRef.current.add(`${profileId}:${run.run_id}`)
+      }
+    }
+    const runId = scanIdentityRef.current.runId
+    if (runId && endedRunsRef.current.has(`${profileId}:${runId}`)) {
+      setIsDelivering(false)
+      setIsStopping(false)
+      setIsScanPaused(false)
+      setActiveRunId(null)
+    }
+  }, [])
   const [hasProfile, setHasProfile] = useState(false)
   const [localActiveStep, setLocalActiveStep] = useState<BossStep>('config')
   const viewChangeRef = useRef(onWorkspaceViewChange)
@@ -315,11 +334,33 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         platform: 'boss',
         profileId,
       }, 2000)
+      if (scanIdentityRef.current.profileId !== profileId) return
+      const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+      const activeId = scanIdentityRef.current.runId
+      const observedId = runId || activeId
+      // A confirmed backend terminal state survives lost or stale extension status.
+      if (observedId && endedRunsRef.current.has(`${profileId}:${observedId}`)) {
+        if (!activeId || activeId === observedId) {
+          setIsDelivering(false)
+          setIsStopping(false)
+          setIsScanPaused(false)
+          setActiveRunId(null)
+        }
+        return
+      }
       if (!scanEventMatchesProfile(status, profileId, true)) return
+      if (activeId && runId && activeId !== runId) return
       const result = readScanResult(status)
       if (result) setScanResult(result)
+      if (status.success && runId && ['complete', 'stopped', 'error'].includes(String(status.stage))) {
+        endedRunsRef.current.add(`${profileId}:${runId}`)
+        setIsDelivering(false)
+        setIsStopping(false)
+        setIsScanPaused(false)
+        setActiveRunId(null)
+        return
+      }
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
-      const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
       if (paused) {
         setIsDelivering(false)
         setIsStopping(false)
@@ -485,6 +526,9 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
               const raw = JSON.parse(event.data)
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
               if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
+              const eventRunId = typeof data.runId === 'string' ? data.runId.trim() : ''
+              if (eventRunId && (endedRunsRef.current.has(`${currentProfile?.id}:${eventRunId}`)
+                  || (scanIdentityRef.current.runId && scanIdentityRef.current.runId !== eventRunId))) return
               const result = readScanResult(data)
               if (result) setScanResult(result)
               appendProgressLog({
@@ -524,6 +568,9 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       const payload = event.payload
       if (!payload || payload.platform !== 'boss') return
       if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
+      const eventRunId = typeof payload.runId === 'string' ? payload.runId.trim() : ''
+      if (eventRunId && (endedRunsRef.current.has(`${currentProfile?.id}:${eventRunId}`)
+          || (scanIdentityRef.current.runId && scanIdentityRef.current.runId !== eventRunId))) return
       const result = readScanResult(payload)
       if (result) setScanResult(result)
 
@@ -956,6 +1003,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       setIsStopping(false)
       setIsScanPaused(false)
 
+      scanIdentityRef.current = { profileId, runId }
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
@@ -1263,7 +1311,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 
   return (
     <div className="space-y-6">
-      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="boss" profileId={currentProfile?.id} /></div></details>
+      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="boss" profileId={currentProfile?.id} onRuns={acceptBackendRuns} /></div></details>
       {!workspaceView && <WorkspaceEntryLink platform="boss" view="setup" />}
       {activeStep !== 'confirm' && <PageHeader
         headingLevel={workspaceView ? 2 : 1}
