@@ -16,7 +16,8 @@ test("three unchanged list steps pause and preserve the queue without claiming b
   assert.equal(h.requests.some(item=>item.path.endsWith("/watch/captures")),false);
 });
 function harness(options={}) {
-  const store=options.store || {},requests=[],updates=[],created=[],focused=[],alarms=[],messages=[];
+  const store=options.store || {},requests=[],updates=[],created=[],focused=[],alarms=[],messages=[],timers=new Map();
+  let timerId=0;
   const tabs=options.tabs || [{id:99,windowId:8,url:"http://127.0.0.1:6866/env-config",active:true,status:"complete"}];
   const windows=options.windows || [{id:8,type:"normal",incognito:false}];
   let clock=1_000_000,pageTime=clock,session=null,sequence=0;
@@ -34,6 +35,7 @@ function harness(options={}) {
         if(message.type==="BOSS_HR_HOST_BIND" && message.explicitResume)page.userPaused=false;
         if(message.type==="BOSS_HR_HOST_SCAN_STEP")return options.scan?options.scan(message):message.cursor.stage==="LIST"?{success:true,targets:[{uid:"u1",captureId:"preview"}],hasMore:false,nextScrollTop:0}
           :{success:true,observedAt:++pageTime,capture:{captureId:"whole-round",unreadCount:1,session:{uid:"u1"},messages:[{from:"对方",type:"文本",text:"您好",messageId:"in-1"}],contextComplete:true}};
+        if(message.type==="BOSS_HR_SEND_V2" && options.send)return options.send(message);
         return {success:true};}}};
   const response=data=>({success:true,httpStatus:200,data:{success:true,data}});
   const request=async(path,config)=>{requests.push({path,config});
@@ -52,11 +54,71 @@ function harness(options={}) {
     if(path.endsWith("/autopilot/pause") || path.endsWith("/autopilot/resume") || path.endsWith("/watch/fault"))return response({});
     if(path.endsWith("/watch/stop")){session=null;return response({});}
     throw Error("unexpected request "+path);};
-  const host=create({chrome,request,ensureContent:async()=>{},now:()=>clock,uuid:()=>"generation-"+(++sequence)});
+  const host=create({chrome,request,ensureContent:async()=>{},now:()=>clock,uuid:()=>"generation-"+(++sequence),
+    setTimer:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;},clearTimer:id=>timers.delete(id)});
   const sender={tab:{id:99,windowId:8,url:"http://127.0.0.1:6866/env-config"}};
   const start=()=>host.control({type:"BOSS_HR_HOST_START",expectedProfileId:1,hrBackgroundProtocol:PROTOCOL,accountBindingConfirmed:true},sender);
-  return {host,start,sender,store,page,tabs,requests,updates,created,focused,alarms,messages,setTime:value=>{clock=value;pageTime=value;},setSession:value=>{session=value;}};
+  return {host,start,sender,store,page,tabs,requests,updates,created,focused,alarms,messages,timers,
+    continue:async()=>{const entry=timers.entries().next().value;if(!entry)return false;timers.delete(entry[0]);await entry[1].fn();return true;},
+    setTime:value=>{clock=value;pageTime=value;},setSession:value=>{session=value;}};
 }
+test('a saved capture cursor continues promptly without waiting for the next thirty-second alarm',async()=>{
+  const h=harness();await h.start();
+  assert.equal(h.timers.size,1);assert.equal([...h.timers.values()][0].ms,1000);
+  assert.equal(await h.continue(),true);
+  assert.equal(h.store[KEY].baselineComplete,true);assert.equal(h.store[KEY].cursor,null);
+  assert.equal(h.timers.size,0);
+});
+test('a successful send receipt with a saved read cursor waits for the regular alarm',async()=>{
+  let claimSend=false,h;
+  h=harness({
+    request:async path=>path.endsWith('/send-commands/claim') && claimSend
+      ?{success:true,httpStatus:200,data:{success:true,data:{commandId:'send-1',leaseToken:'lease-1',leaseDeadlineEpochMs:1_060_000}}}:null,
+    send:async message=>{
+      const command=message.command;
+      const receipt=await h.host.content({type:'BOSS_HR_HOST_RESULT',hostGeneration:command.hostGeneration,
+        documentId:command.pageDocumentId,commandId:command.commandId,leaseToken:command.leaseToken,outcome:'SENT'},
+      {tab:{id:h.store[KEY].tabId,url:URL_CHAT}});
+      assert.equal(receipt.success,true);
+      return {success:true,reported:true};
+    }
+  });
+  await h.start();assert.equal(h.timers.size,1);assert.equal(h.store[KEY].cursor.stage,'CAPTURE');
+  claimSend=true;await h.host.tick();
+  assert.equal(h.store[KEY].state,'RUNNING');assert.equal(h.store[KEY].operation,null);
+  assert.equal(h.store[KEY].cursor.stage,'CAPTURE');assert.equal(h.timers.size,0);
+  assert.equal(h.messages.filter(message=>message.type==='BOSS_HR_SEND_V2').length,1);
+  assert.ok(h.alarms.some(item=>item.name===ALARM && item.config.periodInMinutes===.5));
+});
+test('fast cursor continuation has a bounded burst and the regular alarm can resume the saved queue',async()=>{
+  const targets=Array.from({length:25},(_,index)=>({uid:'uid-'+index,captureId:'preview-'+index}));
+  const h=harness({scan:message=>message.cursor.stage==='LIST'?{success:true,targets,hasMore:false,nextScrollTop:0}
+    :{success:true,capture:null,observedAt:1_000_050}});
+  await h.start();
+  for(let step=0;step<20;step++)assert.equal(await h.continue(),true);
+  assert.equal(h.timers.size,0);assert.equal(h.store[KEY].cursor.queue.length,5);
+  await h.host.tick();assert.equal(h.store[KEY].cursor.queue.length,4);assert.equal(h.timers.size,1);
+});
+for(const action of ['PAUSE','STOP'])test(action+' cancels fast continuation without resurrecting a saved cursor',async()=>{
+  const h=harness();await h.start();const stale=[...h.timers.values()][0].fn;
+  await h.host.control({type:'BOSS_HR_HOST_'+action},h.sender);
+  const requests=h.requests.length;
+  assert.equal(h.timers.size,0);await stale();assert.equal(h.requests.length,requests);
+  assert.equal(h.store[KEY].state,action==='STOP'?'STOPPED':'PAUSED');
+});
+test('a cancelled timer cannot continue a newly resumed control revision',async()=>{
+  const h=harness();await h.start();const stale=[...h.timers.values()][0].fn;
+  await h.host.control({type:'BOSS_HR_HOST_PAUSE'},h.sender);
+  await h.host.control({type:'BOSS_HR_HOST_RESUME',expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},h.sender);
+  const requests=h.requests.length;await stale();assert.equal(h.requests.length,requests);
+});
+test('a retryable continuation failure waits for the regular recovery alarm instead of looping',async()=>{
+  const h=harness({scan:message=>message.cursor.stage==='LIST'?{success:true,targets:[{uid:'u1'}],hasMore:false,nextScrollTop:0}
+    :{success:false,errorCode:'HR_PAGE_NOT_READY',message:'page not ready',retryable:true}});
+  await h.start();assert.equal(await h.continue(),true);
+  assert.equal(h.store[KEY].state,'RECOVERING');assert.equal(h.timers.size,0);
+  assert.equal(h.store[KEY].cursor.queue[0].uid,'u1');
+});
 test("one click creates one inactive tab and the page supplies a fresh heartbeat",async()=>{
   const h=harness();const result=await h.start();
   assert.equal(result.success,true);assert.equal(result.data.state,"RUNNING");
