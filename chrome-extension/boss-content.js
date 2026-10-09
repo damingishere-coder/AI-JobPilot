@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.10.3";
+  const EXTENSION_VERSION = "1.10.4";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -40,7 +40,7 @@
   const deliveryExecutions = new Map();
   const scanControl = window.GetJobsScanControl?.create({platform:"boss", version:EXTENSION_VERSION,instanceId:CONTENT_INSTANCE_ID,
     current:()=>isCurrentContentInstance(), readTask:readStoredScanTask, saveTask:async task=>{storeScanTask(task);await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:normalizeScanTask(task)});}, status:writeScanStatus,
-    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,setStopped:()=>{stopRequested=true;stopRequestedRunId=activeScanRunId;}});
+    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,clearTask:clearStoredScanTask,setStopped:()=>{stopRequested=true;stopRequestedRunId=activeScanRunId;}});
 
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -853,7 +853,18 @@
     if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const storedTask = await readStoredScanTaskFromAnyStorage();
     if (!isCurrentContentInstance() || activeScanPromise) return;
-    if (!storedTask || storedTask.completed || stopRequested) return;
+    if (!storedTask || storedTask.completed || (stopRequested && storedTask.scanProtocol !== 1)) return;
+    // A blocked document reload must reconnect controls without starting navigation.
+    // Keep the original checkpoint until the backend confirms an explicit RESUME.
+    if (!force && storedTask.scanProtocol === 1 && isFreshScanTask(storedTask)
+        && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError || isStopRequested(storedTask.runId))) {
+      activeScanRunId = normalizeScanRunId(storedTask.runId);
+      storeScanTask(storedTask);
+      writeScanStatus({isRunning:false,paused:true,resumable:true,stage:"blocked",runId:storedTask.runId,
+        message:"Boss扫描已暂停，断点已保留；处理页面提示后请点击继续。"});
+      await scanControl?.watch(storedTask);
+      return;
+    }
     // A reload/status probe must not undo an explicit pause or exhausted retry.
     if (!force && storedTask.scanProtocol !== 1 && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) return;
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
@@ -4715,9 +4726,18 @@
   }
 
   function isStrongLoginPrompt(text, url) {
-    const current = String(url || "");
-    if (/passport|login|user\/login|扫码登录|二维码登录/.test(current)) return true;
-    return /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
+    const evidence = window.GetJobsBossPageEvidence;
+    if (typeof evidence?.observe === "function") {
+      return evidence.observe({document,href:url,support:SCAN_SUPPORT,styleReader:node=>window.getComputedStyle?.(node)}).blocker === "LOGIN_REQUIRED";
+    }
+    let pathname;
+    try { pathname = new URL(String(url)).pathname; } catch { pathname = ""; }
+    if (/passport|login|user\/login/.test(pathname)) return true;
+    const loginText = value => /请先登录|请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(value || "");
+    if (Array.from(document.querySelectorAll("[role='dialog'], [aria-modal='true'], [class*='dialog' i], [class*='modal' i]"))
+        .some(node => isVisibleElement(node) && loginText(node.innerText || node.textContent))) return true;
+    const hasJobs = document.querySelector(".job-banner,.job-detail,.job-detail-box,.job-detail-container,a[href*='job_detail']");
+    return !hasJobs && loginText(text);
   }
 
   function buildNavigationKey(keyword, city) {

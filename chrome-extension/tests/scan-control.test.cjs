@@ -12,7 +12,7 @@ function harness({failSave=false,failFirstStopAck=false}={}){
  const control=context.GetJobsScanControl.create({platform:'boss',version:'1.8.16',instanceId:'10000-a',current:()=>live,
    readTask:()=>saved,saveTask:async t=>{if(failSave && t.pausedAt)throw new Error('storage unavailable');saved={...t,updatedAt:clock}},status:s=>state={...state,...s},readStatus:()=>state,
    setStopped:()=>latched=true,resume:()=>{}});
- return {control,task,calls,timers,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
+ return {control,task,calls,timers,clearSaved:()=>saved=null,setState:s=>state=s,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
 }
 test('stop is latched at checkpoint but acknowledged only after run exits',async()=>{
  const h=harness();await h.control.enter(h.task);
@@ -57,4 +57,23 @@ test('failed STOP ack keeps heartbeat alive until a later durable handoff succee
  h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});await h.control.checkpoint();await h.control.leave();
  assert.equal(h.timers.size,1);await [...h.timers][0]();assert.equal(h.timers.size,0);
  assert.equal(h.calls.filter(c=>c.ack?.id==='stop').length,2);
+});
+
+test('an inactive blocked runner acknowledges STOP even after its checkpoint was cleared',async()=>{
+ const h=harness();await h.control.enter(h.task);
+ h.setState({stage:'blocked',paused:true});await h.control.leave();h.clearSaved();
+ h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});
+ await [...h.timers][0]();
+ assert.ok(h.calls.some(c=>c.ack?.id==='stop'&&c.ack.ok===true));
+ assert.equal(h.state().stage,'stopped');assert.equal(h.timers.size,0);
+});
+
+test('a reloaded blocked checkpoint stays inactive and can confirm a pending STOP',async()=>{
+ const h=harness();const t={...h.task,blockedAt:10000,blockState:'登录提示',phase:'detail',detailIndex:7};
+ await h.control.watch(t);
+ assert.equal(h.saved().detailIndex,7);assert.equal(h.saved().blockState,'登录提示');
+ assert.equal(await h.control.checkpoint(),false,'watching must not start a runner');
+ h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});
+ await [...h.timers][0]();
+ assert.ok(h.calls.some(c=>c.ack?.id==='stop'));assert.equal(h.timers.size,0);
 });

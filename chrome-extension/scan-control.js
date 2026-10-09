@@ -1,5 +1,5 @@
 (function(root) {
-  function create({platform,version,instanceId,current,readTask,saveTask,status,resume,setStopped,readStatus}) {
+  function create({platform,version,instanceId,current,readTask,saveTask,status,resume,setStopped,readStatus,clearTask}) {
     let task=null, directive=null, timer=null, flight=null, active=false, offline=false, ack=null, waiting=false, stopped=false, lastSync=0, pauseAt=0, pausedTotal=0, checking=null;
     async function sync(force=false) {
       if(!task || !current()) return null;
@@ -55,6 +55,7 @@
     async function finish(){
         active=false;
         if(stopped) {
+          if(current()) await clearTask?.();
           const command=directive?.commands?.[0];
           if(command?.kind==='STOP'){ack={id:command.id,ok:true};await sync();}
           status({stage:'stopped',isRunning:false,stopRequested:true,message:'扫描已停止',runId:task?.runId});
@@ -62,27 +63,35 @@
         const state=readStatus();
         if((stopped && !ack) || (!stopped && ['complete','stopped','error'].includes(state?.stage))) {clearInterval(timer);task=null;}
     }
+    async function heartbeat() {
+          await sync(true);
+          if(!current() || !task) {clearInterval(timer);return;}
+          if(stopped && !ack){clearInterval(timer);task=null;return;}
+          if(!active && !waiting && (directive?.commands?.[0]?.kind==='STOP' || directive?.desired==='STOPPED')) {
+            stopped=true;setStopped();await finish();return;
+          }
+          if(!active && !waiting && directive?.commands?.length && readTask()) {
+            active=true;
+            const shouldStop=await check();active=false;
+            if(shouldStop) await finish();
+            else if(current()) resume();
+          }
+    }
+    async function start(t, running) {
+        if(t.scanProtocol!==1) {clearInterval(timer);task=null;active=false;stopped=false;return;}
+        if(!task || task.runId!==t.runId || task.profileId!==t.profileId) {directive=null;offline=false;ack=null;lastSync=0;pauseAt=0;pausedTotal=0;}
+        task=t;active=running;stopped=false;await saveTask(t);
+        clearInterval(timer);
+        timer=setInterval(heartbeat,10000);
+        await sync();
+        if(!running) await heartbeat();
+    }
     return {
       epochFor:runId=>task?.runId===runId?directive?.epoch:undefined,
       fault(){offline=true;lastSync=0;},
       pausedMs:()=>pausedTotal+(pauseAt?Date.now()-pauseAt:0),
-      async enter(t) {
-        if(t.scanProtocol!==1) {clearInterval(timer);task=null;active=false;stopped=false;return;}
-        if(!task || task.runId!==t.runId || task.profileId!==t.profileId) {directive=null;offline=false;ack=null;lastSync=0;pauseAt=0;pausedTotal=0;}
-        task=t;active=true;stopped=false;await saveTask(t);
-        clearInterval(timer);
-        timer=setInterval(async()=>{
-          await sync(true);
-          if(stopped && !ack){clearInterval(timer);task=null;return;}
-          if(!active && !waiting && directive?.commands?.length && readTask()) {
-            active=true;
-            const stopped=await check();active=false;
-            if(stopped) await finish();
-            else if(current()) resume();
-          }
-        },10000);
-        await sync();
-      },
+      enter:t=>start(t,true),
+      watch:t=>start(t,false),
       leave:finish,checkpoint:check,
     };
   }

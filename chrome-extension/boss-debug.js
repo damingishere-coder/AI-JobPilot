@@ -154,8 +154,15 @@
   }
 
   function detectLoginPage(url, text) {
-    if (/passport|login|user\/login|扫码登录|二维码登录/i.test(String(url || ""))) return true;
-    return /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
+    if (typeof window.GetJobsBossPageEvidence?.observe === "function") {
+      return window.GetJobsBossPageEvidence.observe({document,href:url,support:window.GetJobsBossScanSupport || {},
+        styleReader:node=>window.getComputedStyle?.(node)}).blocker === "LOGIN_REQUIRED";
+    }
+    let pathname;
+    try { pathname = new URL(String(url)).pathname; } catch { pathname = ""; }
+    if (/passport|login|user\/login/i.test(pathname)) return true;
+    const hasJobs = document.querySelector(".job-banner,.job-detail,.job-detail-box,.job-detail-container,a[href*='job_detail']");
+    return !hasJobs && /请登录后|登录后查看|扫码登录|二维码登录|请扫码|未登录/.test(text || "");
   }
 
   function rawBodyText() {
