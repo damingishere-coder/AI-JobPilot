@@ -12,7 +12,7 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class AnalysisContextService {
-    public static final String RULE = "job-evidence-20260914-v2";
+    public static final String RULE = "job-evidence-20260914-v2-humanizer-3.1.0";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final HrAssistantCryptoService crypto;

@@ -111,6 +111,7 @@ public class HrReplyDraftService {
                 索要简历时，建议使用 BOSS 聊天框的“发简历”按钮，不要求本地文件，不声称已经发送。summary 说明 HR 在问什么以及建议如何回应。
                 4. 个人经历、技能等事实可自然表达但不能改变含义、数字、日期和条件。必须回答本轮连续多条提问。允许按已确认资料回答。普通面试意向可表达愿意沟通；不得自动拒绝机会、议价让步、接受Offer或确认具体面试时间。过期邀约或无法判断时效时用NEEDS_USER。
                 %s
+                %s
 
                 当前岗位：%s / %s / %s
                 沟通资料：%s
@@ -119,7 +120,8 @@ public class HrReplyDraftService {
 
                 最近对话：
                 %s
-                """.formatted(HrConversationPolicy.INSTRUCTIONS, safe(job.companyName()), safe(job.jobName()), safe(job.jobDescription()),
+                """.formatted(HrConversationPolicy.INSTRUCTIONS, HumanizerPolicy.instructions("replyText"),
+                safe(job.companyName()), safe(job.jobName()), safe(job.jobDescription()),
                 writeJson(profile), truncate(resume, MAX_RESUME_CHARS), history);
     }
 

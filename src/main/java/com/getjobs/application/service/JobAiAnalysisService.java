@@ -645,7 +645,8 @@ public class JobAiAnalysisService {
             jobArray.put(job);
         }
         String greetingInstruction = "greeting 必须是20到150字符的中文招呼语，根据岗位选择一项简历中最有分量的真实匹配亮点，自然开启交流，不必复述 JD；不得只写对岗位感兴趣、期待沟通等泛化内容，不得虚构经历。\n"
-                + policyFor(jobs.getFirst().job().request()).instruction(jobs.getFirst().job().request().getProfileId());
+                + policyFor(jobs.getFirst().job().request()).instruction(jobs.getFirst().job().request().getProfileId())
+                + HumanizerPolicy.instructions("greeting");
         boolean containsZhilian = jobs.stream().anyMatch(prepared ->
                 "zhilian".equalsIgnoreCase(prepared.job().request().getPlatform()));
         String promptResume = bossBatch || containsZhilian ? safe(resumeText) : limit(resumeText, 6000);
@@ -781,6 +782,7 @@ public class JobAiAnalysisService {
         try {
             String prompt = "你是求职沟通助手。请只为下面这个 BOSS 岗位生成一条20到150字符的中文招呼语。\n" +
                     greetingPolicy.instruction(request.getProfileId()) +
+                    HumanizerPolicy.instructions("greeting") +
                     "必须根据岗位选择一项候选人简历中最有分量的真实匹配亮点，灵活安排开头并留一个自然的交流入口；不得只写对岗位感兴趣或期待沟通，不得虚构。\n" +
                     "jobEvidence 和 resumeEvidence 必须分别逐字摘录岗位 JD 与简历中的短句。只返回符合 Schema 的 JSON。\n\n" +
                     "公司：" + safe(request.getCompanyName()) + "\n" +

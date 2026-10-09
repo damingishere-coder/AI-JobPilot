@@ -634,7 +634,7 @@ class JobAiAnalysisServiceStatusTest {
     }
 
     @Test
-    void portfolioRuleReachesBothGenerationPromptsAndFinalGreeting() {
+    void humanizerAndPortfolioReachBothGenerationPromptsBeforeGreetingValidation() {
         org.springframework.test.util.ReflectionTestUtils.setField(service, "greetingPolicy",
                 new GreetingPolicy("https://toudiniuma.cn/", PROFILE_ID));
         when(bossJobDataMapper.selectOne(any())).thenReturn(bossJob(DeliveryStatus.NOT_DELIVERED));
@@ -648,7 +648,8 @@ class JobAiAnalysisServiceStatusTest {
         ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
         verify(aiService, times(2)).sendStructuredRequest(prompts.capture(), any());
         assertThat(prompts.getAllValues()).allSatisfy(prompt -> assertThat(prompt)
-                .contains("https://toudiniuma.cn/", "150", "空格"));
+                .contains("https://toudiniuma.cn/", "150", "空格", HumanizerPolicy.instructions("greeting"),
+                        "不改变信息", "jobEvidence", "resumeEvidence"));
     }
 
     @Test
