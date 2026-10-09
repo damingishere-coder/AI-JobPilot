@@ -77,6 +77,17 @@ it('a workbench reload restores a pending STOP and cannot show scanning or submi
   expect(screen.queryByRole('button',{name:'继续扫描'})).not.toBeInTheDocument()
 })
 
+it('a completed latest scan cannot resurrect an older historical pending STOP on reload', async () => {
+  runs = [{...running,state:'STOPPED',desired:'STOPPED'},
+    {...running,run_id:'boss-historical',state:'BLOCKED',desired:'STOPPED',commands:[{id:'old-stop',kind:'STOP',status:'PENDING'}]}]
+  mocks.bridge.mockResolvedValue({success:true,profileId:4,isRunning:false,stage:'idle'})
+  await act(async () => { render(<BossWorkspace />) })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+  expect(screen.queryByRole('button',{name:'停止中...'})).not.toBeInTheDocument()
+  expect(screen.getByRole('button',{name:'开始扫描'})).toBeInTheDocument()
+})
+
 it('a stale running extension reply cannot restart the stopped UI; another run or profile cannot stop the current UI', async () => {
   await openRunningWorkbench()
   runs = [
