@@ -85,40 +85,52 @@ public class NapCatGateway {
         String source=proposal.sourceMessage();
         com.getjobs.application.hr.HrAssistantTypes.ChatCapture capture=null;
         if(autopilot!=null) {
-            try { capture=autopilot.context(proposal.profileId(),proposal.conversationId()); source=HrAutopilotService.latestRound(capture.messages()); }
+            try { capture=autopilot.context(proposal.profileId(),proposal.conversationId()); source=notificationSource(capture); }
             catch(RuntimeException ignored) { source += "\n[上下文未完整采集]"; }
         }
-        String text="【BOSS 回复确认卡 · "+proposal.confirmationCode()+"】\n"+proposal.companyName()+" / "+proposal.jobName()+" / "+proposal.hrName()
-                +"\n\n── HR 原话（本轮）──\n"+source+"\n── 建议回复 / 动作 ──\n"+(proposal.draft().isBlank()?"尚无可安全发送的正文":proposal.draft())
+        var contact=capture==null?null:capture.session();
+        boolean readable=capture!=null?HrMediaService.complete(capture):autopilot==null;
+        boolean canConfirm=readable && !proposal.draft().isBlank();
+        String text="【BOSS 回复确认卡 · "+proposal.confirmationCode()+"】\n"
+                +contactLabel(proposal.companyName(),contact==null?null:contact.companyName(),"公司未读取")+" / "
+                +contactLabel(proposal.jobName(),contact==null?null:contact.jobName(),"岗位未读取")+" / "
+                +contactLabel(proposal.hrName(),contact==null?null:contact.hrName(),"HR未读取")
+                +"\n\n── HR 原话（本轮）──\n"+(source.isBlank()?"[尚未读取到聊天正文，请打开 BOSS 原会话核验]":source)
+                +(readable?"":"\n[上下文或媒体尚未完整读取，以下不代表可直接发送的回复]")
+                +"\n── 建议回复 / 动作 ──\n"+(proposal.draft().isBlank()?"暂不生成回复：请先核验完整聊天正文。":proposal.draft())
                 +"\n\n审核说明："+(autopilot==null?"需要用户确认":autopilot.decisionReason(proposal.id()))
                 +"\n建议说明："+proposal.summary()+"\n"+String.join("；",proposal.missingFacts())
-                +"\n\n尚未发送给 HR。"+(commandsEnabled(settings)?"\n确认发送：发送 "+proposal.confirmationCode()+"\n调整：修改 "+proposal.confirmationCode()+" 新回复\n也可回复：跳过/详情/补充 "+proposal.confirmationCode():"\n群内操作人尚未配置，当前仅通知。请在工作台填写自己的操作人QQ后再确认或修改。")
+                +"\n\n尚未发送给 HR。"+(commandsEnabled(settings)?
+                    (canConfirm?"\n确认发送：发送 "+proposal.confirmationCode()+"\n调整：修改 "+proposal.confirmationCode()+" 新回复":
+                        "\n当前不能确认发送，请先在 BOSS 核验原会话。")
+                    +"\n也可回复：跳过/详情 "+proposal.confirmationCode()+"；补充 "+proposal.confirmationCode()+" 本次事实":
+                    "\n群内操作人尚未配置，当前仅通知。请在工作台填写自己的操作人QQ后再确认或修改。")
+                +"\nQQ 仅同步文字；原始图片、语音和附件请在 BOSS 原会话或工作台详情查看。"
                 +"\n记住 内容 → 确认记住 原文（仅明确确认才长期保存）";
-        boolean queued=sendConfigured(settings,text,"proposal:"+proposal.id()+":"+proposal.version());
-        if(capture!=null) {
-            int part=0;
-            // Forward all media from the latest inbound round, never avatars or earlier unrelated files.
-            var messages=capture.messages(); int start=messages.size();
-            while(start>0 && messages.get(start-1).inbound()) start--;
-            for(var m:messages.subList(start,messages.size())) for(var media:m.media()) {
-                String data=media.dataUrl()==null?"":media.dataUrl();
-                if((data.startsWith("data:image/") || data.startsWith("data:audio/") || data.startsWith("data:application/pdf;")
-                        || data.startsWith("data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;")) && data.contains(";base64,")) {
-                    try {
-                        var payload=objectMapper.readTree(buildNotificationPayload(settings,""));
-                        String mediaType=data.startsWith("data:image/")?"image":data.startsWith("data:audio/")?"record":"file";
-                        var segment=java.util.Map.of("type",mediaType,"data",java.util.Map.of("file","base64://"+data.substring(data.indexOf(',')+1),"name",media.name()));
-                        ((com.fasterxml.jackson.databind.node.ObjectNode)payload.path("params")).set("message",objectMapper.valueToTree(java.util.List.of(segment)));
-                        autopilot.enqueue(proposal.profileId(),"proposal-media:"+proposal.id()+":"+proposal.version()+":"+(part++),payload.toString());
-                    } catch(Exception e) { queued=false; }
-                } else {
-                    queued &= sendConfigured(settings,"【"+proposal.confirmationCode()+"】媒体："+media.name()+"\n读取状态："+media.readStatus()
-                            +"\n"+media.extractedText()+"\n原始内容可在工作台详情查看；未取得时需回到BOSS查看。",
-                            "proposal-media:"+proposal.id()+":"+proposal.version()+":"+(part++));
-                }
+        return sendConfigured(settings,text,"proposal:"+proposal.id()+":"+proposal.version());
+    }
+
+    private static String contactLabel(String original,String captured,String fallback) {
+        return original!=null && !original.isBlank()?original:captured!=null && !captured.isBlank()?captured:fallback;
+    }
+
+    private static String notificationSource(com.getjobs.application.hr.HrAssistantTypes.ChatCapture capture) {
+        var messages=capture.messages(); int start=messages.size();
+        while(start>0 && messages.get(start-1).inbound()) start--;
+        StringBuilder source=new StringBuilder();
+        for(var message:messages.subList(start,messages.size())) {
+            if(message.text()!=null && !message.text().isBlank()) source.append(message.text()).append('\n');
+            if(!message.media().isEmpty() && !java.util.Set.of("图片","语音","视频","附件").contains(message.type())) {
+                source.append("[其他类型卡片，请在 BOSS 原会话查看]\n");
+                continue;
+            }
+            for(var media:message.media()) {
+                if("READABLE".equals(media.readStatus()) && media.extractedText()!=null && !media.extractedText().isBlank())
+                    source.append('[').append(message.type()).append("文字] ").append(media.extractedText()).append('\n');
+                else source.append('[').append(message.type()).append("尚未完整读取，请在 BOSS 原会话查看]\n");
             }
         }
-        return queued;
+        return source.toString().strip();
     }
 
     public boolean notifySystemFault(Long profileId, String message) {
@@ -141,7 +153,7 @@ public class NapCatGateway {
             try {
                 var payload=(com.fasterxml.jackson.databind.node.ObjectNode)objectMapper.readTree(delivery.payload());
                 String targetKey=settings.qqTargetType()==QqTargetType.GROUP?"group_id":"user_id";
-                if(!settings.qqTarget().equals(payload.path("params").path(targetKey).asText())) {
+                if(!settings.qqTarget().equals(payload.path("params").path(targetKey).asText()) || !textOnlyNotification(payload)) {
                     autopilot.receipt(delivery.id(),false,""); continue;
                 }
                 payload.put("echo","hr-delivery:"+delivery.id());
@@ -149,6 +161,14 @@ public class NapCatGateway {
                 sendPayload(payload.toString(),"QQ 通知结果未知");
             } catch(Exception ignored) { /* retain UNKNOWN for manual reconciliation */ }
         }
+    }
+
+    private static boolean textOnlyNotification(JsonNode payload) {
+        JsonNode message=payload.path("params").path("message");
+        if(!message.isArray() || message.isEmpty()) return false;
+        for(JsonNode segment:message) if(!"text".equals(segment.path("type").asText())
+                || !segment.path("data").path("text").isTextual()) return false;
+        return true;
     }
 
     private void connect(Long profileId, HrAssistantStore.SettingsSecret settings, String fingerprint) {

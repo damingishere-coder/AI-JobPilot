@@ -126,6 +126,34 @@ describe('BOSS virtual-list identity adapter', () => {
     expect(support.readMessages(document)[0].type).toBe('未知类型')
   })
 
+  it('never captures recommendation-card logos or contact avatars as HR media', () => {
+    document.querySelector('.im-list')!.innerHTML = `
+      <li class="message-item item-friend" data-fixture-type="frame"><div class="message-content"><div class="recommend-card"><img src="https://example.invalid/logo.png"><img src="https://example.invalid/person.png"><img src="https://example.invalid/person2.png"></div></div></li>
+      <li class="message-item item-friend"><div class="message-content"><div class="text"><p><span class="text-content">不好意思，不太合适哦</span></p></div></div></li>`
+    bindMessages()
+    const messages = support.readMessages(document)
+    expect(messages).toHaveLength(2)
+    expect(messages[0].type).toBe('其他')
+    expect(messages[0].media).toHaveLength(1)
+    expect(messages[0].media[0]).toMatchObject({ sourceUrl: '', readStatus: 'UNAVAILABLE' })
+    expect(messages[1].text).toBe('不好意思，不太合适哦')
+    expect(messages[1].media).toEqual([])
+    expect(JSON.stringify(messages)).not.toContain('example.invalid')
+  })
+
+  it('captures only the verified media type and preserves a real HR image', () => {
+    document.querySelector('.im-list')!.innerHTML = `
+      <li class="message-item item-friend" data-fixture-type="image"><div class="message-content"><div class="figure"><img src="avatar.png"></div><div class="quote-message"><img src="quote.png"></div><div class="text item-image"><img src="photo.png"></div><a href="unrelated-link.html">查看</a></div></li>
+      <li class="message-item item-friend" data-fixture-type="resume"><div class="message-content"><img src="file-icon.png"><a href="attachment.pdf" download="附件.pdf">附件.pdf</a></div></li>`
+    bindMessages()
+    const messages = support.readMessages(document)
+    expect(messages[0].media).toHaveLength(1)
+    expect(messages[0].media[0].sourceUrl).toContain('photo.png')
+    expect(messages[1].media).toHaveLength(1)
+    expect(messages[1].media[0].sourceUrl).toContain('attachment.pdf')
+    expect(JSON.stringify(messages)).not.toMatch(/avatar\.png|quote\.png|file-icon\.png|unrelated-link\.html/)
+  })
+
   it('rejects malformed, synthetic and numerically unsafe identity fields', () => {
     for (const source of [
       { friendId: 0, friendSource: 0, uniqueId: '0-0' },

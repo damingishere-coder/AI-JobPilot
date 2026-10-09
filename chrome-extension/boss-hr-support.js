@@ -225,8 +225,11 @@
       const time = normalizeText(element.querySelector("time,[class*='time']")?.textContent || element.getAttribute?.("data-time"));
       if (!text && type === "文本") type="读取失败";
       const media=[];
-      if(type!=="文本") for(const node of content.querySelectorAll("img,audio,source,a[href]")) {
-        if(node.closest(".figure,[class*='avatar'],.quote-message")) continue;
+      // Only a verified media message may contribute raw files. Unknown platform
+      // cards contain logos, suggested contacts and avatars, not HR attachments.
+      const mediaSelector=({"图片":"img","语音":"audio,source","视频":"video,source","附件":"a[href]"})[type];
+      if(mediaSelector) for(const node of content.querySelectorAll(mediaSelector)) {
+        if(node.closest(".figure,[class*='avatar'],.quote-message,.message-status,.job-card,.job-detail-card")) continue;
         const sourceUrl=node.currentSrc||node.src||node.href||"";
         if(!sourceUrl || media.some(m=>m.sourceUrl===sourceUrl)) continue;
         media.push({name:node.getAttribute("download")||node.getAttribute("alt")||text||type,

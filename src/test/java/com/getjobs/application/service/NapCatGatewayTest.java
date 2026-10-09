@@ -139,6 +139,74 @@ class NapCatGatewayTest {
         verifyNoInteractions(actions);
     }
 
+    @Test
+    void reviewNoticeSynchronizesReadableMediaAsTextWithoutForwardingAnyRawFiles() throws Exception {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        var image=new com.getjobs.application.hr.HrAssistantTypes.MediaContent("图片","image/png","data:image/png;base64,cGlj",
+                "https://example.invalid/photo.png","READABLE","明天下午可以面试吗？");
+        var audio=new com.getjobs.application.hr.HrAssistantTypes.MediaContent("语音","audio/ogg","data:audio/ogg;base64,YXVkaW8=",
+                "https://example.invalid/voice.ogg","UNREADABLE","内部读取错误");
+        var capture=new com.getjobs.application.hr.HrAssistantTypes.ChatCapture("c",1,null,List.of(
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("本人","文本","旧回复","昨天"),
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","图片","","今天","m1",List.of(image)),
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","语音","","今天","m2",List.of(audio))),false,true);
+        when(outbox.context(1L,20L)).thenReturn(capture);
+        assertThat(gateway.notifyProposal(proposal())).isTrue();
+        var payload=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(outbox).enqueue(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("proposal:10:3:0"),payload.capture());
+        var segments=objectMapper.readTree(payload.getValue()).path("params").path("message");
+        assertThat(segments).hasSize(1);
+        assertThat(segments.get(0).path("type").asText()).isEqualTo("text");
+        assertThat(segments.get(0).path("data").path("text").asText())
+                .contains("明天下午可以面试吗？","语音尚未完整读取","QQ 仅同步文字","当前不能确认发送")
+                .doesNotContain("base64://","data:image","内部读取错误","旧回复","确认发送：发送");
+        verifyNoInteractions(actions);
+    }
+
+    @Test
+    void incompleteCaptureShowsKnownSourceAndContactWithoutOfferingToSendAnEmptyDraft() throws Exception {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        when(store.loadSettingsSecret(1L)).thenReturn(groupSettings("123456"));
+        var session=new com.getjobs.application.hr.HrAssistantTypes.ChatSession("uid","","合成HR","合成公司","","",
+                "不好意思，不太合适哦","今天");
+        var logo=new com.getjobs.application.hr.HrAssistantTypes.MediaContent("其他","image/png","data:image/png;base64,cGlj",
+                "https://example.invalid/logo.png","READABLE","无可见文字或卡片字段。");
+        var capture=new com.getjobs.application.hr.HrAssistantTypes.ChatCapture("c",1,session,List.of(
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","其他","","今天","m0",List.of(logo)),
+                new com.getjobs.application.hr.HrAssistantTypes.ChatMessage("对方","文本","不好意思，不太合适哦","今天")),false,false);
+        when(outbox.context(1L,20L)).thenReturn(capture);
+        var incomplete=new ProposalView(10L,1L,20L,"1234","REVIEW_REQUIRED","NEEDS_USER","","","",
+                "不好意思，不太合适哦","","聊天正文未完整读取",List.of("INCOMPLETE_CONTEXT"),List.of("完整聊天正文"),0,3,
+                LocalDateTime.now().plusMinutes(10),LocalDateTime.now(),false);
+        assertThat(gateway.notifyProposal(incomplete)).isTrue();
+        var payload=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(outbox).enqueue(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("proposal:10:3:0"),payload.capture());
+        String text=objectMapper.readTree(payload.getValue()).path("params").path("message").get(0).path("data").path("text").asText();
+        assertThat(text).contains("合成公司","合成HR","不好意思，不太合适哦","上下文或媒体尚未完整读取","暂不生成回复",
+                "详情 1234","补充 1234 本次事实","其他类型卡片").doesNotContain("确认发送：发送","调整：修改","无可见文字","base64");
+    }
+
+    @Test
+    void notificationDispatcherRejectsLegacyQueuedMediaBeforeAnyWebsocketWrite() {
+        var outbox=mock(HrAutopilotStore.class);gateway.setAutopilot(outbox);
+        var socket=mock(java.net.http.WebSocket.class);
+        var settings=groupSettings("123456");
+        when(profileService.getCurrentProfileIdOrNull()).thenReturn(1L);
+        when(store.loadSettingsSecret(1L)).thenReturn(settings);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway,"socket",socket);
+        String fingerprint=org.springframework.test.util.ReflectionTestUtils.invokeMethod(gateway,"fingerprint",1L,settings);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway,"connectionFingerprint",fingerprint);
+        var delivery=new HrAutopilotStore.Delivery("legacy-media",1L,"""
+                {"action":"send_group_msg","params":{"group_id":987654321,"message":[{"type":"image","data":{"file":"base64://cGlj"}}]}}
+                """);
+        when(outbox.pending(1L)).thenReturn(List.of(delivery));
+        when(outbox.dispatching("legacy-media")).thenReturn(true);
+        gateway.flushNotifications();
+        verify(outbox).receipt("legacy-media",false,"");
+        verify(socket,never()).sendText(any(),org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
     private HrAssistantStore.SettingsSecret groupSettings(String operatorQq) {
         return new HrAssistantStore.SettingsSecret(1L, CommunicationProfile.empty(), true,
                 "ws://127.0.0.1:3001", "token", QqTargetType.GROUP, "987654321", operatorQq, 30);
