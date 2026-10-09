@@ -137,6 +137,27 @@ class ScanRunBrowserRegressionTest {
                     """);
                 assertThat(jdbc.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-stop")).isEqualTo("ACKNOWLEDGED");
                 assertThat(jdbc.queryForObject("SELECT state FROM scan_run WHERE platform=?",String.class,platform)).isEqualTo("STOPPED");
+                // A new document must watch a retained blocker without starting work;
+                // the real HTTP/SQLite STOP command still receives a durable ACK.
+                page.evaluate("""
+                    async()=>{
+                      task={...task,runId:task.platform+'-blocked',blockedAt:Date.now(),blockState:'LOGIN_REQUIRED',phase:'detail',detailIndex:7};
+                      base='/api/scan-runs/'+task.runId+'?platform='+task.platform+'&profileId=1';
+                      await api('/api/scan-runs?platform='+task.platform+'&profileId=1',{runId:task.runId});
+                      await observer.attach(task);await observer.event(task,{stage:'blocked',paused:true,errorCode:'LOGIN_REQUIRED'});
+                      await observer.sync(task);saved={...task};state={stage:'blocked'};
+                      control=GetJobsScanControl.create({platform:task.platform,version:'1.10.4',instanceId:Date.now()+'-reloaded',current:()=>true,
+                        readTask:()=>saved,saveTask:async t=>{saved={...t,updatedAt:Date.now()}},status:s=>state={...state,...s},readStatus:()=>state,
+                        setStopped:()=>{},resume:()=>{throw new Error('Blocked scan resumed without command')}});
+                      await control.watch(task);
+                      if(await control.checkpoint() || saved.detailIndex!==7 || !saved.blockedAt)throw new Error('Blocked checkpoint changed');
+                      await api(endpoint('/commands'),{kind:'STOP',id:task.platform+'-blocked-stop'});
+                      const deadline=Date.now()+20000;
+                      while(Date.now()<deadline){if((await api(base)).state==='STOPPED')return;await new Promise(r=>setTimeout(r,200))}
+                      throw new Error('Blocked STOP ACK missing');
+                    }
+                    """);
+                assertThat(jdbc.queryForObject("SELECT status FROM scan_command WHERE id=?",String.class,platform+"-blocked-stop")).isEqualTo("ACKNOWLEDGED");
             }
             assertThat(jdbc.queryForList("SELECT payload FROM scan_event").toString()).doesNotContain("DO_NOT_STORE_SECRET");
             assertThat(jdbc.queryForList("PRAGMA foreign_key_check")).isEmpty();

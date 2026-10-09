@@ -254,6 +254,8 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   const scanIdentityRef = useRef({ profileId: currentProfile?.id, runId: activeRunId })
   scanIdentityRef.current = { profileId: currentProfile?.id, runId: activeRunId }
   const endedRunsRef = useRef(new Set<string>())
+  const backendRunRef = useRef<ScanHistoryRun | null>(null)
+  const stoppingRunRef = useRef<string | null>(null)
   const acceptBackendRuns = useCallback((platform: 'boss' | 'zhilian', profileId: number, runs: ScanHistoryRun[]) => {
     if (platform !== 'boss' || scanIdentityRef.current.profileId !== profileId) return
     for (const run of runs) {
@@ -263,11 +265,23 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       }
     }
     const runId = scanIdentityRef.current.runId
+    const current = runs.find(run => run.platform === platform && run.profile_id === profileId && run.historyComplete
+      && (runId ? run.run_id === runId : !endedRunsRef.current.has(`${profileId}:${run.run_id}`)
+        && !['COMPLETE', 'PARTIAL', 'FAILED', 'STOPPED'].includes(run.state)))
+    if (current) backendRunRef.current = current
     if (runId && endedRunsRef.current.has(`${profileId}:${runId}`)) {
+      stoppingRunRef.current = null
       setIsDelivering(false)
       setIsStopping(false)
       setIsScanPaused(false)
       setActiveRunId(null)
+    } else if (current) {
+      const stopping = current.desired === 'STOPPED' || stoppingRunRef.current === current.run_id
+      stoppingRunRef.current = stopping ? current.run_id : null
+      setIsStopping(stopping)
+      setIsDelivering(stopping || ['STARTING', 'RUNNING'].includes(current.state))
+      setIsScanPaused(['PAUSED', 'BLOCKED'].includes(current.state))
+      setActiveRunId(current.run_id)
     }
   }, [])
   const [hasProfile, setHasProfile] = useState(false)
@@ -353,6 +367,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       const result = readScanResult(status)
       if (result) setScanResult(result)
       if (status.success && runId && ['complete', 'stopped', 'error'].includes(String(status.stage))) {
+        stoppingRunRef.current = null
         endedRunsRef.current.add(`${profileId}:${runId}`)
         setIsDelivering(false)
         setIsStopping(false)
@@ -360,6 +375,9 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         setActiveRunId(null)
         return
       }
+      const backend = backendRunRef.current
+      if (stoppingRunRef.current === observedId || (backend?.profile_id === profileId && backend.run_id === observedId
+          && (backend.desired === 'STOPPED' || ['PAUSED', 'BLOCKED'].includes(backend.state)))) return
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
       if (paused) {
         setIsDelivering(false)
@@ -375,7 +393,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         }
         return
       }
-      const running = Boolean(status.isRunning || status.hasStoredTask)
+      const running = Boolean(status.isRunning)
       if (running) {
         setIsDelivering(true)
         setIsStopping(false)
@@ -536,7 +554,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
                 message: data.message || '',
                 timestamp: data.timestamp,
               })
-              if (data.stage === 'blocked' && (data.paused || data.resumable)) {
+              if (data.stage === 'blocked' && (data.paused || data.resumable) && stoppingRunRef.current !== eventRunId) {
                 setIsDelivering(false)
                 setIsStopping(false)
                 setIsScanPaused(true)
@@ -545,7 +563,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
               if (shouldRefreshAnalysisFromProgress(data)) {
                 guideToConfirmStep(data)
               }
-              if (data.type === 'error') {
+              if (data.type === 'error' && stoppingRunRef.current !== eventRunId) {
                 setIsDelivering(false)
                 setIsStopping(false)
                 setIsScanPaused(false)
@@ -583,7 +601,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       if (shouldRefreshAnalysisFromProgress(payload)) {
         guideToConfirmStep(payload)
       }
-      if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
+      if (payload.stage === 'blocked' && (payload.paused || payload.resumable) && stoppingRunRef.current !== eventRunId) {
         setIsDelivering(false)
         setIsStopping(false)
         setIsScanPaused(true)
@@ -982,9 +1000,11 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         return
       }
       focusLogSection()
-      if (resumeIncomplete && scanResult?.runId) {
-        await scanCommand('boss',profileId,scanResult.runId,'RESUME')
-        onWorkspaceScopeChange?.(scanResult.runId, profileId, 'task')
+      const resumeRunId = activeRunId || scanResult?.runId
+      if ((resumeIncomplete || isScanPaused) && resumeRunId) {
+        const updated = await scanCommand('boss',profileId,resumeRunId,'RESUME')
+        acceptBackendRuns('boss',profileId,[updated])
+        onWorkspaceScopeChange?.(resumeRunId, profileId, 'task')
         appendProgressLog({type:'info',message:'继续请求已保存，请在扫描记录中查看执行确认。'})
         return
       }
@@ -1248,13 +1268,18 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   }
 
   const handleStopDelivery = async () => {
-    if(isStopping || !activeRunId || !currentProfile?.id) return
+    if(isStopping || stoppingRunRef.current === activeRunId || !activeRunId || !currentProfile?.id) return
+    stoppingRunRef.current = activeRunId
     setIsStopping(true)
     try {
-      await scanCommand('boss',currentProfile.id,activeRunId,'STOP')
+      const updated = await scanCommand('boss',currentProfile.id,activeRunId,'STOP')
+      acceptBackendRuns('boss',currentProfile.id,[updated])
       appendProgressLog({type:'warning',message:'停止请求已保存，等待扩展退出扫描；执行结果请查看扫描记录。'})
-    } catch {appendProgressLog({type:'error',message:'停止请求未保存，请检查后端连接并重试。'})}
-    finally {setIsStopping(false)}
+    } catch {
+      stoppingRunRef.current = null
+      setIsStopping(false)
+      appendProgressLog({type:'error',message:'停止请求未保存，请检查后端连接并重试。'})
+    }
   }
 
   const handleOpenPlatform = async () => {

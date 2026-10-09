@@ -271,6 +271,21 @@ class BrowserRuntimeRegressionTest {
             """)).isEqualTo("测试岗位沟通。\n个人作品集：https://example.invalid/");
     }
 
+    @Test void bossJobDescriptionMentioningUnloggedUsersIsNotALoginBlocker() throws Exception {
+        fixture("boss", "detail/redacted-header-only-20260915.html",
+            "<div class='job-detail'>试用激活运营：针对注册未登录、浅度试用客户制定运营策略。</div>");
+        String source = Files.readString(Path.of("chrome-extension/boss-content.js"));
+        String functions = source.substring(source.indexOf("  function isStrongLoginPrompt("),
+            source.indexOf("  function buildNavigationKey("));
+        String check = "const SCAN_SUPPORT=GetJobsBossScanSupport || {};" + functions
+            + "return {scan:isStrongLoginPrompt(document.body.innerText,location.href),debug:GetJobsBossDebug.collect().isLoginPage};";
+        assertThat(probe(check)).isEqualTo(Map.of("scan",false,"debug",false));
+        page.locator("body").evaluate("el=>el.insertAdjacentHTML('beforeend',\"<div role='dialog' style='position:fixed;inset:20px'>请先登录，扫码登录后查看</div>\")");
+        assertThat(probe(check)).isEqualTo(Map.of("scan",true,"debug",true));
+        page.locator("[role='dialog']").evaluate("el=>el.style.display='none'");
+        assertThat(probe(check)).isEqualTo(Map.of("scan",false,"debug",false));
+    }
+
     @Test void realLayoutRejectsHiddenSuccessAndQuotaOverridesVisibleSuccess() throws Exception {
         fixture("zhilian", "states/success.html", "");
         assertThat(probe("return GetJobsZhilianPageEvidence.detectStatus(document)")).isEqualTo("已投递");

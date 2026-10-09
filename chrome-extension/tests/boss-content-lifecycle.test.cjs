@@ -10,11 +10,12 @@ function storage() {
   return { getItem: k => items.get(k) ?? null, setItem: (k, v) => items.set(k, String(v)), removeItem: k => items.delete(k) };
 }
 function harness() {
-  const listeners = [], timers = [], messages = [], runs = [];
+  const listeners = [], timers = [], messages = [], runs = [], watched = [];
   const sessionStorage = storage(), localStorage = storage();
   const pageEvents = {};
   const window = { location: new URL('https://www.zhipin.com/web/geek/jobs?query=AI'), setTimeout: fn => timers.push(fn),
     addEventListener: (name, listener) => { pageEvents[name] = listener; } };
+  window.GetJobsScanControl = {create: () => ({watch: async t => watched.push(t), checkpoint: async () => false})};
   const context = vm.createContext({ window, sessionStorage, localStorage, URL, console, setTimeout: window.setTimeout,
     chrome: { runtime: { onMessage: { addListener: fn => listeners.push(fn) }, sendMessage: async m => { messages.push(m); return { success: true }; } } },
     runs });
@@ -26,7 +27,7 @@ function harness() {
   })();`);
   const boot = () => vm.runInContext(instrumented, context);
   boot();
-  return { window, listeners, timers, messages, runs, sessionStorage, boot, pageEvents };
+  return { window, listeners, timers, messages, runs, watched, sessionStorage, boot, pageEvents };
 }
 function task(extra = {}) {
   return { profileId: 4, runId: 'boss-test', keywords: ['AI'], currentIndex: 0, phase: 'searching',
@@ -62,6 +63,21 @@ test('late bootstrap does not overwrite an already active detail task', async ()
   assert.equal(h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__'), before);
   assert.equal(h.messages.length, 0);
   assert.equal(h.runs.length, 0);
+});
+
+test('protocol reload preserves the blocked detail checkpoint and only reconnects control', async () => {
+  const h = harness();
+  h.window.test.storeScanTask(task({scanProtocol:1,scanOwnerToken:'owner',phase:'detail',detailIndex:7,
+    blockedAt:Date.now(),blockState:'登录提示'}));
+  await h.window.test.resumeStoredScanTaskIfActive();
+  assert.equal(h.runs.length,0);
+  assert.equal(h.watched.length,1);
+  assert.equal(h.watched[0].detailIndex,7);
+  assert.equal(h.watched[0].blockState,'登录提示');
+  assert.equal(h.messages.length,0,'a passive reload must not publish a resume');
+  await h.window.test.resumeStoredScanTaskIfActive(true);
+  assert.equal(h.runs.length,1);
+  assert.equal(h.runs[0].blockedAt,undefined);
 });
 test('superseded instance cannot navigate, publish, overwrite or clear the new checkpoint', async () => {
   const h = harness(), old = h.window.test;

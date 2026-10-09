@@ -45,12 +45,36 @@ it('clears the stop button after a real STOP acknowledgment even when the extens
   expect(mocks.command).toHaveBeenCalledWith('boss', 4, 'boss-current', 'STOP')
   runs = [{ ...running, desired: 'STOPPED', commands: [{ id: 'stop', kind: 'STOP', status: 'PENDING' }] }]
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-  expect(screen.getByRole('button', { name: '停止扫描' })).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: '停止中...' })[0]).toBeDisabled()
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(screen.getAllByRole('button', { name: '停止中...' })[0]).toBeDisabled()
+  expect(mocks.command).toHaveBeenCalledTimes(1)
   runs = [{ ...running, state: 'STOPPED', desired: 'STOPPED', commands: [{ id: 'stop', kind: 'STOP', status: 'ACKNOWLEDGED' }] }]
   mocks.bridge.mockResolvedValue({ success: true, isRunning: false, stage: 'idle' })
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
   expect(screen.queryByRole('button', { name: '停止扫描' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '开始扫描' })).toBeInTheDocument()
+})
+
+it('backend blocked state wins over a stale navigating extension reply; continue targets the same run', async () => {
+  runs = [{ ...running, state: 'BLOCKED', error_code: 'LOGIN_REQUIRED' }]
+  mocks.bridge.mockResolvedValue({success:true,profileId:4,runId:'boss-current',isRunning:true,hasStoredTask:true,stage:'navigating'})
+  await act(async () => { render(<BossWorkspace />) })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(screen.queryByRole('button',{name:'停止扫描'})).not.toBeInTheDocument()
+  expect(screen.getByRole('button',{name:'继续扫描'})).toBeInTheDocument()
+  mocks.command.mockResolvedValue({...running})
+  await act(async () => { fireEvent.click(screen.getByRole('button',{name:'继续扫描'})) })
+  expect(mocks.command).toHaveBeenCalledWith('boss',4,'boss-current','RESUME')
+})
+
+it('a workbench reload restores a pending STOP and cannot show scanning or submit it twice', async () => {
+  runs = [{...running,state:'BLOCKED',desired:'STOPPED',commands:[{id:'stop',kind:'STOP',status:'PENDING'}]}]
+  await act(async () => { render(<BossWorkspace />) })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(screen.getAllByRole('button',{name:'停止中...'})[0]).toBeDisabled()
+  expect(screen.queryByText('扫描中',{selector:'span'})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button',{name:'继续扫描'})).not.toBeInTheDocument()
 })
 
 it('a stale running extension reply cannot restart the stopped UI; another run or profile cannot stop the current UI', async () => {
