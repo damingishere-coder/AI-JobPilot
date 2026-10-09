@@ -265,11 +265,12 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       }
     }
     const runId = scanIdentityRef.current.runId
-    const current = runs.find(run => run.platform === platform && run.profile_id === profileId && run.historyComplete
-      && (runId ? run.run_id === runId : !endedRunsRef.current.has(`${profileId}:${run.run_id}`)
-        && !['COMPLETE', 'PARTIAL', 'FAILED', 'STOPPED'].includes(run.state)))
+    const scoped = runs.filter(run => run.platform === platform && run.profile_id === profileId && run.historyComplete)
+    // History is newest first. An ended latest round must not revive an older one.
+    const current = runId ? scoped.find(run => run.run_id === runId) : scoped[0]
     if (current) backendRunRef.current = current
-    if (runId && endedRunsRef.current.has(`${profileId}:${runId}`)) {
+    const observedId = runId || current?.run_id
+    if (observedId && endedRunsRef.current.has(`${profileId}:${observedId}`)) {
       stoppingRunRef.current = null
       setIsDelivering(false)
       setIsStopping(false)
