@@ -1,6 +1,7 @@
 package com.getjobs.application.service;
 
 import org.springframework.stereotype.Service;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +19,7 @@ import java.util.concurrent.TimeUnit;
  * 通过当前 Windows 用户的 Codex CLI 登录态执行隔离的一次性 AI 任务。
  */
 @Service
+@Slf4j
 public class CodexCliService {
     private static final Semaphore CODEX_SLOTS = new Semaphore(2, true);
 
@@ -94,6 +96,7 @@ public class CodexCliService {
     String run(String content, List<Path> imagePaths, String outputSchema, Map<String, String> config) {
         String model = value(config, "CODEX_MODEL", AiService.DEFAULT_MODEL);
         int timeoutSeconds = parseTimeout(value(config, "CODEX_TIMEOUT_SECONDS", "300"));
+        boolean analysisMode = Boolean.parseBoolean(value(config, "CODEX_ANALYSIS_MODE", "false"));
         long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
 
         Path tempDirectory = null;
@@ -111,7 +114,7 @@ public class CodexCliService {
                 Files.writeString(outputSchemaPath, outputSchema, StandardCharsets.UTF_8);
             }
             List<String> command = buildCommandWithImages(
-                    executable, model, tempDirectory, outputPath, imagePaths, outputSchemaPath);
+                    executable, model, tempDirectory, outputPath, imagePaths, outputSchemaPath, analysisMode);
             ProcessBuilder builder = new ProcessBuilder(command)
                     .directory(tempDirectory.toFile())
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -130,6 +133,8 @@ public class CodexCliService {
                 throw new IllegalStateException("Codex CLI 总执行时间已耗尽");
             }
             process = startProcess(builder);
+            log.info("Codex AI 调用已启动: clientRequestId={}, model={}, analysisMode={}, timeoutSeconds={}",
+                    clientRequestId, model, analysisMode, timeoutSeconds);
             try (var writer = process.outputWriter(StandardCharsets.UTF_8)) {
                 writer.write(buildPrompt(content, imagePaths != null && !imagePaths.isEmpty()));
             }
@@ -146,8 +151,12 @@ public class CodexCliService {
             if (result.isBlank()) {
                 throw cliFailure(AiProviderException.Code.EMPTY_RESPONSE, "Codex CLI 返回空结果", clientRequestId, true, null);
             }
+            log.info("Codex AI 调用完成: clientRequestId={}, model={}, analysisMode={}",
+                    clientRequestId, model, analysisMode);
             return result;
         } catch (AiProviderException e) {
+            log.warn("Codex AI 调用失败: clientRequestId={}, model={}, code={}, outcomeUnknown={}",
+                    clientRequestId, model, e.getCode(), e.isOutcomeUnknown());
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -213,6 +222,14 @@ public class CodexCliService {
             List<Path> imagePaths,
             Path outputSchemaPath
     ) {
+        return buildCommandWithImages(executable, model, workingDirectory, outputPath,
+                imagePaths, outputSchemaPath, false);
+    }
+
+    List<String> buildCommandWithImages(
+            String executable, String model, Path workingDirectory, Path outputPath,
+            List<Path> imagePaths, Path outputSchemaPath, boolean analysisMode
+    ) {
         List<String> command = new ArrayList<>();
         addExecutable(command, executable);
         command.add("exec");
@@ -224,6 +241,14 @@ public class CodexCliService {
         command.add("--ephemeral");
         command.add("--model");
         command.add(model);
+        if (analysisMode) {
+            // Authentication still uses CODEX_HOME, but unrelated desktop MCP and xhigh settings do not.
+            command.add("--ignore-user-config");
+            command.add("-c");
+            command.add("model_reasoning_effort=\"high\"");
+            command.add("-c");
+            command.add("approval_policy=\"never\"");
+        }
         if (imagePaths != null && !imagePaths.isEmpty()) {
             command.add("--image");
             imagePaths.forEach(path -> command.add(path.toString()));

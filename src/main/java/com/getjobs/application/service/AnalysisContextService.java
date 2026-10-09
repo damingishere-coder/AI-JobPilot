@@ -43,7 +43,7 @@ public class AnalysisContextService {
         boolean priority = !company.isEmpty() && jdbc.query("SELECT company_name FROM priority_company WHERE profile_id=? AND (enabled=1 OR enabled IS NULL)",
             (rs,n)->Objects.toString(rs.getString(1),"").trim(),profile).stream().filter(s->!s.isEmpty()).anyMatch(s->company.contains(s)||s.contains(company));
         int threshold = number(settings.get(priority?"priority_apply_threshold":"apply_threshold"),priority?JobAiAnalysisService.DEFAULT_PRIORITY_APPLY_THRESHOLD:JobAiAnalysisService.DEFAULT_APPLY_THRESHOLD);
-        Map<String,String> provider = config.getAiConfigs();
+        Map<String,String> provider = AiService.jobAnalysisConfig(config.getAiConfigs());
         String type = Objects.toString(provider.get("AI_PROVIDER"),"");
         var basis = new Basis(version,"zhilian".equalsIgnoreCase(request.getPlatform())?Objects.toString(settings.get("introduce"),""):"",
             priority,threshold,providerIdentity(provider),type,Objects.toString(provider.get("codex".equalsIgnoreCase(type)?"CODEX_MODEL":"MODEL"),""),RULE,greetingPolicy.urlFor(profile));
@@ -72,6 +72,7 @@ public class AnalysisContextService {
     }
 
     public static String providerIdentity(Map<String,String> config) {
+        config = AiService.jobAnalysisConfig(config);
         var identity = new TreeMap<String,String>();
         for(String key:List.of("AI_PROVIDER","MODEL","CODEX_MODEL","BASE_URL","CODEX_PATH","CODEX_HOME","CODEX_TIMEOUT_SECONDS","AI_REQUEST_TIMEOUT_SECONDS"))
             identity.put(key,Objects.toString(config.get(key),""));

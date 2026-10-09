@@ -158,13 +158,25 @@ public class AiService {
         if (outputSchema == null || outputSchema.isBlank()) {
             throw new IllegalArgumentException("结构化输出 Schema 不能为空");
         }
-        var cfg = configService.getAiConfigs();
+        var cfg = jobAnalysisConfig(configService.getAiConfigs());
         if (expectedProviderIdentity!=null && !expectedProviderIdentity.equals(AnalysisContextService.providerIdentity(cfg)))
             throw new IllegalStateException("AI 配置已不同于入队快照，未调用 Provider；请重新提交分析");
         if ("codex".equalsIgnoreCase(cfg.get("AI_PROVIDER"))) {
             return codexCliService.generateStructuredText(content, outputSchema, cfg);
         }
         return sendRequest(content,cfg);
+    }
+
+    /** The job matcher has its own model and execution settings; desktop preferences are unrelated. */
+    static Map<String, String> jobAnalysisConfig(Map<String, String> saved) {
+        var config = new java.util.HashMap<>(saved);
+        if ("codex".equalsIgnoreCase(config.get("AI_PROVIDER"))) {
+            config.put("CODEX_MODEL", DEFAULT_MODEL);
+            config.put("CODEX_ANALYSIS_MODE", "true");
+        } else {
+            config.put("MODEL", DEFAULT_MODEL);
+        }
+        return config;
     }
 
     /**

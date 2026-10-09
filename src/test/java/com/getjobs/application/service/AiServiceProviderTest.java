@@ -52,8 +52,8 @@ class AiServiceProviderTest {
     }
 
     @Test void changedProviderIdentityStopsBeforeLaunchingCli() {
-        when(configService.getAiConfigs()).thenReturn(Map.of("AI_PROVIDER","codex","CODEX_MODEL","new-model"));
-        String expected=AnalysisContextService.providerIdentity(Map.of("AI_PROVIDER","codex","CODEX_MODEL","old-model"));
+        when(configService.getAiConfigs()).thenReturn(Map.of("AI_PROVIDER","codex","CODEX_PATH","new/codex"));
+        String expected=AnalysisContextService.providerIdentity(Map.of("AI_PROVIDER","codex","CODEX_PATH","old/codex"));
         org.assertj.core.api.Assertions.assertThatThrownBy(()->service.sendStructuredRequest("fixture","{}",expected))
             .hasMessageContaining("未调用 Provider");
         org.mockito.Mockito.verifyNoInteractions(codexCliService);
@@ -68,12 +68,36 @@ class AiServiceProviderTest {
         );
         String schema = "{\"type\":\"object\"}";
         when(configService.getAiConfigs()).thenReturn(config);
-        when(codexCliService.generateStructuredText("岗位分析", schema, config))
+        Map<String, String> analysis = new java.util.HashMap<>(config);
+        analysis.put("CODEX_MODEL", "gpt-6.1-sol");
+        analysis.put("CODEX_ANALYSIS_MODE", "true");
+        when(codexCliService.generateStructuredText("岗位分析", schema, analysis))
                 .thenReturn("{\"decision\":\"SKIP\"}");
 
         assertThat(service.sendStructuredRequest("岗位分析", schema))
                 .isEqualTo("{\"decision\":\"SKIP\"}");
-        verify(codexCliService).generateStructuredText("岗位分析", schema, config);
+        verify(codexCliService).generateStructuredText("岗位分析", schema, analysis);
+        assertThat(config.get("CODEX_MODEL")).isEqualTo("gpt-5.6-sol");
+    }
+
+    @Test void jobAnalysisSnapshotUsesTheSameFixedModelAsTheActualCall() {
+        var old = Map.of("AI_PROVIDER", "codex", "CODEX_MODEL", "gpt-6-astra", "CODEX_PATH", "codex");
+        var current = Map.of("AI_PROVIDER", "codex", "CODEX_MODEL", "gpt-5.6-sol", "CODEX_PATH", "codex");
+        var effective = AiService.jobAnalysisConfig(current);
+        assertThat(effective).containsEntry("CODEX_MODEL", "gpt-6.1-sol")
+                .containsEntry("CODEX_ANALYSIS_MODE", "true");
+        when(configService.getAiConfigs()).thenReturn(current);
+        when(codexCliService.generateStructuredText("分析", "{}", effective)).thenReturn("{}");
+        assertThat(service.sendStructuredRequest("分析", "{}", AnalysisContextService.providerIdentity(old)))
+                .isEqualTo("{}");
+        verify(codexCliService).generateStructuredText("分析", "{}", effective);
+    }
+
+    @Test void remoteJobAnalysisAlsoUsesTheRequestedModelWithoutChangingSavedSettings() {
+        var saved = Map.of("AI_PROVIDER", "api", "MODEL", "old-model");
+        assertThat(AiService.jobAnalysisConfig(saved)).containsEntry("MODEL", "gpt-6.1-sol")
+                .doesNotContainKey("CODEX_ANALYSIS_MODE");
+        assertThat(saved.get("MODEL")).isEqualTo("old-model");
     }
 
     @Test

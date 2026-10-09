@@ -18,6 +18,24 @@ import static org.mockito.Mockito.when;
 
 class CodexCliServiceTest {
     @Test
+    void jobAnalysisOverridesDesktopSettingsAndRetainsReadOnlyStructuredExecution() {
+        CodexCliService service = new CodexCliService();
+        Path cwd = Path.of("work");
+        Path output = cwd.resolve("final.txt");
+        Path schema = cwd.resolve("schema.json");
+        List<String> command = service.buildCommandWithImages(
+                "codex", "gpt-6.1-sol", cwd, output, List.of(), schema, true);
+        assertThat(command).containsSubsequence("--model", "gpt-6.1-sol")
+                .contains("--ignore-user-config")
+                .containsSubsequence("-c", "model_reasoning_effort=\"high\"")
+                .containsSubsequence("-c", "approval_policy=\"never\"")
+                .containsSubsequence("--sandbox", "read-only")
+                .containsSubsequence("--output-schema", schema.toString())
+                .containsSubsequence("--output-last-message", output.toString(), "-");
+        assertThat(service.buildCommand("codex", "gpt-6.1-sol", cwd, output, null))
+                .doesNotContain("--ignore-user-config", "model_reasoning_effort=\"high\"");
+    }
+    @Test
     void commandUsesReadOnlyEphemeralSessionAndOptionalImage() {
         CodexCliService service = new CodexCliService();
         Path cwd = Path.of("work");

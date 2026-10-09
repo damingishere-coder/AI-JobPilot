@@ -314,6 +314,46 @@ class ChromeJobAnalysisQueueServiceTest {
     }
 
     @Test
+    void longJobDescriptionsAreSplitWithoutTruncatingOrDroppingAnyTask() {
+        String description = "完整岗位职责与要求".repeat(600);
+        for (int index = 0; index < 5; index++) {
+            var input = request("boss", "long-job-" + index, "long-run");
+            input.setJobDescription(description);
+            assertThat(store.submit(input).created()).isTrue();
+        }
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        queue.initialize();
+        for (int index = 0; index < 5; index++) {
+            awaitStatus(submittedTaskId("long-job-" + index), "SUCCEEDED");
+        }
+        org.mockito.ArgumentCaptor<List<JobAiAnalysisService.BatchAnalysisJob>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(analysisService, org.mockito.Mockito.atLeastOnce()).analyzeJobs(captor.capture());
+        assertThat(captor.getAllValues()).hasSizeGreaterThan(1).allSatisfy(batch -> {
+            assertThat(batch).hasSizeLessThanOrEqualTo(2);
+            assertThat(batch).allSatisfy(job -> assertThat(job.request().getJobDescription()).isEqualTo(description));
+        });
+        assertThat(captor.getAllValues().stream().flatMap(List::stream).map(JobAiAnalysisService.BatchAnalysisJob::taskId))
+                .hasSize(5).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void oneOversizedJobStillRunsWithItsCompleteDescription() {
+        String description = "完整岗位要求".repeat(3_000);
+        var input = request("boss", "oversized-job", "large-run");
+        input.setJobDescription(description);
+        long id = store.submit(input).task().id();
+        queue = new ChromeJobAnalysisQueueService(analysisService, store);
+        queue.initialize();
+        awaitStatus(id, "SUCCEEDED");
+        org.mockito.ArgumentCaptor<List<JobAiAnalysisService.BatchAnalysisJob>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(analysisService).analyzeJobs(captor.capture());
+        assertThat(captor.getValue()).hasSize(1);
+        assertThat(captor.getValue().getFirst().request().getJobDescription()).isEqualTo(description);
+    }
+
+    @Test
     void batchNeverMixesProfilesOrPlatforms() {
         for (int index = 0; index < 4; index++) {
             store.submit(request(1L, "boss", "boss-p1-" + index, "run-a"));

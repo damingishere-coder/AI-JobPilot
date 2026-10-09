@@ -37,6 +37,8 @@ public class ChromeJobAnalysisQueueService {
     private static final int AI_CONCURRENCY = 2;
     private static final int LOCAL_QUEUE_CAPACITY = 200;
     private static final long BATCH_COALESCE_MILLIS = 250;
+    // Preserve complete JDs while avoiding five long pages sharing one CLI deadline.
+    private static final int MAX_BATCH_REQUEST_CHARS = 12_000;
     private static final Duration LEASE_DURATION = Duration.ofMinutes(5);
     private static final long LEASE_HEARTBEAT_SECONDS = 60;
 
@@ -342,13 +344,19 @@ public class ChromeJobAnalysisQueueService {
             if (seed == null) return List.of();
             List<JobAnalysisTaskStore.TaskRecord> claimedTasks = new ArrayList<>();
             claimedTasks.add(seed);
+            long requestChars = Objects.toString(seed.requestJson(), "").length();
             try {
                 for (JobAnalysisTaskStore.TaskRecord candidate : taskStore.listCompatibleDuePending(
                         seed, JobAiAnalysisService.MAX_BATCH_SIZE - 1)) {
+                    int candidateChars = Objects.toString(candidate.requestJson(), "").length();
+                    if (requestChars + candidateChars > MAX_BATCH_REQUEST_CHARS) continue;
                     try {
                         JobAnalysisTaskStore.TaskRecord claimed = taskStore.claim(
                                 candidate.id(), leaseToken, LEASE_DURATION);
-                        if (claimed != null) claimedTasks.add(claimed);
+                        if (claimed != null) {
+                            claimedTasks.add(claimed);
+                            requestChars += candidateChars;
+                        }
                     } catch (RuntimeException claimError) {
                         log.warn("批量领取兼容 AI 任务 {} 失败，保留已领取任务继续执行: {}",
                                 candidate.id(), claimError.getMessage());

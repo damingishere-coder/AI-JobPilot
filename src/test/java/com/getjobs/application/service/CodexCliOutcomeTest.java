@@ -22,6 +22,18 @@ class CodexCliOutcomeTest {
     }
 
     @Test
+    void jobAnalysisPassesIsolationArgumentsAndKeepsTheConfiguredLoginHome() throws Exception {
+        var service = new SimulatedCli(fakeProcess(), "{}", false);
+        var config = new java.util.HashMap<>(testConfig());
+        config.put("CODEX_ANALYSIS_MODE", "true");
+        config.put("CODEX_MODEL", "gpt-6.1-sol");
+        config.put("CODEX_HOME", fixtureDirectory.toString());
+        assertThat(service.generateStructuredText("合成岗位", "{}", config)).isEqualTo("{}");
+        assertThat(service.builder.command()).contains("--ignore-user-config", "model_reasoning_effort=\"high\"");
+        assertThat(service.builder.environment()).containsEntry("CODEX_HOME", fixtureDirectory.toAbsolutePath().normalize().toString());
+    }
+
+    @Test
     void invalidExecutableIsClassifiedBeforeStartingAnything() {
         var service = new SimulatedCli(null, null, false);
         assertThatThrownBy(() -> service.generateText("synthetic", Map.of("CODEX_PATH", "missing-test-directory/codex.exe")))
@@ -96,10 +108,12 @@ class CodexCliOutcomeTest {
         private final boolean failStart;
         private int starts;
         private Path directory;
+        private ProcessBuilder builder;
         SimulatedCli(Process process, String result, boolean failStart) {
             this.process = process; this.result = result; this.failStart = failStart;
         }
         @Override Process startProcess(ProcessBuilder builder) throws IOException {
+            this.builder = builder;
             starts++;
             directory = builder.directory().toPath();
             if (failStart) throw new IOException("synthetic startup error");
