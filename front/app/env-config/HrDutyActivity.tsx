@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
-type Proposal = { id: number; profileId: number; version: number; status: string; companyName: string; hrName: string; sourceMessage: string; draft: string }
+type Proposal = { id: number; profileId: number; version: number; status: string; companyName: string; hrName: string; sourceMessage: string; draft: string; expiresAt?: string; expiryReason?: string }
 type Activity = { counts: Record<string, number>; progress: { processed: number; baseline_complete: number }; decisions: { proposalId: number; reason: string; origin: string }[] }
 type View = 'legacy' | 'pending' | 'history'
 type Filters = { q: string; status: string; size: number }
@@ -15,6 +15,7 @@ type SearchState = { draft: Filters; applied: Filters; page: number }
 type ProposalPage = { profileId: number; view: string; status: string; q: string; page: number; size: number; total: number; totalPages: number; items: Proposal[] }
 const labels: Record<string, string> = { OBSERVED: '处理中', GENERATING: '处理中', APPROVED: '等待发送', SENDING: '正在发送', SENT_CONFIRMED: '已发送', REVIEW_REQUIRED: '待你决定', SKIPPED: '无需回复', SEND_UNKNOWN: '发送结果未知', BLOCKED: '需人工处理', EXPIRED: '已失效' }
 const attention = new Set(['REVIEW_REQUIRED', 'SEND_UNKNOWN', 'BLOCKED'])
+const expiryLabels: Record<string, string> = { TTL_EXPIRED: '超过有效期', SOURCE_CHANGED: 'HR 已发送新消息', ALREADY_REPLIED: '本人已经回复', SUPERSEDED: '已有新的回复建议', REASSESSMENT_REQUIRED: '需要重新核验资料或上下文', CONTEXT_CHANGED: '发送前核验发现聊天内容已变化', AUTHORIZATION_REVOKED: '托管授权已撤销' }
 const defaultFilters = (): Filters => ({ q: '', status: 'ALL', size: 10 })
 const defaultSearch = (): Record<View, SearchState> => Object.fromEntries(['legacy', 'pending', 'history'].map(view => [view, { draft: defaultFilters(), applied: defaultFilters(), page: 1 }])) as Record<View, SearchState>
 
@@ -102,8 +103,11 @@ export default function HrDutyActivity({ profileId, view = 'legacy' }: { profile
 
 function Reply({ row, decision, expanded = false, locked, busy, onBusyChange, onSaved, edit, onEdit }: { row: Proposal; decision?: { reason: string; origin: string }; expanded?: boolean; locked: boolean; busy: boolean; onBusyChange: (busy: boolean) => void; onSaved: () => void; edit: string | null; onEdit: (value: string | null) => void }) {
   const [message, setMessage] = useState('')
+  const elapsed = Boolean(row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())
+  const expiryLabel = row.status === 'EXPIRED' ? expiryLabels[row.expiryReason || ''] || '旧记录，失效原因未保存' : elapsed && row.status === 'REVIEW_REQUIRED' ? '超过有效期' : ''
+  const actionLocked = locked || elapsed
   async function action(operation: string) {
-    if (busy || locked) return
+    if (busy || actionLocked) return
     onBusyChange(true); setMessage('')
     try {
       const response = await localActionFetch(`${API_BASE}/api/hr-assistant/proposals/${row.id}/${operation}`, {
@@ -118,13 +122,15 @@ function Reply({ row, decision, expanded = false, locked, busy, onBusyChange, on
     <summary className="cursor-pointer text-sm font-medium">{row.companyName} / {row.hrName} · {labels[row.status] || row.status}{decision?.origin === 'BACKLOG' ? ' · 历史待办' : ''}</summary>
     <p className="my-3 whitespace-pre-wrap text-sm">HR：{row.sourceMessage}</p>
     <p className="my-2 text-sm text-muted-foreground">处理依据：{decision?.reason || '等待判断'}</p>
+    {row.expiresAt && <p className="my-2 text-xs text-muted-foreground">回复有效期至：{new Date(row.expiresAt).toLocaleString('zh-CN', { hour12: false })}</p>}
+    {expiryLabel && <p className="my-2 text-sm text-amber-700">回复失效原因：{expiryLabel}。此条记录保留为历史。</p>}
     {row.status === 'SEND_UNKNOWN' && <p className="my-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">发送结果未知，请先核对实际聊天回执；此处不提供重新发送。</p>}
     {row.status === 'REVIEW_REQUIRED' ? <>
       <Textarea aria-label={`回复 ${row.hrName}`} disabled={busy} value={edit ?? row.draft} onChange={e => onEdit(e.target.value)} />
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button type="button" variant="outline" disabled={busy || locked || edit === null || !edit.trim()} onClick={() => void action('revise')}>保存修改</Button>
-        <Button type="button" disabled={busy || locked || edit !== null || !row.draft.trim()} onClick={() => void action('send')}>确认发送</Button>
-        <Button type="button" variant="outline" disabled={busy || locked} onClick={() => void action('skip')}>跳过</Button>
+        <Button type="button" variant="outline" disabled={busy || actionLocked || edit === null || !edit.trim()} onClick={() => void action('revise')}>保存修改</Button>
+        <Button type="button" disabled={busy || actionLocked || edit !== null || !row.draft.trim()} onClick={() => void action('send')}>确认发送</Button>
+        <Button type="button" variant="outline" disabled={busy || actionLocked} onClick={() => void action('skip')}>跳过</Button>
       </div>
       {edit !== null && <p className="mt-2 text-xs text-muted-foreground">先保存修改，再确认发送。</p>}
     </> : <p className="whitespace-pre-wrap text-sm">回复：{row.draft || '无'}</p>}

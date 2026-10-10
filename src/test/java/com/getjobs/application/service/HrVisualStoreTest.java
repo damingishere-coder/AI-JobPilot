@@ -118,6 +118,7 @@ class HrVisualStoreTest {
     @Test void expiredQueueBecomesVisibleStaleAndRetentionPreservesStepReceipts() {
         db.update("UPDATE hr_reply_proposal SET expires_at='2000-01-01 00:00:00'");visual.expire(run);
         assertThat(visual.targets(run).getFirst().status()).isEqualTo("STALE");
+        assertThat(hr.getProposalView(1L,proposal).expiryReason()).isEqualTo("TTL_EXPIRED");
         assertThat(visual.steps(proposal)).extracting(m->m.get("status")).containsOnly("STALE");
         db.update("UPDATE hr_send_command SET updated_at='2000-01-01 00:00:00'");hr.purgeExpired();
         assertThat(visual.steps(proposal)).hasSize(2);

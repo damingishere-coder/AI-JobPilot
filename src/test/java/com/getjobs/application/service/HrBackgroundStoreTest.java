@@ -133,6 +133,7 @@ class HrBackgroundStoreTest {
         long proposal=hr.createProposal(1L,conversation,source,new AiDraft(Classification.REPLY,"好的","回复",List.of(),List.of(),1));
         policies.decision(proposal,2,"TEXT","独立审核",true);hr.queueSendCommand(1L,proposal,1,"old");background.finish(task.id(),"");
         policies.disable(1L);
+        assertThat(hr.getProposalView(1L,proposal).expiryReason()).isEqualTo("AUTHORIZATION_REVOKED");
         assertThat(hr.getProposalView(1L,proposal).status()).isEqualTo("EXPIRED");
         assertThat(db.queryForObject("SELECT status||':'||outcome FROM hr_send_command",String.class)).isEqualTo("STALE:EXPIRED_UNSENT");
         assertThat(hr.claimSendCommand(1L,"new")).isNull();

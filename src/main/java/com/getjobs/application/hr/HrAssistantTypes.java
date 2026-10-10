@@ -195,8 +195,16 @@ public final class HrAssistantTypes {
             int version,
             LocalDateTime expiresAt,
             LocalDateTime updatedAt,
-            boolean highValue
+            boolean highValue,
+            String expiryReason
     ) {
+        public ProposalView(Long id, Long profileId, Long conversationId, String confirmationCode, String status,
+                            String classification, String hrName, String companyName, String jobName, String sourceMessage,
+                            String draft, String summary, List<String> riskTags, List<String> missingFacts, double confidence,
+                            int version, LocalDateTime expiresAt, LocalDateTime updatedAt, boolean highValue) {
+            this(id, profileId, conversationId, confirmationCode, status, classification, hrName, companyName, jobName,
+                    sourceMessage, draft, summary, riskTags, missingFacts, confidence, version, expiresAt, updatedAt, highValue, "");
+        }
     }
 
     public record WatchStatus(
@@ -226,7 +234,8 @@ public final class HrAssistantTypes {
             LocalDateTime lastSuccessfulScanAt,
             String hostGeneration,
             String pageDocumentId,
-            int pendingCaptures
+            int pendingCaptures,
+            java.util.Map<String,Object> lastTransition
     ) {
     }
 

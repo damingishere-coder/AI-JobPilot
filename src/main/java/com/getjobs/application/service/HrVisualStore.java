@@ -248,7 +248,7 @@ public class HrVisualStore {
             AND status IN ('PENDING','LEASED') AND proposal_id IN (SELECT proposal_id FROM hr_visual_target WHERE run_id=? AND status='STALE')
             """,run);
         db.update("""
-            UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1 WHERE status IN ('REVIEW_REQUIRED','APPROVED','SENDING')
+            UPDATE hr_reply_proposal SET status='EXPIRED',expiry_reason='TTL_EXPIRED',version=version+1 WHERE status IN ('REVIEW_REQUIRED','APPROVED','SENDING')
             AND id IN (SELECT proposal_id FROM hr_visual_target WHERE run_id=? AND status='STALE')
             """,run);
     }

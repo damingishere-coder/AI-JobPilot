@@ -22,6 +22,42 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class HrAssistantStoreTest {
+    @Test
+    void newDraftAndRenewedConfirmationStayValidForTwentyFourHours() {
+        long id = queryFixture(1L, "ttl", "公司", "HR", "岗位", "你好", "您好", "REVIEW_REQUIRED");
+        var created = store.getProposalView(1L, id);
+        assertThat(created.expiresAt()).isBetween(java.time.LocalDateTime.now().plusHours(24).minusSeconds(5), java.time.LocalDateTime.now().plusHours(24));
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET expires_at=datetime('now','localtime','+1 hour') WHERE id=?", id);
+        var revised = store.revise(1L, id, created.version(), "好的，谢谢");
+        assertThat(revised.expiresAt()).isBetween(java.time.LocalDateTime.now().plusHours(24).minusSeconds(5), java.time.LocalDateTime.now().plusHours(24));
+        assertThat(revised.version()).isEqualTo(created.version() + 1);
+        assertThatThrownBy(() -> store.requireProposalByCode(1L, created.confirmationCode())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(store.requireProposalByCode(1L, revised.confirmationCode()).id()).isEqualTo(id);
+    }
+
+    @Test
+    void expirationReportsItsReasonAndNeverRevivesHistoryOrUnknownSends() {
+        long expired = queryFixture(1L, "expired", "公司", "HR", "岗位", "你好", "您好", "REVIEW_REQUIRED");
+        long history = queryFixture(1L, "history", "公司", "HR", "岗位", "你好", "旧建议", "EXPIRED");
+        long unknown = queryFixture(1L, "unknown-ttl", "公司", "HR", "岗位", "你好", "未知", "SEND_UNKNOWN");
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET expires_at=datetime('now','localtime','-1 second') WHERE id IN (?,?,?)", expired, history, unknown);
+        assertThatThrownBy(() -> store.queueSendCommand(1L, expired, 1, "watch")).isInstanceOf(HrAssistantStore.StaleProposalException.class);
+        store.purgeExpired();
+        assertThat(store.getProposalView(1L, expired).expiryReason()).isEqualTo("TTL_EXPIRED");
+        assertThat(store.getProposalView(1L, history).status()).isEqualTo("EXPIRED");
+        assertThat(store.getProposalView(1L, history).expiryReason()).isEmpty();
+        assertThat(store.getProposalView(1L, unknown).status()).isEqualTo("SEND_UNKNOWN");
+        assertThat(count("hr_send_command")).isZero();
+    }
+
+    @Test
+    void answeringExpiresOnlyThatConversationWithAnExplicitReason() {
+        long id = queryFixture(1L, "answered-ttl", "公司", "HR", "岗位", "你好", "您好", "REVIEW_REQUIRED");
+        long other = queryFixture(1L, "other-ttl", "公司", "HR", "岗位", "你好", "您好", "REVIEW_REQUIRED");
+        store.expireAnsweredProposals(store.getProposalView(1L, id).conversationId());
+        assertThat(store.getProposalView(1L, id).expiryReason()).isEqualTo("ALREADY_REPLIED");
+        assertThat(store.getProposalView(1L, other).status()).isEqualTo("REVIEW_REQUIRED");
+    }
     @TempDir
     Path tempDir;
 
@@ -225,6 +261,7 @@ class HrAssistantStoreTest {
         store.updateLastInbound(conversationId, store.sourceFingerprint(conversationId, second));
 
         assertThat(store.getProposalView(1L, firstProposal).status()).isEqualTo("EXPIRED");
+        assertThat(store.getProposalView(1L, firstProposal).expiryReason()).isEqualTo("SOURCE_CHANGED");
     }
 
     @Test

@@ -62,6 +62,11 @@
           || (state?.hostGeneration || "")!==(expected.hostGeneration || "") || Number(state?.controlRevision || 0)!==Number(expected.controlRevision || 0)))
           throw fault("HR_HOST_CANCELLED","托管已停止或运行代次发生变化");
         const value = { ...(state || {}), ...changes, protocol: PROTOCOL, updatedAt: now() };
+        if (changes.state && changes.state !== state?.state) value.lastTransition = {
+          from: state?.state || "STOPPED", to: changes.state,
+          reason: changes.errorCode || changes.pauseReason || changes.message || changes.state,
+          source: changes.pauseOrigin || "HR_HOST", at: now()
+        };
         await chrome.storage.local.set({ [KEY]: value });
         return value;
       });

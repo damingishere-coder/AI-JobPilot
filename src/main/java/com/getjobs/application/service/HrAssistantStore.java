@@ -256,7 +256,7 @@ public class HrAssistantStore {
                        updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """, fingerprint, conversationId);
         jdbcTemplate.update("""
-                UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP
+                UPDATE hr_reply_proposal SET status='EXPIRED', expiry_reason='SOURCE_CHANGED', version=version+1, updated_at=CURRENT_TIMESTAMP
                  WHERE conversation_id=? AND source_fingerprint<>?
                    AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')
                 """, conversationId, fingerprint);
@@ -293,7 +293,7 @@ public class HrAssistantStore {
                 """,Integer.class,conversationId,sourceFingerprint);
         if (held != null && held > 0) return true;
         // A deliberate new trial may replace an unsent suggestion, never a sent/unknown/skipped decision.
-        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND status='REVIEW_REQUIRED'",conversationId);
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',expiry_reason='SUPERSEDED',updated_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND status='REVIEW_REQUIRED'",conversationId);
         return false;
     }
 
@@ -340,7 +340,7 @@ public class HrAssistantStore {
             if(retryIncomplete || freshAuthorization) {
                 // Keep the unchanged suggestion as history; its initial version is
                 // preserved to distinguish it from user edits and manual decisions.
-                jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='REVIEW_REQUIRED' AND version=1",id);
+                jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',expiry_reason='REASSESSMENT_REQUIRED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='REVIEW_REQUIRED' AND version=1",id);
                 ignored.add(id);
             }
         }
@@ -358,14 +358,14 @@ public class HrAssistantStore {
     public void resumePendingCommands(Long profileId,String watchSessionId) {
         // Only commands never leased to a browser can be resumed or re-evaluated.
         jdbcTemplate.update("UPDATE hr_send_command SET status='STALE',outcome='EXPIRED_UNSENT',updated_at=CURRENT_TIMESTAMP WHERE transport='CHROME_BRIDGE' AND profile_id=? AND status='PENDING' AND expires_at<=datetime('now','localtime')",profileId);
-        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='APPROVED' AND id IN (SELECT proposal_id FROM hr_send_command WHERE outcome='EXPIRED_UNSENT')",profileId);
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED',expiry_reason='TTL_EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND status='APPROVED' AND id IN (SELECT proposal_id FROM hr_send_command WHERE outcome='EXPIRED_UNSENT')",profileId);
         jdbcTemplate.update("UPDATE hr_send_command SET watch_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE transport='CHROME_BRIDGE' AND profile_id=? AND status='PENDING' AND NOT EXISTS (SELECT 1 FROM hr_autopilot_decision d WHERE d.proposal_id=hr_send_command.proposal_id AND d.capture_origin='TRIAL')",watchSessionId,profileId);
     }
 
     @Transactional
     public void expireAnsweredProposals(long conversationId) {
         jdbcTemplate.update("""
-                UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP
+                UPDATE hr_reply_proposal SET status='EXPIRED', expiry_reason='ALREADY_REPLIED', version=version+1, updated_at=CURRENT_TIMESTAMP
                  WHERE conversation_id=? AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')
                 """, conversationId);
         jdbcTemplate.update("""
@@ -382,7 +382,7 @@ public class HrAssistantStore {
                                com.getjobs.application.hr.HrAssistantTypes.AiDraft draft) {
         String code = nextConfirmationCode(profileId);
         String codeHash = confirmationCodeHash(profileId, code);
-        LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(15);
+        LocalDateTime expiresAt = LocalDateTime.now().plusHours(24);
         KeyHolder keys = new GeneratedKeyHolder();
         jdbcTemplate.update(connection -> {
             PreparedStatement statement = connection.prepareStatement("""
@@ -504,7 +504,7 @@ public class HrAssistantStore {
                     crypto.decrypt(rs.getString("draft_cipher"), aad + ":draft"),
                     crypto.decrypt(rs.getString("summary_cipher"), aad + ":summary"), risk, missing,
                     rs.getDouble("confidence"), rs.getInt("version"), readDateTime(rs.getString("expires_at")),
-                    readDateTime(rs.getString("updated_at")), isHighValue(classification, risk, missing));
+                    readDateTime(rs.getString("updated_at")), isHighValue(classification, risk, missing), rs.getString("expiry_reason"));
     }
 
     @Transactional(readOnly = true)
@@ -566,9 +566,9 @@ public class HrAssistantStore {
         String newCode = nextConfirmationCode(profileId);
         int changed = jdbcTemplate.update("""
                 UPDATE hr_reply_proposal SET confirmation_code_hash=?, confirmation_code_cipher=?, draft_cipher=?, version=version+1, status='REVIEW_REQUIRED',
-                       updated_at=CURRENT_TIMESTAMP
+                       expires_at=?, updated_at=CURRENT_TIMESTAMP
                  WHERE id=? AND profile_id=? AND version=? AND status='REVIEW_REQUIRED'
-                """, confirmationCodeHash(profileId, newCode), crypto.encrypt(newCode, aad + ":code"), crypto.encrypt(newDraft.trim(), aad + ":draft"), proposalId, profileId, expectedVersion);
+                """, confirmationCodeHash(profileId, newCode), crypto.encrypt(newCode, aad + ":code"), crypto.encrypt(newDraft.trim(), aad + ":draft"), LocalDateTime.now().plusHours(24).format(SQLITE_TIMESTAMP), proposalId, profileId, expectedVersion);
         if (changed != 1) throw new StaleProposalException("草稿已变化，请刷新后重新确认");
         return getProposalView(profileId, proposalId);
     }
@@ -596,8 +596,8 @@ public class HrAssistantStore {
                     confirmed_at=excluded.confirmed_at, updated_at=CURRENT_TIMESTAMP
                 """, proposalId, requestKey, status.name(),
                 crypto.encrypt(safe(evidence), "attempt:" + proposalId), status.name());
-        jdbcTemplate.update("UPDATE hr_reply_proposal SET status=?, version=version+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                status.name(), proposalId);
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status=?, expiry_reason=CASE WHEN ?='EXPIRED' THEN 'CONTEXT_CHANGED' ELSE expiry_reason END, version=version+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                status.name(), status.name(), proposalId);
     }
 
     @Transactional
@@ -857,8 +857,8 @@ public class HrAssistantStore {
 
     @Transactional
     public int purgeExpired() {
-        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP " +
-                "WHERE expires_at<datetime('now', 'localtime') AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')");
+        jdbcTemplate.update("UPDATE hr_reply_proposal SET status='EXPIRED', expiry_reason='TTL_EXPIRED', version=version+1, updated_at=CURRENT_TIMESTAMP " +
+                "WHERE expires_at<=datetime('now', 'localtime') AND status IN ('OBSERVED','GENERATING','REVIEW_REQUIRED','APPROVED')");
         int messages = jdbcTemplate.update("DELETE FROM hr_message WHERE expires_at<CURRENT_TIMESTAMP");
         jdbcTemplate.update("""
                 UPDATE hr_reply_attempt SET evidence_cipher=NULL
@@ -916,7 +916,7 @@ public class HrAssistantStore {
     }
 
     private void assertReviewable(ProposalRecord record) {
-        if (record.expiresAt().isBefore(LocalDateTime.now())) throw new StaleProposalException("确认码已过期");
+        if (!record.expiresAt().isAfter(LocalDateTime.now())) throw new StaleProposalException("确认码已过期");
         if (record.status() != ProposalStatus.REVIEW_REQUIRED) throw new StaleProposalException("当前回复任务不可编辑或发送");
     }
 

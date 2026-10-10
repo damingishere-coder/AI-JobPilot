@@ -842,6 +842,77 @@ for (const source of ["registered", "running", "dedicated", "pending"]) {
   });
 }
 
+for (const source of ["registered", "running", "dedicated"]) {
+  for (const paused of [false, true]) test(`scan excludes ${source} HR ownership even on a non-chat URL with paused=${paused}`, async () => {
+    const h = loadBackground({ tabs: [
+      { id: 7, windowId: 3, url: "https://www.zhipin.com/", status: "complete", lastAccessed: 100 },
+      { id: 8, windowId: 4, url: "https://www.zhipin.com/web/geek/jobs", status: "complete" }
+    ], statuses: { 7: { isRunning: true, runId: "boss-run", profileId: 4 } } });
+    const key = require('../boss-hr-host.js').KEY;
+    h.storage[key] = { tabId: 7, profileId: 4, intentEnabled: true, paused, state: paused ? 'PAUSED' : 'RUNNING', cursor: { saved: true } };
+    const savedHost = JSON.stringify(h.storage[key]);
+    if (source === 'registered') await h.context.registerScanSession('boss', 7, 'boss-run', 10, '', 4);
+    if (source === 'dedicated') h.storage.__GET_JOBS_SCAN_WINDOW_boss__ = { tabId: 7, windowId: 3 };
+    const selected = await h.context.findScanPlatformTab('boss', undefined, 'boss-run', 4);
+    assert.equal(selected.id, 8);
+    assert.equal(JSON.stringify(h.storage[key]), savedHost);
+    assert.ok(!h.sentMessages.some(entry => entry.tabId === 7));
+    assert.equal(h.tabUpdates.length, 0);
+  });
+}
+
+test('status and stop discard a conflicting scan registration without contacting the HR tab', async () => {
+  const h = loadBackground({ tabs: [{ id: 7, windowId: 3, url: 'https://www.zhipin.com/', status: 'complete' }],
+    statuses: { 7: { isRunning: true, runId: 'boss-run', profileId: 4 } } });
+  const key = require('../boss-hr-host.js').KEY;
+  h.storage[key] = { tabId: 7, intentEnabled: true, state: 'RUNNING' };
+  for (const type of ['BOSS_SCAN_STATUS', 'BOSS_SCAN_STOP']) {
+    await h.context.registerScanSession('boss', 7, 'boss-run', 10, '', 4);
+    const result = await h.context.handlePageMessage({ type, platform: 'boss', profileId: 4 }, { tab: { id: 10 } });
+    assert.equal(result.success, true);
+    assert.equal(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss, undefined);
+    assert.equal(h.storage[key].state, 'RUNNING');
+  }
+  assert.equal(h.sentMessages.length, 0);
+});
+
+test('starting, stopping and restarting a same-profile scan preserves HR ownership, cursor and timer', async () => {
+  const h = loadBackground({ tabs: [
+    { id: 7, windowId: 3, url: 'https://www.zhipin.com/', status: 'complete' },
+    { id: 8, windowId: 4, url: 'https://www.zhipin.com/web/geek/jobs', status: 'complete' },
+    { id: 10, windowId: 1, url: 'http://127.0.0.1:6866/discover', status: 'complete' }
+  ] });
+  const key = require('../boss-hr-host.js').KEY;
+  h.storage[key] = { tabId: 7, profileId: 4, intentEnabled: true, state: 'RUNNING',
+    hostGeneration: 'hr-generation', watchSessionId: 'hr-watch', nextScanAt: 123456,
+    cursor: { stage: 'CAPTURE', queue: ['hr-contact'] } };
+  const saved = JSON.stringify(h.storage[key]);
+  for (let round = 0; round < 2; round++) {
+    assert.equal((await startScan(h.context, 'boss')).success, true);
+    assert.equal(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__.boss.tabId, 8);
+    for (const type of ['BOSS_SCAN_STATUS', 'BOSS_SCAN_STOP']) {
+      assert.equal((await h.context.handlePageMessage({ type, platform: 'boss', profileId: 4 }, { tab: { id: 10 } })).success, true);
+      assert.equal(JSON.stringify(h.storage[key]), saved);
+    }
+  }
+  assert.ok(!h.sentMessages.some(entry => entry.tabId === 7));
+  assert.ok(!h.tabUpdates.some(entry => entry.tabId === 7));
+  assert.equal(h.alarmClears.length, 0);
+});
+
+test('a new HR binding during scan window preparation is protected before moving or activating it', async () => {
+  const h = independentScanFixture();
+  const key = require('../boss-hr-host.js').KEY;
+  const getWindow = h.context.chrome.windows.get;
+  h.context.chrome.windows.get = async (...args) => {
+    h.storage[key] = { tabId: 1, intentEnabled: true, state: 'RUNNING' };
+    return getWindow(...args);
+  };
+  await assert.rejects(() => startScan(h.context, 'boss'), error => error.errorCode === 'HR_CHAT_PROTECTED');
+  assert.equal(h.windowCreates.length, 0);
+  assert.equal(h.tabUpdates.length, 0);
+});
+
 test("Boss page redirecting to chat during preparation never receives a scan start", async () => {
   const h = independentScanFixture();
   const waitForTab = h.context.waitForSupportedTab;
