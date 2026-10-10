@@ -85,7 +85,7 @@ public class HrAutopilotStore {
         // Only unleased automatic replies are retired for fresh-page re-evaluation.
         // User-edited replies have automatic=false and keep their manual decision.
         jdbc.update("""
-                UPDATE hr_reply_proposal SET status='EXPIRED',version=version+1,updated_at=CURRENT_TIMESTAMP
+                UPDATE hr_reply_proposal SET status='EXPIRED',expiry_reason='AUTHORIZATION_REVOKED',version=version+1,updated_at=CURRENT_TIMESTAMP
                 WHERE profile_id=? AND status='APPROVED'
                   AND id IN (SELECT c.proposal_id FROM hr_send_command c JOIN hr_autopilot_decision d ON d.proposal_id=c.proposal_id WHERE c.status='PENDING' AND d.automatic=1)
                   AND NOT EXISTS (SELECT 1 FROM hr_send_command c WHERE c.proposal_id=hr_reply_proposal.id AND c.status IN ('LEASED','COMPLETE'))

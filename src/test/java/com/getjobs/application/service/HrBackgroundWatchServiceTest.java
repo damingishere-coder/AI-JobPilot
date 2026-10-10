@@ -60,6 +60,23 @@ class HrBackgroundWatchServiceTest {
         while(!complete.getAsBoolean() && System.nanoTime()<deadline)Thread.sleep(10);
         assertThat(complete.getAsBoolean()).isTrue();
     }
+    @Test void jobScanAndHrHostingKeepSeparateControlAndAuthorization() {
+        var hosted=start();
+        var scan=new ScanRunService(db,new ObjectMapper(),new org.springframework.jdbc.datasource.DataSourceTransactionManager(db.getDataSource()));
+        int version=policies.policy(1L).version();
+        scan.register("boss",1,"independent-scan");
+        scan.command("boss",1,"independent-scan","STOP","stop-independent");
+        assertThat(watcher.status().watching()).isTrue();
+        assertThat(watcher.status().watchSessionId()).isEqualTo(hosted.watchSessionId());
+        assertThat(watcher.status().lastTransition()).isEqualTo(hosted.lastTransition());
+        assertThat(policies.policy(1L).version()).isEqualTo(version);
+        assertThat(policies.authorizationValid(1L)).isTrue();
+        scan.register("boss",1,"next-independent-scan");
+        watcher.stop(hosted.watchSessionId(),"USER_STOPPED");
+        assertThat(scan.detail("boss",1,"next-independent-scan").get("desired")).isEqualTo("RUNNING");
+        assertThat(watcher.status().lastTransition().get("source")).isEqualTo("HR_STOP");
+    }
+
     @Test void ackIsIndependentOfSlowAiAndQueuedWorkCompletesAsynchronouslyOnce()throws Exception {
         var status=start();var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
         when(drafts.generateWithFacts(eq(1L),anyLong(),any(),anyList(),anyString())).thenAnswer(call->{entered.countDown();assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();return reply();});

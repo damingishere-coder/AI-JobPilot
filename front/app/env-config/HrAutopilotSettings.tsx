@@ -12,10 +12,12 @@ export const HR_BACKGROUND_PROTOCOL = '2026-09-30-hr-background-v1'
 type Policy = { version: number; enabled: boolean; paused: boolean; resumeName: string; resumeSha256: string; rules: string; facts: string; replyMode: string; sharePhone: boolean; shareResume: boolean; historyMode: string; historyDays: number; authorizationValid?: boolean; blockers?: string[]; communicationProfile?: Record<string, string> }
 type HostState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'RECOVERING' | 'BLOCKED'
 type PageBinding = { watchSessionId?: string; hostGeneration?: string; pageDocumentId?: string }
-type HostStatus = PageBinding & { transport: 'CHROME_BACKGROUND'; state: HostState; intentEnabled: boolean; paused?: boolean; pauseReason?: string; tabId?: number; accountName?: string; needsAccountConfirmation?: boolean; errorCode?: string; message?: string; lastPageSeenAt?: number | string; lastScanAt?: number | string; nextScanAt?: number | string; cursor?: { stage?: string; seen?: unknown[]; queue?: unknown[] } | null; operation?: { kind?: string } | null }
-type WatchStatus = PageBinding & { watching: boolean; transport?: string; lastPageHeartbeatAt?: number | string; lastSuccessfulScanAt?: number | string }
+type Transition = { reason?: string; source?: string; at?: number }
+type HostStatus = PageBinding & { lastTransition?: Transition; transport: 'CHROME_BACKGROUND'; state: HostState; intentEnabled: boolean; paused?: boolean; pauseReason?: string; tabId?: number; accountName?: string; needsAccountConfirmation?: boolean; errorCode?: string; message?: string; lastPageSeenAt?: number | string; lastScanAt?: number | string; nextScanAt?: number | string; cursor?: { stage?: string; seen?: unknown[]; queue?: unknown[] } | null; operation?: { kind?: string } | null }
+type WatchStatus = PageBinding & { lastTransition?: Transition; watching: boolean; transport?: string; lastPageHeartbeatAt?: number | string; lastSuccessfulScanAt?: number | string }
 type Runtime = { host: HostStatus | null; watch: WatchStatus | null; hostError: string; backendError: string }
 const stateLabels: Record<HostState, string> = { STOPPED: '已停止', STARTING: '正在后台核对账号与聊天页', RUNNING: '后台托管中', PAUSED: '已暂停', RECOVERING: '正在校验并恢复连接', BLOCKED: '需要处理后恢复' }
+const transitionSources: Record<string, string> = { USER: '手动控制', REMOTE: '托管策略', HR_HOST: 'Chrome 后台托管', HR_START: '托管启动', HR_STOP: '托管停止', HR_PAGE_FAULT: '聊天页面异常', HR_HOST_FAULT: '后台连接异常', HR_PAGE_HEARTBEAT: '聊天页面心跳' }
 
 function hostData(value: unknown): HostStatus {
   const host = value as HostStatus | undefined
@@ -178,6 +180,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false, 
   }
 
   const host = runtime.host
+  const lastTransition = [host?.lastTransition, runtime.watch?.lastTransition].filter((value): value is Transition => Boolean(value?.at)).sort((a, b) => (b.at || 0) - (a.at || 0))[0]
   const active = host?.intentEnabled === true && host.state !== 'STOPPED'
   const accountReconfirmationRequired = host?.needsAccountConfirmation === true || host?.errorCode === 'ACCOUNT_RECONFIRM_REQUIRED'
   const paused = host?.state === 'PAUSED' || host?.state === 'BLOCKED' || accountReconfirmationRequired
@@ -194,7 +197,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false, 
 
   return <section className="min-w-0 space-y-5 rounded-2xl border bg-muted/60 p-4 leading-7 text-foreground sm:p-6">
     <div><h3 className="text-lg font-semibold">BOSS 一键后台托管</h3>
-    <p className="mt-1 text-sm text-muted-foreground">复用当前 Chrome 登录。开启后可以切换页面或最小化 Chrome，保留后台聊天标签即可。</p></div>
+    <p className="mt-1 text-sm text-muted-foreground">复用当前 Chrome 登录。开启后可以切换页面或最小化 Chrome，保留后台聊天标签即可。同一人物档案的岗位扫描与托管独立运行。</p></div>
     {view !== 'rules' && <div role="status" aria-live="polite" className="min-w-0 space-y-2 rounded-xl border bg-card p-4 text-sm">
       <p className="font-semibold">托管状态：{runtimeLabel}</p>
       {running && <p>当前进度：{progressLabel(host)}</p>}
@@ -205,7 +208,9 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false, 
         <p>最近读取页面：{timeLabel(host?.lastPageSeenAt || runtime.watch?.lastPageHeartbeatAt)}</p>
         <p>最近完成巡检：{timeLabel(host?.lastScanAt || runtime.watch?.lastSuccessfulScanAt)}</p>
         <p>下次巡检：{timeLabel(host?.nextScanAt)}</p>
-      </div></details>
+      </div>
+      {lastTransition && <p className="mt-2 text-sm">最近状态变化：{timeLabel(lastTransition.at)} · {lastTransition.reason} · 来源：{transitionSources[lastTransition.source || ''] || '后台聊天托管'}</p>}
+      </details>
       {runtime.hostError && <p className="text-amber-700">{runtime.hostError}</p>}
       {runtime.backendError && <p className="text-amber-700">{runtime.backendError}</p>}
       {(host?.pauseReason || host?.message) && <p className="text-amber-700">{host.pauseReason || host.message}</p>}

@@ -8,6 +8,14 @@ vi.mock('./HrDutyActivity', () => ({ default: () => null }))
 
 const defaultPolicy = { version: 2, enabled: false, paused: false, resumeName: '', resumeSha256: '', facts: '', rules: '按已确认事实回复', replyMode: 'AUTO', historyMode: 'RECENT', historyDays: 15, sharePhone: false, shareResume: false, authorizationValid: false, communicationProfile: { expectedSalary: '20–25K' } }
 
+it('shows the newest HR transition and its actual source independently of scan controls', async () => {
+  setup({ host: { lastTransition: { reason: '用户暂停', source: 'USER', at: 1000 } },
+    watch: { lastTransition: { reason: '页面连接超时', source: 'HR_PAGE_HEARTBEAT', at: 2000 } } })
+  render(<HrAutopilotSettings profileId={1} />)
+  expect(await screen.findByText(/最近状态变化/)).toHaveTextContent('页面连接超时 · 来源：聊天页面心跳')
+  expect(screen.queryByText(/用户暂停/)).not.toBeInTheDocument()
+})
+
 it('preserves a disabled saved REVIEW and NEW_ONLY policy instead of replacing it with automatic historical replies', async () => {
   const { requests } = setup({ policy: { enabled: false, replyMode: 'REVIEW', historyMode: 'NEW_ONLY', historyDays: 30 } })
   render(<HrAutopilotSettings profileId={1} />)

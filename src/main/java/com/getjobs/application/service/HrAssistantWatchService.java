@@ -75,6 +75,12 @@ public class HrAssistantWatchService {
     private volatile LocalDateTime lastScanAt;
     private volatile LocalDateTime lastHeartbeatAt;
     private volatile String lastError = "";
+    private volatile java.util.Map<String,Object> lastTransition = java.util.Map.of();
+
+    private void recordTransition(String reason, String source) {
+        lastTransition = java.util.Map.of("reason", safe(reason), "source", source,
+                "at", System.currentTimeMillis(), "watching", watching.get());
+    }
     private volatile int outboxCount;
     private volatile long scanIntervalMs = SCAN_INTERVAL_MS;
 
@@ -166,6 +172,7 @@ public class HrAssistantWatchService {
             backgroundBlocker="";
             lastError = "";
             outboxCount = 0;
+            recordTransition("后台连接已核验", "HR_START");
             WatchStatus status = status();
             events.emit("watch-status", status);
             return status;
@@ -182,6 +189,7 @@ public class HrAssistantWatchService {
             // A stop cancels future work, but must not release an in-flight ingestion.
             browserScanRunning = false;
             lastError = safe(reason);
+            recordTransition(lastError, "HR_STOP");
             if(isBackground())backgroundBlocker=lastError.startsWith("USER_STOPPED")?"USER_STOPPED":"HOST_PAUSED";
             if (session != null && !lastError.isBlank() && !lastError.startsWith("USER_STOPPED") && !lastError.startsWith("TRIAL_COMPLETED")) {
                 napCatGateway.notifySystemFault(session.profileId(), lastError);
@@ -231,6 +239,7 @@ public class HrAssistantWatchService {
                 watching.set(false);
                 if(isBackground())backgroundBlocker="PAGE_FAULT";
                 this.browserScanRunning = false;
+                recordTransition(lastError, "HR_PAGE_FAULT");
                 napCatGateway.notifySystemFault(session.profileId(), lastError);
                 events.emit("watch-paused", java.util.Map.of("message", lastError));
             }
@@ -417,7 +426,7 @@ public class HrAssistantWatchService {
                 backgroundBlocker,pageObservedAt==0?null:LocalDateTime.ofInstant(Instant.ofEpochMilli(pageObservedAt),ZoneId.systemDefault()),lastScanAt,
                 active==null || active.binding()==null?"":active.binding().hostGeneration(),
                 active==null || active.binding()==null?"":active.binding().pageDocumentId(),
-                background==null || currentProfile==null?0:background.pending(currentProfile.getId()));
+                background==null || currentProfile==null?0:background.pending(currentProfile.getId()), lastTransition);
     }
 
     public String requireActiveWatchSession(Long profileId) {
@@ -640,6 +649,7 @@ public class HrAssistantWatchService {
             boolean repeated=error.equals(backgroundBlocker) && !watching.get();
             watching.set(false);browserScanRunning=false;backgroundBlocker=error;
             lastError="后台聊天托管已暂停（"+error+"），请在工作台查看并处理";
+            if(!repeated)recordTransition(error,"HR_HOST_FAULT");
             if(!repeated)napCatGateway.notifySystemFault(session.profileId(),lastError);
             return status();
         });
@@ -678,6 +688,7 @@ public class HrAssistantWatchService {
         if(isBackground() && watching.get() && (pageObservedAt==0 || System.currentTimeMillis()-pageObservedAt>120_000)) {
             watching.set(false);browserScanRunning=false;backgroundBlocker="PAGE_HEARTBEAT_EXPIRED";
             lastError="真实聊天页面心跳已超过 120 秒，停止领取发送动作";
+            recordTransition(lastError,"HR_PAGE_HEARTBEAT");
         }
     }
     private String normalize(String value) {return safe(value).replaceAll("\\s+","");}

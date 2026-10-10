@@ -13,6 +13,19 @@ function pageResponse(url: string, items: Row[], total = items.length, page?: nu
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+it('shows expiry reasons separately from hosting and locks time-expired confirmations', async () => {
+  const expired = { ...row(1, 'EXPIRED'), expiryReason: 'ALREADY_REPLIED', expiresAt: '2020-01-01T10:00:00' }
+  const legacy = row(2, 'EXPIRED')
+  const elapsed = { ...row(3), expiresAt: '2020-01-01T10:00:00' }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes('proposals') ? [expired, legacy, elapsed] : {})))
+  render(<HrDutyActivity profileId={4} />)
+  await screen.findByText('回复失效原因：本人已经回复。此条记录保留为历史。')
+  expect(screen.getByText('回复失效原因：旧记录，失效原因未保存。此条记录保留为历史。')).toBeInTheDocument()
+  expect(screen.getByText('回复失效原因：超过有效期。此条记录保留为历史。')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '确认发送' })).toBeDisabled()
+  expect(screen.getAllByText(/回复有效期至/)).toHaveLength(2)
+})
+
 it('keeps the legacy array endpoint and collapsed records with useful send and review counts', async () => {
   const fetchMock = vi.fn(async (url: string) => response(url.includes('proposals') ? [row(1, 'SENT_CONFIRMED')] : { activity: { counts: { SENT_CONFIRMED: 1, REVIEW_REQUIRED: 2 }, progress: { processed: 1, baseline_complete: 0 }, decisions: [] } }))
   vi.stubGlobal('fetch', fetchMock)

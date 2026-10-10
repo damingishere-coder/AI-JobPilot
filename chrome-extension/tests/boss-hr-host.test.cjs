@@ -187,6 +187,22 @@ function harness(options={}) {
     continue:async()=>{const entry=timers.entries().next().value;if(!entry)return false;timers.delete(entry[0]);await entry[1].fn();return true;},
     setTime:value=>{clock=value;pageTime=value;},setSession:value=>{session=value;}};
 }
+test('state transitions retain their cause across polling and worker restarts',async()=>{
+  const h=harness();
+  await h.start();
+  const running=structuredClone(h.store[KEY].lastTransition);
+  assert.equal(running.to,'RUNNING');
+  await h.host.update({lastPageSeenAt:123});
+  assert.deepEqual(h.store[KEY].lastTransition,running);
+  await h.host.control({type:'BOSS_HR_HOST_PAUSE'},h.sender);
+  assert.equal(h.store[KEY].lastTransition.to,'PAUSED');
+  assert.equal(h.store[KEY].lastTransition.source,'USER');
+  const next=harness({store:h.store,tabs:h.tabs});
+  await next.host.initialize();
+  assert.deepEqual(next.store[KEY].lastTransition,h.store[KEY].lastTransition);
+  assert.equal(next.store[KEY].paused,true);
+});
+
 test('queued read targets retain the observed viewport across worker restarts',async()=>{
   const h=harness({scan:message=>({success:true,targets:[{uid:'u1',captureId:'preview',listScrollTop:14000}],hasMore:false,nextScrollTop:0})});
   await h.start();assert.equal(h.store[KEY].cursor.queue[0].listScrollTop,14000);

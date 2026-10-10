@@ -1433,7 +1433,7 @@ async function handlePageMessageInternal(message, sender) {
     tab = await ensureIndependentScanWindow(platform, tab);
   }
   tab = await waitForSupportedTab(tab.id, config);
-  if (isScanStartMessage(message.type) && !isUsableScanTab(platform, tab)) {
+  if (isScanStartMessage(message.type) && !isUsableScanTab(platform, tab, await protectedHrTabIds(platform))) {
     return { success: false, errorCode: "HR_CHAT_PROTECTED",
       message: "BOSS扫描页面跳转到了聊天页。请打开BOSS岗位搜索页后重新开始扫描。" };
   }
@@ -2434,14 +2434,16 @@ async function resolvePlatformTab(platform, message) {
 }
 
 async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requestedProfileId = 0) {
+  const protectedIds = await protectedHrTabIds(platform);
   const registered = await getRegisteredScanTab(platform, requestedRunId, requestedProfileId);
-  if (isUsableScanTab(platform, registered)) return registered;
+  if (isUsableScanTab(platform, registered, protectedIds)) return registered;
+  if (registered) await cleanupPlatformScanState(platform, registered.id);
 
   const running = await findRunningPlatformTab(platform, requestedRunId, requestedProfileId, { scanOnly: true });
   if (running) return running;
 
   const dedicated = await getIndependentScanTab(platform);
-  if (isUsableScanTab(platform, dedicated)) return dedicated;
+  if (isUsableScanTab(platform, dedicated, protectedIds)) return dedicated;
 
   if (platform === "zhilian") {
     const pageStatus = await queryZhilianPageStatus({ type: "ZHILIAN_PAGE_STATUS", platform }, null);
@@ -2452,11 +2454,18 @@ async function findScanPlatformTab(platform, startUrl, requestedRunId = "", requ
   return await findOrCreatePlatformTab(platform, scanStartUrl, { active: false, scanOnly: true });
 }
 
-function isUsableScanTab(platform, tab) {
+async function protectedHrTabIds(platform) {
+  if (platform !== "boss") return new Set();
+  const [host, legacy] = await Promise.all([bossHrHost.read(), readBossHrWatch()]);
+  return new Set([host?.intentEnabled ? host.tabId : null, legacy?.watching ? legacy.tabId : null]
+    .filter(Number.isInteger));
+}
+
+function isUsableScanTab(platform, tab, protectedIds = new Set()) {
   if (!tab || !isSupportedUrl(tab.url || tab.pendingUrl || "", PLATFORM_CONFIG[platform])) return false;
   // Chat documents deliberately reject job navigation. Keep HR tabs in place,
   // including stale scan registrations and tabs currently redirecting to chat.
-  return platform !== "boss" || (!isBossChatUrl(tab.url || "") && !isBossChatUrl(tab.pendingUrl || ""));
+  return platform !== "boss" || (!protectedIds.has(tab.id) && !isBossChatUrl(tab.url || "") && !isBossChatUrl(tab.pendingUrl || ""));
 }
 
 async function getIndependentScanTab(platform) {
@@ -2470,8 +2479,16 @@ async function getIndependentScanTab(platform) {
 async function ensureIndependentScanWindow(platform, tab) {
   const key = `${SCAN_WINDOW_KEY_PREFIX}${platform}__`;
   try {
+    const verify = async () => {
+      tab = await chrome.tabs.get(tab.id);
+      if (!isUsableScanTab(platform, tab, await protectedHrTabIds(platform))) {
+        throw Object.assign(new Error("HR 专用聊天标签不能用于岗位扫描"), { errorCode: "HR_CHAT_PROTECTED" });
+      }
+    };
+    await verify();
     const record = (await chrome.storage.local.get(key))[key];
     const source = await chrome.windows.get(tab.windowId, { populate: true });
+    await verify();
     const isolated = record?.tabId === tab.id && record.windowId === tab.windowId
       && source.tabs?.length === 1 && source.tabs[0].id === tab.id;
     if (!isolated) {
@@ -2491,19 +2508,21 @@ async function ensureIndependentScanWindow(platform, tab) {
       // Only an explicit start/resume restores a minimized window; status polling never does.
       await chrome.windows.update(source.id, { state: "normal" });
     }
+    await verify();
     await chrome.tabs.update(tab.id, { active: true, autoDiscardable: false });
     return await chrome.tabs.get(tab.id);
   } catch (error) {
     throw Object.assign(new Error(`无法准备${platform === "boss" ? "BOSS" : "智联"}独立扫描窗口，尚未启动本次扫描：${error.message || error}`), {
-      errorCode: "SCAN_WINDOW_UNAVAILABLE"
+      errorCode: error.errorCode || "SCAN_WINDOW_UNAVAILABLE"
     });
   }
 }
 
 async function findRegisteredOrRunningScanTab(platform, requestedProfileId = 0) {
   const registered = await getRegisteredScanTab(platform, "", requestedProfileId);
-  if (registered) return registered;
-  return await findRunningPlatformTab(platform, "", requestedProfileId);
+  if (isUsableScanTab(platform, registered, await protectedHrTabIds(platform))) return registered;
+  if (registered) await cleanupPlatformScanState(platform, registered.id);
+  return await findRunningPlatformTab(platform, "", requestedProfileId, { scanOnly: true });
 }
 
 async function findDeliveryPlatformTab(platform, startUrl) {
@@ -2522,6 +2541,7 @@ async function findDeliveryPlatformTab(platform, startUrl) {
 async function findOrCreatePlatformTab(platform, startUrl, options = {}) {
   const config = PLATFORM_CONFIG[platform];
   const excludedTabIds = new Set(options.excludedTabIds || []);
+  if (options.scanOnly) for (const id of await protectedHrTabIds(platform)) excludedTabIds.add(id);
   const tabs = await chrome.tabs.query({});
   const found = tabs
     .filter((tab) => !excludedTabIds.has(tab.id))
@@ -2547,9 +2567,10 @@ async function findRunningPlatformTab(platform, requestedRunId = "", requestedPr
   const profileId = normalizeProfileId(requestedProfileId);
   if (!profileId) return null;
   const config = PLATFORM_CONFIG[platform];
+  const protectedIds = options.scanOnly ? await protectedHrTabIds(platform) : new Set();
   const tabs = (await chrome.tabs.query({}))
     .filter((tab) => isSupportedUrl(tab.url || tab.pendingUrl || "", config))
-    .filter((tab) => !options.scanOnly || isUsableScanTab(platform, tab));
+    .filter((tab) => !options.scanOnly || isUsableScanTab(platform, tab, protectedIds));
 
   for (const tab of tabs) {
     if (!tab.id) continue;
