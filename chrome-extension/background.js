@@ -1429,13 +1429,13 @@ async function handlePageMessageInternal(message, sender) {
     } finally { activeDeliveries.delete(platform); }
   }
 
-  if (isScanStartMessage(message.type)) {
-    tab = await ensureIndependentScanWindow(platform, tab);
-  }
   tab = await waitForSupportedTab(tab.id, config);
   if (isScanStartMessage(message.type) && !isUsableScanTab(platform, tab, await protectedHrTabIds(platform))) {
     return { success: false, errorCode: "HR_CHAT_PROTECTED",
       message: "BOSS扫描页面跳转到了聊天页。请打开BOSS岗位搜索页后重新开始扫描。" };
+  }
+  if (isScanStartMessage(message.type)) {
+    tab = await ensureIndependentScanWindow(platform, tab);
   }
   await ensureContentScript(tab.id, config.contentScript);
   if (!isNoFocusPlatformMessage(message.type) && !isScanStartMessage(message.type)) {
