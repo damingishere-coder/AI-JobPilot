@@ -584,10 +584,16 @@
     }
     async function initialize(browserStartup = false) {
       const state = await read();
-      if (state?.intentEnabled && (!state.paused || state.pauseOrigin==="REMOTE")) {
+      // Older workers paused an authorized host after a backend token rotation.
+      // A real user pause clears errorCode; unknown sends must remain frozen.
+      const tokenBlocked = state?.state === "BLOCKED" && state.errorCode === "ACTION_TOKEN_INVALID"
+        && state.operation?.kind !== "SEND";
+      if (state?.intentEnabled && (!state.paused || state.pauseOrigin==="REMOTE" || tokenBlocked)) {
         await alarm();
         await update({ state: "RECOVERING", message: "后台恢复中，等待核验登录与页面", retryAt: 0, pageCreationAllowed:false,
-          needsAccountConfirmation:browserStartup && !state.accountIdentityStable ? true : state.needsAccountConfirmation || false },{...state,allowPaused:state.pauseOrigin==="REMOTE"});
+          ...(tokenBlocked ? {paused:false,pauseOrigin:"",pauseReason:"",errorCode:""} : {}),
+          needsAccountConfirmation:browserStartup && !state.accountIdentityStable ? true : state.needsAccountConfirmation || false },
+          {...state,allowPaused:state.pauseOrigin==="REMOTE" || tokenBlocked});
       }
     }
     async function timeout(promise, ms) {
