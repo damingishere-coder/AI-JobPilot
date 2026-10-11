@@ -217,6 +217,7 @@
     // ALL describes traversal, not age. Completed baseline sources are already
     // durable in the backend; a changed incoming source must remain eligible.
     const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.baseline===true || message.target?.historical===true,contextComplete:read.complete};
+    if(message.target?.readRecovery?.captureId===capture.captureId && message.target.readRecovery.historical===true)capture.historical=true;
     await hydrateMedia(capture.messages,message.deadlineAt);
     await guard();
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};

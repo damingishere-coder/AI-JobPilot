@@ -194,6 +194,19 @@ public class HrBackgroundStore {
                 "message",blocked>0?"有 "+blocked+" 条聊天记录处理受阻，尚未发送回复。":retrying>0?"有 "+retrying+" 条聊天分析暂时失败，正在等待自动重试。":"");
     }
 
+    /** Minimal reread hints for this account and authorization, with no chat text or send retry. */
+    public List<Map<String,Object>> readRecoveryHints(Long profile,String account,int version) {
+        var hints=new ArrayList<Map<String,Object>>();
+        for(var row:db.queryForList("SELECT id,payload_cipher FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status IN ('PENDING','BLOCKED') AND payload_cipher<>'' ORDER BY updated_at DESC LIMIT 100",
+                profile,accountHash(profile,account),version)) {
+            try {
+                var capture=decode(crypto.decrypt(row.get("payload_cipher").toString(),"background-capture:"+row.get("id")));
+                if(!capture.contextComplete())hints.add(Map.of("uid",capture.session().uid(),"captureId",capture.captureId(),"historical",capture.historical()));
+            }catch(RuntimeException unreadable){/* Unreadable evidence cannot authorize recovery. */}
+        }
+        return hints;
+    }
+
     /** Select stored evidence under the current account and authorization, never a client-supplied snapshot. */
     public ChatCapture requireCapturedSource(Long profile,String account,int version,String id) {
         var rows=db.queryForList("SELECT payload_cipher,status,error_code FROM hr_background_capture WHERE id=? AND profile_id=? AND account_hash=? AND policy_version=?",id,profile,accountHash(profile,account),version);

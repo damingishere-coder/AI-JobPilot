@@ -360,6 +360,7 @@ public class HrAssistantWatchService {
                 background.finish(task.id(),"");
                 autopilot.progress(active.profileId(),false);
             }catch(BackgroundInterrupted e){background.defer(task.id());}
+            catch(BackgroundContextIncomplete e){background.finish(task.id(),"CONTEXT_INCOMPLETE");}
             catch(BackgroundAnalysisUnavailable e) { background.retryAnalysis(task.id(),e.code); }
             catch(org.springframework.dao.DataAccessException e) { background.retryAnalysis(task.id(),"ANALYSIS_STORAGE_UNAVAILABLE"); }
             catch(RuntimeException error) {
@@ -396,7 +397,12 @@ public class HrAssistantWatchService {
 
     private java.util.Map<String,Object> backgroundActivity(Long profile) {
         var result=new java.util.LinkedHashMap<String,Object>(autopilot.progressStatus(profile));
-        if(background!=null && isBackground())result.put("background",background.captureDiagnostics(profile,autopilot.policy(profile).version()));
+        if(background!=null && isBackground()) {
+            var diagnostics=new java.util.LinkedHashMap<>(background.captureDiagnostics(profile,autopilot.policy(profile).version()));
+            if(session!=null && session.profileId().equals(profile) && session.binding()!=null)
+                diagnostics.put("readRecoveryHints",background.readRecoveryHints(profile,session.binding().accountIdentity(),autopilot.policy(profile).version()));
+            result.put("background",diagnostics);
+        }
         return result;
     }
 
@@ -491,6 +497,7 @@ public class HrAssistantWatchService {
         ChatSession chat = capture.session();
         boolean hosted=owner!=null && "CHROME_BACKGROUND".equals(owner.transport());
         boolean trial=owner!=null && owner.reviewLimit()==3;
+        if(hosted && !capture.contextComplete())throw new BackgroundContextIncomplete();
         int assessedVersion=autopilot==null?0:autopilot.policy(profileId).version();
         long conversationId = hosted?background.resolveConversation(profileId,capture):store.upsertConversation(profileId, chat);
         for (ChatMessage message : capture.messages()) store.saveMessage(conversationId, message, settings.retentionDays());
@@ -718,6 +725,7 @@ public class HrAssistantWatchService {
     }
     private String normalize(String value) {return safe(value).replaceAll("\\s+","");}
     private static class BackgroundInterrupted extends IllegalStateException { }
+    private static class BackgroundContextIncomplete extends IllegalStateException { }
     private static class BackgroundAnalysisUnavailable extends IllegalStateException {
         final String code;
         BackgroundAnalysisUnavailable(String code,Throwable cause){super(code,cause);this.code=code;}

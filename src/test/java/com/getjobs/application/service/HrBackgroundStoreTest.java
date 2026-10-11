@@ -12,6 +12,17 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.*;
 
 class HrBackgroundStoreTest {
+    @Test void rereadHintsAreScopedToAccountAuthorizationAndIncompleteStoredEvidence() {
+        var full=capture("uid","partial","采购","问题");
+        var partial=new ChatCapture(full.captureId(),1,full.session(),full.messages(),true,false);
+        background.accept(1L,"测试",2,partial);var task=background.claim(1L,"测试",2);background.finish(task.id(),"LEGACY_IDENTITY_UNRESOLVED");
+        background.accept(1L,"测试",2,capture("complete","complete","采购","完整问题"));
+        assertThat(background.readRecoveryHints(1L,"测试",2)).containsExactly(java.util.Map.of("uid","uid","captureId","partial","historical",true));
+        assertThat(background.readRecoveryHints(1L,"其他",2)).isEmpty();
+        assertThat(background.readRecoveryHints(2L,"测试",2)).isEmpty();
+        assertThat(background.readRecoveryHints(1L,"测试",3)).isEmpty();
+        assertThat(db.queryForObject("SELECT status FROM hr_background_capture WHERE id=?",String.class,task.id())).isEqualTo("BLOCKED");
+    }
     @Test void analysisBackoffHasABoundedBudgetAndDuplicateReadsCannotResetIt() {
         var c=capture("uid","retry","采购","问题");background.accept(1L,"测试",2,c);
         for(int attempt=1;attempt<=4;attempt++) {

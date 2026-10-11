@@ -165,15 +165,17 @@ class HrBackgroundWatchServiceTest {
         var resumed=start();assertThat(resumed.watchSessionId()).isNotEqualTo(status.watchSessionId());
         watcher.processBackgroundCaptures();waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
     }
-    @Test void incompleteReadIsAcknowledgedAndRoutesToHumanWithoutAiOrSend()throws Exception {
+    @Test void incompleteReadIsAcknowledgedAndWaitsForCompleteRereadWithoutAnEmptyProposal()throws Exception {
         var status=start();var c=capture("incomplete");c=new ChatCapture(c.captureId(),c.unreadCount(),c.session(),c.messages(),false,false);
         assertThat(watcher.acceptCapture(status.watchSessionId(),77,"scan",List.of(c),observation()).accepted()).isTrue();
-        watcher.processBackgroundCaptures();waitUntil(()->"DONE".equals(db.queryForObject("SELECT status FROM hr_background_capture",String.class)));
+        watcher.processBackgroundCaptures();waitUntil(()->"BLOCKED".equals(db.queryForObject("SELECT status FROM hr_background_capture",String.class)));
+        assertThat(db.queryForObject("SELECT error_code FROM hr_background_capture",String.class)).isEqualTo("CONTEXT_INCOMPLETE");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
         verify(drafts,never()).generateWithFacts(any(),anyLong(),any(),anyList(),anyString());verifyNoInteractions(ai);
-        verify(qq).notifyProposal(any());assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        verify(qq,never()).notifyProposal(any());assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
         watcher.acceptCapture(status.watchSessionId(),77,"reread",List.of(capture("incomplete")),observation());
         waitUntil(()->!watcher.status().phase().equals("ANALYZING"));
         watcher.processBackgroundCaptures();waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
-        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE status='EXPIRED'",Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE status='EXPIRED'",Integer.class)).isZero();
     }
 }

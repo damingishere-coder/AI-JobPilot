@@ -197,7 +197,7 @@ function harness(options={}) {
     if(path.endsWith("/autopilot"))return response({enabled:true,paused:false,replyMode:"AUTO",authorizationValid:true,historyMode:"RECENT",historyDays:30});
     if(path.endsWith("/autopilot/guard"))return response({enabled:true,paused:false,authorizationValid:true,version:3,watchActive:Boolean(session?.watching)});
     if(path==="/api/hr-assistant/status")return response(session || {watching:false});
-    if(path.endsWith("/watch/start")){session={watching:true,watchSessionId:"watch-"+(++sequence),hostGeneration:config.body.hostGeneration,pageDocumentId:config.body.pageDocumentId,profileId:config.body.expectedProfileId};return response(session);}
+    if(path.endsWith("/watch/start")){session={watching:true,watchSessionId:"watch-"+(++sequence),hostGeneration:config.body.hostGeneration,pageDocumentId:config.body.pageDocumentId,profileId:config.body.expectedProfileId,...options.backendStatus};return response(session);}
     if(path.endsWith("/watch/heartbeat")){assert.ok(config.body.pageObservedAt>requests.findLast(item=>item.path.endsWith("/watch/start")).config.body.pageObservedAt);return response({});}
     if(path.endsWith("/watch/legacy-anchors"))return response([]);
     if(path.endsWith("/send-commands/claim"))return response(null);
@@ -216,6 +216,34 @@ function harness(options={}) {
     continue:async()=>{const entry=timers.entries().next().value;if(!entry)return false;timers.delete(entry[0]);await entry[1].fn();return true;},
     setTime:value=>{clock=value;pageTime=value;},setSession:value=>{session=value;}};
 }
+
+test('authorized partial read hints recover old preview dedupe without reopening the page or resetting backoff',async()=>{
+  const h=harness({backendStatus:{activity:{background:{readRecoveryHints:[{uid:'u1',captureId:'old-partial',historical:false}]}}}});
+  await h.start();await h.host.tick();
+  assert.equal(h.store[KEY].baselineComplete,true);
+  await h.host.control({type:'BOSS_HR_HOST_PAUSE'},h.sender);
+  const completed=h.store[KEY].previews.u1;
+  await h.host.control({type:'BOSS_HR_HOST_RESUME',expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},h.sender);
+  assert.equal(h.store[KEY].previews.u1.signature,completed.signature);
+  assert.equal(h.store[KEY].previews.u1.readRecovery.captureId,'old-partial');
+  assert.equal(h.store[KEY].cursor.queue[0].uid,'u1');
+  assert.equal(h.store[KEY].cursor.queue[0].readRecovery.captureId,'old-partial');
+  assert.equal(h.created.length,1);
+  const retryAt=1_300_000;h.store[KEY].previews.u1.retryAt=retryAt;
+  h.setTime(1_100_000);await h.host.update({cursor:null,nextScanAt:0});
+  await h.host.tick();
+  assert.ok(h.store[KEY].previews.u1.retryAt===retryAt || !h.store[KEY].previews.u1.readIncomplete);
+});
+
+test('an unavailable recovery contact waits for the normal reconciliation interval instead of retraversing every alarm',async()=>{
+  const h=harness({backendStatus:{activity:{background:{readRecoveryHints:[{uid:'unavailable',captureId:'old-partial',historical:false}]}}}});
+  await h.start();
+  assert.equal(h.store[KEY].previews.unavailable.retryAt,2_800_000);
+  await h.host.tick();h.setTime(1_100_000);await h.host.tick();
+  assert.equal(h.messages.findLast(item=>item.type==='BOSS_HR_HOST_SCAN_STEP').cursor.scope,'UNREAD');
+  assert.equal(h.store[KEY].previews.unavailable.retryAt,2_800_000);
+  assert.equal(h.created.length,1);
+});
 test('state transitions retain their cause across polling and worker restarts',async()=>{
   const h=harness();
   await h.start();

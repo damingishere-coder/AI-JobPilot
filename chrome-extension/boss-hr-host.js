@@ -41,6 +41,7 @@
   function eligible(item, previous, cursor, timestamp) {
     const day = messageDay(item.lastTime, timestamp), today = shanghaiDay(timestamp);
     if (day !== null && (day > today || day < today - cursor.historyDays * DAY_MS)) return false;
+    if (previous?.readRecovery) return timestamp >= Number(previous.retryAt || 0);
     if (cursor.catalogOnly) return false;
     if (cursor.unreadOnly && !Number(item.unreadCount || 0)) return false;
     if (previous?.signature === previewSignature(item,timestamp) && previous.readIncomplete)
@@ -193,7 +194,7 @@
           cursor: !reauthorize && previous?.profileId===profileId ? previous.cursor || null : null, baselineComplete:!reauthorize && Boolean(previous?.baselineComplete),lastReconcileAt:reauthorize?null:previous?.lastReconcileAt || null,
           previews:!reauthorize && previous?.profileId===profileId ? previous.previews || {} : {},patrolVersion:!reauthorize ? previous?.patrolVersion || 0 : 0,
           operation: null, retryCount: 0, retryAt: 0, nextScanAt: now(), workbenchWindowId: sender?.tab?.windowId,
-          explicitResume: true, pageCreationAllowed: true, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
+          explicitResume: true, pageCreationAllowed: true, readRecoveryInitialized:false, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
           expectedAccountName: String(message.expectedAccountName || (!reauthorize && previous?.expectedAccountName) || "") },
           {...(previous || {}),exists:Boolean(previous),allowDisabled:true,allowPaused:true});
         await alarm();
@@ -253,6 +254,7 @@
     async function bind(state, page) {
       const backend = await request("/api/hr-assistant/status", { ...context(state), method: "GET", requireActionToken: false });
       const observed = apiData(backend);
+      let boundStatus=observed;
       await active(state);
       const matched = backend.success && observed?.watching && observed.watchSessionId === state.watchSessionId
         && observed.hostGeneration === state.hostGeneration && observed.pageDocumentId === page.documentId;
@@ -271,6 +273,7 @@
         if (!started.success || !apiData(started)?.watchSessionId) throw fault(started.errorType || "HR_BACKEND_BIND_FAILED", started.message || "值守绑定未确认",
           started.httpStatus >= 500 || !started.httpStatus || (started.httpStatus===409 && started.errorType==="HR_WATCH_ACTIVE"
             && (!observed?.profileId || observed.profileId===state.profileId)));
+        boundStatus=apiData(started);
         try {state = await update({ watchSessionId: apiData(started).watchSessionId },state);}
         catch(error) {
           await request("/api/hr-assistant/watch/stop",{...context(state),method:"POST",body:{watchSessionId:apiData(started).watchSessionId,reason:"后台启动已被用户取消",...anchors(state,page)}}).catch(()=>{});
@@ -290,7 +293,16 @@
         watchSessionId: state.watchSessionId, tabId: state.tabId, url: CHAT_URL, contentVersion: PROTOCOL,
         transport: "CHROME_BACKGROUND", scanRunning: Boolean(state.operation && state.operation.kind !== "SEND"), outboxCount: 0, fault: "", ...anchors(state, heartbeatPage) } });
       if (!heartbeat.success) throw fault(heartbeat.errorType || "HR_HEARTBEAT_REJECTED", heartbeat.message || "页面心跳未确认", !heartbeat.httpStatus || heartbeat.httpStatus >= 500);
-      return update({lastPageSeenAt:heartbeatPage.observedAt},state);
+      let previews=state.previews || {};
+      if(!state.readRecoveryInitialized) {
+        for(const hint of boundStatus?.activity?.background?.readRecoveryHints || []) {
+          if(typeof hint.uid!=='string' || !hint.uid || typeof hint.captureId!=='string')continue;
+          const previous=Object.hasOwn(previews,hint.uid)?previews[hint.uid]:null;
+          if(previous?.readIncomplete)continue;
+          previews={...previews,[hint.uid]:{...previous,readIncomplete:true,retryAt:now(),readRecovery:hint}};
+        }
+      }
+      return update({lastPageSeenAt:heartbeatPage.observedAt,previews,readRecoveryInitialized:true},state);
     }
     async function tick(origin = "alarm") {
       if (tickPromise) return tickPromise;
@@ -392,6 +404,7 @@
               continue;
             }
             const target={...item,legacyAnchorId:item.legacyAnchorId || null,
+              readRecovery:previous?.readRecovery || null,
               historical:previous?.signature===previewSignature(item,now()) && previous.readIncomplete && previous.historical===true};
             if (Number.isFinite(item.listScrollTop) && item.listScrollTop>=0) target.listScrollTop=item.listScrollTop;
             targets.push(target);
@@ -401,6 +414,13 @@
           const stalled=response.hasMore && seen.size===cursor.seen.length && Number(response.nextScrollTop)===Number(cursor.scrollTop);
           const stalledSteps=stalled?Number(cursor.stalledSteps || 0)+1:0;
           if(stalledSteps>=3) throw fault("HR_LIST_SCROLL_STALLED", "联系人列表滚动未前进，已暂停并保留采集进度，请检查页面后恢复");
+          if(!response.hasMore) {
+            const queued=new Set(targets.map(item=>item.uid));
+            for(const [uid,preview] of Object.entries(previews)) {
+              if(preview.readIncomplete && now()>=Number(preview.retryAt || 0) && !queued.has(uid))
+                previews={...previews,[uid]:{...preview,retryAt:now()+1800000}};
+            }
+          }
           await update({ previews,cursor: { ...cursor, queue: targets, seen: [...seen], scrollTop: response.nextScrollTop,
             stalledSteps,
             stage: response.hasMore ? "LIST" : "CAPTURE" }, operation: null },state);
