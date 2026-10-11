@@ -57,6 +57,13 @@ it('keeps an enabled saved history window and hides old stopped-account menu tex
 const stoppedHost = { transport: 'CHROME_BACKGROUND', state: 'STOPPED', intentEnabled: false, paused: false }
 const runtimeBinding = { watchSessionId: 'synthetic-watch', hostGeneration: 'synthetic-generation', pageDocumentId: 'synthetic-document' }
 
+it('running connection also displays analysis retry and blocked capture details', async () => {
+  setup({ policy: { enabled: true, authorizationValid: true }, host: { state: 'RUNNING', intentEnabled: true },
+    watch: { watching: true, activity: { background: { retryingCaptures: 1, message: '有 1 条聊天分析暂时失败，正在等待自动重试。' } } } })
+  render(<HrAutopilotSettings profileId={1} settingsDirty={false} />)
+  expect(await screen.findByText('有 1 条聊天分析暂时失败，正在等待自动重试。')).toBeInTheDocument()
+})
+
 beforeEach(() => {
   vi.mocked(getChromeBridgeStatus).mockResolvedValue({ success: true, hrBackgroundProtocol: HR_BACKGROUND_PROTOCOL })
 })

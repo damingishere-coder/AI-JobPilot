@@ -120,9 +120,12 @@ public class ScanRunService {
     }
     public synchronized Map<String,Object> sync(String p,long profile,String run,Map<String,Object> body) {
         return tx.execute(status->{
-            var r=row(p,profile,run); long now=System.currentTimeMillis(); int epoch=(int)n(r.get("epoch"));
-            long supplied=n(body.get("epoch")); boolean current=supplied==epoch;
+            // Acquire the write lock before reading: a deferred read transaction
+            // cannot safely upgrade while another pooled connection is writing.
+            long now=System.currentTimeMillis();
             jdbc.update("UPDATE scan_run SET background_seen_at=? WHERE platform=? AND profile_id=? AND run_id=?",now,p,profile,run);
+            var r=row(p,profile,run); int epoch=(int)n(r.get("epoch"));
+            long supplied=n(body.get("epoch")); boolean current=supplied==epoch;
             if(current && Boolean.TRUE.equals(body.get("pageAlive"))) jdbc.update("UPDATE scan_run SET page_seen_at=?,extension_version=?,content_version=? WHERE platform=? AND profile_id=? AND run_id=?",now,version(body.get("extensionVersion")),version(body.get("contentVersion")),p,profile,run);
             if(current && body.get("ack") instanceof Map<?,?> ack) {
                 String id=Objects.toString(ack.get("id"),""); boolean ok=Boolean.TRUE.equals(ack.get("ok"));

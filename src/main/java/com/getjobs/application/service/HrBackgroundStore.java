@@ -66,7 +66,7 @@ public class HrBackgroundStore {
                 previous=decode(crypto.decrypt(oldCipher,"background-capture:"+originalId));
             if(previous!=null && previous.historical() && !capture.historical())
                 encoded=encode(new ChatCapture(capture.captureId(),capture.unreadCount(),capture.session(),capture.messages(),true,capture.contextComplete()));
-            db.update("UPDATE hr_background_capture SET payload_cipher=?,payload_hash=?,policy_version=?,status='PENDING',error_code='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            db.update("UPDATE hr_background_capture SET payload_cipher=?,payload_hash=?,policy_version=?,status='PENDING',error_code='',retry_count=0,retry_at=0,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     crypto.encrypt(encoded,"background-capture:"+originalId),digest,version,originalId);
             return new CaptureAck(true,capture.captureId(),true,"PENDING");
         }
@@ -118,7 +118,7 @@ public class HrBackgroundStore {
     public Task claim(Long profile,String account,int version) {
         String accountHash=accountHash(profile,account);
         db.update("UPDATE hr_background_capture SET status='BLOCKED',error_code='AUTHORIZATION_CHANGED',updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND account_hash=? AND status='PENDING' AND policy_version<>?",profile,accountHash,version);
-        var ids=db.queryForList("SELECT id FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status='PENDING' ORDER BY created_at,rowid LIMIT 1",String.class,profile,accountHash,version);
+        var ids=db.queryForList("SELECT id FROM hr_background_capture WHERE profile_id=? AND account_hash=? AND policy_version=? AND status='PENDING' AND retry_at<=? ORDER BY created_at,rowid LIMIT 1",String.class,profile,accountHash,version,System.currentTimeMillis());
         if(ids.isEmpty()) {
             // Recover only stored analysis whose identity dependency is now proven.
             // Payload, account, authorization, and historical scope remain immutable;
@@ -147,16 +147,37 @@ public class HrBackgroundStore {
     public void defer(String id) {
         db.update("UPDATE hr_background_capture SET status='PENDING',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING'",id);
     }
+    /** Bounded backoff for analysis. Never requeues browser sends or resets an exhausted retry. */
+    public void retryAnalysis(String id,String code) {
+        db.update("""
+                UPDATE hr_background_capture SET retry_count=retry_count+1,
+                  retry_at=? + CASE retry_count WHEN 0 THEN 30000 WHEN 1 THEN 120000 ELSE 300000 END,
+                  status=CASE WHEN retry_count<3 THEN 'PENDING' ELSE 'BLOCKED' END,
+                  error_code=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING'
+                """,System.currentTimeMillis(),code,id);
+    }
+
+    /** Called only while no analysis worker is active; preserves delayed retries. */
+    public void recoverOrphanedAnalysis() {
+        db.update("UPDATE hr_background_capture SET status='PENDING',updated_at=CURRENT_TIMESTAMP WHERE status='PROCESSING' AND updated_at<datetime('now','-15 minutes')");
+    }
+
+    /** Short atomic finalization. AI and media reads must happen before entering this transaction. */
+    @Transactional
+    public <T> T commitProposal(Long profile,java.util.function.Supplier<T> finalizer) {
+        db.update("UPDATE hr_background_capture SET updated_at=updated_at WHERE profile_id=? AND status='PROCESSING'",profile);
+        return finalizer.get();
+    }
     public int pending(Long profile) {
         return db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND status IN ('PENDING','PROCESSING')",Integer.class,profile);
     }
 
     /** Read-only evidence for the active profile; inspection never retries analysis or a send. */
     public List<Map<String,Object>> inspectCaptures(Long profile,int size) {
-        var rows=db.queryForList("SELECT id,status,error_code,created_at,updated_at,payload_cipher FROM hr_background_capture WHERE profile_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?",profile,Math.max(1,Math.min(size,50)));
+        var rows=db.queryForList("SELECT id,status,error_code,retry_count,retry_at,created_at,updated_at,payload_cipher FROM hr_background_capture WHERE profile_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?",profile,Math.max(1,Math.min(size,50)));
         return rows.stream().map(row->{
             var result=new LinkedHashMap<String,Object>();
-            for(String key:List.of("id","status","error_code","created_at","updated_at"))result.put(key,row.get(key));
+            for(String key:List.of("id","status","error_code","retry_count","retry_at","created_at","updated_at"))result.put(key,row.get(key));
             try {
                 String cipher=Objects.toString(row.get("payload_cipher"),"");
                 if(!cipher.isBlank())result.put("capture",decode(crypto.decrypt(cipher,"background-capture:"+row.get("id"))));
@@ -168,8 +189,9 @@ public class HrBackgroundStore {
 
     public Map<String,Object> captureDiagnostics(Long profile,int version) {
         int blocked=db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND policy_version=? AND status='BLOCKED'",Integer.class,profile,version);
-        return Map.of("blockedCaptures",blocked,"unresolvedLegacyIdentities",unresolvedVisualIdentities(profile).size(),
-                "message",blocked>0?"有 "+blocked+" 条聊天记录处理受阻，尚未发送回复。":"");
+        int retrying=db.queryForObject("SELECT COUNT(*) FROM hr_background_capture WHERE profile_id=? AND policy_version=? AND status='PENDING' AND retry_count>0",Integer.class,profile,version);
+        return Map.of("blockedCaptures",blocked,"retryingCaptures",retrying,"unresolvedLegacyIdentities",unresolvedVisualIdentities(profile).size(),
+                "message",blocked>0?"有 "+blocked+" 条聊天记录处理受阻，尚未发送回复。":retrying>0?"有 "+retrying+" 条聊天分析暂时失败，正在等待自动重试。":"");
     }
 
     /** Select stored evidence under the current account and authorization, never a client-supplied snapshot. */

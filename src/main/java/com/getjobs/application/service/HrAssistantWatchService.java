@@ -348,6 +348,7 @@ public class HrAssistantWatchService {
                 expirePageHeartbeat();
                 if(!watching.get() || !isBackground() || !session.profileId().equals(profileService.getCurrentProfileId())
                         || !dutyBlockers(session.profileId()).isEmpty())return null;
+                background.recoverOrphanedAnalysis();
                 return new Object[]{session,background.claim(session.profileId(),session.binding().accountIdentity(),autopilot.policy(session.profileId()).version())};
             });
             if(pair==null || pair[1]==null){processingBackground.set(false);return;}
@@ -359,6 +360,8 @@ public class HrAssistantWatchService {
                 background.finish(task.id(),"");
                 autopilot.progress(active.profileId(),false);
             }catch(BackgroundInterrupted e){background.defer(task.id());}
+            catch(BackgroundAnalysisUnavailable e) { background.retryAnalysis(task.id(),e.code); }
+            catch(org.springframework.dao.DataAccessException e) { background.retryAnalysis(task.id(),"ANALYSIS_STORAGE_UNAVAILABLE"); }
             catch(RuntimeException error) {
                 String code=error instanceof HrBackgroundStore.IdentityHeldException?"LEGACY_IDENTITY_UNRESOLVED":errorCode(error);
                 background.finish(task.id(),code);
@@ -488,6 +491,7 @@ public class HrAssistantWatchService {
         ChatSession chat = capture.session();
         boolean hosted=owner!=null && "CHROME_BACKGROUND".equals(owner.transport());
         boolean trial=owner!=null && owner.reviewLimit()==3;
+        int assessedVersion=autopilot==null?0:autopilot.policy(profileId).version();
         long conversationId = hosted?background.resolveConversation(profileId,capture):store.upsertConversation(profileId, chat);
         for (ChatMessage message : capture.messages()) store.saveMessage(conversationId, message, settings.retentionDays());
         // Full-list scans include conversations that the user has already answered.
@@ -524,22 +528,43 @@ public class HrAssistantWatchService {
                 draft = autopilot != null ? autopilot.generate(profileId, conversationId, settings.communicationProfile(), capture)
                         : draftService.generate(profileId, conversationId, settings.communicationProfile(), capture.messages());
             } catch (RuntimeException aiFailure) {
+                if(hosted)throw new BackgroundAnalysisUnavailable("AI_GENERATION_UNAVAILABLE",aiFailure);
                 draft = new AiDraft(Classification.NEEDS_USER, "", "AI 草稿生成失败，需要人工填写回复。",
                         List.of("AI_FAILURE"), List.of("请人工填写回复"), 0);
                 events.emit("ai-draft-failed", java.util.Map.of("message", concise(aiFailure), "hrName", safe(chat.hrName())));
             }
         }
-        if(hosted && (!watching.get() || session==null || !session.watchSessionId().equals(owner.watchSessionId()) || Thread.currentThread().isInterrupted()))throw new BackgroundInterrupted();
-        long proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
-        if (trial && Set.of(Classification.NO_REPLY, Classification.REJECTION).contains(draft.classification())) {
-            store.skip(profileId, proposalId);
-            return null;
-        }
+        HrAutopilotService.Assessment assessment=hosted?autopilot.assess(profileId,conversationId,capture,draft):null;
+        if(hosted && assessment.reason().equals("发送审核不可用，需人工决定"))
+            throw new BackgroundAnalysisUnavailable("AI_REVIEW_UNAVAILABLE",null);
+        final AiDraft finalDraft=draft;
+        final ChatCapture finalCapture=capture;
+        long proposalId;
         boolean notify;
-        if (trial && autopilot != null) {
-            autopilot.reviewTrial(profileId, proposalId, capture, draft);
-            notify = true;
-        } else notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, owner.watchSessionId());
+        if(hosted) {
+            var result=profileGuard.locked(()->{
+                expirePageHeartbeat();
+                if(!watching.get() || session==null || !session.watchSessionId().equals(owner.watchSessionId())
+                        || Thread.currentThread().isInterrupted() || autopilot.policy(profileId).version()!=assessedVersion
+                        || !dutyBlockers(profileId).isEmpty())throw new BackgroundInterrupted();
+                return background.commitProposal(profileId,()->{
+                    long id=store.createProposal(profileId,conversationId,sourceFingerprint,finalDraft);
+                    boolean notification=autopilot.applyAssessment(profileId,id,finalCapture,assessment,owner.watchSessionId(),assessedVersion);
+                    return new Object[]{id,notification};
+                });
+            });
+            proposalId=(Long)result[0];notify=(Boolean)result[1];
+        } else {
+            proposalId = store.createProposal(profileId, conversationId, sourceFingerprint, draft);
+            if (trial && Set.of(Classification.NO_REPLY, Classification.REJECTION).contains(draft.classification())) {
+                store.skip(profileId, proposalId);
+                return null;
+            }
+            if (trial && autopilot != null) {
+                autopilot.reviewTrial(profileId, proposalId, capture, draft);
+                notify = true;
+            } else notify = autopilot == null || autopilot.apply(profileId, proposalId, conversationId, capture, draft, owner.watchSessionId());
+        }
         ProposalView proposal = store.getProposalView(profileId, proposalId);
         events.emit("proposal-created", proposal);
         if (notify && settings.qqEnabled() && !napCatGateway.notifyProposal(proposal)) {
@@ -693,6 +718,10 @@ public class HrAssistantWatchService {
     }
     private String normalize(String value) {return safe(value).replaceAll("\\s+","");}
     private static class BackgroundInterrupted extends IllegalStateException { }
+    private static class BackgroundAnalysisUnavailable extends IllegalStateException {
+        final String code;
+        BackgroundAnalysisUnavailable(String code,Throwable cause){super(code,cause);this.code=code;}
+    }
 
     private record WatchSession(String watchSessionId, String browserSessionId, Long profileId,
                                 int tabId, String url, String contentVersion, int reviewLimit,String transport,BackgroundBinding binding) {

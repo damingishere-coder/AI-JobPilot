@@ -12,6 +12,19 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.*;
 
 class HrBackgroundStoreTest {
+    @Test void analysisBackoffHasABoundedBudgetAndDuplicateReadsCannotResetIt() {
+        var c=capture("uid","retry","采购","问题");background.accept(1L,"测试",2,c);
+        for(int attempt=1;attempt<=4;attempt++) {
+            var task=background.claim(1L,"测试",2);assertThat(task).isNotNull();
+            background.retryAnalysis(task.id(),"AI_GENERATION_UNAVAILABLE");
+            assertThat(db.queryForObject("SELECT retry_count FROM hr_background_capture",Integer.class)).isEqualTo(attempt);
+            assertThat(background.claim(1L,"测试",2)).isNull();
+            assertThat(background.accept(1L,"测试",2,c).queueStatus()).isEqualTo(attempt<4?"PENDING":"BLOCKED");
+            db.update("UPDATE hr_background_capture SET retry_at=0");
+        }
+        assertThat(background.claim(1L,"测试",2)).isNull();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+    }
     @TempDir Path dir;
     JdbcTemplate db;
     HrAssistantStore hr;

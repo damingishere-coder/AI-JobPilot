@@ -14,7 +14,7 @@ type HostState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'RECOVERING' | 
 type PageBinding = { watchSessionId?: string; hostGeneration?: string; pageDocumentId?: string }
 type Transition = { reason?: string; source?: string; at?: number }
 type HostStatus = PageBinding & { lastTransition?: Transition; transport: 'CHROME_BACKGROUND'; state: HostState; intentEnabled: boolean; paused?: boolean; pauseReason?: string; tabId?: number; accountName?: string; needsAccountConfirmation?: boolean; errorCode?: string; message?: string; lastPageSeenAt?: number | string; lastScanAt?: number | string; nextScanAt?: number | string; cursor?: { stage?: string; seen?: unknown[]; queue?: unknown[] } | null; operation?: { kind?: string } | null }
-type WatchStatus = PageBinding & { lastTransition?: Transition; watching: boolean; transport?: string; lastPageHeartbeatAt?: number | string; lastSuccessfulScanAt?: number | string }
+type WatchStatus = PageBinding & { lastTransition?: Transition; watching: boolean; transport?: string; lastPageHeartbeatAt?: number | string; lastSuccessfulScanAt?: number | string; activity?: { background?: { blockedCaptures?: number; retryingCaptures?: number; message?: string } } }
 type Runtime = { host: HostStatus | null; watch: WatchStatus | null; hostError: string; backendError: string }
 const stateLabels: Record<HostState, string> = { STOPPED: '已停止', STARTING: '正在后台核对账号与聊天页', RUNNING: '后台托管中', PAUSED: '已暂停', RECOVERING: '正在校验并恢复连接', BLOCKED: '需要处理后恢复' }
 const transitionSources: Record<string, string> = { USER: '手动控制', REMOTE: '托管策略', HR_HOST: 'Chrome 后台托管', HR_START: '托管启动', HR_STOP: '托管停止', HR_PAGE_FAULT: '聊天页面异常', HR_HOST_FAULT: '后台连接异常', HR_PAGE_HEARTBEAT: '聊天页面心跳' }
@@ -201,6 +201,7 @@ export default function HrAutopilotSettings({ profileId, settingsDirty = false, 
     {view !== 'rules' && <div role="status" aria-live="polite" className="min-w-0 space-y-2 rounded-xl border bg-card p-4 text-sm">
       <p className="font-semibold">托管状态：{runtimeLabel}</p>
       {running && <p>当前进度：{progressLabel(host)}</p>}
+      {runtime.watch?.activity?.background?.message && <p className="text-amber-700 dark:text-amber-300">{runtime.watch.activity.background.message}</p>}
       <p className="break-all">已核验 BOSS 账号：{accountLabel}</p>
       <details><summary className="cursor-pointer text-muted-foreground">连接与巡检详情</summary>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">

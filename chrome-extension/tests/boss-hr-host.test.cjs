@@ -27,6 +27,35 @@ function patrolHarness(items,options={}) {
 }
 const patrolItem=(uid,lastTime,changes={})=>({uid,lastTime,previewKey:uid+'-preview',unreadCount:0,...changes});
 
+test('incomplete capture retries after its unread badge clears and preserves historical scope',async()=>{
+  let complete=false;
+  const item=patrolItem('u1','今天',{unreadCount:1});
+  const h=harness({scan:message=>message.cursor.stage==='LIST'?{success:true,targets:[item],hasMore:false,nextScrollTop:0}:
+    !message.target?{success:true,capture:null}:{success:true,observation:{...item,unreadCount:0,lastDirection:'对方'},capture:{captureId:'same-source',contextComplete:complete,
+      historical:message.cursor.baseline || message.target.historical,session:{uid:'u1'},messages:[{from:'对方',messageId:'in'}]}}});
+  await h.start();await h.host.tick();
+  assert.equal(h.store[KEY].previews.u1.readIncomplete,true);
+  item.unreadCount=0;
+  h.setTime(1_030_000);await h.host.update({nextScanAt:0,lastReconcileAt:0});await h.host.tick();await h.host.tick();
+  assert.equal(h.store[KEY].previews.u1.readIncomplete,true);
+  assert.equal(h.requests.filter(r=>r.path.endsWith('/watch/captures')).length,1);
+  complete=true;h.setTime(1_100_001);await h.host.tick();await h.host.tick();
+  assert.equal(h.requests.filter(r=>r.path.endsWith('/watch/captures')).length,2,JSON.stringify(h.store[KEY]));
+  assert.equal(h.messages.findLast(m=>m.type==='BOSS_HR_HOST_SCAN_STEP').target.historical,true);
+  assert.equal(h.store[KEY].previews.u1.readIncomplete,undefined);
+});
+
+test('an incomplete contact does not prevent the remaining contacts from being captured',async()=>{
+  const items=[patrolItem('u1','今天'),patrolItem('u2','今天')];
+  const h=harness({scan:message=>message.cursor.stage==='LIST'?{success:true,targets:items,hasMore:false,nextScrollTop:0}:
+    {success:true,observation:{...message.target,unreadCount:0},capture:{captureId:message.target.uid,contextComplete:message.target.uid==='u2',
+      session:{uid:message.target.uid},messages:[{from:'对方',messageId:'in'}]}}});
+  await h.start();await h.host.tick();await h.host.tick();
+  assert.equal(h.requests.filter(r=>r.path.endsWith('/watch/captures')).length,2);
+  assert.equal(h.store[KEY].state,'RUNNING');assert.equal(h.store[KEY].cursor,null);
+  assert.equal(h.store[KEY].previews.u1.readIncomplete,true);assert.equal(h.store[KEY].previews.u2.readIncomplete,undefined);
+});
+
 test('RECENT baseline opens only the authorized fifteen-day range, including its calendar boundary',async()=>{
   const h=patrolHarness([patrolItem('two-months','2026-08-08',{unreadCount:1}),patrolItem('month','09-08'),
     patrolItem('expired','09-22',{unreadCount:1}),patrolItem('boundary','09-23'),patrolItem('recent','今天')]);
@@ -557,20 +586,47 @@ test("account confirmation immediately after Chrome startup is applied before a 
   assert.equal(resumed.success,true);assert.equal(h.store[KEY].needsAccountConfirmation,false);assert.equal(h.store[KEY].state,"RUNNING");
   assert.equal(h.requests.filter(item=>item.path.endsWith("/autopilot/resume")).length,1);
 });
-test("Chrome startup replaces a stale saved window ID using an existing inactive normal window",async()=>{
+test("Chrome startup never reopens a missing chat; explicit resume can create it once",async()=>{
   const h=harness({page:{accountIdentityStable:true}});await h.start();
   const next=harness({store:h.store,tabs:[{id:20,windowId:42,url:"https://example.test/",active:true,status:"complete"}],
     windows:[{id:42,type:"normal",incognito:false}],page:{accountIdentityStable:true}});
   await next.host.initialize(true);await next.host.tick();
+  assert.equal(next.store[KEY].state,"BLOCKED");assert.equal(next.created.length,0);
+  assert.equal(next.store[KEY].errorCode,"BOSS_CHAT_TAB_MISSING");
+  for(let i=0;i<5;i++){next.setTime(2_000_000+i*300_000);await next.host.tick();}
+  assert.equal(next.created.length,0);
+  await next.host.control({type:"BOSS_HR_HOST_RESUME",expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},next.sender);
   assert.equal(next.store[KEY].state,"RUNNING");assert.equal(next.created.length,1);
   assert.equal(next.created[0].windowId,42);assert.equal(next.created[0].active,false);
   assert.equal(next.store[KEY].workbenchWindowId,42);assert.equal(next.focused.length,0);
   assert.ok(next.updates.every(item=>!("active" in item.config)));assert.equal(next.tabs.find(item=>item.id===20).active,true);
 });
-test("Chrome startup with no normal window remains recoverable and never creates or focuses a window",async()=>{
+test("no normal window requires manual recovery and never loops page creation",async()=>{
   const h=harness({page:{accountIdentityStable:true}});await h.start();
   const next=harness({store:h.store,tabs:[],windows:[{id:41,type:"popup",incognito:false},{id:43,type:"normal",incognito:true}],page:{accountIdentityStable:true}});
   await next.host.initialize(true);await next.host.tick();
-  assert.equal(next.store[KEY].state,"RECOVERING");assert.equal(next.store[KEY].paused,false);
+  assert.equal(next.store[KEY].errorCode,"BOSS_CHAT_TAB_MISSING");
+  await next.host.control({type:"BOSS_HR_HOST_RESUME",expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},next.sender);
+  assert.equal(next.store[KEY].state,"BLOCKED");assert.equal(next.store[KEY].paused,true);
   assert.equal(next.store[KEY].errorCode,"HR_BROWSER_WINDOW_UNAVAILABLE");assert.equal(next.created.length,0);assert.equal(next.focused.length,0);
+  for(let i=0;i<5;i++){next.setTime(2_000_000+i*300_000);await next.host.tick();}
+  assert.equal(next.created.length,0);
+});
+
+test("closed or discarded chat never gets reloaded or repeatedly reopened by alarms",async()=>{
+  const h=harness();await h.start();
+  h.tabs.find(tab=>tab.id===7).discarded=true;
+  await h.host.tick();
+  assert.equal(h.store[KEY].errorCode,"BOSS_CHAT_TAB_DISCARDED");
+  for(let i=0;i<5;i++){h.setTime(2_000_000+i*300_000);await h.host.tick();}
+  assert.equal(h.created.length,1);
+  assert.ok(h.updates.every(item=>!("url" in item.config)));
+  h.tabs.splice(h.tabs.findIndex(tab=>tab.id===7),1);
+  await h.host.control({type:"BOSS_HR_HOST_RESUME",expectedProfileId:1,hrBackgroundProtocol:PROTOCOL},h.sender);
+  assert.equal(h.created.length,2);
+  h.tabs.splice(h.tabs.findIndex(tab=>tab.id===7),1);
+  await h.host.tick();
+  assert.equal(h.store[KEY].errorCode,"BOSS_CHAT_TAB_MISSING");
+  for(let i=0;i<5;i++){h.setTime(4_000_000+i*300_000);await h.host.tick();}
+  assert.equal(h.created.length,2);
 });
