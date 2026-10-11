@@ -408,6 +408,46 @@ test("cold worker and backend restart rebind the page, with the same generation 
   assert.equal(next.requests.filter(item=>item.path.endsWith("/watch/start")).length,1);
   assert.equal(next.requests.filter(item=>item.path.endsWith("/watch/captures")).length,1);
 });
+
+test('a legacy token-blocked host recovers its original page without navigation',async()=>{
+  const h=harness();await h.start();
+  const original={...h.store[KEY]};
+  await h.host.update({state:'BLOCKED',paused:true,pauseOrigin:'USER',errorCode:'ACTION_TOKEN_INVALID',operation:null});
+  const next=harness({store:h.store,tabs:h.tabs});
+  await next.host.initialize();
+  assert.equal(next.store[KEY].state,'RECOVERING');assert.equal(next.store[KEY].paused,false);
+  assert.equal(next.store[KEY].pageCreationAllowed,false);
+  await next.host.tick();
+  assert.equal(next.store[KEY].state,'RUNNING');
+  assert.equal(next.store[KEY].tabId,original.tabId);
+  assert.equal(next.store[KEY].pageDocumentId,original.pageDocumentId);
+  assert.equal(next.store[KEY].hostGeneration,original.hostGeneration);
+  assert.equal(next.created.length,0);assert.equal(next.focused.length,0);
+  assert.equal(next.updates.some(item=>item.updates?.url),false);
+});
+
+test('token-block recovery preserves user pauses, unknown sends and disabled intent',async()=>{
+  for(const kind of ['user','unknown-send','disabled']) {
+    const h=harness();await h.start();
+    await h.host.update({state:'BLOCKED',paused:true,pauseOrigin:'USER',errorCode:kind==='user'?'':'ACTION_TOKEN_INVALID',
+      intentEnabled:kind!=='disabled',operation:kind==='unknown-send'?{kind:'SEND',phase:'DISPATCHED',commandId:'unknown'}:null});
+    const before=JSON.stringify(h.store[KEY]);
+    const next=harness({store:h.store,tabs:h.tabs});await next.host.initialize();await next.host.tick();
+    assert.equal(JSON.stringify(next.store[KEY]),before,kind);
+    assert.equal(next.requests.length,0,kind);assert.equal(next.messages.length,0,kind);
+  }
+});
+
+test('token-block recovery still honors a persisted backend pause before reading or sending',async()=>{
+  const h=harness();await h.start();
+  await h.host.update({state:'BLOCKED',paused:true,errorCode:'ACTION_TOKEN_INVALID',operation:null});
+  const next=harness({store:h.store,tabs:h.tabs,request:async path=>path.endsWith('/autopilot')
+    ?{success:true,httpStatus:200,data:{data:{enabled:true,paused:true}}}:null});
+  await next.host.initialize();await next.host.tick();
+  assert.equal(next.store[KEY].paused,true);assert.equal(next.store[KEY].pauseOrigin,'REMOTE');
+  assert.equal(next.requests.some(item=>item.path.endsWith('/watch/start')),false);
+  assert.deepEqual(next.messages.map(item=>item.type),['BOSS_HR_HOST_UNBIND']);
+});
 test("browser restart with only a display name requires confirmation rather than accepting a same-name account",async()=>{
   const h=harness();await h.start();const next=harness({store:h.store,tabs:h.tabs});
   await next.host.initialize(true);await next.host.tick();assert.equal(next.store[KEY].errorCode,"ACCOUNT_RECONFIRM_REQUIRED");

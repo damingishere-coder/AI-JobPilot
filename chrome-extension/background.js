@@ -1132,8 +1132,17 @@ async function requestLocalApi(path, options = {}) {
             message: `本地接口响应格式不兼容（HTTP ${response.status}）：${error.message}`, attempt, baseUrl };
         }
         if (response.status === 401 && options.requireActionToken) {
-          localActionToken = null;
-          localActionBaseUrl = "";
+          if (localActionToken === requestOptions.headers["X-Local-Action-Token"]) {
+            localActionToken = null;
+            localActionBaseUrl = "";
+          }
+          // This explicit HR authentication rejection happens before the controller
+          // executes any action. Refresh once; an uncertain network outcome never
+          // enters this branch and keeps the existing no-retry send boundary.
+          if (path.startsWith("/api/hr-assistant/") && data.success === false
+              && data.errorCode === "ACTION_TOKEN_INVALID" && !options.actionTokenRetried) {
+            return await requestLocalApi(path, { ...options, actionTokenRetried: true });
+          }
         }
         if (data.success === false) {
           return {

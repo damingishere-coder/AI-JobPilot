@@ -56,6 +56,56 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
   };
 }
 
+test('HR token rotation refreshes once before executing a rejected action', async () => {
+  const calls=[];
+  let tokenCount=0, actions=0;
+  const {context}=loadBackground({tabs:[],fetchImpl:async(url,options)=>{
+    if(url.endsWith('/action-token')) {
+      tokenCount++;
+      return jsonResponse({success:true,data:{token:'token-'+tokenCount}});
+    }
+    calls.push({url,token:options.headers['X-Local-Action-Token'],body:options.body});
+    if(calls.length===1)return jsonResponse({success:false,errorCode:'ACTION_TOKEN_INVALID'},{ok:false,status:401});
+    actions++;
+    return jsonResponse({success:true,data:{accepted:true}});
+  }});
+  const result=await context.requestLocalApi('/api/hr-assistant/watch/start',{
+    operation:'hr-background',method:'POST',requireActionToken:true,body:{expectedProfileId:4}
+  });
+  assert.equal(result.success,true);
+  assert.equal(tokenCount,2);assert.equal(actions,1);assert.equal(calls.length,2);
+  assert.equal(calls[0].token,'token-1');assert.equal(calls[1].token,'token-2');
+  assert.equal(calls[0].body,calls[1].body);assert.equal(calls[0].url,calls[1].url);
+});
+
+test('repeated HR authentication rejection cannot loop', async () => {
+  let tokenCount=0,requests=0;
+  const {context}=loadBackground({tabs:[],fetchImpl:async url=>{
+    if(url.endsWith('/action-token'))return jsonResponse({success:true,data:{token:'token-'+(++tokenCount)}});
+    requests++;
+    return jsonResponse({success:false,errorCode:'ACTION_TOKEN_INVALID'},{ok:false,status:401});
+  }});
+  const result=await context.requestLocalApi('/api/hr-assistant/watch/start',{operation:'hr-background',requireActionToken:true});
+  assert.equal(result.success,false);assert.equal(result.errorType,'ACTION_TOKEN_INVALID');
+  assert.equal(tokenCount,2);assert.equal(requests,2);
+});
+
+test('HR send uncertainty and other authentication failures do not replay', async () => {
+  for(const failure of ['network','unknown','different-code','wrong-status']) {
+    let requests=0,tokenCount=0;
+    const {context}=loadBackground({tabs:[],fetchImpl:async url=>{
+      if(url.endsWith('/action-token'))return jsonResponse({success:true,data:{token:'token-'+(++tokenCount)}});
+      requests++;
+      if(failure==='network')throw new Error('connection lost after controller action');
+      if(failure==='unknown')return jsonResponse({success:false,errorCode:'SEND_UNKNOWN'},{ok:false,status:503});
+      return jsonResponse({success:false,errorCode:failure==='different-code'?'OTHER_AUTH_FAILURE':'ACTION_TOKEN_INVALID'},
+        {ok:false,status:failure==='wrong-status'?409:401});
+    }});
+    const result=await context.requestLocalApi('/api/hr-assistant/proposals/1/send',{operation:'hr-send',requireActionToken:true});
+    assert.equal(result.success,false,failure);assert.equal(requests,1,failure);assert.equal(tokenCount,1,failure);
+  }
+});
+
 function loadBackground({
   tabs,
   statuses = {},
