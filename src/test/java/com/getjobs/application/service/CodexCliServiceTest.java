@@ -3,8 +3,11 @@ package com.getjobs.application.service;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -17,6 +20,64 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CodexCliServiceTest {
+    @TempDir
+    Path temporaryDirectory;
+
+    private CodexCliService desktopService(Path bin) {
+        return new CodexCliService() {
+            @Override Path desktopBinDirectory() { return bin; }
+        };
+    }
+
+    @Test
+    void removedDesktopRuntimeUsesNewestInstalledExecutable() throws Exception {
+        Path bin = Files.createDirectories(temporaryDirectory.resolve("desktop-bin"));
+        Path older = Files.createDirectories(bin.resolve("1111111111111111"));
+        Path newer = Files.createDirectories(bin.resolve("2222222222222222"));
+        Files.writeString(older.resolve("codex.exe"), "old fixture");
+        Files.writeString(newer.resolve("codex.exe"), "new fixture");
+        Files.setLastModifiedTime(older, FileTime.fromMillis(1000));
+        Files.setLastModifiedTime(newer, FileTime.fromMillis(2000));
+        Files.createDirectories(bin.resolve("3333333333333333"));
+        Path unrelated = Files.createDirectories(bin.resolve("unrelated-runtime"));
+        Files.writeString(unrelated.resolve("codex.exe"), "not a desktop runtime");
+        Files.writeString(bin.resolve("codex.exe"), "old unversioned launcher");
+
+        assertThat(desktopService(bin).resolveExecutable(bin.resolve("9999999999999999/codex.exe").toString()))
+                .isEqualTo(newer.resolve("codex.exe").toString());
+    }
+
+    @Test
+    void existingConfiguredExecutableKeepsItsExplicitSelection() throws Exception {
+        Path bin = Files.createDirectories(temporaryDirectory.resolve("desktop-bin"));
+        Path configured = Files.createDirectories(bin.resolve("1111111111111111")).resolve("codex.exe");
+        Files.writeString(configured, "configured fixture");
+        Path newer = Files.createDirectories(bin.resolve("2222222222222222")).resolve("codex.exe");
+        Files.writeString(newer, "new fixture");
+
+        assertThat(desktopService(bin).resolveExecutable(configured.toString())).isEqualTo(configured.toString());
+    }
+
+    @Test
+    void missingCustomPathDoesNotSwitchToDesktopInstallation() throws Exception {
+        Path bin = Files.createDirectories(temporaryDirectory.resolve("desktop-bin"));
+        Path installed = Files.createDirectories(bin.resolve("1111111111111111")).resolve("codex.exe");
+        Files.writeString(installed, "installed fixture");
+
+        assertThatThrownBy(() -> desktopService(bin).resolveExecutable(temporaryDirectory.resolve("custom/codex.exe").toString()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("未找到 Codex CLI");
+    }
+
+    @Test
+    void incompleteDesktopInstallationDoesNotUseUnversionedLauncher() throws Exception {
+        Path bin = Files.createDirectories(temporaryDirectory.resolve("desktop-bin"));
+        Files.createDirectories(bin.resolve("1111111111111111"));
+        Files.writeString(bin.resolve("codex.exe"), "old unversioned launcher");
+
+        assertThatThrownBy(() -> desktopService(bin).resolveExecutable(bin.resolve("9999999999999999/codex.exe").toString()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("未找到 Codex CLI");
+    }
+
     @Test
     void jobAnalysisOverridesDesktopSettingsAndRetainsReadOnlyStructuredExecution() {
         CodexCliService service = new CodexCliService();

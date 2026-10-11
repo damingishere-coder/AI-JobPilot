@@ -7,8 +7,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -263,12 +265,17 @@ public class CodexCliService {
         return command;
     }
 
-    private String resolveExecutable(String configured) {
+    String resolveExecutable(String configured) {
         validateExecutableName(configured);
         Path configuredPath = Path.of(configured);
         if (configuredPath.isAbsolute() || configuredPath.getParent() != null) {
             if (Files.isRegularFile(configuredPath)) {
                 return configuredPath.toAbsolutePath().normalize().toString();
+            }
+            Path updatedDesktopExecutable = findUpdatedDesktopExecutable(configuredPath);
+            if (updatedDesktopExecutable != null) {
+                log.warn("Codex 桌面版旧运行目录已移除，使用当前安装目录: {}", updatedDesktopExecutable);
+                return updatedDesktopExecutable.toString();
             }
             throw new IllegalStateException("未找到 Codex CLI：" + configured);
         }
@@ -293,6 +300,43 @@ public class CodexCliService {
             }
         }
         throw new IllegalStateException("未找到 Codex CLI：" + configured);
+    }
+
+    // Desktop updates replace bin/<fingerprint>/codex.exe. Recover only that
+    // known installation layout; a missing custom executable must still fail.
+    private Path findUpdatedDesktopExecutable(Path configuredPath) {
+        Path bin = desktopBinDirectory();
+        if (bin == null) return null;
+        bin = bin.toAbsolutePath().normalize();
+        Path absolute = configuredPath.toAbsolutePath().normalize();
+        Path previousRuntime = absolute.getParent();
+        if (previousRuntime == null || !bin.equals(previousRuntime.getParent())
+                || !"codex.exe".equalsIgnoreCase(absolute.getFileName().toString())
+                || !previousRuntime.getFileName().toString().matches("[a-fA-F0-9]{16}")) return null;
+        try (var runtimes = Files.list(bin)) {
+            return runtimes.filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> path.getFileName().toString().matches("[a-fA-F0-9]{16}"))
+                    .filter(path -> Files.isRegularFile(path.resolve("codex.exe"), LinkOption.NOFOLLOW_LINKS))
+                    .max(Comparator.comparingLong(this::runtimeModifiedAt).thenComparing(Path::toString))
+                    .map(path -> path.resolve("codex.exe").toAbsolutePath().normalize())
+                    .orElse(null);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private long runtimeModifiedAt(Path path) {
+        try {
+            return Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toMillis();
+        } catch (IOException e) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    Path desktopBinDirectory() {
+        String localAppData = System.getenv("LOCALAPPDATA");
+        return localAppData == null || localAppData.isBlank() ? null
+                : Path.of(localAppData).resolve("OpenAI").resolve("Codex").resolve("bin");
     }
 
     void validateExecutableName(String configured) {

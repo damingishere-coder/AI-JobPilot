@@ -125,7 +125,10 @@ class FullPipelineBrowserRegressionTest {
         job=browser.newPage();String html=Files.readString(Path.of("chrome-extension/tests/fixtures/boss/detail/full.html"))
             .replace("AI产品运营","Java后端工程师").replace("负责产品需求分析、运营推广和数据跟踪。任职要求：熟悉人工智能产品并具备项目交付经验。","Java 和 Spring Boot 后端开发、系统设计。任职要求：Java 项目交付经验。");
         job.route(JOB_URL,route->route.fulfill(new Route.FulfillOptions().setContentType("text/html").setBody("<!doctype html><meta charset='utf-8'>"+html)));
-        job.navigate(JOB_URL);
+        // The routed fixture is usable once its DOM is parsed. Its collector is
+        // awaited below; the unrelated full-load event can stall on Windows CI.
+        job.navigate(JOB_URL, new Page.NavigateOptions()
+                .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED));
         await(()->Boolean.TRUE.equals(probe("return !!globalThis.GetJobsBossDetailCollector")));
     }
 
