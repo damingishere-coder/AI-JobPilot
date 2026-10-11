@@ -16,12 +16,17 @@
 
 本地 37 项测试中 36 通过、1 项按平台跳过，构建通过。新增回归验证旧版本被移除后的恢复、有效的显式路径、缺失的自定义路径和不完整安装。完整 CI 通过后按主线 PR 流程合并，沿用已有 RunDock Backend 与原数据库部署。
 
+首次 Windows CI 的 20 项离线浏览器测试中，1 项在静态岗位夹具的 `navigate` 等待全页 `load` 事件时超时。该夹具需要的是正文 DOM 和采集脚本；修改为等待 `DOMContentLoaded`，继续保留采集脚本就绪检查与完整流程断言，且所有真实招聘网络请求仍受拦截与禁止外连约束。
+
+调整后本地 `./gradlew.bat browserRegressionTest --no-daemon` 的 20 项离线浏览器回归全部通过。
+
 真实消息生成、审核及发送仍须以恢复后的数据库与聊天回执核验；连接正常和构建成功不代表已经发送。4 条历史 `SEND_UNKNOWN` 保持冻结；1 条历史身份未解决记录继续保留人工边界。
 
 ## 文件与回滚
 
 - `src/main/java/com/getjobs/application/service/CodexCliService.java`
 - `src/test/java/com/getjobs/application/service/CodexCliServiceTest.java`
+- `src/test/java/com/getjobs/application/FullPipelineBrowserRegressionTest.java`
 - 本交付记录
 
 业务代码回滚基准为 `3c88445fe0c785ae5d9562f0575b80db0c2c6ca6`，通过正常回滚 PR 撤销本次代码；本次没有新增迁移。当前有效的 Codex 路径可以保留。原路径已不存在，恢复原配置会再次阻止 AI 启动，不能作为可用运行方案。保留数据库与所有聊天、建议、命令及未知发送历史。
