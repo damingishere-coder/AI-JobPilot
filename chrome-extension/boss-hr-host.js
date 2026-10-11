@@ -41,8 +41,11 @@
   function eligible(item, previous, cursor, timestamp) {
     const day = messageDay(item.lastTime, timestamp), today = shanghaiDay(timestamp);
     if (day !== null && (day > today || day < today - cursor.historyDays * DAY_MS)) return false;
+    if (previous?.readRecovery) return timestamp >= Number(previous.retryAt || 0);
     if (cursor.catalogOnly) return false;
     if (cursor.unreadOnly && !Number(item.unreadCount || 0)) return false;
+    if (previous?.signature === previewSignature(item,timestamp) && previous.readIncomplete)
+      return timestamp >= Number(previous.retryAt || 0);
     if (previous?.signature === previewSignature(item,timestamp) && Number(item.unreadCount || 0) <= previous.unreadCount) return false;
     // Unknown dates cannot make an unobserved, read historical chat current.
     return day !== null || Number(item.unreadCount || 0) > 0 || Boolean(previous);
@@ -191,7 +194,7 @@
           cursor: !reauthorize && previous?.profileId===profileId ? previous.cursor || null : null, baselineComplete:!reauthorize && Boolean(previous?.baselineComplete),lastReconcileAt:reauthorize?null:previous?.lastReconcileAt || null,
           previews:!reauthorize && previous?.profileId===profileId ? previous.previews || {} : {},patrolVersion:!reauthorize ? previous?.patrolVersion || 0 : 0,
           operation: null, retryCount: 0, retryAt: 0, nextScanAt: now(), workbenchWindowId: sender?.tab?.windowId,
-          explicitResume: true, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
+          explicitResume: true, pageCreationAllowed: true, readRecoveryInitialized:false, needsAccountConfirmation: false, legacyAnchorsChecked: false,listRechecks:0,controlRevision:Number(previous?.controlRevision || 0)+1,
           expectedAccountName: String(message.expectedAccountName || (!reauthorize && previous?.expectedAccountName) || "") },
           {...(previous || {}),exists:Boolean(previous),allowDisabled:true,allowPaused:true});
         await alarm();
@@ -208,6 +211,11 @@
         if (candidates.length > 1) throw fault("HR_HOST_TAB_AMBIGUOUS", "发现多个专用聊天标签，请保留一个后恢复");
         tab=candidates[0];
         if(!tab) {
+          if (!explicit || state.pageCreationAllowed !== true)
+            throw fault("BOSS_CHAT_TAB_MISSING", "专用聊天页已关闭，请手动恢复托管；系统不会自动刷新或重开页面");
+          // One page creation per explicit user command. An alarm, worker
+          // restart, or failed creation cannot navigate the platform again.
+          state = await update({pageCreationAllowed:false},state);
           // Chrome window IDs do not survive a browser restart. Use a verified
           // existing normal window, and never create or focus a window here.
           let window=state.workbenchWindowId!=null ? await chrome.windows.get(state.workbenchWindowId).catch(()=>null) : null;
@@ -215,10 +223,10 @@
             const windows=await chrome.windows.getAll({windowTypes:["normal"],populate:false});
             window=windows.find(item=>item.type==="normal" && !item.incognito);
           }
-          if(!window)throw fault("HR_BROWSER_WINDOW_UNAVAILABLE","Chrome 暂无普通窗口，等待浏览器窗口出现后在后台恢复",true);
+          if(!window)throw fault("HR_BROWSER_WINDOW_UNAVAILABLE","Chrome 暂无普通窗口，请打开普通窗口后手动恢复托管");
           await active(state);
           tab=await chrome.tabs.create({url:CHAT_URL,active:false,windowId:window.id}).catch(()=>{
-            throw fault("HR_BACKGROUND_TAB_CREATE_FAILED","Chrome 窗口暂不可用，后台稍后重试",true);
+            throw fault("HR_BACKGROUND_TAB_CREATE_FAILED","聊天页未能打开，请手动恢复；系统不会循环重开页面");
           });
         }
         state = await update({ tabId: tab.id,workbenchWindowId:tab.windowId,originalAutoDiscardable: tab.autoDiscardable !== false, watchSessionId: "", pageDocumentId: "" },state);
@@ -246,6 +254,7 @@
     async function bind(state, page) {
       const backend = await request("/api/hr-assistant/status", { ...context(state), method: "GET", requireActionToken: false });
       const observed = apiData(backend);
+      let boundStatus=observed;
       await active(state);
       const matched = backend.success && observed?.watching && observed.watchSessionId === state.watchSessionId
         && observed.hostGeneration === state.hostGeneration && observed.pageDocumentId === page.documentId;
@@ -264,6 +273,7 @@
         if (!started.success || !apiData(started)?.watchSessionId) throw fault(started.errorType || "HR_BACKEND_BIND_FAILED", started.message || "值守绑定未确认",
           started.httpStatus >= 500 || !started.httpStatus || (started.httpStatus===409 && started.errorType==="HR_WATCH_ACTIVE"
             && (!observed?.profileId || observed.profileId===state.profileId)));
+        boundStatus=apiData(started);
         try {state = await update({ watchSessionId: apiData(started).watchSessionId },state);}
         catch(error) {
           await request("/api/hr-assistant/watch/stop",{...context(state),method:"POST",body:{watchSessionId:apiData(started).watchSessionId,reason:"后台启动已被用户取消",...anchors(state,page)}}).catch(()=>{});
@@ -283,7 +293,16 @@
         watchSessionId: state.watchSessionId, tabId: state.tabId, url: CHAT_URL, contentVersion: PROTOCOL,
         transport: "CHROME_BACKGROUND", scanRunning: Boolean(state.operation && state.operation.kind !== "SEND"), outboxCount: 0, fault: "", ...anchors(state, heartbeatPage) } });
       if (!heartbeat.success) throw fault(heartbeat.errorType || "HR_HEARTBEAT_REJECTED", heartbeat.message || "页面心跳未确认", !heartbeat.httpStatus || heartbeat.httpStatus >= 500);
-      return update({lastPageSeenAt:heartbeatPage.observedAt},state);
+      let previews=state.previews || {};
+      if(!state.readRecoveryInitialized) {
+        for(const hint of boundStatus?.activity?.background?.readRecoveryHints || []) {
+          if(typeof hint.uid!=='string' || !hint.uid || typeof hint.captureId!=='string')continue;
+          const previous=Object.hasOwn(previews,hint.uid)?previews[hint.uid]:null;
+          if(previous?.readIncomplete)continue;
+          previews={...previews,[hint.uid]:{...previous,readIncomplete:true,retryAt:now(),readRecovery:hint}};
+        }
+      }
+      return update({lastPageSeenAt:heartbeatPage.observedAt,previews,readRecoveryInitialized:true},state);
     }
     async function tick(origin = "alarm") {
       if (tickPromise) return tickPromise;
@@ -318,7 +337,7 @@
           throw fault("HR_AUTHORIZATION_REQUIRED", "请确认回复模式、历史处理范围和当前沟通资料");
         const ready = await getPage(state, state.explicitResume===true);
         state = await bind(ready.state, ready.page);
-        state = await update({ state: "RUNNING", errorCode: "", message: "后台托管中", pauseReason: "", retryCount: 0, retryAt: 0, explicitResume:false },state);
+        state = await update({ state: "RUNNING", errorCode: "", message: "后台托管中", pauseReason: "", retryCount: 0, retryAt: 0, explicitResume:false, pageCreationAllowed:false },state);
         const legacy = await request("/api/hr-assistant/watch/legacy-anchors", { ...context(state), method:"POST",
           body:{watchSessionId:state.watchSessionId,tabId:state.tabId,...anchors(state,ready.page)} });
         if (!legacy.success) throw fault(legacy.errorType || "HR_LEGACY_ANCHORS_UNAVAILABLE",legacy.message || "无法核验历史未知发送",!legacy.httpStatus || legacy.httpStatus>=500);
@@ -351,7 +370,8 @@
         if (!state.cursor && Number(state.nextScanAt || 0) > now()) return;
         if (!state.cursor) {
           const catalog = state.patrolVersion!==PATROL_VERSION || !state.baselineComplete;
-          const reconcile = catalog || !state.lastReconcileAt || now()-state.lastReconcileAt>=1800000;
+          const dueRead=Object.values(state.previews || {}).some(item=>item.readIncomplete && now()>=Number(item.retryAt || 0));
+          const reconcile = catalog || dueRead || !state.lastReconcileAt || now()-state.lastReconcileAt>=1800000;
           state = await update({ cursor: {stage:"LIST",scope:reconcile?"ALL":"UNREAD",scrollTop:0,queue:[],seen:[],baseline:!state.baselineComplete,
             catalogOnly:catalog && p.historyMode==="NEW_ONLY" && !state.baselineComplete,
             unreadOnly:catalog && p.historyMode==="NEW_ONLY" && state.baselineComplete,historyDays:p.historyDays,policyKey,patrolVersion:PATROL_VERSION,
@@ -375,10 +395,17 @@
           for (const item of response.targets || []) if (item.uid && !seen.has(item.uid)) {
             seen.add(item.uid);
             if(!item.previewKey || !Number.isFinite(item.unreadCount) || typeof item.lastTime!=="string")
-              throw fault("HR_LIST_EVIDENCE_MISSING","联系人摘要或时间未读完整，请刷新托管聊天页");
+              throw fault("HR_LIST_EVIDENCE_MISSING","联系人摘要或时间未读完整，请查看聊天页并手动恢复托管");
             const previous=Object.hasOwn(previews,item.uid)?previews[item.uid]:null;
-            if(!eligible(item,previous,cursor,now())) {previews=remember(previews,item,now());continue;}
-            const target={...item,legacyAnchorId:item.legacyAnchorId || null};
+            if(!eligible(item,previous,cursor,now())) {
+              // A read retry remains pending even after opening the chat cleared
+              // its unread badge. Cataloging must not erase that checkpoint.
+              if(!previous?.readIncomplete || previous.signature!==previewSignature(item,now()))previews=remember(previews,item,now());
+              continue;
+            }
+            const target={...item,legacyAnchorId:item.legacyAnchorId || null,
+              readRecovery:previous?.readRecovery || null,
+              historical:previous?.signature===previewSignature(item,now()) && previous.readIncomplete && previous.historical===true};
             if (Number.isFinite(item.listScrollTop) && item.listScrollTop>=0) target.listScrollTop=item.listScrollTop;
             targets.push(target);
           }
@@ -387,6 +414,13 @@
           const stalled=response.hasMore && seen.size===cursor.seen.length && Number(response.nextScrollTop)===Number(cursor.scrollTop);
           const stalledSteps=stalled?Number(cursor.stalledSteps || 0)+1:0;
           if(stalledSteps>=3) throw fault("HR_LIST_SCROLL_STALLED", "联系人列表滚动未前进，已暂停并保留采集进度，请检查页面后恢复");
+          if(!response.hasMore) {
+            const queued=new Set(targets.map(item=>item.uid));
+            for(const [uid,preview] of Object.entries(previews)) {
+              if(preview.readIncomplete && now()>=Number(preview.retryAt || 0) && !queued.has(uid))
+                previews={...previews,[uid]:{...preview,retryAt:now()+1800000}};
+            }
+          }
           await update({ previews,cursor: { ...cursor, queue: targets, seen: [...seen], scrollTop: response.nextScrollTop,
             stalledSteps,
             stage: response.hasMore ? "LIST" : "CAPTURE" }, operation: null },state);
@@ -400,8 +434,14 @@
               throw fault(saved.errorType || "HR_CAPTURE_ACK_MISSING", saved.message || "采集未确认保存，保留游标稍后重读", !saved.httpStatus || saved.httpStatus>=500);
           }
           const observation=response.observation;
-          const previews=observation && observation.uid===cursor.queue[0]?.uid && observation.previewKey
+          let previews=observation && observation.uid===cursor.queue[0]?.uid && observation.previewKey
             ?remember(state.previews || {},observation,now()):state.previews || {};
+          if(response.capture && !response.capture.contextComplete && observation?.uid===cursor.queue[0]?.uid && observation.previewKey) {
+            const previous=state.previews?.[observation.uid];
+            const attempts=previous?.signature===previewSignature(observation,now())?Number(previous.readAttempts || 0)+1:1;
+            previews={...previews,[observation.uid]:{...previews[observation.uid],readIncomplete:true,readAttempts:attempts,
+              retryAt:now()+[60000,120000,300000,1800000][Math.min(attempts-1,3)],historical:response.capture.historical===true}};
+          }
           const remaining = cursor.queue.slice(1);
           if (remaining.length) await update({previews,cursor: { ...cursor, queue: remaining }, operation: null,listRechecks:0 },state);
           else await update({previews,patrolVersion:PATROL_VERSION,cursor: null, operation: null,listRechecks:0, baselineComplete: true, lastScanAt: now(), nextScanAt: now() + 60000,
@@ -546,7 +586,7 @@
       const state = await read();
       if (state?.intentEnabled && (!state.paused || state.pauseOrigin==="REMOTE")) {
         await alarm();
-        await update({ state: "RECOVERING", message: "后台恢复中，等待核验登录与页面", retryAt: 0,
+        await update({ state: "RECOVERING", message: "后台恢复中，等待核验登录与页面", retryAt: 0, pageCreationAllowed:false,
           needsAccountConfirmation:browserStartup && !state.accountIdentityStable ? true : state.needsAccountConfirmation || false },{...state,allowPaused:state.pauseOrigin==="REMOTE"});
       }
     }

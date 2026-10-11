@@ -50,6 +50,33 @@ class HrBackgroundWatchServiceTest {
         binding=new BackgroundBinding("generation","document","geek:测试账号","测试账号",true,System.currentTimeMillis());
     }
     @AfterEach void stop(){watcher.shutdownBackground();}
+    @Test void transientDraftFailureRetriesAnalysisWithoutCreatingAnEmptyProposalOrBlockingOtherContacts() throws Exception {
+        when(drafts.generateWithFacts(eq(1L),anyLong(),any(),anyList(),anyString()))
+                .thenThrow(new IllegalStateException("temporary AI timeout")).thenReturn(reply());
+        var status=start();watcher.acceptCapture(status.watchSessionId(),77,"scan",List.of(capture("retry")),observation());
+        watcher.processBackgroundCaptures();
+        waitUntil(()->db.queryForObject("SELECT retry_count FROM hr_background_capture",Integer.class)==1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT status FROM hr_background_capture",String.class)).isEqualTo("PENDING");
+        assertThat(watcher.status().watching()).isTrue();
+        watcher.acceptCapture(status.watchSessionId(),77,"scan",List.of(capture("other")),observation());
+        waitUntil(()->!watcher.status().phase().equals("ANALYZING"));watcher.processBackgroundCaptures();
+        waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
+        waitUntil(()->!watcher.status().phase().equals("ANALYZING"));
+        db.update("UPDATE hr_background_capture SET retry_at=0 WHERE retry_count=1");watcher.processBackgroundCaptures();
+        waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==2);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE classification='NEEDS_USER'",Integer.class)).isZero();
+    }
+    @Test void transientAuditFailureIsRetriedBeforeAnyProposalOrSendIsCommitted() throws Exception {
+        when(ai.sendHrStructuredRequest(anyString(),anyString())).thenThrow(new IllegalStateException("audit timeout"))
+                .thenReturn("{\"allowed\":true,\"evidence\":[],\"reason\":\"礼貌回复\",\"claims\":[]}");
+        var status=start();watcher.acceptCapture(status.watchSessionId(),77,"scan",List.of(capture("audit")),observation());
+        watcher.processBackgroundCaptures();waitUntil(()->db.queryForObject("SELECT retry_count FROM hr_background_capture",Integer.class)==1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
+        waitUntil(()->!watcher.status().phase().equals("ANALYZING"));
+        db.update("UPDATE hr_background_capture SET retry_at=0");watcher.processBackgroundCaptures();
+        waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
+    }
     AiDraft reply(){return new AiDraft(Classification.REPLY,"好的，谢谢","普通回复",List.of(),List.of(),1);}
     ChatCapture capture(String id){return new ChatCapture(id,1,new ChatSession("uid-"+id,"","测试HR","测试公司","采购","","方便沟通吗","今天"),
             List.of(new ChatMessage("对方","文本","方便沟通吗","今天")),false,true);}
@@ -138,15 +165,17 @@ class HrBackgroundWatchServiceTest {
         var resumed=start();assertThat(resumed.watchSessionId()).isNotEqualTo(status.watchSessionId());
         watcher.processBackgroundCaptures();waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
     }
-    @Test void incompleteReadIsAcknowledgedAndRoutesToHumanWithoutAiOrSend()throws Exception {
+    @Test void incompleteReadIsAcknowledgedAndWaitsForCompleteRereadWithoutAnEmptyProposal()throws Exception {
         var status=start();var c=capture("incomplete");c=new ChatCapture(c.captureId(),c.unreadCount(),c.session(),c.messages(),false,false);
         assertThat(watcher.acceptCapture(status.watchSessionId(),77,"scan",List.of(c),observation()).accepted()).isTrue();
-        watcher.processBackgroundCaptures();waitUntil(()->"DONE".equals(db.queryForObject("SELECT status FROM hr_background_capture",String.class)));
+        watcher.processBackgroundCaptures();waitUntil(()->"BLOCKED".equals(db.queryForObject("SELECT status FROM hr_background_capture",String.class)));
+        assertThat(db.queryForObject("SELECT error_code FROM hr_background_capture",String.class)).isEqualTo("CONTEXT_INCOMPLETE");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal",Integer.class)).isZero();
         verify(drafts,never()).generateWithFacts(any(),anyLong(),any(),anyList(),anyString());verifyNoInteractions(ai);
-        verify(qq).notifyProposal(any());assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
+        verify(qq,never()).notifyProposal(any());assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)).isZero();
         watcher.acceptCapture(status.watchSessionId(),77,"reread",List.of(capture("incomplete")),observation());
         waitUntil(()->!watcher.status().phase().equals("ANALYZING"));
         watcher.processBackgroundCaptures();waitUntil(()->db.queryForObject("SELECT COUNT(*) FROM hr_send_command",Integer.class)==1);
-        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE status='EXPIRED'",Integer.class)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM hr_reply_proposal WHERE status='EXPIRED'",Integer.class)).isZero();
     }
 }

@@ -25,6 +25,22 @@ function captureHarness(batches) {
   return {...window.test,scrolls:()=>scrolls};
 }
 const text=(from,messageId,body,time='今天')=>({from,type:'文本',text:body,time,messageId,media:[]});
+
+test('browser navigation shortcuts do not pause hosting, while chat submission keys do',async()=>{
+  let listener;const events={},sent=[];
+  const window={addEventListener:(name,fn)=>events[name]=fn};window.top=window;window.self=window;
+  vm.runInNewContext(source,{window,document:{querySelector:()=>null},location:{pathname:'/web/geek/chat',href:'https://www.zhipin.com/web/geek/chat'},
+    crypto:{randomUUID:()=>"document"},sessionStorage:{getItem:()=>null,setItem:()=>{},removeItem:()=>{}},
+    GetJobsBossHrSupport:{normalizeText:value=>String(value||''),pageSafety:()=>({safe:true})},
+    chrome:{runtime:{onMessage:{addListener:fn=>listener=fn},sendMessage:(message,reply)=>{sent.push(message);reply({success:true});}}}});
+  const call=message=>new Promise(resolve=>listener({source:'GET_JOBS_BACKGROUND',...message},{},resolve));
+  await call({type:'BOSS_HR_HOST_BIND',protocol:PROTOCOL,documentId:'document',hostGeneration:'generation',watchSessionId:'watch',explicitResume:true});
+  for(const key of ['Control','Shift','Alt','Meta','Tab','l','t','w'])events.keydown({type:'keydown',key,ctrlKey:true,isTrusted:true,composedPath:()=>[]});
+  assert.equal((await call({type:'BOSS_HR_HOST_PAGE_PING'})).userPaused,false);
+  events.keydown({type:'keydown',key:'Enter',ctrlKey:true,isTrusted:true,composedPath:()=>[]});
+  assert.equal((await call({type:'BOSS_HR_HOST_PAGE_PING'})).userPaused,true);
+  assert.equal(sent.filter(m=>m.type==='BOSS_HR_HOST_MANUAL_PAUSE').length,1);
+});
 test('NEW_ONLY baseline captures stay historical while a later ALL scan captures new incoming without an unread badge',async()=>{
   const messages=[text('本人','self-1','较早回复'),text('本人','self-2','最近回复'),text('对方','new-1','新提问')];
   const h=captureHarness([messages]);

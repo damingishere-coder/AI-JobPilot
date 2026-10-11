@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "2026-10-09-hr-media-scope-v1";
+  const SCRIPT_BUILD = "2026-10-11-hr-read-recovery-v1";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -28,6 +28,11 @@
   });
   const pauseForUser=(event)=> {
     if(window.__GET_JOBS_BOSS_HR_BRIDGE__!==SCRIPT_BUILD)return;
+    // Switching tabs, opening the address bar, or pressing a modifier does not
+    // edit a conversation. Ctrl+Enter and ordinary input still pause first.
+    if(event.type==='keydown' && (/^(Control|Shift|Alt|Meta)$/.test(event.key || '')
+        || ((event.ctrlKey || event.metaKey) && /^(Tab|[ltw])$/i.test(event.key || ''))
+        || (event.altKey && event.key==='Tab')))return;
     if (hostGeneration && event.isTrusted && !event.composedPath().some(node=>node?.id==="getjobs-boss-hr-assistant")) {
       userPaused=true;
       try {sessionStorage.setItem("getjobs-hr-paused","1");} catch {}
@@ -211,7 +216,8 @@
     session.lastMessage=support.latestInbound(read.messages)?.text || "";delete session.surfaceText;
     // ALL describes traversal, not age. Completed baseline sources are already
     // durable in the backend; a changed incoming source must remain eligible.
-    const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.baseline===true,contextComplete:read.complete};
+    const capture={captureId:await support.sourceCaptureId(snapshot.uid,read.messages,hostPageStatus().accountIdentity),unreadCount:snapshot.unreadCount || 1,session,messages:read.messages,historical:cursor.baseline===true || message.target?.historical===true,contextComplete:read.complete};
+    if(message.target?.readRecovery?.captureId===capture.captureId && message.target.readRecovery.historical===true)capture.historical=true;
     await hydrateMedia(capture.messages,message.deadlineAt);
     await guard();
     if (!captureStillCurrent(snapshot,read.messages)) return {...changedDuringRead(),retryable:true};
@@ -652,6 +658,12 @@
     let scroller=pane?.parentElement;
     for(let i=0;i<4 && scroller && scroller.scrollHeight<=scroller.clientHeight+10;i++) scroller=scroller.parentElement;
     const hasBoundary=items=>items.filter(m=>m.from==="本人").length>=2;
+    const hasBeginning=()=> {
+      const uid=pane?.getAttribute?.('data-getjobs-hr-history-start');
+      return Boolean(uid && uid===document.querySelector('.chat-conversation')?.getAttribute('data-getjobs-hr-uid'))
+        || Array.from(document.querySelectorAll('.chat-conversation .history-tip,.chat-conversation .load-more'))
+          .some(node=>/没有更多消息|已加载全部|沟通从这里开始/.test(node.textContent||''));
+    };
     let legacyEnd=legacyCapture?.messages?.length || 0;
     while(legacyEnd>0 && legacyCapture.messages[legacyEnd-1].from!=="对方") legacyEnd--;
     let legacyStart=legacyEnd;
@@ -661,22 +673,29 @@
     const rowCount=()=>Array.from(document.querySelectorAll(".chat-conversation .im-list > .message-item"))
       .filter(node=>!node.classList.contains("item-system")).length;
     let lostBoundary=rowCount()!==messages.length;
-    for(let i=0;i<(legacyCapture?40:8) && (!hasBoundary(messages) || !legacyComplete(messages)) && scroller;i++) {
+    for(let i=0;i<(legacyCapture?40:8) && ((!hasBoundary(messages) && !hasBeginning()) || !legacyComplete(messages)) && scroller;i++) {
       if (Date.now()>=deadlineAt) break;
       await guard();
       const count=messages.length;
-      scroller.scrollTop=0; scroller.dispatchEvent(new Event("scroll",{bubbles:true})); await wait(350);
-      const loaded=support.readMessages(document);
-      if(rowCount()!==loaded.length) lostBoundary=true;
       const first=messages[0]?.messageId;
+      scroller.scrollTop=0; scroller.dispatchEvent(new Event("scroll",{bubbles:true}));
+      let loaded=messages;
+      // Slow history responses need several DOM observations, with overlap and
+      // the existing operation deadline still checked before every read.
+      for(let poll=0;poll<6 && Date.now()+350<deadlineAt;poll++) {
+        await wait(350);await guard();loaded=support.readMessages(document);
+        if(loaded[0]?.messageId!==first || loaded.length!==count || hasBeginning())break;
+      }
+      if(rowCount()!==loaded.length) lostBoundary=true;
       const overlap=first ? loaded.findIndex(m=>m.messageId===first) : -1;
       if(messages.length && overlap<0) {lostBoundary=true;break;}
       messages=messages.length ? loaded.slice(0,overlap).concat(messages) : loaded;
       if(messages.length===count) break;
     }
     // Keep the latest round plus a preceding complete exchange; virtual-list gaps remain incomplete.
-    const beginning=Array.from(document.querySelectorAll(".chat-conversation .history-tip,.chat-conversation .load-more"))
-      .some(node=>/没有更多消息|已加载全部|沟通从这里开始/.test(node.textContent||""));
+    // Metadata is refreshed by readMessages; it belongs to the same selected
+    // platform UID, not to a prior conversation or an initial empty list.
+    const beginning=hasBeginning();
     const complete=!lostBoundary && legacyComplete(messages) && (hasBoundary(messages) || (beginning && messages.length>0));
     const lastSelf=messages.findLastIndex(message=>message.from==="本人");
     const round=messages.slice(lastSelf+1);

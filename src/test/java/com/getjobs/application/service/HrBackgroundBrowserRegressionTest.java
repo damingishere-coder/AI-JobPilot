@@ -15,6 +15,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HrBackgroundBrowserRegressionTest {
     private static final String PROTOCOL="2026-09-30-hr-background-v1";
 
+    @Test void firstChatUsesVerifiedHistoryMetadataAndRejectsInitialLoadingOrForeignConversation() {
+        try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
+                new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)
+                        .setArgs(List.of("--disable-background-networking","--host-resolver-rules=MAP * ~NOTFOUND")));
+             BrowserContext context=browser.newContext()) {
+            Page chat=fixture(context);
+            chat.evaluate("""
+                ()=>{
+                  document.querySelector('.history-tip').remove();
+                  const list=document.querySelector('.im-list'),record=list.parentElement;
+                  record.className='chat-record';
+                  const source=document.querySelector('.friend-content-warp').__vue__.$props.source;
+                  record.__vue__={$el:record,$refs:{scrollContent:list},boss:source,loading:false,history:false,isToTop:true,msgMinId:'inbound'};
+                  const call=payload=>new Promise(resolve=>fixtureListener({source:'GET_JOBS_BACKGROUND',...payload}, {},resolve));
+                  window.readFirst=async()=>{
+                    const page=await call({type:'BOSS_HR_HOST_PAGE_PING'});
+                    await call({type:'BOSS_HR_HOST_BIND',protocol:'2026-09-30-hr-background-v1',documentId:page.documentId,
+                      hostGeneration:'generation',watchSessionId:'watch',explicitResume:true});
+                    return call({type:'BOSS_HR_HOST_SCAN_STEP',protocol:'2026-09-30-hr-background-v1',documentId:page.documentId,
+                      hostGeneration:'generation',watchSessionId:'watch',cursor:{stage:'CAPTURE'},target:{uid:'101-0'},deadlineAt:Date.now()+20000});
+                  };
+                }
+                """);
+            // This path exercises the production DOM reader and MAIN-world identity export.
+            var result=chat.evaluate("()=>readFirst()");
+            assertThat(result.toString()).contains("contextComplete=true");
+            for(String mutation:List.of("loading=true","history=true","isToTop=false","boss={friendId:'999',friendSource:0,uniqueId:'999-0'}")) {
+                chat.evaluate("document.querySelector('.chat-record').__vue__."+mutation);
+                chat.evaluate("()=>GetJobsBossHrSupport.readMessages(document)");
+                assertThat(chat.locator(".im-list").getAttribute("data-getjobs-hr-history-start")).isNull();
+                chat.evaluate("""
+                    ()=>{const h=document.querySelector('.chat-record').__vue__;h.loading=false;h.history=false;h.isToTop=true;
+                      h.boss=document.querySelector('.friend-content-warp').__vue__.$props.source;}
+                    """);
+            }
+            assertThat(chat.evaluate("fixtureDispatches")).isEqualTo(0);
+        }
+    }
+
     @Test void productionPanelRendersAnalysisBlockerAcrossCollapseAndClearsItAfterReadRecovery() {
         try (Playwright pw=Playwright.create(); Browser browser=pw.chromium().launch(
                 new BrowserType.LaunchOptions().setChannel("chromium").setHeadless(true)

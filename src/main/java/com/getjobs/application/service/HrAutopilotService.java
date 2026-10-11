@@ -177,9 +177,12 @@ public class HrAutopilotService {
     public boolean apply(Long profileId,long proposalId,long conversationId,ChatCapture capture,AiDraft draft,String watchSessionId) {
         var policy=policies.policy(profileId);
         var assessment=assess(profileId,conversationId,capture,draft);
+        return applyAssessment(profileId,proposalId,capture,assessment,watchSessionId,policy.version());
+    }
+    public boolean applyAssessment(Long profileId,long proposalId,ChatCapture capture,Assessment assessment,String watchSessionId,int assessedVersion) {
         var current=policies.policy(profileId);
-        boolean automatic=policies.authorizationValid(profileId) && current.version()==policy.version() && current.enabled()&&"AUTO".equals(current.replyMode())&&!current.paused()&&!Set.of("HUMAN","HISTORY","HISTORY_OLD","RESUME_NATIVE").contains(assessment.action());
-        policies.decision(proposalId,policy.version(),assessment.action(),assessment.reason(),automatic);
+        boolean automatic=policies.authorizationValid(profileId) && current.version()==assessedVersion && current.enabled()&&"AUTO".equals(current.replyMode())&&!current.paused()&&!Set.of("HUMAN","HISTORY","HISTORY_OLD","RESUME_NATIVE").contains(assessment.action());
+        policies.decision(proposalId,assessedVersion,assessment.action(),assessment.reason(),automatic);
         policies.audit(proposalId,assessment.evidence(),capture.historical());
         if(Set.of("HISTORY","HISTORY_OLD","NO_REPLY").contains(assessment.action())) {
             store.markFinal(proposalId,ProposalStatus.SKIPPED,assessment.reason()); return false;

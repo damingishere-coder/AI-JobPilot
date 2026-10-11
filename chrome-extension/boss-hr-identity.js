@@ -9,6 +9,7 @@
   const JOB_KEY = "data-getjobs-job-key";
   const MESSAGE_TYPE = "data-getjobs-hr-message-type";
   const EVENT = "getjobs:hr:refresh-identities";
+  const BUILD = "2026-10-11-hr-history-boundary-v1";
 
   function text(value) { return String(value ?? "").replace(/\s+/g, " ").trim(); }
 
@@ -29,6 +30,7 @@
     for (const node of documentRef.querySelectorAll(`[${ATTRIBUTE}]`)) node.removeAttribute(ATTRIBUTE);
     for (const node of documentRef.querySelectorAll(`[${JOB_KEY}]`)) node.removeAttribute(JOB_KEY);
     for (const node of documentRef.querySelectorAll(`[${MESSAGE_TYPE}]`)) node.removeAttribute(MESSAGE_TYPE);
+    for (const node of documentRef.querySelectorAll('[data-getjobs-hr-history-start]')) node.removeAttribute('data-getjobs-hr-history-start');
     for (const row of documentRef.querySelectorAll(".chat-conversation .im-list > .message-item")) {
       try {
         const component = row.__vue__;
@@ -71,17 +73,28 @@
           pane.setAttribute(ATTRIBUTE, uid);
           const jobKey = text(component.selectedFriend$.encryptJobId);
           if (/^[\w~-]+$/.test(jobKey)) pane.setAttribute(JOB_KEY, jobKey);
+          // MessageList sets isToTop only after its history response reaches the
+          // beginning. Initial/loading state is not a history boundary. Export
+          // only this fact, tied to the selected UID and this exact rendered UL.
+          const list=pane.querySelector('.im-list'),record=list?.closest('.chat-record');
+          const history=record?.__vue__;
+          if(history?.$el===record && history.$refs?.scrollContent===list
+              && sourceUid(history.boss)===uid && history.loading===false
+              && history.history===false && history.isToTop===true && text(history.msgMinId)
+              && list.querySelector('.message-item[data-mid]'))list.setAttribute('data-getjobs-hr-history-start',uid);
         }
       } catch { /* Leave an unsupported pane unbound. */ }
     }
   }
 
   function install(documentRef) {
-    if (documentRef.__getJobsHrIdentityInstalled) return;
-    documentRef.__getJobsHrIdentityInstalled=true;
+    if (documentRef.__getJobsHrIdentityInstalled === BUILD) return;
+    documentRef.__getJobsHrIdentityInstalled=BUILD;
     // On-demand, synchronous metadata only: no timer, network, navigation or
     // component method calls. Do not export the rest of the component props.
-    documentRef.addEventListener(EVENT, () => sync(documentRef));
+    documentRef.addEventListener(EVENT, () => {
+      if(documentRef.__getJobsHrIdentityInstalled===BUILD)sync(documentRef);
+    });
   }
   return { sourceUid, sync, install };
 });
