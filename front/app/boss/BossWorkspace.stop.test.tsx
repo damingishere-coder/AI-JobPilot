@@ -75,6 +75,24 @@ it('backend blocked state wins over a stale navigating extension reply; continue
   mocks.command.mockResolvedValue({...running})
   await act(async () => { fireEvent.click(screen.getByRole('button',{name:'继续扫描'})) })
   expect(mocks.command).toHaveBeenCalledWith('boss',4,'boss-current','RESUME')
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(mocks.bridge.mock.calls.some(([message])=>message.type==='BOSS_SCAN_START')).toBe(false)
+})
+
+it('a new BOSS run explicitly starts with keyword zero instead of a prior global cursor', async () => {
+  runs=[]
+  localStorage.setItem('__GET_JOBS_BOSS_KEYWORD_CURSOR__',JSON.stringify({nextIndex:2,keywordTotal:8}))
+  mocks.bridge.mockImplementation(async message=>message.type==='BOSS_SCAN_START'
+    ?{success:true,startAccepted:true,profileId:4,runId:message.runId,scanOwnerToken:'owner',isRunning:true,stage:'received'}
+    :{success:true,profileId:4,isRunning:false,stage:'idle'})
+  await act(async()=>{render(<BossWorkspace />)})
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'开始扫描'}))})
+  expect(mocks.register).toHaveBeenCalledTimes(1)
+  const starts=mocks.bridge.mock.calls.filter(([message])=>message.type==='BOSS_SCAN_START')
+  expect(starts).toHaveLength(1)
+  expect(starts[0][0]).toMatchObject({currentIndex:0,profileId:4,resumeIncomplete:false})
+  expect(starts[0][0].runId).toMatch(/^boss-\d+$/)
+  expect(mocks.command).not.toHaveBeenCalled()
 })
 
 it('a workbench reload preserves pending STOP history without blocking a new round or submitting STOP twice', async () => {
