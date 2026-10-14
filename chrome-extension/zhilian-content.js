@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.16";
+  const EXTENSION_VERSION = "1.8.17";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -14,6 +14,7 @@
   const SCAN_STATUS_KEY = "__GET_JOBS_ZHILIAN_SCAN_STATUS__";
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__";
   const SCAN_SUPPORT = window.GetJobsZhilianScanSupport || {};
+  const START_SUPPORT = window.GetJobsScanStartSupport;
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
@@ -78,9 +79,10 @@
   ];
   let stopRequested = false;
   let activeScanPromise = null;
+  let scanStartQueue = Promise.resolve();
   const scanControl = window.GetJobsScanControl?.create({platform:"zhilian", version:EXTENSION_VERSION,instanceId:CONTENT_INSTANCE_ID,
-    current:()=>window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ === CONTENT_INSTANCE_ID, readTask:readStoredScanTask, saveTask:async task=>{storeScanTask(task);await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:normalizeScanTask(task)});}, status:writeScanStatus,
-    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,setStopped:()=>{stopRequested=true;}});
+    current:()=>window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ === CONTENT_INSTANCE_ID, readTask:readStoredScanTask, saveTask:task=>storeScanTask(task,{requireDurable:true}), status:writeScanStatus,
+    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,clearTask:clearStoppedScanTask,setStopped:()=>{stopRequested=true;}});
 
   let expectedScanOwnerToken = "";
   let scanOwnershipLost = false;
@@ -115,7 +117,8 @@
     }
     if (messageType === "ZHILIAN_SCAN_START") {
       handleScanStartMessage(message).then(sendResponse).catch((error) => {
-        sendResponse({ success: false, message: error.message || String(error) });
+        sendResponse({ success: false, startNotDispatched: error.startNotDispatched === true,
+          errorCode: error.errorCode || "SCAN_START_UNCONFIRMED", message: error.message || String(error) });
       });
       return true;
     }
@@ -144,16 +147,15 @@
   async function handleScanStopMessage(message) {
     const profileId = normalizeProfileId(message?.profileId);
     if (!profileId) return { success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描停止请求缺少档案 ID" };
-    const storedTask = await readStoredScanTaskFromAnyStorage();
-    const storedProfileId = normalizeProfileId(storedTask?.profileId);
-    if (storedProfileId && storedProfileId !== profileId) {
-      clearStoredScanTask();
-      writeScanStatus({ isRunning: false, stopRequested: false, stage: "idle", paused: false, resumable: false, profileId, runId: "", message: "已清除其他档案的智联扫描断点" });
-      return { success: true, message: "已清除其他档案的智联扫描断点", profileId };
+    const storedTask = await readRawScanTask();
+    const bound = storedTask || readScanStatus();
+    if ((normalizeProfileId(bound?.profileId) && normalizeProfileId(bound.profileId) !== profileId)
+        || (message.runId && bound?.runId && bound.runId !== message.runId)) {
+      return { success: false, errorCode: "SCAN_IDENTITY_CHANGED", message: "智联停止目标已变化，未清理其他扫描断点。", profileId };
     }
     stopRequested = true;
     await storeStopRequested(message?.runId);
-    clearStoredScanTask();
+    await clearStoredScanTask();
     writeScanStatus({
       isRunning: false,
       stopRequested: true,
@@ -170,72 +172,95 @@
     return { success: true, message: "已请求停止智联扫描", profileId };
   }
 
-  async function handleScanStartMessage(message) {
-    const profileId = normalizeProfileId(message?.profileId);
-    if (!profileId) return { success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描启动请求缺少档案 ID" };
-    if (!scanKeywords(message).length) {
-      return { success: false, message: "请至少填写一个搜索关键词" };
-    }
-    const existingTask = await readStoredScanTaskFromAnyStorage();
-    const status = readScanStatus();
-    let incomingTask = normalizeScanTask(message);
-    if (message.resumeIncomplete) incomingTask = window.GetJobsContinuousScan.restore(localStorage, "zhilian", incomingTask);
-    const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
-    const configChanged = Boolean(
-      existingTask?.keywordCursorKey
-        && incomingTask.keywordCursorKey
-        && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
-    );
-    if (profileChanged || configChanged) {
-      clearStoredScanTask();
-      postProgress(message, "warning", profileChanged
-        ? "智联档案已变化，其他档案或旧版扫描断点已放弃，将从第一个关键词重新开始。"
-        : "智联扫描配置已变化，旧断点已放弃，将按新配置重新开始。", {
-        operation: "scan",
-        stage: "checkpointReset",
-        diagnosticType: profileChanged ? "PROFILE_CHANGED" : "CONFIG_CHANGED"
-      });
-    }
-    const canResumeExisting = Boolean(
-      !profileChanged
-        && !configChanged
-        && existingTask
-        && !existingTask.completed
-        && (isResumableScanTask(existingTask) || status.resumable || status.stage === "blocked")
-    );
+  function handleScanStartMessage(message) {
+    const work = scanStartQueue.then(() => acceptScanStartMessage(message));
+    scanStartQueue = work.catch(() => {});
+    return work;
+  }
 
-    if (message.resumeIncomplete || canResumeExisting) {
-      await requestZhilianLocalApi("chrome-resume", { body: { profileId, runId: message.resumeIncomplete ? incomingTask.runId : existingTask.runId }, pageTabId: message.pageTabId });
+  function scanStartConfigKey(message) {
+    const config = { ...message.config, keywords: scanKeywords(message),
+      searchJobLimit: normalizeSearchJobLimit(message.searchJobLimit ?? message.config?.searchJobLimit) };
+    const sorted = value => Array.isArray(value) ? value.map(sorted)
+      : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+    return JSON.stringify(sorted(config));
+  }
+
+  async function readRawScanTask() {
+    try {
+      const local = JSON.parse(sessionStorage.getItem(SCAN_TASK_KEY) || "null");
+      if (local) return local;
+    } catch { /* A reconciliation probe must not repair storage. */ }
+    if (!chrome?.storage?.local) return null;
+    const result = await chrome.storage.local.get(SHARED_SCAN_TASK_KEY);
+    return result?.[SHARED_SCAN_TASK_KEY] || null;
+  }
+
+  function readRawScanStatus() {
+    try { return JSON.parse(sessionStorage.getItem(SCAN_STATUS_KEY) || "null"); }
+    catch { return null; }
+  }
+
+  async function acceptScanStartMessage(message) {
+    const profileId = normalizeProfileId(message?.profileId);
+    if (!profileId) return { success: false, startNotDispatched: true, errorCode: "PROFILE_REQUIRED", message: "智联扫描启动请求缺少档案 ID" };
+    if (!START_SUPPORT || !message.runId || !message.scanOwnerToken) {
+      return { success: false, startNotDispatched: true, errorCode: "SCAN_START_IDENTITY_REQUIRED", message: "智联启动身份不完整，请重新加载扩展并刷新工作台。" };
     }
+    if (!scanKeywords(message).length) {
+      return { success: false, startNotDispatched: true, errorCode: "KEYWORD_REQUIRED", message: "请至少填写一个搜索关键词" };
+    }
+    const existingTask = await readRawScanTask();
+    const status = readRawScanStatus();
+    const accepted = START_SUPPORT.readonlyStatus(message, existingTask, status);
+    const configKey = scanStartConfigKey(message);
+    const record = START_SUPPORT.identityMatches(existingTask, message) ? existingTask
+      : START_SUPPORT.identityMatches(status, message) ? status : null;
+    if (record) {
+      if ((record.startConfigKey || scanStartConfigKey(record)) !== configKey) {
+        return { success: false, startNotDispatched: true, errorCode: "SCAN_START_CONFIG_CHANGED", message: "同一智联扫描的启动配置不一致，未重复执行。" };
+      }
+      if (accepted.startAccepted) return { ...accepted, message: "智联扫描启动已确认。" };
+      return { success: false, startUnconfirmed: true, errorCode: "SCAN_START_UNCONFIRMED", message: "智联启动断点尚未可靠保存，请查看原任务状态。" };
+    }
+    if ([existingTask, status].some(item => item?.runId === message.runId)) {
+      return { success: false, startNotDispatched: true, errorCode: "SCAN_START_IDENTITY_CHANGED", message: "智联扫描档案或所有者已变化，未执行重复启动。" };
+    }
+    if (activeScanPromise) return { success: false, startNotDispatched: true, errorCode: "SCAN_EXECUTOR_BUSY", message: "智联上一轮执行器尚未退出，请查看任务状态后重试。" };
+
+    // A new run always starts a new checkpoint; only an explicit RESUME command
+    // may continue an old run. Preserve archived receipts through the old clear path.
+    scanOwnershipLost = false;
+    expectedScanOwnerToken = message.scanOwnerToken;
+    if (existingTask) await clearStoredScanTask();
     stopRequested = false;
     await clearStopRequested();
-    if (canResumeExisting && !message.resumeIncomplete) {
-      resumeStoredScanTaskIfActive(true).catch((error) => {
-        writeScanStatus({
-          isRunning: false,
-          stopRequested: false,
-          stage: "error",
-          message: error.message || String(error),
-          runId: existingTask.runId,
-          updatedAt: Date.now()
-        });
-      });
-      return { success: true, message: "智联 Chrome扫描任务已恢复。", resumed: true, runId: existingTask.runId, profileId };
-    }
-
-    startScan(incomingTask).catch((error) => {
-      postProgress(message, "error", error.message || String(error), {
-        operation: "scan",
-        stage: "error"
-      });
-    });
-    return { success: true, message: "智联 Chrome扫描任务已启动。", profileId };
+    const incomingTask = normalizeScanTask({ ...message, startAccepted: true, startConfigKey: configKey });
+    await startScan(incomingTask);
+    return START_SUPPORT.ack(incomingTask, { message: "智联 Chrome扫描任务已启动。" });
   }
 
   async function handleScanStatusMessage(message, sendResponse) {
     const profileId = normalizeProfileId(message?.profileId);
     if (!profileId) {
       sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "智联扫描状态请求缺少档案 ID", isRunning: false, hasStoredTask: false });
+      return;
+    }
+    if (message.reconcileStart === true) {
+      try {
+        sendResponse(START_SUPPORT?.readonlyStatus(message, await readRawScanTask(), readRawScanStatus())
+          || { success: false, startAccepted: false, errorCode: "SCAN_START_SUPPORT_MISSING" });
+      } catch (error) {
+        sendResponse({ success: false, startAccepted: false, errorCode: "SCAN_STORAGE_FAILED", message: error.message || String(error) });
+      }
+      return;
+    }
+    const rawTask = await readRawScanTask();
+    if (rawTask?.startAccepted === false && normalizeProfileId(rawTask.profileId) === profileId) {
+      sendResponse({ success: true, startAccepted: false, startUnconfirmed: true,
+        isRunning: false, hasStoredTask: true, paused: true, resumable: false, stage: "blocked",
+        errorCode: "SCAN_START_UNCONFIRMED", runId: rawTask.runId, profileId,
+        scanOwnerToken: rawTask.scanOwnerToken, message: "智联启动准备尚未确认，不代表扫描已经运行。" });
       return;
     }
     if (await hasStopRequested()) {
@@ -289,7 +314,26 @@
 
   async function startScan(message) {
     const task = normalizeScanTask(message);
-    await storeScanTask(task);
+    try {
+      // The preparation marker cannot bootstrap a scan. Accept only after both
+      // durable and document checkpoints have completed their writes.
+      await storeScanTask({ ...task, startAccepted: false }, { requireDurable: true });
+      await storeScanTask(task, { requireDurable: true });
+    } catch (error) {
+      let rolledBack = true;
+      try {
+        const stored = JSON.parse(sessionStorage.getItem(SCAN_TASK_KEY) || "null");
+        if (START_SUPPORT.identityMatches(stored, task)) sessionStorage.removeItem(SCAN_TASK_KEY);
+      } catch { rolledBack = false; }
+      try {
+        const stored = (await chrome.storage.local.get(SHARED_SCAN_TASK_KEY))[SHARED_SCAN_TASK_KEY];
+        if (START_SUPPORT.identityMatches(stored, task)) await chrome.storage.local.remove(SHARED_SCAN_TASK_KEY);
+      } catch { rolledBack = false; }
+      throw Object.assign(new Error("智联扫描断点保存失败，请核对任务记录。"), {
+        errorCode: rolledBack ? "SCAN_STORAGE_FAILED" : "SCAN_START_UNCONFIRMED",
+        startNotDispatched: rolledBack, cause: error
+      });
+    }
     writeScanStatus({
       isRunning: true,
       stopRequested: false,
@@ -299,6 +343,9 @@
       message: "智联 Chrome扫描任务已接收",
       profileId: task.profileId,
       runId: task.runId,
+      scanOwnerToken: task.scanOwnerToken,
+      startAccepted: task.startAccepted,
+      startConfigKey: task.startConfigKey,
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
@@ -345,7 +392,9 @@
     });
   }
 
-  async function resumeStoredScanTaskIfActive(_force = false) {
+  async function resumeStoredScanTaskIfActive(force = false) {
+    if (!force && window.__GET_JOBS_SCAN_START_PREPARING__) return;
+    if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID || activeScanPromise) return;
     if (await hasStopRequested()) {
       stopRequested = true;
       clearStoredScanTask();
@@ -364,7 +413,32 @@
       writeScanStatus({ isRunning: false, stopRequested: true, stage: "stopped", message: "智联扫描已取消" });
       return;
     }
+    if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID || activeScanPromise) return;
     if (!storedTask || storedTask.completed || stopRequested) return;
+    if (storedTask.startAccepted === false) return;
+    if (!force) {
+      const ownership = await readScanTabOwnership();
+      if (!ownership?.success || !ownership.isOwner || ownership.runId !== storedTask.runId
+          || normalizeProfileId(ownership.profileId) !== normalizeProfileId(storedTask.profileId)
+          || ownership.ownerToken !== storedTask.scanOwnerToken) return;
+      const blocked = storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError;
+      // Legacy checkpoints carry no acceptance evidence. Keep them available
+      // for explicit controls, but never bootstrap their collection.
+      if (storedTask.startAccepted !== true && !blocked) return;
+    }
+    if (!force && isFreshScanTask(storedTask)
+        && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) {
+      if (storedTask.scanProtocol === 1) {
+        writeScanStatus({ isRunning: false, paused: true, resumable: true, stage: "blocked",
+          runId: storedTask.runId, profileId: storedTask.profileId,
+          scanOwnerToken: storedTask.scanOwnerToken, startAccepted: storedTask.startAccepted === true,
+          startConfigKey: storedTask.startConfigKey || scanStartConfigKey(storedTask),
+          diagnosticType: storedTask.lastError?.type || readScanStatus().diagnosticType || "",
+          message: "智联扫描已暂停，断点已保留；处理页面提示后请点击继续。" });
+        await scanControl?.watch(storedTask);
+      }
+      return;
+    }
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
       ? SCAN_SUPPORT.prepareTaskForResume(storedTask)
       : storedTask;
@@ -2242,8 +2316,11 @@
     window.scrollTo(0, 0);
   }
 
-  async function storeScanTask(task) {
-    if (scanOwnershipLost || window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
+  async function storeScanTask(task, { requireDurable = false } = {}) {
+    if (scanOwnershipLost || window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) {
+      if (requireDurable) throw Object.assign(new Error("智联扫描所有权已变化，未确认启动。"), { errorCode: "SCAN_OWNER_MISMATCH" });
+      return;
+    }
     window.GetJobsContinuousScan?.accountDetailTime(task);
     const normalized = {
       ...normalizeScanTask(task),
@@ -2251,8 +2328,14 @@
       type: "ZHILIAN_SCAN_START",
       updatedAt: Date.now()
     };
-    sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(normalized));
-    await writeSharedScanTask(normalized);
+    if (requireDurable) {
+      await writeSharedScanTask(normalized, true);
+      sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(normalized));
+    } else {
+      sessionStorage.setItem(SCAN_TASK_KEY, JSON.stringify(normalized));
+      await writeSharedScanTask(normalized);
+    }
+    return normalized;
   }
 
   function readStoredScanTask() {
@@ -2265,7 +2348,7 @@
     }
   }
 
-  function clearStoredScanTask(preserve = true) {
+  function clearStoredScanTask(preserve = true, { requireDurable = false } = {}) {
     if (preserve && window.GetJobsContinuousScan) {
       try {
         const raw = sessionStorage.getItem(SCAN_TASK_KEY);
@@ -2276,11 +2359,34 @@
           writeScanStatus({ runId: previous.runId, profileId: previous.profileId,
             keywordResults: window.GetJobsContinuousScan.results(previous), outcome: stopRequested ? "stopped" : "partial" });
         }
-      } catch (error) { console.warn("采集断点归档失败，保留原断点", error); return; }
+      } catch (error) {
+        if (requireDurable) throw error;
+        console.warn("采集断点归档失败，保留原断点", error); return;
+      }
     }
     if (scanOwnershipLost || window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID) return;
     sessionStorage.removeItem(SCAN_TASK_KEY);
-    clearSharedScanTask();
+    return clearSharedScanTask(requireDurable);
+  }
+
+  async function clearStoppedScanTask(stoppedTask) {
+    const currentTask = await readRawScanTask();
+    if (stoppedTask && currentTask && (stoppedTask.runId !== currentTask.runId
+        || normalizeProfileId(stoppedTask.profileId) !== normalizeProfileId(currentTask.profileId)
+        || stoppedTask.scanOwnerToken !== currentTask.scanOwnerToken)) return;
+    const target = stoppedTask || currentTask;
+    try {
+      await clearStoredScanTask(true, { requireDurable: true });
+      const local = JSON.parse(sessionStorage.getItem(SCAN_TASK_KEY) || "null");
+      const shared = (await chrome.storage.local.get(SHARED_SCAN_TASK_KEY))[SHARED_SCAN_TASK_KEY];
+      if (target && [local, shared].some(task => task?.runId === target.runId
+          && normalizeProfileId(task.profileId) === normalizeProfileId(target.profileId)
+          && task.scanOwnerToken === target.scanOwnerToken)) {
+        throw new Error("智联停止断点仍然存在");
+      }
+    } catch (error) {
+      throw Object.assign(new Error("智联停止断点清理未确认。"), { errorCode: "CHECKPOINT_CLEAR_FAILED", cause: error });
+    }
   }
 
   async function readStoredScanTaskFromAnyStorage() {
@@ -2316,11 +2422,15 @@
     }
   }
 
-  async function writeSharedScanTask(task) {
-    if (!chrome?.storage?.local) return;
+  async function writeSharedScanTask(task, requireDurable = false) {
+    if (!chrome?.storage?.local) {
+      if (requireDurable) throw Object.assign(new Error("智联共享扫描存储不可用，未确认启动。"), { errorCode: "SCAN_STORAGE_FAILED" });
+      return;
+    }
     try {
       await chrome.storage.local.set({ [SHARED_SCAN_TASK_KEY]: task });
     } catch (error) {
+      if (requireDurable) throw Object.assign(new Error("智联扫描断点保存失败，未确认启动。"), { errorCode: "SCAN_STORAGE_FAILED", cause: error });
       console.warn("[GetJobs] 智联共享扫描任务保存失败", error);
     }
   }
@@ -2337,9 +2447,13 @@
     }
   }
 
-  function clearSharedScanTask() {
-    if (!chrome?.storage?.local) return;
-    chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
+  function clearSharedScanTask(requireDurable = false) {
+    if (!chrome?.storage?.local) {
+      if (requireDurable) throw new Error("智联共享扫描断点无法清理");
+      return;
+    }
+    return chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
+      if (requireDurable) throw error;
       console.warn("[GetJobs] 智联共享扫描任务清理失败", error);
     });
   }

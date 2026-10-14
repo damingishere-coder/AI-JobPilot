@@ -41,8 +41,8 @@
     const message = event.data;
     if (!isValidPageMessage(message)) return;
 
-    chrome.runtime.sendMessage(message, (response) => {
-      const lastError = chrome.runtime.lastError?.message || "";
+    const forwardResponse = (response, explicitError = "") => {
+      const lastError = explicitError || chrome.runtime.lastError?.message || "";
       postToPage({
         source: TARGET,
         requestId: message.requestId,
@@ -50,11 +50,16 @@
         version: BRIDGE_VERSION,
         response: response || {
           success: false,
+          errorCode: lastError.includes("Extension context invalidated") ? "EXTENSION_NOT_CONNECTED"
+            : lastError.includes("Receiving end does not exist") || lastError.includes("Could not establish connection")
+              ? "EXTENSION_NOT_CONNECTED" : "BRIDGE_EMPTY_RESPONSE",
           message: normalizeLastError(lastError),
           rawMessage: lastError
         }
       });
-    });
+    };
+    try { chrome.runtime.sendMessage(message, forwardResponse); }
+    catch(error) { forwardResponse(null,error.message || String(error)); }
   });
 
   chrome.runtime.onMessage.addListener((message) => {

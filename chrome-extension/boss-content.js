@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.10.4";
+  const EXTENSION_VERSION = "1.10.5";
   // Manifest injection and a readiness probe can meet in the same document.
   // Reuse its runner instead of leaving the first runner alive without a listener.
   if (window.__GET_JOBS_BOSS_CONTENT_VERSION__ === EXTENSION_VERSION) return;
@@ -23,6 +23,7 @@
   const KEYWORD_CURSOR_KEY = "__GET_JOBS_BOSS_KEYWORD_CURSOR__";
   const SUBMIT_BATCH_SIZE = 10;
   const SCAN_SUPPORT = window.GetJobsBossScanSupport || {};
+  const START_SUPPORT = window.GetJobsScanStartSupport;
   const SCAN_TASK_TTL_MS = SCAN_SUPPORT.DEFAULT_TASK_TTL_MS || 24 * 60 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
@@ -37,10 +38,12 @@
   let stopRequestedRunId = "";
   let activeScanRunId = "";
   let activeScanPromise = null;
+  let scanStartQueue = Promise.resolve();
+  let scanStartPreparing = false;
   const deliveryExecutions = new Map();
   const scanControl = window.GetJobsScanControl?.create({platform:"boss", version:EXTENSION_VERSION,instanceId:CONTENT_INSTANCE_ID,
     current:()=>isCurrentContentInstance(), readTask:readStoredScanTask, saveTask:async task=>{storeScanTask(task);await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:normalizeScanTask(task)});}, status:writeScanStatus,
-    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,clearTask:clearStoredScanTask,setStopped:()=>{stopRequested=true;stopRequestedRunId=activeScanRunId;}});
+    resume:()=>resumeStoredScanTaskIfActive(true),readStatus:readScanStatus,clearTask:clearStoppedScanTask,setStopped:()=>{stopRequested=true;stopRequestedRunId=activeScanRunId;}});
 
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -132,7 +135,15 @@
       return true;
     }
     if (message?.type === "BOSS_SCAN_START") {
-      handleScanStartMessage(message, sendResponse).catch(error => sendResponse({ success: false, message: error.message || String(error) }));
+      const operation=scanStartQueue.catch(()=>{}).then(async()=>{
+        scanStartPreparing=true;
+        try {await handleScanStartMessage(message,sendResponse);} finally {scanStartPreparing=false;}
+      });
+      scanStartQueue=operation.catch(()=>{});
+      operation.catch(error => sendResponse({ success: false,
+        errorCode: error.errorCode || error.code || "SCAN_START_UNCONFIRMED",
+        startNotDispatched: error.startNotDispatched === true,
+        message: error.message || String(error) }));
       return true;
     }
     if (message?.type === "BOSS_DELIVER_CURRENT_V2") {
@@ -687,6 +698,11 @@
   }
 
   async function handleScanStatusMessage(message, sendResponse) {
+    if (message.reconcileStart === true) {
+      const records = await readRawStartRecords();
+      sendResponse(START_SUPPORT.readonlyStatus(message, records.task, records.status));
+      return;
+    }
     const profileId = normalizeProfileId(message?.profileId);
     if (!profileId) {
       sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描状态请求缺少档案 ID", isRunning: false, hasStoredTask: false });
@@ -694,6 +710,11 @@
     }
     let task = await readStoredScanTaskFromAnyStorage();
     let status = readScanStatus();
+    if(task?.startAccepted===false && normalizeProfileId(task.profileId)===profileId) {
+      sendResponse({success:true,startUnconfirmed:true,errorCode:"SCAN_START_UNCONFIRMED",isRunning:false,
+        hasStoredTask:false,stage:"startUnconfirmed",runId:task.runId,profileId});
+      return;
+    }
     if ((task && normalizeProfileId(task.profileId) !== profileId)
         || (normalizeProfileId(status.profileId) && normalizeProfileId(status.profileId) !== profileId)) {
       clearStoredScanTask();
@@ -734,11 +755,38 @@
   async function handleScanStartMessage(message, sendResponse) {
     const profileId = normalizeProfileId(message?.profileId);
     if (!profileId) {
-      sendResponse({ success: false, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
+      sendResponse({ success: false, startNotDispatched:true, errorCode: "PROFILE_REQUIRED", message: "Boss扫描启动请求缺少档案 ID" });
+      return;
+    }
+    if(!START_SUPPORT || !message.runId || !message.scanOwnerToken) {
+      sendResponse({success:false,startNotDispatched:true,errorCode:"SCAN_START_IDENTITY_REQUIRED",message:"BOSS启动身份不完整，请重新加载扩展并刷新工作台。"});
+      return;
+    }
+    const raw = await readRawStartRecords();
+    const startConfigKey = stableKey({cursor:buildKeywordCursorKey(message, uniqueStrings(toList(message?.keywords || message.config?.keywords || message.config?.keyword || "AI产品运营"))),
+      scanProtocol:Number(message.scanProtocol)||0,autoDeliver:isAutoDeliverEnabled(message)});
+    if([raw.task,raw.status].some(record=>record?.runId===message.runId && !START_SUPPORT.identityMatches(record,message))) {
+      sendResponse({success:false,startNotDispatched:true,errorCode:"SCAN_START_CONFLICT",message:"同一BOSS扫描的档案或执行者身份不一致，未重复执行。"});
+      return;
+    }
+    const accepted = START_SUPPORT.readonlyStatus(message, raw.task, raw.status);
+    if (accepted.startAccepted) {
+      if (accepted.startConfigKey !== startConfigKey) {
+        sendResponse({success:false,startNotDispatched:true,errorCode:"SCAN_START_CONFLICT",message:"本轮扫描配置不一致，请核对任务记录。"});
+      } else {
+        sendResponse({...accepted,duplicate:true,message:"本轮扫描已接受，已返回当前状态。"});
+      }
+      return;
+    }
+    if([raw.task,raw.status].some(record=>START_SUPPORT.identityMatches(record,message))) {
+      sendResponse({success:false,startUnconfirmed:true,errorCode:"SCAN_START_UNCONFIRMED",message:"本轮断点尚未确认接受，请核对原任务状态。"});
+      return;
+    }
+    if (activeScanPromise) {
+      sendResponse({success:false,startNotDispatched:true,errorCode:"SCAN_ALREADY_RUNNING",message:"此页面已有扫描执行，请先停止旧任务。"});
       return;
     }
     const existingTask = await readStoredScanTaskFromAnyStorage();
-    const status = readScanStatus();
     let incomingTask = normalizeScanTask(message);
     if (message.resumeIncomplete) incomingTask = window.GetJobsContinuousScan.restore(localStorage, "boss", incomingTask);
     const configChanged = Boolean(
@@ -750,7 +798,7 @@
     const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
     const shouldDiscardExisting = Boolean(existingTask && (profileChanged || !sameRun || configChanged));
     if (shouldDiscardExisting) {
-      clearStoredScanTask();
+      await clearStoredScanTask();
       postProgress(message, "warning", profileChanged
         ? "Boss档案已变化，其他档案或旧版扫描断点已放弃，将从第一个关键词重新开始。"
         : configChanged
@@ -763,40 +811,46 @@
         runId: incomingTask.runId || ""
       });
     }
-    const resumableTask = shouldDiscardExisting ? null : existingTask;
-    const canResumeExisting = Boolean(
-      canResumeExistingScanTask(resumableTask, incomingTask, status, configChanged)
-    );
-
-    if (message.resumeIncomplete || canResumeExisting) {
+    if (message.resumeIncomplete) {
       await callBossLocalApi("chrome-resume", { profileId, runId: incomingTask.runId }, { pageTabId: message.pageTabId });
     }
-    if (canResumeExisting && !message.resumeIncomplete) {
-      activeScanRunId = normalizeScanRunId(resumableTask.runId);
-      stopRequested = false;
-      stopRequestedRunId = "";
-      clearStopRequested();
-      resumeStoredScanTaskIfActive(true).catch((error) => {
-        writeScanStatus({
-          isRunning: false,
-          stopRequested: false,
-          stage: "error",
-          message: error.message || String(error),
-          runId: activeScanRunId,
-          updatedAt: Date.now()
-        });
-      });
-      sendResponse({ success: true, message: "Boss Chrome扫描任务已恢复。", resumed: true, runId: activeScanRunId, profileId });
-      return;
-    }
-
     const runId = normalizeScanRunId(message?.runId) || `boss-${Date.now()}`;
+    const initialTask = {...incomingTask,runId,startAccepted:true,startConfigKey};
+    try {
+      // Incomplete preparation is never eligible for bootstrap recovery.
+      const preparingTask={...initialTask,startAccepted:false};
+      await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:preparingTask});
+      sessionStorage.setItem(SCAN_TASK_KEY,JSON.stringify(preparingTask));
+      await chrome.storage.local.set({[SHARED_SCAN_TASK_KEY]:initialTask});
+      sessionStorage.setItem(SCAN_TASK_KEY,JSON.stringify(initialTask));
+    } catch(error) {
+      let rolledBack=true;
+      try {
+        const stored=JSON.parse(sessionStorage.getItem(SCAN_TASK_KEY)||"null");
+        if(START_SUPPORT.identityMatches(stored,initialTask)) sessionStorage.removeItem(SCAN_TASK_KEY);
+      } catch {rolledBack=false;}
+      try {
+        const stored=(await chrome.storage.local.get(SHARED_SCAN_TASK_KEY))[SHARED_SCAN_TASK_KEY];
+        if(START_SUPPORT.identityMatches(stored,initialTask)) await chrome.storage.local.remove(SHARED_SCAN_TASK_KEY);
+      } catch {rolledBack=false;}
+      throw Object.assign(new Error("扫描断点保存失败，请核对任务记录"),{
+        errorCode:rolledBack?"SCAN_STORAGE_FAILED":"SCAN_START_UNCONFIRMED",startNotDispatched:rolledBack});
+    }
     activeScanRunId = runId;
     stopRequested = false;
     stopRequestedRunId = "";
     clearStopRequested();
-    startScan({ ...incomingTask, runId });
-    sendResponse({ success: true, message: "Boss Chrome扫描任务已启动。", runId, profileId });
+    startScan(initialTask);
+    sendResponse(START_SUPPORT.ack(initialTask,{message:"Boss Chrome扫描任务已启动。"}));
+  }
+
+  async function readRawStartRecords() {
+    const parse = key => {try{return JSON.parse(sessionStorage.getItem(key)||"null");}catch{return null;}};
+    let task=parse(SCAN_TASK_KEY);
+    if(!task) {
+      try {task=(await chrome.storage.local.get(SHARED_SCAN_TASK_KEY))[SHARED_SCAN_TASK_KEY]||null;} catch {}
+    }
+    return {task,status:parse(SCAN_STATUS_KEY)};
   }
 
   function startScan(message) {
@@ -814,6 +868,9 @@
       message: "Boss Chrome扫描任务已接收",
       profileId: task.profileId,
       runId: task.runId,
+      scanOwnerToken: task.scanOwnerToken,
+      startAccepted: task.startAccepted === true,
+      startConfigKey: task.startConfigKey,
       startedAt: task.startedAt,
       updatedAt: Date.now()
     });
@@ -849,11 +906,23 @@
   }
 
   async function resumeStoredScanTaskIfActive(force = false) {
-    if (!isCurrentContentInstance() || activeScanPromise) return;
+    if(!force && window.__GET_JOBS_SCAN_START_PREPARING__) return;
+    if (!isCurrentContentInstance() || activeScanPromise || scanStartPreparing) return;
     if(window.location.pathname.startsWith("/web/geek/chat")) return;
     const storedTask = await readStoredScanTaskFromAnyStorage();
-    if (!isCurrentContentInstance() || activeScanPromise) return;
+    if (!isCurrentContentInstance() || activeScanPromise || scanStartPreparing) return;
     if (!storedTask || storedTask.completed || (stopRequested && storedTask.scanProtocol !== 1)) return;
+    if(storedTask.startAccepted === false) return;
+    if(!force) {
+      const paused=Boolean(storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError || isStopRequested(storedTask.runId));
+      if(storedTask.scanProtocol!==1 && paused) return;
+      const owner=await readScanTabOwnership();
+      if(!isCurrentContentInstance() || scanStartPreparing || window.__GET_JOBS_SCAN_START_PREPARING__) return;
+      if(!owner?.isOwner || owner.runId!==storedTask.runId || Number(owner.profileId)!==Number(storedTask.profileId)
+          || !storedTask.scanOwnerToken || owner.ownerToken!==storedTask.scanOwnerToken) return;
+      // Old checkpoints without acceptance evidence remain available for explicit user action.
+      if(storedTask.startAccepted!==true && !(storedTask.scanProtocol===1 && paused)) return;
+    }
     // A blocked document reload must reconnect controls without starting navigation.
     // Keep the original checkpoint until the backend confirms an explicit RESUME.
     if (!force && storedTask.scanProtocol === 1 && isFreshScanTask(storedTask)
@@ -3627,8 +3696,17 @@
     }
   }
 
-  function clearStoredScanTask(preserve = true) {
+  function clearStoppedScanTask(stoppedTask) {
+    return clearStoredScanTask(true,stoppedTask);
+  }
+
+  function clearStoredScanTask(preserve = true, expectedTask = null) {
     if (!isCurrentContentInstance()) return;
+    if(expectedTask) {
+      const raw=sessionStorage.getItem(SCAN_TASK_KEY);
+      const previous=raw?JSON.parse(raw):null;
+      if(previous && !START_SUPPORT.identityMatches(previous,expectedTask)) return;
+    }
     if (preserve && window.GetJobsContinuousScan) {
       try {
         const raw = sessionStorage.getItem(SCAN_TASK_KEY);
@@ -3639,10 +3717,10 @@
           writeScanStatus({ runId: previous.runId, profileId: previous.profileId,
             keywordResults: window.GetJobsContinuousScan.results(previous), outcome: stopRequested ? "stopped" : "partial" });
         }
-      } catch (error) { console.warn("采集断点归档失败，保留原断点", error); return; }
+      } catch (error) { console.warn("采集断点归档失败，保留原断点", error); if(expectedTask)throw error;return; }
     }
     sessionStorage.removeItem(SCAN_TASK_KEY);
-    clearSharedScanTask();
+    return clearSharedScanTask(expectedTask);
   }
 
   async function readStoredScanTaskFromAnyStorage() {
@@ -3695,9 +3773,14 @@
     }
   }
 
-  function clearSharedScanTask() {
+  function clearSharedScanTask(expectedTask = null) {
     if (!canUseChromeStorage()) return;
-    chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
+    if(expectedTask) return (async()=>{
+      const stored=(await chrome.storage.local.get(SHARED_SCAN_TASK_KEY))[SHARED_SCAN_TASK_KEY];
+      if(stored && !START_SUPPORT.identityMatches(stored,expectedTask)) return;
+      await chrome.storage.local.remove(SHARED_SCAN_TASK_KEY);
+    })();
+    return chrome.storage.local.remove(SHARED_SCAN_TASK_KEY).catch((error) => {
       console.warn("[GetJobs] Boss共享扫描任务清理失败", error);
     });
   }

@@ -11,6 +11,8 @@ afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.un
 
 it('配置页不再嵌入分析；启动后提供带档案与批次的独立结果入口', async () => {
   sessionStorage.clear()
+  vi.mocked(sendChromeBridgeMessage).mockImplementation(async message => message.type === 'ZHILIAN_SCAN_START'
+    ? {success:true,startAccepted:true,runId:message.runId,profileId:message.profileId,scanOwnerToken:'test-owner'} : {success:true})
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, headers:new Headers({'Content-Type':'application/json'}), text:async()=>JSON.stringify({success:true,data:{token:'offline-test'}}), json: async () => url.includes('/api/local-auth/action-token') ? {success:true,data:{token:'offline-test'}} : url.includes('/api/scan-runs') ? [] : url.endsWith('/config') ? {
     success: true, hasProfile: true, currentProfile: { id: 4, name: '测试档案' },
     config: { keywords: '["开发"]', cityCode: '489', salary: '0000,9999999', searchJobLimit: 20 },

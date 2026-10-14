@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { REQUIRED_BACKGROUND_VERSION, REQUIRED_RUNTIME_PROTOCOL, sendChromeBridgeMessage } from './chromeBridge'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.unstubAllGlobals();vi.useRealTimers() })
 
-function bridge(version: string, success = true) {
+function bridge(version: string, success = true, reply?: 'empty'|'timeout') {
   const requests: string[] = []
   const listeners = new Set<(event: unknown) => void>()
   const fakeWindow = {
@@ -13,11 +13,12 @@ function bridge(version: string, success = true) {
     removeEventListener: (_: string, handler: (event: unknown) => void) => listeners.delete(handler),
     postMessage(message: { type: string; requestId: string }) {
       requests.push(message.type)
+      if(reply==='timeout'&&message.type!=='GET_JOBS_EXTENSION_PING')return
       queueMicrotask(() => listeners.forEach(handler => handler({
         source: fakeWindow, origin: fakeWindow.location.origin,
         data: { source: 'GET_JOBS_EXTENSION', requestId: message.requestId,
           response: message.type === 'GET_JOBS_EXTENSION_PING'
-            ? { success, version, runtimeProtocol: REQUIRED_RUNTIME_PROTOCOL, message: success ? '' : '扩展未连接' } : { success: true } },
+            ? { success, version, runtimeProtocol: REQUIRED_RUNTIME_PROTOCOL, message: success ? '' : '扩展未连接' } : reply==='empty'?undefined:{ success: true } },
       })))
     },
   }
@@ -54,5 +55,15 @@ describe('scan extension compatibility', () => {
     const requests = bridge('', false)
     expect((await sendChromeBridgeMessage({ type: 'ZHILIAN_SCAN_START' })).success).toBe(false)
     expect(requests).toEqual(['GET_JOBS_EXTENSION_PING'])
+  })
+  it('a missing response is uncertain and keeps its diagnostic code',async()=>{
+    bridge(REQUIRED_BACKGROUND_VERSION,true,'empty')
+    expect(await sendChromeBridgeMessage({type:'BOSS_SCAN_STATUS'})).toMatchObject({success:false,errorCode:'BRIDGE_EMPTY_RESPONSE',startUnconfirmed:true})
+  })
+  it('a timed out response is uncertain rather than confirming failed dispatch',async()=>{
+    vi.useFakeTimers();bridge(REQUIRED_BACKGROUND_VERSION,true,'timeout')
+    const pending=sendChromeBridgeMessage({type:'BOSS_SCAN_STATUS'},100)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(await pending).toMatchObject({success:false,errorCode:'BRIDGE_RESPONSE_TIMEOUT',startUnconfirmed:true})
   })
 })

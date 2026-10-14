@@ -1,4 +1,5 @@
 importScripts("scan-observer.js");
+importScripts("scan-start-support.js");
 importScripts("boss-delivery-support.js");
 importScripts("application-runtime-protocol.js");
 importScripts("browser-application-runtime.js");
@@ -9,6 +10,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhipin.com/",
     contentScript: "boss-content.js",
     contentScripts: [
+      "scan-start-support.js",
       "scan-control.js",
       "continuous-scan-support.js",
       "boss-selectors.js",
@@ -30,6 +32,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
+      "scan-start-support.js",
       "scan-control.js",
       "continuous-scan-support.js", "zhilian-filters.js",
       "zhilian-scan-support.js",
@@ -64,8 +67,8 @@ const CONTENT_READY_RETRIES = 12;
 const CONTENT_READY_INTERVAL_MS = 250;
 const TAB_LOAD_TIMEOUT_MS = 10000;
 const DELIVERY_NAVIGATION_TIMEOUT_MS = 15000;
-const REQUIRED_BOSS_CONTENT_VERSION = "1.10.4";
-const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.16";
+const REQUIRED_BOSS_CONTENT_VERSION = "1.10.5";
+const REQUIRED_ZHILIAN_CONTENT_VERSION = "1.8.17";
 const LOCAL_API_BASE_URLS = ["http://127.0.0.1:6866"];
 const BOSS_LOCAL_API_MAX_ATTEMPTS = 3;
 const BOSS_LOCAL_API_TIMEOUT_MS = 30000;
@@ -1445,6 +1448,10 @@ async function handlePageMessageInternal(message, sender) {
   }
   if (isScanStartMessage(message.type)) {
     tab = await ensureIndependentScanWindow(platform, tab);
+    // Dynamic injection must not bootstrap a previous local checkpoint before this explicit start arrives.
+    await chrome.scripting.executeScript({target:{tabId:tab.id},func: identity => {
+      globalThis.__GET_JOBS_SCAN_START_PREPARING__=identity;
+    },args:[{platform,profileId:message.profileId,runId:message.runId}]});
   }
   await ensureContentScript(tab.id, config.contentScript);
   if (!isNoFocusPlatformMessage(message.type) && !isScanStartMessage(message.type)) {
@@ -1462,12 +1469,14 @@ async function handlePageMessageInternal(message, sender) {
         message: `${platform === "boss" ? "BOSS" : "智联"}使用独立扫描窗口，可与另一平台同时运行。请保持扫描窗口展开，勿最小化或关闭。`
       });
     }
-    const response = await chrome.tabs.sendMessage(tab.id, {
+    const dispatch = {
       ...toPlatformContentMessage(message, platform),
       source: "GET_JOBS_BACKGROUND",
       pageTabId,
       scanOwnerToken: scanSession?.ownerToken
-    });
+    };
+    if (scanSession) return await dispatchScanStart(tab.id, platform, dispatch);
+    const response = await chrome.tabs.sendMessage(tab.id, dispatch);
     if (scanSession && response?.success === false) {
       await clearScanSession(platform, tab.id);
     }
@@ -1478,8 +1487,87 @@ async function handlePageMessageInternal(message, sender) {
     }
     return {
       success: false,
+      errorCode: error.errorCode || error.code || "PLATFORM_REQUEST_FAILED",
       message: buildContentScriptError(platform, error)
     };
+  }
+}
+
+async function dispatchScanStart(tabId, platform, message) {
+  const support = GetJobsScanStartSupport;
+  const sendBounded = (payload, timeoutMs) => new Promise((resolve,reject) => {
+    const timer=setTimeout(()=>reject(Object.assign(new Error("扫描页面回执超时"),{errorCode:"SCAN_START_UNCONFIRMED"})),timeoutMs);
+    Promise.resolve().then(()=>chrome.tabs.sendMessage(tabId,payload)).then(resolve,reject).finally(()=>clearTimeout(timer));
+  });
+  const accepted = response => response?.success === true && response.startAccepted === true
+    && support.identityMatches(response, message);
+  const remember = async (startAcceptance,response) => {
+    await mutateScanSessions(sessions=>{
+      const session=sessions[platform];
+      if(!session || session.tabId!==tabId || !support.identityMatches({...session,scanOwnerToken:session.ownerToken},message)) return;
+      session.startAcceptance=startAcceptance;
+      if(response) session.lastScanState={stage:response.stage || "received",isRunning:response.isRunning!==false,
+        paused:response.paused===true,resumable:response.resumable!==false};
+    });
+  };
+  const unconfirmed = async text => {
+    await remember("UNKNOWN").catch(()=>{});
+    return {success:false,errorCode:"SCAN_START_UNCONFIRMED",startUnconfirmed:true,message:text};
+  };
+  const reconcile = async () => {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!isUsableScanTab(platform, tab, await protectedHrTabIds(platform))) return null;
+      // A direct read never injects/bootstrap-resumes scripts or invents a navigating status.
+      const response = await sendBounded({ source: "GET_JOBS_BACKGROUND",
+        type: platform === "boss" ? "BOSS_SCAN_STATUS" : "ZHILIAN_SCAN_STATUS_V2",
+        reconcileStart: true, runId: message.runId, profileId: message.profileId,
+        scanOwnerToken: message.scanOwnerToken },2000);
+      if(!accepted(response)) return null;
+      await remember("ACCEPTED",response);
+      return { ...response, reconciled: true };
+    } catch { return null; }
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await sendBounded(message,5000);
+      if (accepted(response)) {await remember("ACCEPTED",response);return response;}
+      const reconciled = await reconcile();
+      if (reconciled) return reconciled;
+      if (response?.success === false && response.startNotDispatched === true) {
+        await clearScanSession(platform, tabId);
+        return response;
+      }
+      return await unconfirmed("扫描启动结果尚未确认，已保留本轮记录。请查看扫描记录和招聘页面后再操作。");
+    } catch (error) {
+      if (support.isNoReceiver(error)) {
+        if (attempt === 0) {
+          try {
+            const tab = await waitForSupportedTab(tabId, PLATFORM_CONFIG[platform]);
+            if (!isUsableScanTab(platform, tab, await protectedHrTabIds(platform))) {
+              throw Object.assign(new Error("扫描标签已进入 HR 聊天页，已停止准备"), {errorCode:"HR_CHAT_PROTECTED"});
+            }
+            await ensureContentScript(tabId, PLATFORM_CONFIG[platform].contentScript);
+            const prepared = await chrome.tabs.get(tabId);
+            if (!isUsableScanTab(platform, prepared, await protectedHrTabIds(platform))) {
+              throw Object.assign(new Error("扫描标签已进入 HR 聊天页，已停止派发"), {errorCode:"HR_CHAT_PROTECTED"});
+            }
+            continue;
+          } catch (preparationError) {
+            await clearScanSession(platform, tabId);
+            return { success:false, startNotDispatched:true,
+              errorCode:preparationError.errorCode || "CONTENT_SCRIPT_NOT_READY",
+              message:buildContentScriptError(platform, preparationError) };
+          }
+        }
+        await clearScanSession(platform, tabId);
+        return {success:false,startNotDispatched:true,errorCode:"CONTENT_SCRIPT_NOT_READY",
+          message:buildContentScriptError(platform,error)};
+      }
+      const reconciled = await reconcile();
+      if (reconciled) return reconciled;
+      return await unconfirmed("扫描启动回执中断，已保留本轮记录；请核对招聘页面和扫描记录。");
+    }
   }
 }
 
@@ -2362,6 +2450,14 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
       source: "GET_JOBS_BACKGROUND",
       pageTabId
     });
+    if(response?.runId && response.profileId) await mutateScanSessions(sessions=>{
+      const session=sessions[platform];
+      if(session?.startAcceptance==="ACCEPTED" && session.tabId===tabId && session.runId===response.runId
+          && Number(session.profileId)===Number(response.profileId)) {
+        session.lastScanState={stage:response.stage || "received",isRunning:response.isRunning===true,
+          paused:response.paused===true,resumable:response.resumable===true};
+      }
+    });
     if (response && isTerminalScanStatus(response)) {
       await clearScanSession(platform, tabId);
     }
@@ -2382,12 +2478,19 @@ async function queryPassivePlatformStatus(tabId, platform, message, pageTabId) {
 async function buildRegisteredNavigationStatus(platform, tabId) {
   const session = await readScanSession(platform);
   if (!session || session.tabId !== tabId) return null;
+  if(session.startAcceptance !== "ACCEPTED") return {success:true,startUnconfirmed:true,errorCode:"SCAN_START_UNCONFIRMED",
+    isRunning:false,hasStoredTask:false,temporaryUnavailable:true,stage:"startUnconfirmed",
+    runId:session.runId||"",profileId:normalizeProfileId(session.profileId)||null,
+    message:"本轮启动尚未取得页面确认，请核对招聘页面和扫描记录。"};
+  const last=session.lastScanState || {};
   return {
     success: true,
-    isRunning: true,
-    hasStoredTask: true,
+    isRunning: last.isRunning === true,
+    hasStoredTask: !["complete","stopped","error"].includes(last.stage),
+    paused:last.paused===true,
+    resumable:last.resumable===true,
     temporaryUnavailable: true,
-    stage: "navigating",
+    stage: last.isRunning === true ? "navigating" : last.stage || "startUnconfirmed",
     runId: session.runId || "",
     profileId: normalizeProfileId(session.profileId) || null,
     message: `${platform === "boss" ? "Boss" : "智联"}扫描页面正在跳转，任务仍在后台继续。`
@@ -2649,17 +2752,21 @@ async function registerScanSession(platform, tabId, runId, pageTabId, ownerToken
   return await mutateScanSessions((sessions) => {
     const existing = sessions[platform];
     const sameProfile = normalizeProfileId(existing?.profileId) === profileId;
+    const resolvedOwnerToken=String(ownerToken || (sameProfile && existing?.tabId===tabId ? existing.ownerToken : "")
+      || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const sameIdentity=sameProfile && existing?.tabId===tabId && existing?.runId===String(runId||existing?.runId||"")
+      && existing?.ownerToken===resolvedOwnerToken;
     const session = {
       platform,
       tabId,
       profileId,
       runId: String(runId || (sameProfile ? existing?.runId : "") || ""),
+      startAcceptance: sameIdentity
+        ? existing.startAcceptance || "UNKNOWN" : "PENDING",
+      lastScanState: sameIdentity
+        ? existing.lastScanState : undefined,
       pageTabId: pageTabId || (sameProfile ? existing?.pageTabId : null) || null,
-      ownerToken: String(
-        ownerToken
-          || (sameProfile && existing?.tabId === tabId ? existing?.ownerToken : "")
-          || `${platform}-${tabId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      ),
+      ownerToken: resolvedOwnerToken,
       updatedAt: Date.now()
     };
     sessions[platform] = session;
@@ -2752,11 +2859,18 @@ async function updateScanSessionFromEvent(platform, tabId, payload) {
   if (!profileId) return;
   const session = await readScanSession(platform);
   if (!session || session.tabId !== tabId || normalizeProfileId(session.profileId) !== profileId) return;
+  if(payload.runId && payload.runId !== session.runId) return;
   if (["complete", "stopped", "error"].includes(String(payload.stage || ""))) {
     await clearScanSession(platform, tabId);
     return;
   }
   await registerScanSession(platform, tabId, payload.runId || session.runId, session.pageTabId, session.ownerToken, profileId);
+  if(session.startAcceptance==="ACCEPTED" && payload.stage) await mutateScanSessions(sessions=>{
+    const current=sessions[platform];
+    if(!current || current.runId!==session.runId || current.tabId!==tabId) return;
+    const paused=payload.paused===true || ["blocked","submitBatchFailed"].includes(payload.stage);
+    current.lastScanState={stage:payload.stage,isRunning:!paused,paused,resumable:true};
+  });
 }
 
 async function broadcastPlatformEvent(payload, preferredPageTabId = null) {

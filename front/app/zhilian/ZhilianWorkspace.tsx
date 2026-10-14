@@ -1,7 +1,7 @@
 'use client'
 
-import ScanHistory from '@/app/components/ScanHistory'
-import { registerScan, scanStartFailed, scanCommand } from '@/lib/scan-runs'
+import ScanHistory, { type ScanHistoryRun } from '@/app/components/ScanHistory'
+import { registerScan, scanStartFailed, scanCommand, ScanRequestError, readScanRuns, scanIsTerminal, scanHasUnconfirmedStart, verifyScanStart, scanStartIsUnconfirmed, scanFailureMessage } from '@/lib/scan-runs'
 
 import { useScanResult } from '@/lib/use-scan-result'
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -67,6 +67,7 @@ const isTerminalScanPayload = (payload: Record<string, unknown>) => {
   const stage = String(payload.stage || '')
   const message = String(payload.message || '')
   const operation = String(payload.operation || '')
+  if (operation === 'scan' && stage === 'blocked' && (payload.paused || payload.resumable)) return false
   return (operation === 'scan' && ['complete', 'stopped', 'error', 'blocked'].includes(stage))
     || message.includes('扫描完成')
     || message.includes('扫描已停止')
@@ -85,6 +86,8 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
   const [chromeBridgeReady, setChromeBridgeReady] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
+  const [startUnconfirmed, setStartUnconfirmed] = useState(false)
+  const [requestedHistoryRunId, setRequestedHistoryRunId] = useState('')
   const [openClawReady, setOpenClawReady] = useState(false)
   const [openClawRunning, setOpenClawRunning] = useState(false)
   const [openClawMessage, setOpenClawMessage] = useState('')
@@ -100,8 +103,43 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
   const [submissionProgress, setSubmissionProgress] = useState<Record<string, number>>({})
   const [scanResult, setScanResult] = useScanResult('zhilian', currentProfile?.id)
   const scanRunRef = useRef('')
+  const backendRunRef = useRef<ScanHistoryRun | null>(null)
+  const endedRunsRef = useRef(new Set<string>())
+  const unconfirmedRunsRef = useRef(new Set<string>())
+  const scanIdentityRef = useRef({ profileId: currentProfile?.id, runId: activeRunId })
+  scanIdentityRef.current = { profileId: currentProfile?.id, runId: activeRunId }
+  const acceptBackendRuns = useCallback((platform: 'boss' | 'zhilian', profileId: number, runs: ScanHistoryRun[]) => {
+    if (platform !== 'zhilian' || scanIdentityRef.current.profileId !== profileId) return
+    const scoped = runs.filter(run => run.platform === platform && run.profile_id === profileId && run.historyComplete)
+    for (const run of scoped) if (scanIsTerminal(run.state) || run.desired === 'STOPPED') endedRunsRef.current.add(`${profileId}:${run.run_id}`)
+    const runId = scanIdentityRef.current.runId
+    const current = runId ? scoped.find(run => run.run_id === runId) : scoped[0]
+    if (current) backendRunRef.current = current
+    const observedId = runId || current?.run_id
+    if (observedId && endedRunsRef.current.has(`${profileId}:${observedId}`)) {
+      setIsDelivering(false);setIsStopping(false);setIsScanPaused(false);setStartUnconfirmed(false);setActiveRunId(null)
+    } else if (current) {
+      const unknownKey = `${profileId}:${current.run_id}`
+      const unknown = scanHasUnconfirmedStart(current.error_code) || (unconfirmedRunsRef.current.has(unknownKey) && current.state === 'STARTING')
+      if (unknown) unconfirmedRunsRef.current.add(unknownKey)
+      else unconfirmedRunsRef.current.delete(unknownKey)
+      scanRunRef.current = current.run_id
+      setIsDelivering(!unknown && ['STARTING','RUNNING'].includes(current.state));setIsStopping(false)
+      setStartUnconfirmed(unknown)
+      setIsScanPaused(['PAUSED','BLOCKED'].includes(current.state) && !unknown)
+      setActiveRunId(current.run_id);setLatestRunId(current.run_id)
+    }
+  }, [])
+  const backendOwnsStatus = useCallback((runId: unknown) => {
+    const id = typeof runId === 'string' && runId ? runId : scanIdentityRef.current.runId
+    if (id && endedRunsRef.current.has(`${scanIdentityRef.current.profileId}:${id}`)) return true
+    const backend = backendRunRef.current
+    return Boolean(backend && backend.profile_id === scanIdentityRef.current.profileId && backend.run_id === id
+      && (backend.desired === 'STOPPED' || scanIsTerminal(backend.state) || ['PAUSED','BLOCKED'].includes(backend.state)))
+  }, [])
   const acceptRun = useCallback((runId: unknown) => {
     if (typeof runId !== 'string' || !runId) return !scanRunRef.current
+    if (scanIdentityRef.current.runId && scanIdentityRef.current.runId !== runId) return false
     const current = scanRunRef.current
     if (current && current !== runId) {
       const incomingTime = Number(runId.match(/^zhilian-(\d+)$/)?.[1] || 0)
@@ -112,7 +150,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
     return true
   }, [])
 
-  useEffect(() => { scanRunRef.current = '' }, [currentProfile?.id])
+  useEffect(() => { scanRunRef.current = '';backendRunRef.current = null;setRequestedHistoryRunId('');setStartUnconfirmed(false) }, [currentProfile?.id])
 
   useEffect(() => {
     setRunProgress({}); setSubmissionProgress({})
@@ -211,20 +249,40 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
       }, 2000)
       if (profileRef.current !== profileId) return
       if (status.profileId !== undefined && normalizeScanProfileId(status.profileId) !== profileId) return
+      if (backendOwnsStatus(status.runId)) return
       if (!acceptRun(status.runId)) return
+      const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
+      const backend = backendRunRef.current
+      if (status.startUnconfirmed === true || scanHasUnconfirmedStart(status.errorCode)) {
+        if (!runId || !scanEventMatchesProfile(status,profileId,true) || (backend?.profile_id === profileId && backend.run_id !== runId)) return
+        unconfirmedRunsRef.current.add(`${profileId}:${runId}`)
+        setStartUnconfirmed(true);setIsDelivering(false);setIsStopping(false);setIsScanPaused(false)
+        setActiveRunId(runId);setLatestRunId(runId);setRequestedHistoryRunId(runId)
+        if (!silent) appendProgressLog({type:'warning',message:String(status.message || '本轮启动结果仍待核实，请查看扫描记录后停止该轮，避免重复启动。')})
+        return
+      }
+      if (runId && unconfirmedRunsRef.current.has(`${profileId}:${runId}`)) {
+        if (!verifyScanStart(status,runId,profileId).success) return
+        unconfirmedRunsRef.current.delete(`${profileId}:${runId}`);setStartUnconfirmed(false)
+      }
       if (normalizeScanProfileId(status.profileId) === profileId) {
         const result = readScanResult(status)
         if (result) { setScanResult(result); setLatestRunId(result.runId) }
       }
       if (!status.success) return
       const paused = status.paused === true || status.stage === 'blocked'
-      setIsScanPaused(paused)
       const terminal = ['complete', 'stopped', 'error', 'idle'].includes(String(status.stage || ''))
+      setIsScanPaused(paused && !terminal)
+      if (paused && !terminal) {
+        setIsDelivering(false);setIsStopping(false)
+        if (typeof status.runId === 'string' && status.runId) {setActiveRunId(status.runId);setLatestRunId(status.runId)}
+        return
+      }
       const running = !paused && !terminal && (status.isRunning === true || (status.isRunning === undefined && status.hasStoredTask === true))
       if (running) {
+        if (runId && unconfirmedRunsRef.current.has(`${profileId}:${runId}`)) return
         setIsDelivering(true)
         setIsStopping(keepStopping)
-        const runId = typeof status.runId === 'string' && status.runId.trim() ? status.runId.trim() : null
         if (runId) { setActiveRunId(runId); setLatestRunId(runId) }
         if (!silent) {
           appendProgressLog({
@@ -243,7 +301,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
     } catch {
       // 扩展未连接或平台页未打开时，保持当前前端状态。
     }
-  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, backendOwnsStatus, setScanResult])
 
   useEffect(() => {
     void checkChromeBridge()
@@ -282,6 +340,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
       if (!payload || payload.platform !== 'zhilian') return
       if (!scanEventMatchesProfile(payload, currentProfile?.id, true)) return
       if ((payload.operation === 'scan' || Array.isArray(payload.keywordResults)) && !acceptRun(payload.runId)) return
+      if (backendOwnsStatus(payload.runId)) return
       const result = readScanResult(payload)
       if (result) setScanResult(result)
       if (typeof payload.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: payload.submissionConfirmed, pending: Number(payload.submissionPending || 0) })
@@ -293,6 +352,10 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
       })
 
       if (typeof payload.runId === 'string') setLatestRunId(payload.runId)
+      if (payload.stage === 'blocked' && (payload.paused || payload.resumable)) {
+        setIsScanPaused(true);setIsDelivering(false);setIsStopping(false)
+        if (typeof payload.runId === 'string') setActiveRunId(payload.runId)
+      }
       if (isTerminalScanPayload(payload)) {
         setIsScanPaused(payload.paused === true || payload.stage === 'blocked')
         setIsDelivering(false)
@@ -300,7 +363,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
         setActiveRunId(null)
       }
     })
-  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, backendOwnsStatus, setScanResult])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
@@ -333,6 +396,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
               const data = typeof raw === 'string' ? JSON.parse(raw) : raw
               if (!scanEventMatchesProfile(data, currentProfile?.id, true)) return
               if ((data.operation === 'scan' || Array.isArray(data.keywordResults)) && !acceptRun(data.runId)) return
+              if (backendOwnsStatus(data.runId)) return
               const result = readScanResult(data)
               if (result) setScanResult(result)
               if (typeof data.submissionConfirmed === 'number') setSubmissionProgress({ confirmed: data.submissionConfirmed, pending: Number(data.submissionPending || 0) })
@@ -342,6 +406,10 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
                 timestamp: data.timestamp,
               })
               if (typeof data.runId === 'string') setLatestRunId(data.runId)
+              if (data.stage === 'blocked' && (data.paused || data.resumable)) {
+                setIsScanPaused(true);setIsDelivering(false);setIsStopping(false)
+                if (typeof data.runId === 'string') setActiveRunId(data.runId)
+              }
               if (isTerminalScanPayload(data)) {
                 setIsScanPaused(data.paused === true || data.stage === 'blocked')
                 setIsDelivering(false)
@@ -358,7 +426,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
     })
 
     return () => client.close()
-  }, [appendProgressLog, currentProfile?.id, acceptRun, setScanResult])
+  }, [appendProgressLog, currentProfile?.id, acceptRun, backendOwnsStatus, setScanResult])
 
   const [savedConfigSnapshot, setSavedConfigSnapshot] = useState('')
   const configDirtyRef = useRef(false)
@@ -490,6 +558,11 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
     let registeredProfile = 0
     let dispatchAttempted = false
     try {
+      if (startUnconfirmed) {
+        appendProgressLog({type:'warning',message:'上一轮启动结果待核实，请先在扫描记录中核实并停止该轮，避免重复采集。'})
+        setRequestedHistoryRunId(activeRunId || '')
+        return
+      }
       const keywords = normalizeKeywordTokens(config.keywords)
       if (!keywords.length) {
         appendProgressLog({ type: 'error', message: ZHILIAN_KEYWORD_REQUIRED_MESSAGE })
@@ -512,14 +585,17 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
         appendProgressLog({ type: 'error', message: '当前档案 ID 无效，请刷新档案后重试。' })
         return
       }
-      if (resumeIncomplete && scanResult?.runId) {
-        await scanCommand('zhilian',profileId,scanResult.runId,'RESUME')
-        onWorkspaceScopeChange?.(scanResult.runId, profileId, 'task')
+      const resumeRunId = activeRunId || scanResult?.runId
+      if (resumeIncomplete && resumeRunId) {
+        const updated = await scanCommand('zhilian',profileId,resumeRunId,'RESUME')
+        acceptBackendRuns('zhilian',profileId,[updated])
+        onWorkspaceScopeChange?.(resumeRunId, profileId, 'task')
         appendProgressLog({type:'info',message:'继续请求已保存，请在扫描记录中查看执行确认。'})
         return
       }
       if (!filterCatalog || filterError) { appendProgressLog({type:'error',message:filterError || '官方筛选选项尚未加载，请稍后重试'}); return }
       const runId = `zhilian-${Date.now()}`
+      registeredProfile = profileId
       await registerScan('zhilian',profileId,runId)
       registeredRun = runId; registeredProfile = profileId
       const setup = await validateSetupForPlatform('zhilian', { openPlatformPageIfMissing: true })
@@ -530,21 +606,25 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
         alert(message)
         return
       }
-      if (profileRef.current !== profileId) return
-
-
+      if (profileRef.current !== profileId) {
+        await scanStartFailed('zhilian',profileId,runId,'PROFILE_CHANGED',false,'档案已切换，本轮尚未发送到扩展。')
+        return
+      }
       setActiveRunId(runId)
+      scanIdentityRef.current = {profileId,runId}
       scanRunRef.current = runId
       setLatestRunId(runId)
       setScanResult(null)
       setIsStopping(false)
       setIsDelivering(true)
       setIsScanPaused(false)
+      setStartUnconfirmed(false)
+      setRequestedHistoryRunId('')
       onWorkspaceViewChange?.('task')
       appendProgressLog({ type: 'info', message: '已发送智联招聘 Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       dispatchAttempted = true
-      const data = await sendChromeBridgeMessage({
+      const response = await sendChromeBridgeMessage({
         type: 'ZHILIAN_SCAN_START',
         scanProtocol: 1,
         resumeIncomplete,
@@ -557,22 +637,55 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
           searchJobLimit,
         },
       })
+      const data = verifyScanStart(response, runId, profileId)
       if (data.success) {
+        if (profileRef.current !== profileId) return
+        unconfirmedRunsRef.current.delete(`${profileId}:${runId}`)
+        const ended = ['complete','stopped','error'].includes(String(data.stage)) || endedRunsRef.current.has(`${profileId}:${runId}`)
+        if (ended) {
+          endedRunsRef.current.add(`${profileId}:${runId}`)
+          setIsDelivering(false);setIsStopping(false);setIsScanPaused(false);setStartUnconfirmed(false);setActiveRunId(null)
+        } else if (data.paused === true || data.stage === 'blocked') {setIsDelivering(false);setIsScanPaused(true)}
         onWorkspaceScopeChange?.(runId, profileId, 'task')
         appendProgressLog({ type: 'info', message: data.message || '智联招聘 Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
-        await scanStartFailed('zhilian',profileId,runId,String(data.errorCode || 'START_FAILED'))
-        appendProgressLog({ type: 'error', message: data.message || '智联招聘扫描启动失败。' })
+        const unknown = scanStartIsUnconfirmed(data)
+        if (unknown) unconfirmedRunsRef.current.add(`${profileId}:${runId}`)
+        await scanStartFailed('zhilian',profileId,runId,String(data.errorCode || 'SCAN_START_UNCONFIRMED'),unknown,data.message || '')
+        if (profileRef.current !== profileId) return
+        appendProgressLog({ type: 'error', message: scanFailureMessage(data, '智联招聘') })
         setIsDelivering(false)
         setIsStopping(false)
-        setActiveRunId(null)
+        setIsScanPaused(false)
+        setStartUnconfirmed(unknown)
+        setRequestedHistoryRunId(runId)
+        setActiveRunId(unknown ? runId : null)
       }
     } catch (error) {
-      if(registeredRun) await scanStartFailed('zhilian',registeredProfile,registeredRun,dispatchAttempted?'START_FAILED':'SETUP_NOT_READY').catch(()=>{})
-      appendProgressLog({ type: 'error', message: '智联招聘扫描启动失败：网络或服务异常。' })
+      const message = error instanceof Error ? error.message : String(error)
+      if(registeredRun) await scanStartFailed('zhilian',registeredProfile,registeredRun,dispatchAttempted?'SCAN_START_UNCONFIRMED':'SETUP_NOT_READY',dispatchAttempted,message).catch(()=>{})
+      if (registeredProfile && profileRef.current !== registeredProfile) return
+      appendProgressLog({ type: 'error', message: `智联招聘扫描启动${dispatchAttempted ? '结果待核实' : '失败'}：${message}` })
       setIsDelivering(false)
       setIsStopping(false)
-      setActiveRunId(null)
+      setIsScanPaused(false)
+      setStartUnconfirmed(dispatchAttempted)
+      if (dispatchAttempted && registeredRun) unconfirmedRunsRef.current.add(`${registeredProfile}:${registeredRun}`)
+      setActiveRunId(dispatchAttempted ? registeredRun : null)
+      if (registeredRun) setRequestedHistoryRunId(registeredRun)
+      if (error instanceof ScanRequestError && error.code === 'PLATFORM_SCAN_ALREADY_ACTIVE' && registeredProfile) {
+        try {
+          const runs = await readScanRuns<ScanHistoryRun>('zhilian',registeredProfile)
+          const blocking = runs.find(run => run.platform === 'zhilian' && run.profile_id === registeredProfile && run.historyComplete && run.desired !== 'STOPPED' && !scanIsTerminal(run.state))
+          if (profileRef.current !== registeredProfile) return
+          if (blocking) {
+            scanIdentityRef.current = {profileId:registeredProfile,runId:blocking.run_id}
+            setRequestedHistoryRunId(blocking.run_id)
+            acceptBackendRuns('zhilian',registeredProfile,runs)
+            appendProgressLog({type:'warning',message:`已定位当前档案的扫描 ${blocking.run_id}，请在下方扫描记录中停止或继续该轮。`})
+          } else appendProgressLog({type:'warning',message:'当前档案没有可核实的占用任务，可能由其他档案占用。请切换到对应档案查看，不会控制其他任务。'})
+        } catch (lookupError) {appendProgressLog({type:'error',message:`无法定位占用任务：${lookupError instanceof Error ? lookupError.message : String(lookupError)}`})}
+      }
     } finally {
       startingRef.current = false
       setIsStarting(false)
@@ -583,7 +696,8 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
     if(isStopping || !activeRunId || !currentProfile?.id) return
     setIsStopping(true)
     try {
-      await scanCommand('zhilian',currentProfile.id,activeRunId,'STOP')
+      const updated = await scanCommand('zhilian',currentProfile.id,activeRunId,'STOP')
+      acceptBackendRuns('zhilian',currentProfile.id,[updated])
       appendProgressLog({type:'warning',message:'停止请求已保存，等待扩展退出扫描；执行结果请查看扫描记录。'})
     } catch {appendProgressLog({type:'error',message:'停止请求未保存，请检查后端连接并重试。'})}
     finally {setIsStopping(false)}
@@ -714,7 +828,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
 
   return (
     <div className="space-y-6">
-      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="zhilian" profileId={currentProfile?.id} /></div></details>
+      <details open={Boolean(requestedHistoryRunId)} className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="zhilian" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} /></div></details>
       {!workspaceView && <WorkspaceEntryLink platform="zhilian" view="setup" />}
       <PageHeader
         headingLevel={workspaceView ? 2 : 1}
@@ -741,8 +855,8 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-	              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : '开始扫描'}
+	              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || startUnconfirmed || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
+	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : startUnconfirmed ? '启动待核实' : '开始扫描'}
 	              </Button>
 	            )}
             <Button asChild size="sm" variant="outline"><a href="https://www.zhaopin.com/" target="_blank" rel="noreferrer">打开智联 / 管理登录</a></Button>
@@ -787,7 +901,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
                 <summary className="cursor-pointer py-2 text-muted-foreground">查看关键词采集明细</summary>
                 <ScanResult result={scanResult} busy={isDelivering || isStarting} />
               </details>}
-              {scanResult && !isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
+              {scanResult && !isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting || startUnconfirmed || backendRunRef.current?.desired === 'STOPPED'} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
             </>}
           /></div>
 

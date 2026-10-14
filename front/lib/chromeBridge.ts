@@ -3,6 +3,7 @@ export type ChromeBridgeResponse<T = unknown> = {
   message?: string
   version?: string
   rawMessage?: string
+  errorCode?: string
   data?: T
   [key: string]: unknown
 }
@@ -40,11 +41,12 @@ type ChromeBridgeMessageEnvelope<T = unknown> = {
 export async function sendChromeBridgeMessage<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
   if (SCAN_START_TYPES.has(String(payload.type))) {
     const status = await sendBridgeRequest({ type: 'GET_JOBS_EXTENSION_PING' }, 3000)
-    if (!status.success) return { success: false, ...(payload.scanProtocol === 1 ? {errorCode:'EXTENSION_NOT_CONNECTED'} : {}), message: status.message || 'Chrome扩展未连接，请先检查扩展连接。' }
-    if (payload.scanProtocol === 1 && status.scanProtocol !== 1) return {success:false,errorCode:'EXTENSION_RELOAD_REQUIRED',message:'请重新加载 1.8.16 或更新版投递牛马 Chrome Bridge，并刷新招聘平台页面。当前扩展不支持扫描记录与控制。'}
+    if (!status.success) return { success: false, startNotDispatched: true, errorCode:'EXTENSION_NOT_CONNECTED', message: status.message || 'Chrome扩展未连接，请先检查扩展连接。' }
+    if (payload.scanProtocol === 1 && status.scanProtocol !== 1) return {success:false,startNotDispatched:true,errorCode:'EXTENSION_RELOAD_REQUIRED',message:'请重新加载 1.8.16 或更新版投递牛马 Chrome Bridge，并刷新招聘平台页面。当前扩展不支持扫描记录与控制。'}
     if (status.version !== REQUIRED_BACKGROUND_VERSION || status.runtimeProtocol !== REQUIRED_RUNTIME_PROTOCOL) {
       return {
         success: false,
+        startNotDispatched: true,
         errorCode: 'EXTENSION_RELOAD_REQUIRED',
         version: status.version,
         message: `Chrome中运行的招聘扩展后台需要更新（当前：${status.version || '未知'}，需要：${REQUIRED_BACKGROUND_VERSION}）。请打开 chrome://extensions，找到“投递牛马 Chrome Bridge”点击重新加载，再刷新BOSS/智联页面及工作台。仅刷新招聘页面不能更新扩展后台。`,
@@ -61,19 +63,19 @@ export async function sendChromeBridgeMessage<T = unknown>(payload: Record<strin
 
 function sendBridgeRequest<T = unknown>(payload: Record<string, unknown>, timeout = 30000): Promise<ChromeBridgeResponse<T>> {
   if (typeof window === 'undefined') {
-    return Promise.resolve({ success: false, message: '当前环境不支持Chrome扩展通信。' })
+    return Promise.resolve({ success: false, errorCode: 'BRIDGE_UNSUPPORTED', startNotDispatched: true, message: '当前环境不支持Chrome扩展通信。' })
   }
 
   const targetOrigin = getBridgeTargetOrigin()
   if (!targetOrigin) {
-    return Promise.resolve({ success: false, message: '当前页面来源不允许连接 Chrome Bridge。' })
+    return Promise.resolve({ success: false, errorCode: 'BRIDGE_ORIGIN_NOT_ALLOWED', startNotDispatched: true, message: '当前页面来源不允许连接 Chrome Bridge。' })
   }
 
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return new Promise((resolve) => {
     const timer = window.setTimeout(() => {
       window.removeEventListener('message', onMessage)
-      resolve({ success: false, message: 'Chrome扩展未响应，请确认已加载 投递牛马 Chrome Bridge。' })
+      resolve({ success: false, errorCode: 'BRIDGE_RESPONSE_TIMEOUT', startUnconfirmed: true, message: 'Chrome扩展回执超时；启动是否执行需要查看扫描记录核实。请确认已加载 投递牛马 Chrome Bridge。' })
     }, timeout)
 
     const onMessage = (event: MessageEvent) => {
@@ -83,7 +85,7 @@ function sendBridgeRequest<T = unknown>(payload: Record<string, unknown>, timeou
       if (!data || data.source !== TARGET || data.requestId !== requestId) return
       window.clearTimeout(timer)
       window.removeEventListener('message', onMessage)
-      resolve(data.response || { success: false, message: 'Chrome扩展返回为空。' })
+      resolve(data.response || { success: false, errorCode: 'BRIDGE_EMPTY_RESPONSE', startUnconfirmed: true, message: 'Chrome扩展返回为空，启动结果待核实。' })
     }
 
     window.addEventListener('message', onMessage)

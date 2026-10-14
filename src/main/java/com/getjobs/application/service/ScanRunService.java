@@ -64,6 +64,11 @@ public class ScanRunService {
             case "LOG_QUEUE_FULL" -> "日志缓冲已满，扫描已暂停";
             case "SETUP_NOT_READY" -> "启动前检查未通过，请补齐设置后重新扫描";
             case "START_FAILED" -> "启动结果未确认，请检查扩展连接和启动记录";
+            case "SCAN_START_UNCONFIRMED", "BRIDGE_RESPONSE_TIMEOUT", "BRIDGE_EMPTY_RESPONSE" -> "启动交接结果未确认，已保留任务；请核对扫描页状态后继续或停止本轮";
+            case "CONTENT_SCRIPT_NOT_READY" -> "扫描页尚未准备好接收任务，请刷新招聘页面后重新扫描";
+            case "SCAN_STORAGE_FAILED" -> "扫描断点保存失败，本轮未确认启动";
+            case "PAGE_HIDDEN" -> "扫描页隐藏且岗位字段尚未渲染，已暂停并保留断点；请展开扫描窗口后继续";
+            case "CARD_NOT_READY", "CARD_DETACHED" -> "岗位卡片尚未完整渲染或已经变化，已暂停并保留断点";
             case "" -> "";
             default -> "采集异常，详见错误代码、阶段及时间线";
         });
