@@ -14,9 +14,11 @@ const request = (extra = {}) => ({ source: 'GET_JOBS_BACKGROUND', type: 'ZHILIAN
   scanProtocol: 1, profileId: 4, runId: 'zhilian-new', scanOwnerToken: 'owner-new',
   config: { cityCode: '489', keywords: ['AI'], searchJobLimit: 30 }, ...extra });
 function harness({ failSave = false, holdSave = false, failLocalCommit = false, failRollback = false, keepShared = false,
-  preparationFlag = false, initialTask = null, automaticBootstrap = false } = {}) {
+  preparationFlag = false, initialTask = null, automaticBootstrap = false, realControl = false } = {}) {
   const local = new Map(), shared = {}, mutations = [], runs = [], watches = [], messages = [];
   let controlOptions, releaseSave;
+  let clock = Date.now(), controlReply = { success: true, desired: 'PAUSED', state: 'BLOCKED', epoch: 1, commands: [] };
+  const timers = new Set(), controlCalls = [];
   const held = holdSave ? new Promise(resolve => { releaseSave = resolve; }) : null;
   const storage = { getItem: key => local.get(key) || null,
     setItem: (key, value) => {
@@ -27,7 +29,7 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
   const window = { location: { href: 'https://www.zhaopin.com/jobs?jl=489&kw=AI' },
     __GET_JOBS_SCAN_START_PREPARING__: preparationFlag,
     GetJobsScanControl: { create: options => { controlOptions = options; return {
-      watch: async task => { watches.push(structuredClone(task)); await options.saveTask(task); },
+      watch: async (task, options) => { watches.push({ ...structuredClone(task), controlOptions: structuredClone(options || {}) }); },
       checkpoint: async () => false, fault: () => {}, pausedMs: () => 0,
     }; } } };
   const hooks = { run: async task => { runs.push(structuredClone(task)); },
@@ -35,6 +37,15 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
   const context = vm.createContext({ window, globalThis: window, hooks, sessionStorage: storage, localStorage: storage,
     chrome: { runtime: { onMessage: { addListener: () => {} }, sendMessage: async message => {
       messages.push(structuredClone(message));
+      if (message.type === 'SCAN_CONTROL_SYNC') {
+        controlCalls.push(structuredClone(message));
+        if (message.ack) {
+          const kind = controlReply.commands.find(command => command.id === message.ack.id)?.kind;
+          controlReply = { ...controlReply, commands: [], desired: message.ack.ok
+            ? kind === 'RESUME' ? 'RUNNING' : kind === 'STOP' ? 'STOPPED' : 'PAUSED' : kind === 'STOP' ? 'STOPPED' : 'PAUSED' };
+        }
+        return structuredClone(controlReply);
+      }
       if (message.type === 'ZHILIAN_SCAN_OWNER_STATUS') return hooks.ownership;
       return { success: true };
     } }, storage: { local: {
@@ -49,9 +60,21 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
         if (key === SHARED && keepShared) return;
         mutations.push(['shared-remove', key]); delete shared[key];
       },
-    } } }, console, Date, Math, URL, URLSearchParams, setTimeout, clearTimeout });
+    } } }, console, Date: { now: () => clock }, Math, URL, URLSearchParams, setTimeout, clearTimeout,
+    setInterval: callback => { timers.add(callback); return callback; }, clearInterval: callback => timers.delete(callback) });
   for (const name of ['vendor/js-sha256.js', 'scan-start-support.js', 'zhilian-scan-support.js']) {
     vm.runInContext(fs.readFileSync(path.join(dir, name), 'utf8'), context);
+  }
+  if (realControl) {
+    vm.runInContext(fs.readFileSync(path.join(dir, 'scan-control.js'), 'utf8'), context);
+    const create = window.GetJobsScanControl.create;
+    window.GetJobsScanControl.create = options => {
+      controlOptions = options; const control = create(options);
+      return { ...control, watch: async (task, settings) => {
+        watches.push({ ...structuredClone(task), controlOptions: structuredClone(settings || {}) });
+        return control.watch(task, settings);
+      } };
+    };
   }
   let source = fs.readFileSync(path.join(dir, 'zhilian-content.js'), 'utf8');
   if (!automaticBootstrap) source = source.replace('resumeStoredScanTaskIfActive().catch', 'Promise.resolve().catch');
@@ -70,6 +93,11 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
   const task = () => JSON.parse(local.get(TASK) || 'null');
   return { api: window.testApi, local, shared, mutations, runs, watches, messages, seed, task,
     options: () => controlOptions, releaseSave, ownership: value => { hooks.ownership = value; },
+    controlCalls, now: () => clock, advanceTime: ms => { clock += ms; },
+    directive: value => { controlReply = structuredClone(value); }, tick: async () => {
+      for (const timer of [...timers]) await timer();
+      await new Promise(resolve => setImmediate(resolve));
+    },
     state: () => JSON.parse(local.get(STATUS) || 'null') };
 }
 test('acknowledges start only after the shared checkpoint has been saved', async () => {
@@ -273,4 +301,107 @@ test('legacy accepted start JSON compares compatibly without restarting and save
   assert.equal(saved.keywordCursorKey.includes('salary'), false);
   h.api.writeStatus({ runId: original.runId, profileId: 4, startConfigKey: legacyStartKey });
   assert.equal(h.state().startConfigKey, digest(legacyStartKey));
+});
+
+test('a 95-minute paused checkpoint reload reconnects real controls without renewal and epoch-two RESUME runs once', async () => {
+  const h = harness({ realControl: true });
+  const original = { ...request({ config: { cityCode: '489', keywords: ['AI', '运营', '数据'], searchJobLimit: 30 } }),
+    startAccepted: true, phase: 'detail', currentIndex: 2, detailIndex: 7,
+    totalSaved: 9, updatedAt: h.now() - 95 * 60000, pausedAt: h.now() - 95 * 60000,
+    lastError: { type: 'PAGE_HIDDEN' }, jobs: [{ id: 'kept', title: '已采集岗位', url: 'https://www.zhaopin.com/jobdetail/kept.htm' }] };
+  h.seed(original); await h.api.resume(false);
+  assert.equal(h.watches.length, 1); assert.equal(h.runs.length, 0);
+  assert.deepEqual(h.task(), original, 'a control-only reload must preserve the original recovery deadline and business checkpoint');
+  h.directive({ success: true, epoch: 2, desired: 'RESUMING', commands: [{ id: 'resume-epoch-two', kind: 'RESUME' }] });
+  await h.tick();
+  assert.equal(h.controlCalls.find(call => call.ack?.id === 'resume-epoch-two')?.ack.ok, true);
+  assert.equal(h.runs.length, 1); assert.equal(h.runs[0].currentIndex, 2); assert.equal(h.runs[0].detailIndex, 7);
+  assert.equal(h.runs[0].jobs[0].id, 'kept'); assert.equal(h.runs[0].lastError, undefined);
+});
+
+for (const age of [86400000 - 1, 86400000, 86400000 + 1]) test(`paused control boundary at ${age} ms never renews a checkpoint`, async () => {
+  const h = harness({ realControl: true });
+  const original = { ...request(), startAccepted: true, updatedAt: h.now() - age,
+    pausedAt: h.now() - age, lastError: { type: 'PAGE_HIDDEN' }, phase: 'collecting' };
+  h.seed(original); await h.api.resume(false);
+  assert.equal(h.watches.length, 1); assert.deepEqual(h.task(), original); assert.equal(h.runs.length, 0);
+  h.directive({ success: true, epoch: 2, desired: 'RESUMING', commands: [{ id: 'resume-boundary', kind: 'RESUME' }] });
+  await h.tick();
+  const ack = h.controlCalls.find(call => call.ack?.id === 'resume-boundary').ack;
+  assert.equal(ack.ok, age < 86400000);
+  if (age >= 86400000) {
+    assert.equal(ack.errorCode, 'CHECKPOINT_EXPIRED'); assert.deepEqual(h.task(), original); assert.equal(h.runs.length, 0);
+    h.directive({ success: true, epoch: 2, desired: 'PAUSED', commands: [{ id: 'pause-expired', kind: 'PAUSE' }] });
+    await h.tick();
+    assert.equal(h.controlCalls.find(call => call.ack?.id === 'pause-expired').ack.ok, false);
+    assert.deepEqual(h.task(), original);
+    await h.api.resume(false); assert.deepEqual(h.task(), original);
+    h.directive({ success: true, epoch: 3, desired: 'RESUMING', commands: [{ id: 'resume-still-expired', kind: 'RESUME' }] });
+    await h.tick();
+    assert.equal(h.controlCalls.find(call => call.ack?.id === 'resume-still-expired').ack.errorCode, 'CHECKPOINT_EXPIRED');
+    h.directive({ success: true, epoch: 3, desired: 'STOPPED', commands: [{ id: 'stop-expired', kind: 'STOP' }] });
+    await h.tick();
+    assert.equal(h.controlCalls.find(call => call.ack?.id === 'stop-expired').ack.ok, true); assert.equal(h.task(), null);
+  }
+});
+
+test('accepted identity with no checkpoint reconnects controls, fails RESUME/PAUSE and retains STOP recovery', async () => {
+  const h = harness({ realControl: true });
+  h.api.writeStatus({ ...request(), startAccepted: true, stage: 'blocked', paused: true, resumable: true });
+  await h.api.resume(false); assert.equal(h.task(), null); assert.equal(h.watches.length, 1);
+  for (const [id, kind] of [['resume-missing', 'RESUME'], ['pause-missing', 'PAUSE']]) {
+    h.directive({ success: true, epoch: 2, desired: kind === 'RESUME' ? 'RESUMING' : 'PAUSED', commands: [{ id, kind }] });
+    await h.tick();
+    const ack = h.controlCalls.find(call => call.ack?.id === id).ack;
+    assert.equal(ack.ok, false); assert.equal(ack.errorCode, 'CHECKPOINT_MISSING'); assert.equal(h.task(), null);
+  }
+  await h.api.resume(false); assert.equal(h.task(), null);
+  h.directive({ success: true, epoch: 3, desired: 'RESUMING', commands: [{ id: 'resume-missing-after-reload', kind: 'RESUME' }] });
+  await h.tick(); assert.equal(h.controlCalls.find(call => call.ack?.id === 'resume-missing-after-reload').ack.ok, false);
+  h.directive({ success: true, epoch: 3, desired: 'STOPPED', commands: [{ id: 'stop-missing', kind: 'STOP' }] });
+  await h.tick(); assert.equal(h.controlCalls.find(call => call.ack?.id === 'stop-missing').ack.ok, true);
+  assert.equal(h.runs.length, 0); assert.equal(h.task(), null);
+});
+
+test('PAUSE fails explicitly when a valid watched checkpoint disappears after reconnecting controls', async () => {
+  const h = harness({ realControl: true });
+  h.seed({ ...request(), startAccepted: true, updatedAt: h.now() - 95 * 60000,
+    pausedAt: h.now() - 95 * 60000, lastError: { type: 'PAGE_HIDDEN' } });
+  await h.api.resume(false);
+  assert.equal(h.watches[0].controlOptions.checkpointError, '');
+  h.local.delete(TASK); delete h.shared[SHARED];
+  h.directive({ success: true, epoch: 2, desired: 'PAUSED', commands: [{ id: 'pause-after-loss', kind: 'PAUSE' }] });
+  await h.tick();
+  const ack = h.controlCalls.find(call => call.ack?.id === 'pause-after-loss')?.ack;
+  assert.equal(ack?.ok, false); assert.equal(ack?.errorCode, 'CHECKPOINT_MISSING');
+  assert.equal(h.task(), null); assert.equal(h.shared[SHARED], undefined); assert.equal(h.runs.length, 0);
+});
+
+test('accepted paused checkpoint cannot resume after its live owner changed', async () => {
+  const h = harness({ realControl: true }); const original = { ...request(), startAccepted: true,
+    updatedAt: h.now() - 95 * 60000, pausedAt: h.now() - 95 * 60000, lastError: { type: 'PAGE_HIDDEN' } };
+  h.seed(original); await h.api.resume(false);
+  h.ownership({ success: true, isOwner: true, runId: 'new-owner-run', profileId: 4, ownerToken: 'new-owner' });
+  await h.api.resume(true); assert.equal(h.runs.length, 0); assert.deepEqual(h.task(), original);
+});
+
+for (const storage of ['session-only', 'shared-only']) test(`${storage} paused checkpoints missing both timestamps cannot acquire a new validity window during normalization`, async () => {
+  const h = harness({ realControl: true });
+  const original = { ...request(), startAccepted: true, pausedAt: h.now() - 48 * 3600000,
+    phase: 'collecting', lastError: { type: 'PAGE_HIDDEN' } };
+  h.seed(original);
+  if (storage === 'session-only') delete h.shared[SHARED];
+  else h.local.delete(TASK);
+  await h.api.resume(false);
+  assert.equal(h.watches.length, 1); assert.equal(h.watches[0].controlOptions.checkpointError, 'CHECKPOINT_MISSING');
+  assert.equal(h.task().startedAt, undefined); assert.equal(h.task().updatedAt, undefined);
+  assert.equal(h.watches[0].startedAt, undefined);
+  const before = structuredClone(h.task());
+  for (const [id, kind] of [['resume-no-time', 'RESUME'], ['pause-no-time', 'PAUSE']]) {
+    h.directive({ success: true, epoch: 2, desired: kind === 'RESUME' ? 'RESUMING' : 'PAUSED', commands: [{ id, kind }] });
+    await h.tick();
+    assert.equal(h.controlCalls.find(call => call.ack?.id === id).ack.errorCode, 'CHECKPOINT_MISSING');
+    assert.deepEqual(h.task(), before); assert.equal(h.runs.length, 0);
+    if (storage === 'shared-only') assert.deepEqual(h.shared[SHARED], original);
+  }
 });

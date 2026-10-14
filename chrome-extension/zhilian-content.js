@@ -1,5 +1,5 @@
 (function () {
-  const EXTENSION_VERSION = "1.8.17";
+  const EXTENSION_VERSION = "1.8.18";
   if (window.__GET_JOBS_ZHILIAN_CONTENT_VERSION__ === EXTENSION_VERSION) return;
   const CONTENT_INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   window.__GET_JOBS_ZHILIAN_CONTENT__ = true;
@@ -16,6 +16,7 @@
   const SCAN_SUPPORT = window.GetJobsZhilianScanSupport || {};
   const START_SUPPORT = window.GetJobsScanStartSupport;
   const SCAN_TASK_TTL_MS = 30 * 60 * 1000;
+  const SCAN_CONTROL_TTL_MS = 24 * 60 * 60 * 1000;
   const DETAIL_NAVIGATION_GUARD_MS = 800;
   const SEARCH_NAVIGATION_GRACE_MS = 15 * 1000;
   const SEARCH_NAVIGATION_RETRY_MS = 2500;
@@ -282,7 +283,8 @@
       task = null;
       status = readScanStatus();
     }
-    const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable));
+    const paused = Boolean(status.paused || (status.stage === "blocked" && status.resumable)
+      || (task?.scanProtocol === 1 && (task.pausedAt || task.blockedAt || task.blockState || task.lastError)));
     const hasFreshTask = Boolean(task && isFreshScanTask(task));
     const hasResumableTask = Boolean(hasFreshTask || paused);
     if (task && !hasFreshTask && !paused) {
@@ -299,12 +301,13 @@
       });
     }
     const nextStatus = readScanStatus();
+    const resumeUnavailable = ["CHECKPOINT_EXPIRED", "CHECKPOINT_MISSING", "CHECKPOINT_MISMATCH"].includes(nextStatus.resumeErrorCode);
     sendResponse({
       success: true,
       ...nextStatus,
       isRunning: Boolean(nextStatus.isRunning || hasFreshTask) && !paused,
       paused,
-      resumable: Boolean(nextStatus.resumable || hasResumableTask),
+      resumable: !resumeUnavailable && Boolean(nextStatus.resumable || hasResumableTask),
       runId: nextStatus.runId || task?.runId || "",
       scanOwnerToken: task?.scanOwnerToken || "",
       profileId,
@@ -414,9 +417,24 @@
       return;
     }
     if (window.__GET_JOBS_ZHILIAN_CONTENT_INSTANCE_ID__ !== CONTENT_INSTANCE_ID || activeScanPromise) return;
-    if (!storedTask || storedTask.completed || stopRequested) return;
+    if (!storedTask) {
+      const status = readRawScanStatus();
+      if (status?.startAccepted === true && !["complete", "stopped", "error"].includes(status.stage)) {
+        const ownership = await readScanTabOwnership();
+        if (ownership?.success && ownership.isOwner && ownership.runId === status.runId
+            && normalizeProfileId(ownership.profileId) === normalizeProfileId(status.profileId)
+            && ownership.ownerToken === status.scanOwnerToken) {
+          writeScanStatus({ isRunning: false, paused: true, resumable: false, stage: "blocked",
+            runId: status.runId, profileId: status.profileId, resumeErrorCode: "CHECKPOINT_MISSING",
+            diagnosticType: "CHECKPOINT_MISSING", message: "恢复断点不存在，请停止本轮后新建扫描。" });
+          await scanControl?.watch({ ...status, scanProtocol: 1 }, { checkpointError: "CHECKPOINT_MISSING" });
+        }
+      }
+      return;
+    }
+    if (storedTask.completed || stopRequested) return;
     if (storedTask.startAccepted === false) return;
-    if (!force) {
+    if (!force || storedTask.scanProtocol === 1) {
       const ownership = await readScanTabOwnership();
       if (!ownership?.success || !ownership.isOwner || ownership.runId !== storedTask.runId
           || normalizeProfileId(ownership.profileId) !== normalizeProfileId(storedTask.profileId)
@@ -424,25 +442,29 @@
       const blocked = storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError;
       // Legacy checkpoints carry no acceptance evidence. Keep them available
       // for explicit controls, but never bootstrap their collection.
-      if (storedTask.startAccepted !== true && !blocked) return;
+      if (!force && storedTask.startAccepted !== true && !blocked) return;
     }
-    if (!force && isFreshScanTask(storedTask)
-        && (storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError)) {
-      if (storedTask.scanProtocol === 1) {
-        writeScanStatus({ isRunning: false, paused: true, resumable: true, stage: "blocked",
-          runId: storedTask.runId, profileId: storedTask.profileId,
-          scanOwnerToken: storedTask.scanOwnerToken, startAccepted: storedTask.startAccepted === true,
-          startConfigKey: storedTask.startConfigKey ? START_SUPPORT.normalizeKey(storedTask.startConfigKey) : scanStartConfigKey(storedTask),
-          diagnosticType: storedTask.lastError?.type || readScanStatus().diagnosticType || "",
-          message: "智联扫描已暂停，断点已保留；处理页面提示后请点击继续。" });
-        await scanControl?.watch(storedTask);
-      }
+    const blockedCheckpoint = Boolean(storedTask.pausedAt || storedTask.blockedAt || storedTask.blockState || storedTask.lastError);
+    const checkpointAt = Number(storedTask.updatedAt || storedTask.startedAt || 0);
+    const controlFresh = Boolean(checkpointAt && Date.now() - checkpointAt < SCAN_CONTROL_TTL_MS);
+    if (blockedCheckpoint && storedTask.scanProtocol === 1 && (!force || !controlFresh)) {
+      const checkpointError = controlFresh ? "" : checkpointAt ? "CHECKPOINT_EXPIRED" : "CHECKPOINT_MISSING";
+      writeScanStatus({ isRunning: false, paused: true, resumable: !checkpointError, stage: "blocked",
+        runId: storedTask.runId, profileId: storedTask.profileId,
+        scanOwnerToken: storedTask.scanOwnerToken, startAccepted: storedTask.startAccepted === true,
+        startConfigKey: storedTask.startConfigKey ? START_SUPPORT.normalizeKey(storedTask.startConfigKey) : scanStartConfigKey(storedTask),
+        resumeErrorCode: checkpointError,
+        diagnosticType: checkpointError || storedTask.lastError?.type || readScanStatus().diagnosticType || "",
+        message: checkpointError ? "恢复断点已超过有效期，请停止本轮后新建扫描；原断点已保留。"
+          : "智联扫描已暂停，断点已保留；处理页面提示后请点击继续。" });
+      await scanControl?.watch(storedTask, { checkpointError });
       return;
     }
+    if (!force && blockedCheckpoint) return;
     const task = typeof SCAN_SUPPORT.prepareTaskForResume === "function"
       ? SCAN_SUPPORT.prepareTaskForResume(storedTask)
       : storedTask;
-    if (!isFreshScanTask(task) || !isZhilianUrl(window.location.href)) {
+    if (!(isFreshScanTask(task) || (blockedCheckpoint && storedTask.scanProtocol === 1 && controlFresh)) || !isZhilianUrl(window.location.href)) {
       clearStoredScanTask();
       writeScanStatus({
         isRunning: false,
@@ -2341,7 +2363,7 @@
   function readStoredScanTask() {
     try {
       const raw = sessionStorage.getItem(SCAN_TASK_KEY);
-      return raw ? normalizeScanTask(JSON.parse(raw)) : null;
+      return raw ? normalizeScanTask(JSON.parse(raw), { preserveCheckpointTime: true }) : null;
     } catch {
       sessionStorage.removeItem(SCAN_TASK_KEY);
       return null;
@@ -2440,7 +2462,7 @@
     try {
       const result = await chrome.storage.local.get(SHARED_SCAN_TASK_KEY);
       const task = result?.[SHARED_SCAN_TASK_KEY];
-      return task ? normalizeScanTask(task) : null;
+      return task ? normalizeScanTask(task, { preserveCheckpointTime: true }) : null;
     } catch (error) {
       console.warn("[GetJobs] 智联共享扫描任务读取失败", error);
       return null;
@@ -2493,7 +2515,7 @@
     }
   }
 
-  function normalizeScanTask(message) {
+  function normalizeScanTask(message, { preserveCheckpointTime = false } = {}) {
     const config = message?.config || {};
     const keywords = scanKeywords(message);
     const searchJobLimit = normalizeSearchJobLimit(message?.searchJobLimit ?? config.searchJobLimit);
@@ -2517,7 +2539,7 @@
       collectedJobs: normalizeCollectedJobs(message.collectedJobs),
       searchPage: Math.max(1, Number(message.searchPage || 1)),
       pagesScanned: Math.max(0, Number(message.pagesScanned || 0)),
-      startedAt: message.startedAt || Date.now(),
+      startedAt: preserveCheckpointTime ? message.startedAt : message.startedAt || Date.now(),
       keywordCursorKey: cursorState.cursorKey,
       keywordCursorReset: cursorState.reset,
       ...(message.startConfigKey ? { startConfigKey: START_SUPPORT.normalizeKey(message.startConfigKey) } : {})

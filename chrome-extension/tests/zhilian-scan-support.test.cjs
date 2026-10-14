@@ -147,7 +147,8 @@ test("keeps the Zhilian resume URL guard and background search navigation wired"
   const source = fs.readFileSync(path.resolve(__dirname, "..", "zhilian-content.js"), "utf8");
 
   assert.match(source, /function isZhilianUrl\(rawUrl\)/);
-  assert.match(source, /!isFreshScanTask\(task\) \|\| !isZhilianUrl\(window\.location\.href\)/);
+  assert.match(source, /isFreshScanTask\(task\) \|\| \(blockedCheckpoint && storedTask\.scanProtocol === 1 && controlFresh\)/);
+  assert.match(source, /!isZhilianUrl\(window\.location\.href\)/);
   assert.match(source, /requestBackgroundNavigation\(url, "search"\)/);
 });
 

@@ -9,6 +9,8 @@ export type ScanHistoryRun = {platform?:ScanPlatform;profile_id?:number;created_
 type Event = {id:number;created_at:number;kind:string;payload:Record<string,unknown>}
 const states:Record<string,string>={STARTING:'正在启动',RUNNING:'扫描中',PAUSED:'已暂停',BLOCKED:'已阻塞',COMPLETE:'扫描完成',PARTIAL:'部分完成',FAILED:'失败',STOPPED:'已停止',LEGACY:'未记录完整过程'}
 const errors:Record<string,string>={BACKEND_UNAVAILABLE:'后端连接中断',LOG_QUEUE_FULL:'日志缓冲已满',SCAN_TAB_CLOSED:'扫描页面已关闭',FILTER_NOT_APPLIED:'官网筛选未生效',EXTENSION_RELOAD_REQUIRED:'扩展需要重新加载',START_FAILED:'启动结果未确认',SCAN_START_UNCONFIRMED:'启动回执未确认，请核实任务后停止，避免重复启动',BRIDGE_RESPONSE_TIMEOUT:'扩展启动回执超时，结果待核实',BRIDGE_EMPTY_RESPONSE:'扩展启动回执为空，结果待核实',CONTENT_SCRIPT_NOT_READY:'招聘页面脚本尚未就绪',SETUP_NOT_READY:'启动前检查未通过',CHECKPOINT_MISSING:'恢复断点不存在',CHECKPOINT_CLEAR_FAILED:'停止约束已保存，但扩展断点清理失败，请查看停止回执',UNRECOGNIZED_LAYOUT:'未识别岗位页面结构',SCAN_STORAGE_FAILED:'扩展本地记录保存失败',PAGE_HIDDEN:'扫描窗口被隐藏',CARD_NOT_READY:'岗位列表尚未就绪'}
+Object.assign(errors, { CHECKPOINT_EXPIRED: '恢复断点已超过 24 小时，请停止本轮后新建扫描',
+  CHECKPOINT_MISSING: '恢复断点不存在，请停止本轮后新建扫描', CHECKPOINT_MISMATCH: '恢复断点与当前任务身份不匹配，请停止本轮后新建扫描' })
 const time=(v?:number)=>v?new Date(v).toLocaleString():'尚未联系'
 export default function ScanHistory({platform,profileId,onRuns,requestedRunId=''}:{platform:ScanPlatform;profileId?:number;requestedRunId?:string;onRuns?:(platform:ScanPlatform,profileId:number,runs:ScanHistoryRun[])=>void}) {
   const [runs,setRuns]=useState<ScanHistoryRun[]>([]),[selected,setSelected]=useState(''),[events,setEvents]=useState<Event[]>([])
@@ -90,7 +92,7 @@ export default function ScanHistory({platform,profileId,onRuns,requestedRunId=''
           <button className="rounded border px-3 py-1" onClick={exportDiagnostics}>导出诊断</button>
           <button className="rounded border px-3 py-1" onClick={()=>navigator.clipboard.writeText(`${platform} ${current.run_id}；${states[current.state]}；新增入队 ${current.accepted}；${current.error_code||'无已记录错误'}；最后联系 ${time(current.page_seen_at)}`).catch(()=>setError('复制失败，请使用导出诊断'))}>复制摘要</button>
         </div>
-        {current.commands?.slice(0,3).map(c=><p key={c.id} className="text-sm">{({PAUSE:'暂停',RESUME:'继续',STOP:'停止'})[c.kind]||c.kind}：{({PENDING:'请求已保存，等待扩展执行',ACKNOWLEDGED:'扩展已确认执行',FAILED:'执行失败',SUPERSEDED:'已被后续指令替代'})[c.status]||c.status}{c.error_code?`（${c.error_code}）`:''}</p>)}
+        {current.commands?.slice(0,3).map(c=><p key={c.id} className="text-sm">{({PAUSE:'暂停',RESUME:'继续',STOP:'停止'})[c.kind]||c.kind}：{({PENDING:'请求已保存，等待扩展执行',ACKNOWLEDGED:'扩展已确认执行',FAILED:'执行失败',SUPERSEDED:'已被后续指令替代'})[c.status]||c.status}{c.error_code?`（${errors[c.error_code] || c.error_code}；${c.error_code}）`:''}</p>)}
         <p className="text-sm text-muted-foreground">暂停扫描不停止已入队的 AI 分析。{current.analysis?.map(a=>`${a.status} ${a.count}`).join(' · ')}</p>
         <details><summary className="cursor-pointer">过程与错误记录</summary>
           <p className="text-sm">读取 {current.counters?.read||0} · 重复 {current.counters?.duplicates||0} · 详情失败 {current.counters?.detailFailures||0} · 提交失败 {current.counters?.submissionFailures||0}</p>
