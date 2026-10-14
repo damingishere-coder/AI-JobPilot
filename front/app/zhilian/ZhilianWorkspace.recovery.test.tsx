@@ -60,6 +60,23 @@ it('backend pause survives stale bridge status and explicit resume uses the reta
   expect(screen.getByRole('button',{name:'停止扫描'})).toBeInTheDocument()
 })
 
+for(const state of ['PAUSED','BLOCKED'])it(`the primary action resumes the exact backend ${state} run while history stays collapsed`,async()=>{
+  runs=[{...running,state,desired:'PAUSED',error_code:'PAGE_HIDDEN',pageConnected:true}]
+  mocks.command.mockResolvedValue({...running})
+  await act(async()=>{render(<ZhilianWorkspace />)})
+  await act(async()=>{window.dispatchEvent(new Event('focus'))})
+  expect(screen.getByText('历史采集记录').closest('details')).not.toHaveAttribute('open')
+  expect(screen.queryByRole('button',{name:'开始扫描'})).not.toBeInTheDocument()
+  const resume=screen.getByRole('button',{name:'继续扫描'})
+  expect(resume).toBeEnabled()
+  await act(async()=>{fireEvent.click(resume)})
+  expect(mocks.command).toHaveBeenCalledTimes(1)
+  expect(mocks.command).toHaveBeenCalledWith('zhilian',4,'zhilian-200','RESUME')
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(mocks.bridge.mock.calls.some(([message])=>message.type==='ZHILIAN_SCAN_START')).toBe(false)
+  expect(screen.getByRole('button',{name:'停止扫描'})).toBeInTheDocument()
+})
+
 it('a new Zhilian run explicitly starts with keyword zero instead of a prior global cursor',async()=>{
   runs=[]
   localStorage.setItem('__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__',JSON.stringify({nextIndex:2,keywordTotal:8}))
