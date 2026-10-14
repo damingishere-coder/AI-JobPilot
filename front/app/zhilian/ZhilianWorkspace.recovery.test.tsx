@@ -55,7 +55,39 @@ it('backend pause survives stale bridge status and explicit resume uses the reta
   mocks.command.mockResolvedValue({...running})
   await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'继续'}))})
   expect(mocks.command).toHaveBeenCalledWith('zhilian',4,'zhilian-200','RESUME')
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(mocks.bridge.mock.calls.some(([message])=>message.type==='ZHILIAN_SCAN_START')).toBe(false)
   expect(screen.getByRole('button',{name:'停止扫描'})).toBeInTheDocument()
+})
+
+it('a new Zhilian run explicitly starts with keyword zero instead of a prior global cursor',async()=>{
+  runs=[]
+  localStorage.setItem('__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__',JSON.stringify({nextIndex:2,keywordTotal:8}))
+  mocks.bridge.mockImplementation(async message=>message.type==='ZHILIAN_SCAN_START'
+    ?{success:true,startAccepted:true,profileId:4,runId:message.runId,scanOwnerToken:'owner',isRunning:true,stage:'received'}
+    :{success:true,profileId:4,isRunning:false,stage:'idle'})
+  await act(async()=>{render(<ZhilianWorkspace />)})
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'开始扫描'}))})
+  expect(mocks.register).toHaveBeenCalledTimes(1)
+  const starts=mocks.bridge.mock.calls.filter(([message])=>message.type==='ZHILIAN_SCAN_START')
+  expect(starts).toHaveLength(1)
+  expect(starts[0][0]).toMatchObject({currentIndex:0,profileId:4,resumeIncomplete:false})
+  expect(starts[0][0].runId).toMatch(/^zhilian-\d+$/)
+  expect(mocks.command).not.toHaveBeenCalled()
+})
+
+it('continuing unfinished Zhilian keywords resumes the existing checkpoint without a new START or registration',async()=>{
+  runs=[{...running,state:'PAUSED',desired:'PAUSED',pageConnected:true}]
+  mocks.bridge.mockResolvedValue({success:true,profileId:4,runId:'zhilian-200',stage:'blocked',paused:true,resumable:true,
+    isRunning:false,outcome:'paused',keywordResults:[{keywordIndex:3,keyword:'运营',collected:4,target:30,
+      historyDuplicates:0,detailFailures:0,stopReason:'paused',outcome:'partial'}]})
+  mocks.command.mockResolvedValue({...running,state:'PAUSED',desired:'RESUMING'})
+  await act(async()=>{render(<ZhilianWorkspace />)})
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'继续未完成关键词'}))})
+  expect(mocks.command).toHaveBeenCalledWith('zhilian',4,'zhilian-200','RESUME')
+  expect(mocks.command).toHaveBeenCalledTimes(1)
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(mocks.bridge.mock.calls.some(([message])=>message.type==='ZHILIAN_SCAN_START')).toBe(false)
 })
 
 it('a pending stop on reload allows a new round while an unknown start prevents repeat dispatch',async()=>{

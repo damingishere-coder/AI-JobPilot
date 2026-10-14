@@ -1080,6 +1080,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         platform: 'boss',
         profileId,
         runId,
+        currentIndex: 0,
         config: {
           ...config,
           keywords: keywordsDisplay,

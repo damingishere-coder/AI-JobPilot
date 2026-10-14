@@ -631,6 +631,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
         platform: 'zhilian',
         profileId,
         runId,
+        currentIndex: 0,
         config: {
           ...config,
           keywords,
