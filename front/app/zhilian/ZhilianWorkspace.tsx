@@ -586,7 +586,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
         return
       }
       const resumeRunId = activeRunId || scanResult?.runId
-      if (resumeIncomplete && resumeRunId) {
+      if ((resumeIncomplete || isScanPaused) && resumeRunId) {
         const updated = await scanCommand('zhilian',profileId,resumeRunId,'RESUME')
         acceptBackendRuns('zhilian',profileId,[updated])
         onWorkspaceScopeChange?.(resumeRunId, profileId, 'task')
@@ -857,7 +857,7 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
 	              </Button>
 	            ) : (
 	              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || startUnconfirmed || !hasProfile || normalizeKeywordTokens(config.keywords).length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : startUnconfirmed ? '启动待核实' : '开始扫描'}
+	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : startUnconfirmed ? '启动待核实' : isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button asChild size="sm" variant="outline"><a href="https://www.zhaopin.com/" target="_blank" rel="noreferrer">打开智联 / 管理登录</a></Button>

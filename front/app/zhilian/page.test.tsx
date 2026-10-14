@@ -60,7 +60,7 @@ it('已暂停且保留断点时显示已暂停，不把断点误认成运行任�
   render(<Page />)
   await screen.findByText('已暂停')
   expect(screen.queryByText('扫描中')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: '开始扫描' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '继续扫描' })).toBeEnabled()
   expect(screen.getByRole('button', { name: '继续未完成关键词' })).toBeEnabled()
   expect(screen.queryByRole('button', { name: '停止扫描' })).not.toBeInTheDocument()
 })
