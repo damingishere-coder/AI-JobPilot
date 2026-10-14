@@ -1,4 +1,5 @@
 importScripts("scan-observer.js");
+importScripts("vendor/js-sha256.js");
 importScripts("scan-start-support.js");
 importScripts("boss-delivery-support.js");
 importScripts("application-runtime-protocol.js");
@@ -10,6 +11,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhipin.com/",
     contentScript: "boss-content.js",
     contentScripts: [
+      "vendor/js-sha256.js",
       "scan-start-support.js",
       "scan-control.js",
       "continuous-scan-support.js",
@@ -32,6 +34,7 @@ const PLATFORM_CONFIG = {
     home: "https://www.zhaopin.com/",
     contentScript: "zhilian-content.js",
     contentScripts: [
+      "vendor/js-sha256.js",
       "scan-start-support.js",
       "scan-control.js",
       "continuous-scan-support.js", "zhilian-filters.js",

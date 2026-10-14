@@ -35,6 +35,7 @@
     {
       "matches": ["https://www.zhipin.com/*", "https://*.zhipin.com/*"],
       "js": [
+        "vendor/js-sha256.js",
         "scan-start-support.js",
         "scan-control.js",
         "continuous-scan-support.js",
@@ -55,7 +56,7 @@
     },
     {
       "matches": ["https://www.zhaopin.com/*", "https://*.zhaopin.com/*"],
-      "js": ["scan-start-support.js", "scan-control.js", "continuous-scan-support.js", "zhilian-filters.js", "zhilian-scan-support.js", "zhilian-modern-collector.js", "zhilian-page-evidence.js", "browser-application-runtime.js", "zhilian-content.js"],
+      "js": ["vendor/js-sha256.js", "scan-start-support.js", "scan-control.js", "continuous-scan-support.js", "zhilian-filters.js", "zhilian-scan-support.js", "zhilian-modern-collector.js", "zhilian-page-evidence.js", "browser-application-runtime.js", "zhilian-content.js"],
       "run_at": "document_idle"
     },
     {

@@ -31,7 +31,7 @@ function harness() {
   vm.runInContext(fs.readFileSync(path.join(dir, 'boss-scan-support.js'), 'utf8'), context);
   const instrumented = source.replace(/\}\)\(\);\s*$/, `
     window.test = { resumeStoredScanTaskIfActive, storeScanTask, clearStoredScanTask, clearStoppedScanTask, writeScanStatus, requestBackgroundNavigation,
-      isSearchNavigationPending, postProgress, setActive: value => { activeScanPromise = value; } };
+      isSearchNavigationPending, postProgress, normalizeScanTask, buildKeywordCursorKey, setActive: value => { activeScanPromise = value; } };
     runScan = async task => { runs.push(task); };
   })();`);
   const boot = () => vm.runInContext(instrumented, context);
@@ -210,4 +210,29 @@ test('an already loaded local checkpoint cannot bootstrap under a different owne
   h.context.chrome.runtime.sendMessage=async()=>({success:true,isOwner:true,runId:'boss-new',profileId:4,ownerToken:'new-owner'});
   await h.window.test.resumeStoredScanTaskIfActive();
   assert.equal(h.runs.length,0);assert.equal(JSON.parse(h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__')).runId,'boss-test');
+});
+test('BOSS stores opaque cursor and start keys while preserving configured filters',async()=>{
+  const h=harness();await dispatch(h,startRequest({config:{keywords:['采购'],searchJobLimit:30,salary:['10001,15000']}}));
+  const saved=JSON.parse(h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__'));
+  assert.match(saved.keywordCursorKey,/^sha256:[a-f0-9]{64}$/);assert.match(saved.startConfigKey,/^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(saved.config.salary,['10001,15000']);
+  assert.equal(saved.startConfigKey.includes('salary'),false);assert.equal(saved.keywordCursorKey.includes('10001'),false);
+});
+test('a legacy BOSS cursor retains its next keyword and a legacy start key acknowledges without rewriting',async()=>{
+  const h=harness(),message=startRequest({config:{keywords:['AI','采购'],searchJobLimit:30,salary:['10001,15000']}});
+  const oldCursor=JSON.stringify({platform:'boss',profileId:4,keywords:['AI','采购'],cityCode:[],jobType:'',salary:['10001,15000'],experience:[],degree:[],scale:[],industry:[],stage:[],searchJobLimit:30});
+  h.localStorage.setItem('__GET_JOBS_BOSS_KEYWORD_CURSOR__',JSON.stringify({cursorKey:oldCursor,keywordTotal:2,nextIndex:1}));
+  const normalized=h.window.test.normalizeScanTask(message);
+  assert.equal(normalized.currentIndex,1);assert.match(normalized.keywordCursorKey,/^sha256:/);
+  const oldStart=JSON.stringify({cursor:oldCursor,scanProtocol:1,autoDeliver:false});
+  const legacy={...normalized,keywordCursorKey:oldCursor,startConfigKey:oldStart,startAccepted:true,pausedAt:Date.now()};
+  h.sessionStorage.setItem('__GET_JOBS_BOSS_SCAN_TASK__',JSON.stringify(legacy));
+  const before=h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__');
+  const result=await dispatch(h,message);
+  assert.equal(result.startAccepted,true);assert.equal(result.duplicate,true);assert.equal(h.runs.length,0);
+  assert.equal(h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__'),before);
+  h.window.test.storeScanTask(legacy);
+  const updated=JSON.parse(h.sessionStorage.getItem('__GET_JOBS_BOSS_SCAN_TASK__'));
+  assert.match(updated.startConfigKey,/^sha256:/);assert.match(updated.keywordCursorKey,/^sha256:/);
+  assert.equal(updated.currentIndex,1);
 });

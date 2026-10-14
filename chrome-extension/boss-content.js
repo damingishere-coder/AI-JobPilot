@@ -771,7 +771,7 @@
     }
     const accepted = START_SUPPORT.readonlyStatus(message, raw.task, raw.status);
     if (accepted.startAccepted) {
-      if (accepted.startConfigKey !== startConfigKey) {
+      if (START_SUPPORT.normalizeBossStartKey(accepted.startConfigKey) !== startConfigKey) {
         sendResponse({success:false,startNotDispatched:true,errorCode:"SCAN_START_CONFLICT",message:"本轮扫描配置不一致，请核对任务记录。"});
       } else {
         sendResponse({...accepted,duplicate:true,message:"本轮扫描已接受，已返回当前状态。"});
@@ -792,7 +792,7 @@
     const configChanged = Boolean(
       existingTask?.keywordCursorKey
         && incomingTask.keywordCursorKey
-        && existingTask.keywordCursorKey !== incomingTask.keywordCursorKey
+        && !START_SUPPORT.keyMatches(existingTask.keywordCursorKey,incomingTask.keywordCursorKey)
     );
     const sameRun = isSameScanRun(existingTask, incomingTask);
     const profileChanged = Boolean(existingTask && normalizeProfileId(existingTask.profileId) !== profileId);
@@ -3648,6 +3648,7 @@
     const cursorState = resolveKeywordCursor(message, cursorKeywords, hasExplicitIndex);
     return {
       ...message,
+      ...(message?.startConfigKey ? {startConfigKey:START_SUPPORT.normalizeBossStartKey(message.startConfigKey)} : {}),
       profileId: normalizeProfileId(message?.profileId),
       config: { ...config, keywords, searchJobLimit },
       keywords,
@@ -3831,8 +3832,8 @@
       const raw = localStorage.getItem(KEYWORD_CURSOR_KEY);
       if (!raw) return null;
       const state = JSON.parse(raw);
-      if (!state || state.cursorKey !== cursorKey) return null;
-      return state;
+      if (!state || !START_SUPPORT.keyMatches(state.cursorKey,cursorKey)) return null;
+      return {...state,cursorKey:START_SUPPORT.normalizeKey(state.cursorKey)};
     } catch {
       localStorage.removeItem(KEYWORD_CURSOR_KEY);
       return null;
@@ -3852,7 +3853,7 @@
   function writeKeywordCursor(cursorKey, nextIndex, keywordTotal, state, keyword = "") {
     if (!cursorKey || !keywordTotal) return;
     localStorage.setItem(KEYWORD_CURSOR_KEY, JSON.stringify({
-      cursorKey,
+      cursorKey: START_SUPPORT.normalizeKey(cursorKey),
       nextIndex: normalizeKeywordIndex(nextIndex, keywordTotal),
       keywordTotal,
       state,
@@ -3895,7 +3896,7 @@
   }
 
   function stableKey(value) {
-    return JSON.stringify(value);
+    return START_SUPPORT.fingerprint(JSON.stringify(value));
   }
 
   function normalizeKeywordIndex(value, total) {
@@ -4133,6 +4134,7 @@
     const merged = typeof SCAN_SUPPORT.mergeScanStatus === "function"
       ? SCAN_SUPPORT.mergeScanStatus(previous, nextStatus, Date.now())
       : { ...previous, ...nextStatus, updatedAt: Date.now() };
+    if(merged.startConfigKey) merged.startConfigKey=START_SUPPORT.normalizeBossStartKey(merged.startConfigKey);
     sessionStorage.setItem(SCAN_STATUS_KEY, JSON.stringify(merged));
   }
 

@@ -183,7 +183,7 @@
       searchJobLimit: normalizeSearchJobLimit(message.searchJobLimit ?? message.config?.searchJobLimit) };
     const sorted = value => Array.isArray(value) ? value.map(sorted)
       : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
-    return JSON.stringify(sorted(config));
+    return START_SUPPORT.fingerprint(JSON.stringify(sorted(config)));
   }
 
   async function readRawScanTask() {
@@ -217,7 +217,7 @@
     const record = START_SUPPORT.identityMatches(existingTask, message) ? existingTask
       : START_SUPPORT.identityMatches(status, message) ? status : null;
     if (record) {
-      if ((record.startConfigKey || scanStartConfigKey(record)) !== configKey) {
+      if (!START_SUPPORT.keyMatches(record.startConfigKey || scanStartConfigKey(record), configKey)) {
         return { success: false, startNotDispatched: true, errorCode: "SCAN_START_CONFIG_CHANGED", message: "同一智联扫描的启动配置不一致，未重复执行。" };
       }
       if (accepted.startAccepted) return { ...accepted, message: "智联扫描启动已确认。" };
@@ -432,7 +432,7 @@
         writeScanStatus({ isRunning: false, paused: true, resumable: true, stage: "blocked",
           runId: storedTask.runId, profileId: storedTask.profileId,
           scanOwnerToken: storedTask.scanOwnerToken, startAccepted: storedTask.startAccepted === true,
-          startConfigKey: storedTask.startConfigKey || scanStartConfigKey(storedTask),
+          startConfigKey: storedTask.startConfigKey ? START_SUPPORT.normalizeKey(storedTask.startConfigKey) : scanStartConfigKey(storedTask),
           diagnosticType: storedTask.lastError?.type || readScanStatus().diagnosticType || "",
           message: "智联扫描已暂停，断点已保留；处理页面提示后请点击继续。" });
         await scanControl?.watch(storedTask);
@@ -2519,7 +2519,8 @@
       pagesScanned: Math.max(0, Number(message.pagesScanned || 0)),
       startedAt: message.startedAt || Date.now(),
       keywordCursorKey: cursorState.cursorKey,
-      keywordCursorReset: cursorState.reset
+      keywordCursorReset: cursorState.reset,
+      ...(message.startConfigKey ? { startConfigKey: START_SUPPORT.normalizeKey(message.startConfigKey) } : {})
     };
   }
 
@@ -2572,8 +2573,8 @@
       const raw = localStorage.getItem(KEYWORD_CURSOR_KEY);
       if (!raw) return null;
       const state = JSON.parse(raw);
-      if (!state || state.cursorKey !== cursorKey) return null;
-      return state;
+      if (!state || !START_SUPPORT.keyMatches(state.cursorKey, cursorKey)) return null;
+      return { ...state, cursorKey: START_SUPPORT.normalizeKey(state.cursorKey) };
     } catch {
       localStorage.removeItem(KEYWORD_CURSOR_KEY);
       return null;
@@ -2593,7 +2594,7 @@
   function writeKeywordCursor(cursorKey, nextIndex, keywordTotal, state, keyword = "") {
     if (!cursorKey || !keywordTotal) return;
     localStorage.setItem(KEYWORD_CURSOR_KEY, JSON.stringify({
-      cursorKey,
+      cursorKey: START_SUPPORT.normalizeKey(cursorKey),
       nextIndex: normalizeKeywordIndex(nextIndex, keywordTotal),
       keywordTotal,
       state,
@@ -2618,7 +2619,7 @@
   }
 
   function stableKey(value) {
-    return JSON.stringify(value);
+    return START_SUPPORT.fingerprint(JSON.stringify(value));
   }
 
   function normalizeKeywordIndex(value, total) {
@@ -2725,6 +2726,7 @@
     const merged = typeof SCAN_SUPPORT.mergeScanStatus === "function"
       ? SCAN_SUPPORT.mergeScanStatus(previous, nextStatus, Date.now())
       : { ...previous, ...nextStatus, updatedAt: Date.now() };
+    if (merged.startConfigKey) merged.startConfigKey = START_SUPPORT.normalizeKey(merged.startConfigKey);
     sessionStorage.setItem(SCAN_STATUS_KEY, JSON.stringify(merged));
   }
 

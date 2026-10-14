@@ -3,10 +3,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const dir = path.join(__dirname, '..');
 const TASK = '__GET_JOBS_ZHILIAN_SCAN_TASK__';
 const SHARED = '__GET_JOBS_ZHILIAN_SHARED_SCAN_TASK__';
 const STATUS = '__GET_JOBS_ZHILIAN_SCAN_STATUS__';
+const CURSOR = '__GET_JOBS_ZHILIAN_KEYWORD_CURSOR__';
+const digest = serialized => `sha256:${createHash('sha256').update(serialized, 'utf8').digest('hex')}`;
 const request = (extra = {}) => ({ source: 'GET_JOBS_BACKGROUND', type: 'ZHILIAN_SCAN_START',
   scanProtocol: 1, profileId: 4, runId: 'zhilian-new', scanOwnerToken: 'owner-new',
   config: { cityCode: '489', keywords: ['AI'], searchJobLimit: 30 }, ...extra });
@@ -47,7 +50,7 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
         mutations.push(['shared-remove', key]); delete shared[key];
       },
     } } }, console, Date, Math, URL, URLSearchParams, setTimeout, clearTimeout });
-  for (const name of ['scan-start-support.js', 'zhilian-scan-support.js']) {
+  for (const name of ['vendor/js-sha256.js', 'scan-start-support.js', 'zhilian-scan-support.js']) {
     vm.runInContext(fs.readFileSync(path.join(dir, name), 'utf8'), context);
   }
   let source = fs.readFileSync(path.join(dir, 'zhilian-content.js'), 'utf8');
@@ -56,6 +59,8 @@ function harness({ failSave = false, holdSave = false, failLocalCommit = false, 
       runScan = hooks.run;
       window.testApi = { start: handleScanStartMessage, resume: resumeStoredScanTaskIfActive,
         stop: handleScanStopMessage, status: message => new Promise(resolve => handleScanStatusMessage(message, resolve)),
+        normalize: normalizeScanTask, store: storeScanTask, advance: advanceKeywordCursor,
+        cursorKey: buildKeywordCursorKey, startKey: scanStartConfigKey,
         busy: value => { activeScanPromise = value ? Promise.resolve() : null; },
         writeStatus: writeScanStatus };
     })();`);
@@ -229,4 +234,43 @@ test('ordinary STATUS never presents an uncommitted initial marker as a running 
   assert.equal(result.resumable, false); assert.equal(h.runs.length, 0); assert.equal(h.mutations.length, before);
   const duplicate = await h.api.start(request());
   assert.equal(duplicate.startUnconfirmed, true); assert.notEqual(duplicate.startNotDispatched, true);
+});
+test('legacy raw JSON cursor keys retain the next keyword while all newly written keys use real SHA256', () => {
+  const h = harness(); const keywords = ['AI', '运营', '数据'];
+  const message = request({ config: { cityCode: '489', keywords, searchJobLimit: 30 } });
+  const legacyKey = JSON.stringify({ platform: 'zhilian', profileId: 4, keywords,
+    cityCode: '489', salary: '0000,9999999', searchJobLimit: 30 });
+  const legacyCursor = { cursorKey: legacyKey, nextIndex: 2, keywordTotal: 3,
+    state: 'next', keyword: '运营', updatedAt: 12345 };
+  h.local.set(CURSOR, JSON.stringify(legacyCursor));
+  const normalized = h.api.normalize(message);
+  assert.equal(normalized.currentIndex, 2); assert.equal(normalized.keywordCursorReset, false);
+  assert.equal(normalized.keywordCursorKey, digest(legacyKey));
+  assert.deepEqual(JSON.parse(h.local.get(CURSOR)), legacyCursor, 'reading an old matching cursor must not reset or rewrite its history');
+  h.api.advance(normalized, 2, '数据');
+  const saved = JSON.parse(h.local.get(CURSOR));
+  assert.equal(saved.nextIndex, 2); assert.equal(saved.keywordTotal, 3);
+  assert.equal(saved.cursorKey, digest(legacyKey)); assert.equal(saved.cursorKey.includes('salary'), false);
+  assert.equal(saved.cursorKey.includes('0000,9999999'), false);
+});
+test('legacy accepted start JSON compares compatibly without restarting and saves only hashed redundant keys', async () => {
+  const h = harness(); const legacyStartKey = JSON.stringify({ cityCode: '489', keywords: ['AI'], searchJobLimit: 30 });
+  const legacyCursorKey = JSON.stringify({ platform: 'zhilian', profileId: 4, keywords: ['AI'],
+    cityCode: '489', salary: '0000,9999999', searchJobLimit: 30 });
+  const original = { ...request(), startAccepted: true, startConfigKey: legacyStartKey,
+    keywordCursorKey: legacyCursorKey, currentIndex: 0, phase: 'detail', detailIndex: 7,
+    totalSaved: 9, updatedAt: Date.now(), jobs: [{ id: 'historical', title: '保留岗位', url: 'https://www.zhaopin.com/jobdetail/historical.htm' }] };
+  h.seed(original); const before = h.mutations.length;
+  const duplicate = await h.api.start(request());
+  assert.equal(duplicate.startAccepted, true); assert.equal(h.runs.length, 0);
+  assert.equal(h.mutations.length, before); assert.deepEqual(h.task(), original);
+  await h.api.store(original, { requireDurable: true });
+  const saved = h.task();
+  assert.equal(saved.startConfigKey, digest(legacyStartKey)); assert.equal(saved.keywordCursorKey, digest(legacyCursorKey));
+  assert.equal(saved.currentIndex, 0); assert.equal(saved.detailIndex, 7); assert.equal(saved.totalSaved, 9);
+  assert.deepEqual(saved.jobs, original.jobs); assert.equal(h.shared[SHARED].startConfigKey, saved.startConfigKey);
+  assert.match(saved.keywordCursorKey, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(saved.keywordCursorKey.includes('salary'), false);
+  h.api.writeStatus({ runId: original.runId, profileId: 4, startConfigKey: legacyStartKey });
+  assert.equal(h.state().startConfigKey, digest(legacyStartKey));
 });
