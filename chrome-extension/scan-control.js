@@ -1,6 +1,6 @@
 (function(root) {
   function create({platform,version,instanceId,current,readTask,saveTask,status,resume,setStopped,readStatus,clearTask}) {
-    let task=null, directive=null, timer=null, flight=null, active=false, offline=false, ack=null, waiting=false, stopped=false, lastSync=0, pauseAt=0, pausedTotal=0, checking=null, finishing=null;
+    let task=null, directive=null, timer=null, flight=null, active=false, offline=false, ack=null, waiting=false, stopped=false, lastSync=0, pauseAt=0, pausedTotal=0, checking=null, finishing=null, checkpointError='';
     async function sync(force=false) {
       if(!task || !current()) return null;
       if(flight) {await flight;if(ack)return sync(true);return directive;}
@@ -27,12 +27,25 @@
         if(command?.kind==='STOP' || directive?.desired==='STOPPED') {
           stopped=true;setStopped();return true;
         }
-        if(command?.kind==='RESUME') {
+        if(command?.kind==='RESUME' || command?.kind==='PAUSE' || checkpointError) {
           const saved=readTask();
-          const valid=!!saved && saved.runId===task.runId && Number(saved.profileId)===Number(task.profileId) && saved.scanOwnerToken===task.scanOwnerToken && !saved.completed && Date.now()-Number(saved.updatedAt||saved.startedAt||0)<86400000 && JSON.stringify(saved.config)===JSON.stringify(task.config);
-          ack={id:command.id,ok:valid,errorCode:valid?'':'CHECKPOINT_MISSING'};
+          const matches=!!saved && saved.runId===task.runId && Number(saved.profileId)===Number(task.profileId)
+            && saved.scanOwnerToken===task.scanOwnerToken && !saved.completed && JSON.stringify(saved.config)===JSON.stringify(task.config);
+          const timestamp=Number(saved?.updatedAt||saved?.startedAt||0);
+          const errorCode=checkpointError || (!saved || !timestamp ? 'CHECKPOINT_MISSING'
+            : !matches ? 'CHECKPOINT_MISMATCH' : Date.now()-timestamp>=86400000 ? 'CHECKPOINT_EXPIRED' : '');
+          if(errorCode) {
+            if(command) {ack={id:command.id,ok:false,errorCode};await sync();}
+            status({stage:'blocked',paused:true,isRunning:false,resumable:false,runId:task.runId,
+              diagnosticType:errorCode,resumeErrorCode:errorCode,
+              message:errorCode==='CHECKPOINT_EXPIRED'?'恢复断点已超过 24 小时，请停止本轮后新建扫描':'恢复断点不存在或身份不匹配，请停止本轮后新建扫描'});
+            return true;
+          }
+        }
+        if(command?.kind==='RESUME') {
+          ack={id:command.id,ok:true,errorCode:''};
           await sync();
-          if(valid && directive?.desired==='RUNNING') {
+          if(directive?.desired==='RUNNING') {
             offline=false;
             status({stage:'resume',paused:false,isRunning:true,message:'已确认继续扫描',runId:task.runId});
           }
@@ -77,18 +90,21 @@
           if(!active && !waiting && (directive?.commands?.[0]?.kind==='STOP' || directive?.desired==='STOPPED')) {
             stopped=true;setStopped();await finish();return;
           }
-          if(!active && !waiting && directive?.commands?.length && readTask()) {
+          if(!active && !waiting && directive?.commands?.length) {
             active=true;
             const shouldStop=await check();active=false;
             if(shouldStop) await finish();
             else if(current()) resume();
           }
     }
-    async function start(t, running) {
+    async function start(t, running, options={}) {
         if(finishing) await finishing;
         if(t.scanProtocol!==1) {clearInterval(timer);task=null;active=false;stopped=false;return;}
         if(!task || task.runId!==t.runId || task.profileId!==t.profileId) {directive=null;offline=false;ack=null;lastSync=0;pauseAt=0;pausedTotal=0;}
-        task=t;active=running;stopped=false;await saveTask(t);
+        task=t;active=running;stopped=false;checkpointError=options.checkpointError || '';
+        // Reconnecting controls must not create a missing checkpoint or renew
+        // the original checkpoint's 24-hour recovery window.
+        if(running) await saveTask(t);
         clearInterval(timer);
         timer=setInterval(heartbeat,10000);
         await sync();
@@ -99,7 +115,7 @@
       fault(){offline=true;lastSync=0;},
       pausedMs:()=>pausedTotal+(pauseAt?Date.now()-pauseAt:0),
       enter:t=>start(t,true),
-      watch:t=>start(t,false),
+      watch:(t,options)=>start(t,false,options),
       leave:finish,checkpoint:check,
     };
   }

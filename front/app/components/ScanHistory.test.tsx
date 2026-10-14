@@ -41,3 +41,11 @@ it('unknown start cannot be resumed even if the page is connected',async()=>{
   expect(screen.getByRole('button',{name:'继续'})).toBeDisabled()
   expect(screen.getByRole('button',{name:'停止本轮'})).toBeEnabled()
 })
+for(const [errorCode,message] of [['CHECKPOINT_EXPIRED','恢复断点已超过 24 小时'],['CHECKPOINT_MISSING','恢复断点不存在']])it(`failed resume displays ${errorCode} even when the run still reports PAGE_HIDDEN`,async()=>{
+  const paused={...run,state:'BLOCKED',desired:'PAUSED',pageConnected:true,error_code:'PAGE_HIDDEN',
+    commands:[{id:'resume',kind:'RESUME',status:'FAILED',error_code:errorCode}]}
+  vi.stubGlobal('fetch',vi.fn(async(url:string)=>({ok:true,json:async()=>url.includes('/events')?[]:[paused]})))
+  render(<ScanHistory platform="zhilian" profileId={4}/> )
+  expect(await screen.findByText(new RegExp(message))).toHaveTextContent(errorCode)
+  expect(screen.getByRole('button',{name:'停止本轮'})).toBeEnabled()
+})

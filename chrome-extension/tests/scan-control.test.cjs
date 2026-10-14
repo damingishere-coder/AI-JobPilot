@@ -13,7 +13,7 @@ function harness({failSave=false,failFirstStopAck=false,failClear=false}={}){
    readTask:()=>saved,saveTask:async t=>{if(failSave && t.pausedAt)throw new Error('storage unavailable');saved={...t,updatedAt:clock}},status:s=>state={...state,...s},readStatus:()=>state,
    clearTask:async target=>{cleared.push(target);if(failClear)throw new Error('remove failed');saved=null;},
    setStopped:()=>latched=true,resume:()=>{}});
- return {control,task,calls,cleared,timers,clearSaved:()=>saved=null,setState:s=>state=s,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
+ return {control,task,calls,cleared,timers,seed:t=>saved=structuredClone(t),advance:ms=>clock+=ms,clearSaved:()=>saved=null,setState:s=>state=s,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
 }
 test('stop is latched at checkpoint but acknowledged only after run exits',async()=>{
  const h=harness();await h.control.enter(h.task);
@@ -71,6 +71,7 @@ test('an inactive blocked runner acknowledges STOP even after its checkpoint was
 
 test('a reloaded blocked checkpoint stays inactive and can confirm a pending STOP',async()=>{
  const h=harness();const t={...h.task,blockedAt:10000,blockState:'登录提示',phase:'detail',detailIndex:7};
+ h.seed(t);
  await h.control.watch(t);
  assert.equal(h.saved().detailIndex,7);assert.equal(h.saved().blockState,'登录提示');
  assert.equal(await h.control.checkpoint(),false,'watching must not start a runner');
