@@ -83,7 +83,10 @@
     const text = storage.getItem(`getjobs-last-scan:${platform}:${incoming.profileId}`);
     if (!text) throw new Error("没有可恢复的关键词记录");
     const previous = JSON.parse(text);
-    if (previous.keywordCursorKey !== incoming.keywordCursorKey || previous.runId !== incoming.runId) {
+    const keysMatch=root.GetJobsScanStartSupport?.keyMatches
+      ? root.GetJobsScanStartSupport.keyMatches(previous.keywordCursorKey,incoming.keywordCursorKey)
+      : previous.keywordCursorKey === incoming.keywordCursorKey;
+    if (!keysMatch || previous.runId !== incoming.runId) {
       throw new Error("搜索条件或任务已变化，请按当前条件开始新的扫描");
     }
     const indices = results(previous).filter(item => item.outcome === "partial").map(item => item.keywordIndex - 1);
@@ -93,6 +96,7 @@
       if (data) { data.elapsedMs = 0; data.activeDetailAt = 0; data.recoveryAttempts = 0; data.stopReason = ""; }
     }
     return { ...previous, ...Object.fromEntries(["pageTabId", "scanOwnerToken", "requestId"].map(key => [key, incoming[key]])),
+      keywordCursorKey: incoming.keywordCursorKey,
       currentIndex: indices[0], resumeIndices: indices,
       phase: Number(previous.currentIndex) === indices[0] && ["detail", "submitting"].includes(previous.phase) ? previous.phase : "collecting",
       searchPage: 1, pausedAt: null, lastError: null, startedAt: Date.now() };

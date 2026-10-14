@@ -1,6 +1,6 @@
 (function(root) {
   function create({platform,version,instanceId,current,readTask,saveTask,status,resume,setStopped,readStatus,clearTask}) {
-    let task=null, directive=null, timer=null, flight=null, active=false, offline=false, ack=null, waiting=false, stopped=false, lastSync=0, pauseAt=0, pausedTotal=0, checking=null;
+    let task=null, directive=null, timer=null, flight=null, active=false, offline=false, ack=null, waiting=false, stopped=false, lastSync=0, pauseAt=0, pausedTotal=0, checking=null, finishing=null;
     async function sync(force=false) {
       if(!task || !current()) return null;
       if(flight) {await flight;if(ack)return sync(true);return directive;}
@@ -52,13 +52,20 @@
       return true;
     }
     function check(){if(!checking)checking=checkpoint().finally(()=>{checking=null});return checking;}
-    async function finish(){
+    function finish(){
+        if(!finishing) finishing=finishInternal().finally(()=>{finishing=null;});
+        return finishing;
+    }
+    async function finishInternal(){
         active=false;
         if(stopped) {
-          if(current()) await clearTask?.();
+          let clearFailed=false;
+          try {if(current()) await clearTask?.(task);} catch {clearFailed=true;}
           const command=directive?.commands?.[0];
-          if(command?.kind==='STOP'){ack={id:command.id,ok:true};await sync();}
-          status({stage:'stopped',isRunning:false,stopRequested:true,message:'扫描已停止',runId:task?.runId});
+          if(command?.kind==='STOP'){ack={id:command.id,ok:!clearFailed,errorCode:clearFailed?'CHECKPOINT_CLEAR_FAILED':''};await sync();}
+          status({stage:clearFailed?'blocked':'stopped',isRunning:false,stopRequested:true,
+            paused:clearFailed,resumable:false,diagnosticType:clearFailed?'CHECKPOINT_CLEAR_FAILED':'',
+            message:clearFailed?'扫描执行已停止，但断点清理失败，请核对扫描记录':'扫描已停止',runId:task?.runId});
         }
         const state=readStatus();
         if((stopped && !ack) || (!stopped && ['complete','stopped','error'].includes(state?.stage))) {clearInterval(timer);task=null;}
@@ -78,6 +85,7 @@
           }
     }
     async function start(t, running) {
+        if(finishing) await finishing;
         if(t.scanProtocol!==1) {clearInterval(timer);task=null;active=false;stopped=false;return;}
         if(!task || task.runId!==t.runId || task.profileId!==t.profileId) {directive=null;offline=false;ack=null;lastSync=0;pauseAt=0;pausedTotal=0;}
         task=t;active=running;stopped=false;await saveTask(t);

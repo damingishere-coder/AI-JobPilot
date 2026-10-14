@@ -122,4 +122,19 @@ class ScanRunServiceTest {
         scans.command("boss",4,"r1","PAUSE","p");sync(1,List.of(),Map.of("id","p","ok",false,"errorCode","CHECKPOINT_SAVE_FAILED"));
         assertEquals("BLOCKED",detail().get("state"));assertTrue(detail().get("commands").toString().contains("CHECKPOINT_SAVE_FAILED"));
     }
+    @Test void unconfirmedStartRemainsBlockedUntilExplicitStopAndDoesNotClaimPageContact(){
+        var failed=event("start-failure",1,1,"BLOCKED");
+        failed.put("kind","startFailure");failed.put("stage","startFailed");failed.put("errorCode","SCAN_START_UNCONFIRMED");
+        scans.sync("boss",4,"r1",Map.of("epoch",1,"events",List.of(failed)));
+        assertEquals("BLOCKED",detail().get("state"));
+        assertEquals("PAUSED",detail().get("desired"));
+        assertEquals(false,detail().get("pageConnected"));
+        assertTrue(detail().get("errorMessage").toString().contains("交接结果未确认"));
+        assertThrows(ResponseStatusException.class,()->scans.register("boss",4,"r2"));
+        scans.command("boss",4,"r1","STOP","stop-unconfirmed");
+        scans.register("boss",4,"r2");
+        assertEquals("BLOCKED",detail().get("state"));
+        assertEquals("PENDING",db.queryForObject("SELECT status FROM scan_command WHERE id='stop-unconfirmed'",String.class));
+        assertEquals("STARTING",scans.detail("boss",4,"r2").get("state"));
+    }
 }

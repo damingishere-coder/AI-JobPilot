@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { scanCommand, scanUrl, type ScanPlatform } from '@/lib/scan-runs'
+import { scanCommand, scanUrl, scanIsTerminal, type ScanPlatform } from '@/lib/scan-runs'
 
 type Command = {id:string;kind:string;status:string;error_code:string}
 export type ScanHistoryRun = {platform?:ScanPlatform;profile_id?:number;created_at?:number;stop_reason?:string;errorMessage?:string;run_id:string;state:string;desired?:string;keyword?:string;stage?:string;accepted:number;error_code?:string;
@@ -8,15 +8,17 @@ export type ScanHistoryRun = {platform?:ScanPlatform;profile_id?:number;created_
   historyComplete:boolean;keywordReceipts?:{keyword:string;accepted:number}[];counters?:Record<string,number>;commands?:Command[];analysis?:{status:string;count:number}[]}
 type Event = {id:number;created_at:number;kind:string;payload:Record<string,unknown>}
 const states:Record<string,string>={STARTING:'正在启动',RUNNING:'扫描中',PAUSED:'已暂停',BLOCKED:'已阻塞',COMPLETE:'扫描完成',PARTIAL:'部分完成',FAILED:'失败',STOPPED:'已停止',LEGACY:'未记录完整过程'}
-const errors:Record<string,string>={BACKEND_UNAVAILABLE:'后端连接中断',LOG_QUEUE_FULL:'日志缓冲已满',SCAN_TAB_CLOSED:'扫描页面已关闭',FILTER_NOT_APPLIED:'官网筛选未生效',EXTENSION_RELOAD_REQUIRED:'扩展需要重新加载',START_FAILED:'启动结果未确认',SETUP_NOT_READY:'启动前检查未通过',CHECKPOINT_MISSING:'恢复断点不存在',UNRECOGNIZED_LAYOUT:'未识别岗位页面结构',SCAN_STORAGE_FAILED:'扩展本地记录保存失败'}
+const errors:Record<string,string>={BACKEND_UNAVAILABLE:'后端连接中断',LOG_QUEUE_FULL:'日志缓冲已满',SCAN_TAB_CLOSED:'扫描页面已关闭',FILTER_NOT_APPLIED:'官网筛选未生效',EXTENSION_RELOAD_REQUIRED:'扩展需要重新加载',START_FAILED:'启动结果未确认',SCAN_START_UNCONFIRMED:'启动回执未确认，请核实任务后停止，避免重复启动',BRIDGE_RESPONSE_TIMEOUT:'扩展启动回执超时，结果待核实',BRIDGE_EMPTY_RESPONSE:'扩展启动回执为空，结果待核实',CONTENT_SCRIPT_NOT_READY:'招聘页面脚本尚未就绪',SETUP_NOT_READY:'启动前检查未通过',CHECKPOINT_MISSING:'恢复断点不存在',CHECKPOINT_CLEAR_FAILED:'停止约束已保存，但扩展断点清理失败，请查看停止回执',UNRECOGNIZED_LAYOUT:'未识别岗位页面结构',SCAN_STORAGE_FAILED:'扩展本地记录保存失败',PAGE_HIDDEN:'扫描窗口被隐藏',CARD_NOT_READY:'岗位列表尚未就绪'}
 const time=(v?:number)=>v?new Date(v).toLocaleString():'尚未联系'
-export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPlatform;profileId?:number;onRuns?:(platform:ScanPlatform,profileId:number,runs:ScanHistoryRun[])=>void}) {
+export default function ScanHistory({platform,profileId,onRuns,requestedRunId=''}:{platform:ScanPlatform;profileId?:number;requestedRunId?:string;onRuns?:(platform:ScanPlatform,profileId:number,runs:ScanHistoryRun[])=>void}) {
   const [runs,setRuns]=useState<ScanHistoryRun[]>([]),[selected,setSelected]=useState(''),[events,setEvents]=useState<Event[]>([])
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[errorsOnly,setErrorsOnly]=useState(false)
   const cursor=useRef(0)
+  const scopeRef=useRef({platform,profileId});scopeRef.current={platform,profileId}
   const onRunsRef=useRef(onRuns);onRunsRef.current=onRuns
   const current=runs.find(r=>r.run_id===selected)||runs[0]
   useEffect(()=>{setSelected('');setRuns([]);setEvents([]);cursor.current=0},[platform,profileId])
+  useEffect(()=>{if(requestedRunId)setSelected(requestedRunId)},[requestedRunId,platform,profileId])
   useEffect(()=>{
     if(!profileId)return
     let stopped=false,timer:ReturnType<typeof setTimeout>
@@ -29,7 +31,7 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
       if(!stopped)timer=setTimeout(poll,document.hidden?15000:3000)
     }
     void poll();return()=>{stopped=true;clearTimeout(timer)}
-  },[platform,profileId])
+  },[platform,profileId,requestedRunId])
   const runId=current?.run_id,managed=current?.historyComplete
   useEffect(()=>{
     setEvents([]);cursor.current=0
@@ -49,8 +51,8 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
   async function control(kind:'PAUSE'|'RESUME'|'STOP') {
     if(!profileId||!current)return
     setBusy(true);setError('')
-    try{const updated=await scanCommand(platform,profileId,current.run_id,kind);setRuns(prev=>prev.map(r=>r.run_id===current.run_id?updated:r))}
-    catch(e){setError(e instanceof Error?e.message:'指令提交失败')}
+    try{const updated=await scanCommand(platform,profileId,current.run_id,kind);if(scopeRef.current.platform!==platform||scopeRef.current.profileId!==profileId)return;const next=runs.map(r=>r.run_id===current.run_id?updated:r);setRuns(next);onRunsRef.current?.(platform,profileId,next)}
+    catch(e){if(scopeRef.current.platform===platform&&scopeRef.current.profileId===profileId)setError(e instanceof Error?e.message:'指令提交失败')}
     finally{setBusy(false)}
   }
   async function exportDiagnostics(){
@@ -63,7 +65,8 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
     }catch(e){setError(e instanceof Error?e.message:'导出失败')}
   }
   const keywordResults=([...events].reverse().find(e=>Array.isArray(e.payload.keywordResults))?.payload.keywordResults||[]) as {keyword:string;duplicates:number;detailFailures:number;stopReason:string}[]
-  const terminal=current&&['COMPLETE','PARTIAL','FAILED','STOPPED'].includes(current.state)
+  const terminal=current&&scanIsTerminal(current.state)
+  const startUnconfirmed=current&&['START_FAILED','SCAN_START_UNCONFIRMED','BRIDGE_RESPONSE_TIMEOUT','BRIDGE_EMPTY_RESPONSE'].includes(current.error_code||'')
   return <section className="rounded-xl border p-4 space-y-3" aria-label="扫描记录">
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">扫描记录</h2>
       <select aria-label="选择扫描记录" value={current?.run_id||''} onChange={e=>setSelected(e.target.value)} className="max-w-full rounded border bg-background p-2">
@@ -74,6 +77,7 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
       <p><strong>{states[current.state]||current.state}</strong> · 新增入队 <strong>{current.accepted}</strong> 个</p>
       {current.historyComplete?<>
         {!terminal&&!current.pageConnected&&<p className="text-amber-700">状态待核实：扫描页未联系，以上为最后已知状态。</p>}
+        {!terminal&&current.desired==='STOPPED'&&<p className="text-amber-700">停止约束已保存，后端不再接收本轮采集提交；扩展退出确认仍待回执。可以新建扫描，历史待确认状态保留。</p>}
         <p className="text-sm">开始时间：{time(current.created_at)} · 关键词：{current.keyword||'尚未开始'} · 阶段：{current.stage} · 最后联系：{time(current.page_seen_at)}</p>
         <p className="text-sm">{current.backgroundConnected?'扩展后台在线':'扩展后台未联系'} · 扩展 {current.extension_version||'未报告'} / 页面脚本 {current.content_version||'未报告'}</p>
         {current.error_code&&<p className="text-red-700">{errors[current.error_code]||current.errorMessage||current.error_code}（{current.error_code}）</p>}
@@ -81,7 +85,7 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
         {(!current.extension_version||!current.content_version)&&<p className="text-sm text-amber-700">尚未确认新扫描协议，请重新加载 1.8.16 或更新版本的扩展与招聘页面。</p>}
         <div className="flex flex-wrap gap-2">
           <button className="rounded border px-3 py-1 disabled:opacity-50" disabled={busy||terminal||current.desired==='STOPPED'} onClick={()=>control('PAUSE')}>暂停</button>
-          <button className="rounded border px-3 py-1 disabled:opacity-50" disabled={busy||!current.pageConnected||!['PAUSED','BLOCKED'].includes(current.state)||current.desired==='STOPPED'} onClick={()=>control('RESUME')}>继续</button>
+          <button className="rounded border px-3 py-1 disabled:opacity-50" disabled={busy||startUnconfirmed||!current.pageConnected||!['PAUSED','BLOCKED'].includes(current.state)||current.desired==='STOPPED'} onClick={()=>control('RESUME')}>继续</button>
           <button className="rounded border px-3 py-1 disabled:opacity-50" disabled={busy||terminal||current.desired==='STOPPED'} onClick={()=>control('STOP')}>停止本轮</button>
           <button className="rounded border px-3 py-1" onClick={exportDiagnostics}>导出诊断</button>
           <button className="rounded border px-3 py-1" onClick={()=>navigator.clipboard.writeText(`${platform} ${current.run_id}；${states[current.state]}；新增入队 ${current.accepted}；${current.error_code||'无已记录错误'}；最后联系 ${time(current.page_seen_at)}`).catch(()=>setError('复制失败，请使用导出诊断'))}>复制摘要</button>
@@ -93,7 +97,7 @@ export default function ScanHistory({platform,profileId,onRuns}:{platform:ScanPl
           {current.keywordReceipts?.map(k=><p key={k.keyword}>{k.keyword}：新增入队 {k.accepted} 个</p>)}
           {keywordResults.map(k=><p key={k.keyword}>{k.keyword}：跳过重复 {k.duplicates}，详情失败 {k.detailFailures}，结束原因 {k.stopReason||'仍在进行'}</p>)}
           <label><input type="checkbox" checked={errorsOnly} onChange={e=>setErrorsOnly(e.target.checked)}/> 只看错误</label>
-          <ol className="max-h-80 overflow-auto text-sm space-y-1">{events.filter(e=>!errorsOnly||e.kind==='error'||e.kind==='startFailure').map(e=><li key={e.id}>{time(Number(e.payload.observedAt)||e.created_at)} · {String(e.payload.keyword||'')} · {String(e.payload.stage||e.kind)} {String(e.payload.errorCode||'')}</li>)}</ol>
+          <ol className="max-h-80 overflow-auto text-sm space-y-1">{events.filter(e=>!errorsOnly||e.kind==='error'||e.kind==='startFailure').map(e=><li key={e.id}>{time(Number(e.payload.observedAt)||e.created_at)} · {String(e.payload.keyword||'')} · {String(e.payload.stage||e.kind)} {String(e.payload.errorCode||'')} {String(e.payload.message||'')}</li>)}</ol>
         </details>
       </>:<p className="text-sm text-muted-foreground">历史任务未记录完整过程，仅展示已核实的入库回执。</p>}
     </>}

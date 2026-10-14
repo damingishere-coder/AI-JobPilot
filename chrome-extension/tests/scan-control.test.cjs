@@ -1,8 +1,8 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
 const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-function harness({failSave=false,failFirstStopAck=false}={}){
+function harness({failSave=false,failFirstStopAck=false,failClear=false}={}){
  let clock=10000,saved=null,state={stage:'collecting'},reply={success:true,desired:'RUNNING',commands:[]},live=true,latched=false;
- const calls=[],timers=new Set();let onSleep=()=>{},held=null;
+ const calls=[],cleared=[],timers=new Set();let onSleep=()=>{},held=null;
  const context=vm.createContext({Date:{now:()=>clock},console,
    setInterval:fn=>{timers.add(fn);return fn},clearInterval:fn=>timers.delete(fn),
    setTimeout:fn=>{clock+=2500;onSleep();return setImmediate(fn)},
@@ -11,8 +11,9 @@ function harness({failSave=false,failFirstStopAck=false}={}){
  const task={runId:'run',profileId:4,scanProtocol:1,scanOwnerToken:'owner',config:{keywords:['test']},updatedAt:clock};
  const control=context.GetJobsScanControl.create({platform:'boss',version:'1.8.16',instanceId:'10000-a',current:()=>live,
    readTask:()=>saved,saveTask:async t=>{if(failSave && t.pausedAt)throw new Error('storage unavailable');saved={...t,updatedAt:clock}},status:s=>state={...state,...s},readStatus:()=>state,
+   clearTask:async target=>{cleared.push(target);if(failClear)throw new Error('remove failed');saved=null;},
    setStopped:()=>latched=true,resume:()=>{}});
- return {control,task,calls,timers,clearSaved:()=>saved=null,setState:s=>state=s,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
+ return {control,task,calls,cleared,timers,clearSaved:()=>saved=null,setState:s=>state=s,holdNext:()=>{let release;held=new Promise(resolve=>release=resolve);return ()=>release()},setReply:r=>{reply=r;clock+=2500},onSleep:fn=>onSleep=fn,latched:()=>latched,saved:()=>saved,state:()=>state,close:()=>live=false};
 }
 test('stop is latched at checkpoint but acknowledged only after run exits',async()=>{
  const h=harness();await h.control.enter(h.task);
@@ -76,4 +77,22 @@ test('a reloaded blocked checkpoint stays inactive and can confirm a pending STO
  h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});
  await [...h.timers][0]();
  assert.ok(h.calls.some(c=>c.ack?.id==='stop'));assert.equal(h.timers.size,0);
+});
+test('STOP clears only its captured task identity before acknowledging',async()=>{
+ const h=harness();await h.control.enter(h.task);
+ h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});
+ await h.control.checkpoint();await h.control.leave();
+ assert.equal(h.cleared.length,1);assert.equal(h.cleared[0].runId,h.task.runId);
+ assert.equal(h.cleared[0].scanOwnerToken,h.task.scanOwnerToken);
+});
+test('failed STOP cleanup records a failed ack and keeps stop fencing',async()=>{
+ const h=harness({failClear:true});await h.control.enter(h.task);
+ h.setReply({success:true,desired:'STOPPED',commands:[{id:'stop',kind:'STOP'}]});
+ await h.control.checkpoint();await h.control.leave();
+ const stop=h.calls.filter(c=>c.ack?.id==='stop');
+ assert.equal(stop.length,1);assert.equal(stop[0].ack.ok,false);
+ assert.equal(stop[0].ack.errorCode,'CHECKPOINT_CLEAR_FAILED');
+ assert.equal(h.latched(),true);assert.ok(h.saved());
+ assert.equal(h.state().isRunning,false);assert.equal(h.state().stopRequested,true);
+ assert.equal(h.state().diagnosticType,'CHECKPOINT_CLEAR_FAILED');
 });

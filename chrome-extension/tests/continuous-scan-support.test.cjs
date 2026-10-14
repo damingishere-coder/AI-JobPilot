@@ -69,6 +69,20 @@ test('resume retains unsent details and prior credits, restarting only unfinishe
   assert.equal(resumed.continuousScan.keywords.pending.elapsedMs,0);
   assert.throws(() => scan.restore(storage,'boss',{profileId:4,runId:'new',keywordCursorKey:'filters'}),/条件或任务已变化/);
 });
+test('legacy raw configuration archives resume with hashed keys without replacing history',()=>{
+  const support=require('../scan-start-support.js');
+  const storage=new Map();storage.setItem=storage.set.bind(storage);storage.getItem=storage.get.bind(storage);
+  const oldKey=JSON.stringify({salary:['10001,15000'],keywords:['done','pending']});
+  const previous={profileId:4,runId:'r',keywordCursorKey:oldKey,keywords:['done','pending'],config:{searchJobLimit:1},
+    currentIndex:1,phase:'submitting',jobs:[{id:'pending'}],continuousScan:{credited:{first:'done'},receipts:{},
+      keywords:{done:{stopReason:'target_reached'},pending:{stopReason:'stopped'}}}};
+  scan.archive(storage,'boss',previous);const archived=storage.getItem('getjobs-last-scan:boss:4');
+  const resumed=scan.restore(storage,'boss',{profileId:4,runId:'r',keywordCursorKey:support.fingerprint(oldKey)});
+  assert.equal(resumed.currentIndex,1);assert.equal(resumed.phase,'submitting');
+  assert.equal(resumed.continuousScan.credited.first,'done');assert.deepEqual(resumed.jobs,[{id:'pending'}]);
+  assert.equal(resumed.keywordCursorKey,support.fingerprint(oldKey));
+  assert.equal(storage.getItem('getjobs-last-scan:boss:4'),archived);
+});
 test('detail budget includes navigation but excludes queue waiting and human pause', () => {
   const task = {keywords:['kw'],currentIndex:0,phase:'detail',continuousScan:{keywords:{kw:{elapsedMs:0}}}};
   scan.accountDetailTime(task,100); scan.accountDetailTime(task,600);

@@ -6,7 +6,7 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../zhilian-content.js'), 'utf8');
 function harness(respond) {
   const calls = [], stored = [], logs = [], listeners = [];
-  const window = {};
+  const window = { GetJobsScanStartSupport: require('../scan-start-support.js') };
   const hooks = { request: async (op, args) => { calls.push(args.body.jobs.map(j => j.id)); return respond(calls.length, args.body.jobs); },
     store: async task => stored.push(JSON.parse(JSON.stringify(task))), log: (...args) => logs.push(args),
     pause: async (message, jobs, totalSaved, error) => ({paused:true, message:error.message, receipts:message.submissionReceipts}) };

@@ -1,7 +1,7 @@
 'use client'
 
 import ScanHistory, { type ScanHistoryRun } from '@/app/components/ScanHistory'
-import { registerScan, scanStartFailed, scanCommand } from '@/lib/scan-runs'
+import { registerScan, scanStartFailed, scanCommand, ScanRequestError, readScanRuns, scanIsTerminal, scanHasUnconfirmedStart, verifyScanStart, scanStartIsUnconfirmed, scanFailureMessage } from '@/lib/scan-runs'
 
 import ScanResult, { readScanResult } from '@/app/zhilian/ScanResult'
 import { useScanResult } from '@/lib/use-scan-result'
@@ -245,6 +245,10 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
   const [isScanPaused, setIsScanPaused] = useState(false)
+  const [startUnconfirmed, setStartUnconfirmed] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  const startingRef = useRef(false)
+  const [requestedHistoryRunId, setRequestedHistoryRunId] = useState('')
   const [analysisRefreshSignal, setAnalysisRefreshSignal] = useState(0)
   const [analysisFocusRunId, setAnalysisFocusRunId] = useState('')
   const [searchJobLimitMode, setSearchJobLimitMode] = useState<'preset' | 'custom'>('preset')
@@ -254,13 +258,15 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   const scanIdentityRef = useRef({ profileId: currentProfile?.id, runId: activeRunId })
   scanIdentityRef.current = { profileId: currentProfile?.id, runId: activeRunId }
   const endedRunsRef = useRef(new Set<string>())
+  const unconfirmedRunsRef = useRef(new Set<string>())
   const backendRunRef = useRef<ScanHistoryRun | null>(null)
   const stoppingRunRef = useRef<string | null>(null)
+  useEffect(() => {backendRunRef.current=null;setRequestedHistoryRunId('');setStartUnconfirmed(false)},[currentProfile?.id])
   const acceptBackendRuns = useCallback((platform: 'boss' | 'zhilian', profileId: number, runs: ScanHistoryRun[]) => {
     if (platform !== 'boss' || scanIdentityRef.current.profileId !== profileId) return
     for (const run of runs) {
       if (run.platform === platform && run.profile_id === profileId && run.historyComplete
-          && ['COMPLETE', 'PARTIAL', 'FAILED', 'STOPPED'].includes(run.state)) {
+          && (scanIsTerminal(run.state) || run.desired === 'STOPPED')) {
         endedRunsRef.current.add(`${profileId}:${run.run_id}`)
       }
     }
@@ -275,13 +281,19 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       setIsDelivering(false)
       setIsStopping(false)
       setIsScanPaused(false)
+      setStartUnconfirmed(false)
       setActiveRunId(null)
     } else if (current) {
-      const stopping = current.desired === 'STOPPED' || stoppingRunRef.current === current.run_id
+      const unknownKey = `${profileId}:${current.run_id}`
+      const unknown = scanHasUnconfirmedStart(current.error_code) || (unconfirmedRunsRef.current.has(unknownKey) && current.state === 'STARTING')
+      if (unknown) unconfirmedRunsRef.current.add(unknownKey)
+      else unconfirmedRunsRef.current.delete(unknownKey)
+      const stopping = stoppingRunRef.current === current.run_id
       stoppingRunRef.current = stopping ? current.run_id : null
       setIsStopping(stopping)
-      setIsDelivering(stopping || ['STARTING', 'RUNNING'].includes(current.state))
-      setIsScanPaused(['PAUSED', 'BLOCKED'].includes(current.state))
+      setIsDelivering(!unknown && (stopping || ['STARTING', 'RUNNING'].includes(current.state)))
+      setStartUnconfirmed(unknown)
+      setIsScanPaused(['PAUSED', 'BLOCKED'].includes(current.state) && !unknown)
       setActiveRunId(current.run_id)
     }
   }, [])
@@ -365,6 +377,19 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       }
       if (!scanEventMatchesProfile(status, profileId, true)) return
       if (activeId && runId && activeId !== runId) return
+      const backend = backendRunRef.current
+      if (status.startUnconfirmed === true || scanHasUnconfirmedStart(status.errorCode)) {
+        if (!runId || (backend?.profile_id === profileId && backend.run_id !== runId)) return
+        unconfirmedRunsRef.current.add(`${profileId}:${runId}`)
+        setStartUnconfirmed(true);setIsDelivering(false);setIsStopping(false);setIsScanPaused(false)
+        setActiveRunId(runId);setRequestedHistoryRunId(runId)
+        if (!silent) appendProgressLog({type:'warning',message:String(status.message || '本轮启动结果仍待核实，请查看扫描记录后停止该轮，避免重复启动。')})
+        return
+      }
+      if (observedId && unconfirmedRunsRef.current.has(`${profileId}:${observedId}`)) {
+        if (!verifyScanStart(status,observedId,profileId).success) return
+        unconfirmedRunsRef.current.delete(`${profileId}:${observedId}`);setStartUnconfirmed(false)
+      }
       const result = readScanResult(status)
       if (result) setScanResult(result)
       if (status.success && runId && ['complete', 'stopped', 'error'].includes(String(status.stage))) {
@@ -376,7 +401,6 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         setActiveRunId(null)
         return
       }
-      const backend = backendRunRef.current
       if (stoppingRunRef.current === observedId || (backend?.profile_id === profileId && backend.run_id === observedId
           && (backend.desired === 'STOPPED' || ['PAUSED', 'BLOCKED'].includes(backend.state)))) return
       const paused = Boolean(status.paused || (status.stage === 'blocked' && status.resumable))
@@ -396,6 +420,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       }
       const running = Boolean(status.isRunning)
       if (running) {
+        if (observedId && unconfirmedRunsRef.current.has(`${profileId}:${observedId}`)) return
         setIsDelivering(true)
         setIsStopping(false)
         setIsScanPaused(false)
@@ -548,6 +573,8 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
               const eventRunId = typeof data.runId === 'string' ? data.runId.trim() : ''
               if (eventRunId && (endedRunsRef.current.has(`${currentProfile?.id}:${eventRunId}`)
                   || (scanIdentityRef.current.runId && scanIdentityRef.current.runId !== eventRunId))) return
+              const backend = backendRunRef.current
+              if (backend && backend.profile_id === currentProfile?.id && backend.run_id === eventRunId && ['PAUSED','BLOCKED'].includes(backend.state)) return
               const result = readScanResult(data)
               if (result) setScanResult(result)
               appendProgressLog({
@@ -590,6 +617,8 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       const eventRunId = typeof payload.runId === 'string' ? payload.runId.trim() : ''
       if (eventRunId && (endedRunsRef.current.has(`${currentProfile?.id}:${eventRunId}`)
           || (scanIdentityRef.current.runId && scanIdentityRef.current.runId !== eventRunId))) return
+      const backend = backendRunRef.current
+      if (backend && backend.profile_id === currentProfile?.id && backend.run_id === eventRunId && ['PAUSED','BLOCKED'].includes(backend.state)) return
       const result = readScanResult(payload)
       if (result) setScanResult(result)
 
@@ -978,10 +1007,18 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
   }
 
   const handleStartDelivery = async (resumeIncomplete = false) => {
+    if (startingRef.current || isDelivering) return
+    startingRef.current = true
+    setIsStarting(true)
     let registeredRun = ''
     let registeredProfile = 0
     let dispatchAttempted = false
     try {
+      if (startUnconfirmed) {
+        appendProgressLog({ type: 'warning', message: '上一轮启动结果待核实，请先在扫描记录中核实并停止该轮，避免重复采集。' })
+        setRequestedHistoryRunId(activeRunId || '')
+        return
+      }
       if (!hasProfile) {
         appendProgressLog({ type: 'error', message: '请先在简历配置页新建档案。' })
         alert('请先在简历配置页新建档案。')
@@ -1010,9 +1047,14 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         return
       }
       const runId = `boss-${Date.now()}`
+      registeredProfile = profileId
       await registerScan('boss',profileId,runId)
       registeredRun = runId; registeredProfile = profileId
       const setup = await validateSetupForPlatform('boss', { requirePlatformLogin: false })
+      if (scanIdentityRef.current.profileId !== profileId) {
+        await scanStartFailed('boss',profileId,runId,'PROFILE_CHANGED',false,'档案已切换，本轮尚未发送到扩展。')
+        return
+      }
       if (!setup.ready) {
         await scanStartFailed('boss',profileId,runId,'SETUP_NOT_READY')
         const message = formatSetupMissingMessage('Boss', setup.missing)
@@ -1023,13 +1065,15 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       setIsDelivering(true)
       setIsStopping(false)
       setIsScanPaused(false)
+      setStartUnconfirmed(false)
+      setRequestedHistoryRunId('')
 
       scanIdentityRef.current = { profileId, runId }
       setActiveRunId(runId)
       appendProgressLog({ type: 'info', message: '已发送 Boss Chrome扫描请求：扫描会持续采集，AI 在后台分析，结果稍后进入待确认列表。' })
       const searchJobLimit = commitSearchJobLimit()
       dispatchAttempted = true
-      const data = await sendChromeBridgeMessage({
+      const response = await sendChromeBridgeMessage({
         type: 'BOSS_SCAN_START',
         scanProtocol: 1,
         resumeIncomplete,
@@ -1051,29 +1095,63 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         },
         autoDeliver: 0,
       })
+      const data = verifyScanStart(response, runId, profileId)
 
       if (data.success) {
+        if (scanIdentityRef.current.profileId !== profileId) return
+        unconfirmedRunsRef.current.delete(`${profileId}:${runId}`)
+        const ended = ['complete','stopped','error'].includes(String(data.stage)) || endedRunsRef.current.has(`${profileId}:${runId}`)
+        if (ended) {
+          endedRunsRef.current.add(`${profileId}:${runId}`)
+          setIsDelivering(false);setIsStopping(false);setIsScanPaused(false);setStartUnconfirmed(false);setActiveRunId(null)
+        } else if (data.paused === true || data.stage === 'blocked') { setIsDelivering(false); setIsScanPaused(true) }
         setHasScanResult(false)
         onWorkspaceScopeChange?.(typeof data.runId === 'string' && data.runId.trim() ? data.runId.trim() : runId, profileId, 'task')
-        if (typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
+        if (!ended && typeof data.runId === 'string' && data.runId.trim()) setActiveRunId(data.runId.trim())
         appendProgressLog({ type: 'info', message: data.message || 'Boss Chrome扫描任务已启动，等待Chrome页面采集岗位。' })
       } else {
-        await scanStartFailed('boss',profileId,runId,String(data.errorCode || 'START_FAILED'))
+        const unknown = scanStartIsUnconfirmed(data)
+        if (unknown) unconfirmedRunsRef.current.add(`${profileId}:${runId}`)
+        await scanStartFailed('boss',profileId,runId,String(data.errorCode || 'SCAN_START_UNCONFIRMED'),unknown,data.message || '')
+        if (scanIdentityRef.current.profileId !== profileId) return
         console.warn('启动失败：', data.message)
-        appendProgressLog({ type: 'error', message: data.message || 'Boss扫描启动失败。' })
+        appendProgressLog({ type: 'error', message: scanFailureMessage(data, 'Boss') })
         setIsDelivering(false)
         setIsStopping(false)
         setIsScanPaused(false)
-        setActiveRunId(null)
+        setStartUnconfirmed(unknown)
+        setRequestedHistoryRunId(runId)
+        setActiveRunId(unknown ? runId : null)
       }
     } catch (error) {
-      if(registeredRun) await scanStartFailed('boss',registeredProfile,registeredRun,dispatchAttempted?'START_FAILED':'SETUP_NOT_READY').catch(()=>{})
+      const message = error instanceof Error ? error.message : String(error)
+      if(registeredRun) await scanStartFailed('boss',registeredProfile,registeredRun,dispatchAttempted?'SCAN_START_UNCONFIRMED':'SETUP_NOT_READY',dispatchAttempted,message).catch(()=>{})
+      if (registeredProfile && scanIdentityRef.current.profileId !== registeredProfile) return
       console.error('Failed to start delivery:', error)
-      appendProgressLog({ type: 'error', message: 'Boss扫描启动失败：网络或服务异常。' })
+      appendProgressLog({ type: 'error', message: `Boss扫描启动${dispatchAttempted ? '结果待核实' : '失败'}：${message}` })
       setIsDelivering(false)
       setIsStopping(false)
       setIsScanPaused(false)
-      setActiveRunId(null)
+      setStartUnconfirmed(dispatchAttempted)
+      if (dispatchAttempted && registeredRun) unconfirmedRunsRef.current.add(`${registeredProfile}:${registeredRun}`)
+      setActiveRunId(dispatchAttempted ? registeredRun : null)
+      if (registeredRun) setRequestedHistoryRunId(registeredRun)
+      if (error instanceof ScanRequestError && error.code === 'PLATFORM_SCAN_ALREADY_ACTIVE' && registeredProfile) {
+        try {
+          const runs = await readScanRuns<ScanHistoryRun>('boss', registeredProfile)
+          const blocking = runs.find(run => run.platform === 'boss' && run.profile_id === registeredProfile && run.historyComplete && run.desired !== 'STOPPED' && !scanIsTerminal(run.state))
+          if (scanIdentityRef.current.profileId !== registeredProfile) return
+          if (blocking) {
+            scanIdentityRef.current = { profileId: registeredProfile, runId: blocking.run_id }
+            setRequestedHistoryRunId(blocking.run_id)
+            acceptBackendRuns('boss',registeredProfile,runs)
+            appendProgressLog({type:'warning',message:`已定位当前档案的扫描 ${blocking.run_id}，请在下方扫描记录中停止或继续该轮。`})
+          } else appendProgressLog({type:'warning',message:'当前档案没有可核实的占用任务，可能由其他档案占用。请切换到对应档案查看，不会控制其他任务。'})
+        } catch (lookupError) { appendProgressLog({type:'error',message:`无法定位占用任务：${lookupError instanceof Error ? lookupError.message : String(lookupError)}`}) }
+      }
+    } finally {
+      startingRef.current = false
+      setIsStarting(false)
     }
   }
 
@@ -1337,7 +1415,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 
   return (
     <div className="space-y-6">
-      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="boss" profileId={currentProfile?.id} onRuns={acceptBackendRuns} /></div></details>
+      <details open={Boolean(requestedHistoryRunId)} className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="boss" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} /></div></details>
       {!workspaceView && <WorkspaceEntryLink platform="boss" view="setup" />}
       {activeStep !== 'confirm' && <PageHeader
         headingLevel={workspaceView ? 2 : 1}
@@ -1389,8 +1467,8 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 	                <BiStop className="mr-1" /> {isStopping ? '停止中...' : '停止扫描'}
 	              </Button>
 	            ) : (
-              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
-	                <BiPlay className="mr-1" /> {isScanPaused ? '继续扫描' : '开始扫描'}
+              <Button onClick={() => { void handleStartDelivery() }} size="sm" disabled={isStarting || startUnconfirmed || !hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-success px-4">
+	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : startUnconfirmed ? '启动待核实' : isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
             <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
@@ -1827,7 +1905,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
                 <summary className="cursor-pointer py-2 text-muted-foreground">查看关键词采集明细</summary>
                 <ScanResult result={isScanPaused && scanResult.runId === activeRunId ? { ...scanResult, outcome: 'paused' } : scanResult} busy={isDelivering} />
               </details>
-              {!isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
+              {!isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting || startUnconfirmed || backendRunRef.current?.desired === 'STOPPED'} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
             </> : null}
           />
 

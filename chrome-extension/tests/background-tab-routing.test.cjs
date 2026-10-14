@@ -191,6 +191,10 @@ function loadBackground({
         if (message.type === "BOSS_SCAN_STATUS" || message.type === "ZHILIAN_SCAN_STATUS_V2") {
           return statuses[tabId] || { success: true, isRunning: false, hasStoredTask: false, stage: "idle" };
         }
+        if (message.type === "BOSS_SCAN_START" || message.type === "ZHILIAN_SCAN_START_V2") {
+          return {success:true,startAccepted:true,runId:message.runId,profileId:message.profileId,
+            scanOwnerToken:message.scanOwnerToken};
+        }
         if (message.type === "BOSS_PAGE_STATUS") return statuses[tabId]?.hasLoginPrompt ? statuses[tabId] : { success: true, chromePageReady: true, isLoggedIn: true };
         if (message.type === "ZHILIAN_PAGE_STATUS") return statuses[tabId] || { success: true, chromePageReady: false };
         if (message.type === "BOSS_DELIVER_CURRENT_V2") {
@@ -233,6 +237,7 @@ function loadBackground({
     scripting: {
       async executeScript(options) {
         executedScripts.push(options);
+        if(options.func && options.world!=="MAIN") return [];
         if (options.world === "MAIN") {
           return [{
             result: {
@@ -477,6 +482,8 @@ test("injects all Zhilian dependencies when the content script is missing", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "vendor/js-sha256.js",
+    "scan-start-support.js",
     "scan-control.js",
     "continuous-scan-support.js",
     "zhilian-filters.js",
@@ -527,6 +534,8 @@ test("reinjects all Zhilian dependencies when the content script is stale", asyn
 
   assert.equal(executedScripts.length, 1);
   assert.deepEqual(Array.from(executedScripts[0].files), [
+    "vendor/js-sha256.js",
+    "scan-start-support.js",
     "scan-control.js",
     "continuous-scan-support.js",
     "zhilian-filters.js",
@@ -855,6 +864,76 @@ function startScan(context, platform) {
     runId: `${platform}-run`, config: { keywords: '["AI产品运营"]' } },
   { tab: { id: 10, url: "http://127.0.0.1:6866/zhilian" } });
 }
+
+for(const platform of ['boss','zhilian']) {
+  function fixture() {return loadBackground({tabs:[{id:1,windowId:1,
+    url:platform==='boss'?'https://www.zhipin.com/web/geek/jobs?_security_check=passed':'https://www.zhaopin.com/',status:'complete'}]});}
+  test(`${platform}: no receiver prepares the original tab and retries only once`,async()=>{
+    const h=fixture(),original=h.context.chrome.tabs.sendMessage;let starts=0;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>{
+      if(message.type.includes('SCAN_START') && ++starts===1)throw new Error('Could not establish connection. Receiving end does not exist.');
+      return original(id,message);
+    };
+    const result=await startScan(h.context,platform);
+    assert.equal(result.startAccepted,true);assert.equal(starts,2);
+    assert.equal(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__[platform].tabId,1);
+    assert.equal(h.tabList.length,1);
+  });
+  test(`${platform}: repeated no receiver ends as not dispatched`,async()=>{
+    const h=fixture(),original=h.context.chrome.tabs.sendMessage;let starts=0;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>{
+      if(message.type.includes('SCAN_START')){starts++;throw new Error('Receiving end does not exist');}
+      return original(id,message);
+    };
+    const result=await startScan(h.context,platform);
+    assert.equal(starts,2);assert.equal(result.success,false);assert.equal(result.startNotDispatched,true);
+    assert.equal(result.errorCode,'CONTENT_SCRIPT_NOT_READY');
+  });
+  test(`${platform}: a lost port queries the exact accepted run without another start`,async()=>{
+    const h=fixture(),original=h.context.chrome.tabs.sendMessage;let starts=0,request;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>{
+      if(message.type.includes('SCAN_START')){starts++;request=message;throw new Error('The message port closed before a response was received.');}
+      if(message.reconcileStart) return {success:true,startAccepted:true,runId:request.runId,
+        profileId:request.profileId,scanOwnerToken:request.scanOwnerToken,isRunning:true,stage:'received'};
+      return original(id,message);
+    };
+    const result=await startScan(h.context,platform);
+    assert.equal(result.reconciled,true);assert.equal(starts,1);
+  });
+  test(`${platform}: empty response and a registered navigating fallback remain unknown`,async()=>{
+    const h=fixture(),original=h.context.chrome.tabs.sendMessage;let starts=0;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>{
+      if(message.type.includes('SCAN_START')){starts++;return undefined;}
+      if(message.reconcileStart) return h.context.buildRegisteredNavigationStatus(platform,id);
+      return original(id,message);
+    };
+    const result=await startScan(h.context,platform);
+    assert.equal(result.success,false);assert.equal(result.errorCode,'SCAN_START_UNCONFIRMED');assert.equal(starts,1);
+    assert.ok(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__[platform]);
+  });
+  test(`${platform}: a foreign owner cannot turn a lost reply into success`,async()=>{
+    const h=fixture(),original=h.context.chrome.tabs.sendMessage;let starts=0,request;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>{
+      if(message.type.includes('SCAN_START')){starts++;request=message;return {success:true};}
+      if(message.reconcileStart)return {...request,success:true,startAccepted:true,scanOwnerToken:'foreign'};
+      return original(id,message);
+    };
+    const result=await startScan(h.context,platform);
+    assert.equal(result.errorCode,'SCAN_START_UNCONFIRMED');assert.equal(starts,1);
+  });
+}
+
+test('a BOSS redirect to HR during one allowed reprepare never receives another start',async()=>{
+  const h=loadBackground({tabs:[{id:1,windowId:1,url:'https://www.zhipin.com/web/geek/jobs',status:'complete'}]});
+  const original=h.context.chrome.tabs.sendMessage;let starts=0;
+  h.context.chrome.tabs.sendMessage=async(id,message)=>{
+    if(message.type==='BOSS_SCAN_START'){starts++;h.tabList[0].url='https://www.zhipin.com/web/geek/chat';throw new Error('Receiving end does not exist');}
+    return original(id,message);
+  };
+  const result=await startScan(h.context,'boss');
+  assert.equal(result.errorCode,'HR_CHAT_PROTECTED');assert.equal(starts,1);
+  assert.equal(h.tabList[0].url,'https://www.zhipin.com/web/geek/chat');
+});
 
 test("Boss start opens a jobs tab when only HR chats are available", async () => {
   const chatUrl = "https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1";
@@ -1200,7 +1279,6 @@ test("uses a separate Boss tab for delivery while scanning", async () => {
     }
   });
   await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
-
   const deliveryTab = await context.findDeliveryPlatformTab("boss", "https://www.zhipin.com/job_detail/demo.html");
 
   assert.equal(deliveryTab.id, 3);
@@ -1345,6 +1423,10 @@ test("reports navigation as running while the registered scan content script rel
   });
   await context.registerScanSession("boss", 1, "boss-run", 10, "", 4);
 
+  await context.mutateScanSessions(sessions=>{
+    sessions.boss.startAcceptance="ACCEPTED";
+    sessions.boss.lastScanState={isRunning:true,resumable:true,paused:false,stage:"received"};
+  });
   const status = await context.buildRegisteredNavigationStatus("boss", 1);
 
   assert.equal(status.isRunning, true);
@@ -1353,6 +1435,39 @@ test("reports navigation as running while the registered scan content script rel
   assert.equal(status.runId, "boss-run");
   assert.equal(status.profileId, 4);
 });
+
+for(const platform of ['boss','zhilian']) {
+  test(`${platform}: owner rotation cannot inherit a prior start acceptance`,async()=>{
+    const h=loadBackground({tabs:[{id:1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/jobs':'https://www.zhaopin.com/',status:'complete'}]});
+    assert.equal((await startScan(h.context,platform)).startAccepted,true);
+    const before=h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__[platform];
+    assert.equal(before.startAcceptance,'ACCEPTED');
+    const rotated=await h.context.registerScanSession(platform,1,before.runId,10,'rotated-owner',4);
+    assert.equal(rotated.ownerToken,'rotated-owner');assert.equal(rotated.startAcceptance,'PENDING');
+    assert.equal(rotated.lastScanState,undefined);
+    const status=await h.context.buildRegisteredNavigationStatus(platform,1);
+    assert.equal(status.startUnconfirmed,true);assert.equal(status.isRunning,false);
+  });
+  test(`${platform}: a merely registered start cannot claim a running navigation`,async()=>{
+    const h=loadBackground({tabs:[{id:1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/jobs':'https://www.zhaopin.com/',status:'loading'}]});
+    await h.context.registerScanSession(platform,1,`${platform}-pending`,10,'owner',4);
+    h.context.chrome.tabs.sendMessage=async()=>{throw new Error('Receiving end does not exist');};
+    const status=await h.context.queryPassivePlatformStatus(1,platform,{type:platform==='boss'?'BOSS_SCAN_STATUS':'ZHILIAN_SCAN_STATUS',profileId:4},10);
+    assert.equal(status.startUnconfirmed,true);assert.equal(status.isRunning,false);assert.equal(status.hasStoredTask,false);
+  });
+  test(`${platform}: unknown start remains unconfirmed on later ordinary status polls`,async()=>{
+    const h=loadBackground({tabs:[{id:1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/jobs':'https://www.zhaopin.com/',status:'complete'}]});
+    const original=h.context.chrome.tabs.sendMessage;
+    h.context.chrome.tabs.sendMessage=async(id,message)=>message.type.includes('SCAN_START')?undefined:original(id,message);
+    const initial=await startScan(h.context,platform);
+    assert.equal(initial.startUnconfirmed,true);
+    h.context.chrome.tabs.sendMessage=async()=>{throw new Error('Receiving end does not exist');};
+    h.tabList[0].status='loading';
+    const status=await h.context.queryPassivePlatformStatus(1,platform,{type:platform==='boss'?'BOSS_SCAN_STATUS':'ZHILIAN_SCAN_STATUS',profileId:4},10);
+    assert.equal(h.storage.__GET_JOBS_PLATFORM_SCAN_SESSIONS__[platform].startAcceptance,'UNKNOWN');
+    assert.equal(status.startUnconfirmed,true);assert.equal(status.isRunning,false);assert.equal(status.hasStoredTask,false);
+  });
+}
 
 test("runs only the fixed Boss search API request in the page MAIN world", async () => {
   const { dispatchRuntimeMessage, executedScripts } = loadBackground({

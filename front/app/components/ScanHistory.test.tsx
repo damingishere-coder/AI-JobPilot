@@ -22,3 +22,22 @@ it('old or malformed server responses cannot crash the workbench',async()=>{
   render(<ScanHistory platform="zhilian" profileId={4}/>)
   await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('接口版本不兼容'))
 })
+it('requested blocking run is selected and control response immediately updates its parent',async()=>{
+  const onRuns=vi.fn()
+  const old={...run,run_id:'boss-blocking',platform:'boss',profile_id:4,state:'BLOCKED',pageConnected:true,error_code:'LOGIN_REQUIRED'}
+  vi.stubGlobal('fetch',vi.fn(async (url:string)=>({ok:true,json:async()=>url.includes('/events')?[]:[run,old]})))
+  render(<ScanHistory platform="boss" profileId={4} requestedRunId="boss-blocking" onRuns={onRuns}/> )
+  await waitFor(()=>expect(screen.getByRole('combobox')).toHaveValue('boss-blocking'))
+  vi.mocked(scanCommand).mockResolvedValue({...old,desired:'STOPPED',commands:[{id:'c1',kind:'STOP',status:'PENDING'}]})
+  fireEvent.click(screen.getByRole('button',{name:'停止本轮'}))
+  await screen.findByText(/停止约束已保存/)
+  expect(onRuns).toHaveBeenLastCalledWith('boss',4,[run,expect.objectContaining({run_id:'boss-blocking',desired:'STOPPED'})])
+  expect(scanCommand).toHaveBeenCalledWith('boss',4,'boss-blocking','STOP')
+})
+it('unknown start cannot be resumed even if the page is connected',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async (url:string)=>({ok:true,json:async()=>url.includes('/events')?[]:[{...run,state:'BLOCKED',pageConnected:true,error_code:'SCAN_START_UNCONFIRMED'}]})))
+  render(<ScanHistory platform="boss" profileId={4}/> )
+  await screen.findByText(/启动回执未确认/)
+  expect(screen.getByRole('button',{name:'继续'})).toBeDisabled()
+  expect(screen.getByRole('button',{name:'停止本轮'})).toBeEnabled()
+})
