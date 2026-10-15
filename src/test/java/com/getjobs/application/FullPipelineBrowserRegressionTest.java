@@ -184,7 +184,9 @@ class FullPipelineBrowserRegressionTest {
         assertThat(refreshed.status()).isEqualTo(200);
         workbench.getByRole(com.microsoft.playwright.options.AriaRole.HEADING,new Page.GetByRoleOptions().setName("Boss 投递分析")).waitFor();
         // Audit cards are collapsed after reload; open the zero-count disclosure before checking its empty state.
-        workbench.getByText("待确认岗位审核卡片（共 0 条）",new Page.GetByTextOptions().setExact(true)).click();
+        if (!workbench.getByText("当前筛选下没有待确认岗位。",new Page.GetByTextOptions().setExact(true)).isVisible()) {
+            workbench.getByText("待确认岗位审核卡片（共 0 条）",new Page.GetByTextOptions().setExact(true)).click();
+        }
         workbench.getByText("当前筛选下没有待确认岗位。",new Page.GetByTextOptions().setExact(true)).waitFor();
         assertThat(workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("确认投递").setExact(true)).count()).isZero();
         assertThat(workbench.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,new Page.GetByRoleOptions().setName("审核并发送").setExact(true)).count()).isZero();

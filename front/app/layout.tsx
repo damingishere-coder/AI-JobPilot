@@ -21,7 +21,7 @@ export default function RootLayout({
           type="image/svg+xml"
         />
       </head>
-      <body suppressHydrationWarning>
+      <body suppressHydrationWarning className="bg-[#f7faff] dark:bg-blacksection">
         <ThemeProvider
           attribute="class"
           defaultTheme="light"

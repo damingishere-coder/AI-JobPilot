@@ -18,7 +18,6 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 import type { DiscoverView } from '@/app/discover/workspace-query'
-import { WorkspaceEntryLink } from '@/app/discover/WorkspaceEntryLink'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
@@ -164,7 +163,7 @@ interface BossApiPocResponse extends BossDiagnosticsResponse {
 const BOSS_DELIVERY_STEPS: Array<{ key: BossStep; title: string; description: string }> = [
   { key: 'config', title: '配置条件', description: '关键词与筛选条件' },
   { key: 'scan', title: '扫描岗位', description: '实时日志与采集进度' },
-  { key: 'confirm', title: '岗位结果', description: '查看历史、审核与确认投递' },
+  { key: 'confirm', title: '确认投递', description: '待确认岗位处理' },
 ]
 
 const SEARCH_JOB_LIMIT_PRESETS = [10, 20, 30, 50, 100, 200]
@@ -1416,18 +1415,16 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 
   return (
     <div className="space-y-6">
-      <details open={Boolean(requestedHistoryRunId)} className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="boss" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} /></div></details>
-      {!workspaceView && <WorkspaceEntryLink platform="boss" view="setup" />}
-      {activeStep !== 'confirm' && <PageHeader
-        headingLevel={workspaceView ? 2 : 1}
+      <ScanHistory platform="boss" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} />
+      <PageHeader
         icon={<BiBriefcase className="text-2xl" />}
-        title={workspaceView ? (activeStep === 'scan' ? 'BOSS 采集任务' : 'BOSS 搜索条件') : 'Boss直聘配置'}
+        title="Boss直聘配置"
         subtitle="配置Boss直聘平台的求职参数"
         iconClass="text-white"
         accentBgClass="bg-teal-500"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <details className="relative"><summary className="cursor-pointer rounded-lg border px-3 py-2 text-sm">连接与诊断</summary><div className="absolute right-0 z-30 mt-2 flex w-[min(90vw,420px)] flex-col gap-2 rounded-xl border bg-background p-4 shadow-lg">            <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
+            <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查扩展连接
             </Button>
             <Button
@@ -1454,7 +1451,6 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
             >
               <BiSearch className="mr-1" /> {isRunningBossApiPoc ? 'API POC 测试中...' : '测试 Boss API POC'}
             </Button>
-<Button onClick={() => setShowLogoutDialog(true)} size="sm" variant="outline">退出旧版登录</Button></div></details>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-4 text-slate-500 cursor-not-allowed shadow-sm">
                 <BiPlay className="mr-1" /> 检查登录中...
@@ -1472,15 +1468,18 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 	                <BiPlay className="mr-1" /> {isStarting ? '启动中...' : startUnconfirmed ? '启动待核实' : isScanPaused ? '继续扫描' : '开始扫描'}
 	              </Button>
 	            )}
+            <Button onClick={() => setShowLogoutDialog(true)} size="sm" className="app-button-danger px-4">
+              <BiLogOut className="mr-1" /> 退出登录
+            </Button>
             <Button onClick={() => handleSave(false)} size="sm" disabled={!hasProfile || keywordsDisplay.length > MAX_JOB_KEYWORDS} className="app-button-primary px-4">
               <BiSave className="mr-1" /> 保存配置
             </Button>
           </div>
         }
-      />}
+      />
 
-      {configError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{configError} <Button variant="outline" onClick={() => void fetchAllData()}>重新加载</Button></div>}
       <CurrentProfileBadge profile={currentProfile} onRefresh={fetchAllData} />
+      {configError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{configError} <Button variant="outline" onClick={() => void fetchAllData()}>重新加载</Button></div>}
 
       {!hasProfile ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -1488,7 +1487,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
         </div>
       ) : null}
 
-      {!workspaceView && <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering && !isScanPaused} />}
+      <BossStepBar activeStep={activeStep} onChange={setActiveStep} hasScanResult={hasScanResult} isRunning={isDelivering && !isScanPaused} />
 
       {hasScanResult && activeStep !== 'confirm' ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-900/60 dark:bg-cyan-950/30 dark:text-cyan-100">
@@ -1502,8 +1501,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
       {activeStep === 'config' ? (
         <div className="space-y-6">
 
-	          <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">使用说明</summary>
-          {/* 平台说明 */}
+	          {/* 平台说明 */}
 	          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -1523,7 +1521,6 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
             </CardContent>
           </Card>
 
-          </details>
           {/* 搜索配置 */}
           <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
@@ -1627,12 +1624,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
                 <p className="text-xs text-muted-foreground">每个关键词最多进入AI打分的岗位数，范围 1-200。</p>
               </div>
 
-              </div>
-            </CardContent>
-        </Card>
-
-        <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">高级条件与黑名单</summary><div className="mt-4 space-y-6">
-          <div className="grid gap-4 md:grid-cols-2">              <div className="space-y-2">
+              <div className="space-y-2">
                 <Label>公司行业</Label>
                 <MultiSelect
                   options={options.industry}
@@ -1658,7 +1650,10 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
                 </Select>
                 <p className="text-xs text-muted-foreground">开启后将过滤活跃状态包含“年”的HR，但仍保存数据。</p>
               </div>
-</div>
+              </div>
+            </CardContent>
+        </Card>
+
         {/* 薪资和经验 */}
         <Card className="animate-in fade-in slide-in-from-bottom-6 duration-700">
           <CardHeader>
@@ -1882,7 +1877,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
           </CardContent>
         </Card>
 
-        </div></details>
+
         </div>
       ) : null}
 
@@ -1906,7 +1901,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
                 <summary className="cursor-pointer py-2 text-muted-foreground">查看关键词采集明细</summary>
                 <ScanResult result={isScanPaused && scanResult.runId === activeRunId ? { ...scanResult, outcome: 'paused' } : scanResult} busy={isDelivering} />
               </details>
-              {!isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting || startUnconfirmed || backendRunRef.current?.desired === 'STOPPED'} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
+              {!isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
             </> : null}
           />
 
@@ -1934,8 +1929,7 @@ export default function BossWorkspace({ workspaceView, onWorkspaceViewChange, re
 
       {activeStep === 'confirm' ? (
         <div className="space-y-6">
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-4"><span className="mr-2 text-sm font-medium">岗位范围</span><Button variant={!requestedScanRunId ? "default" : "outline"} onClick={() => { setAnalysisFocusRunId(""); onWorkspaceScopeChange?.("", currentProfile?.id) }}>全部岗位</Button><Button variant={requestedScanRunId ? "default" : "outline"} disabled={!scanResult?.runId} onClick={() => { const runId = scanResult?.runId || ""; setAnalysisFocusRunId(runId); onWorkspaceScopeChange?.(runId, currentProfile?.id) }}>最近扫描</Button></div>
-          <AnalysisContent refreshSignal={analysisRefreshSignal} focusScanRunId={workspaceView ? requestedScanRunId : analysisFocusRunId} />
+          <AnalysisContent refreshSignal={analysisRefreshSignal} focusScanRunId={requestedScanRunId || analysisFocusRunId} />
         </div>
       ) : null}
 

@@ -13,8 +13,8 @@ export type OpportunityTab = 'overview' | 'feedback' | 'interviews' | 'records'
 const tabs: Record<OpportunityTab, string> = { overview: '概览', feedback: '沟通与反馈', interviews: '面试', records: '投递与记录' }
 type Draft = { stage: string; interest: string; note: string; nextAction: string; followUp: string }
 
-export default function OpportunityEditor({ detail, onSaved, onClose, initialTab = 'overview' }: {
-  detail: OpportunityDetail; onSaved: () => void | Promise<void>; onClose: () => void; initialTab?: OpportunityTab;
+export default function OpportunityEditor({ detail, onSaved, onClose, initialTab = 'overview', legacy = false }: {
+  detail: OpportunityDetail; onSaved: () => void | Promise<void>; onClose: () => void; initialTab?: OpportunityTab; legacy?: boolean;
 }) {
   const [tab, setTab] = useState<OpportunityTab>(initialTab)
   const [draft, setDraft] = useState<Partial<Draft>>({})
@@ -66,16 +66,16 @@ export default function OpportunityEditor({ detail, onSaved, onClose, initialTab
       <div className="flex items-start justify-between gap-3"><div><p className="mb-1 text-xs text-muted-foreground">{platformLabels[detail.platform] || detail.platform} · {detail.archived ? '已归档' : '当前机会'}</p><h2 className="text-xl font-semibold">{detail.job_name || '历史岗位'} · {detail.company_name || '公司未知'}</h2></div><Button variant="outline" onClick={onClose}>关闭</Button></div>
       <p className="text-sm text-muted-foreground">{snapshot.location || '地点待核实'} · {snapshot.salary || '薪资待核实'}</p>
       <div className="flex flex-wrap gap-2 text-sm"><span className="rounded bg-muted px-2 py-1">阶段：{stages[detail.stage]}</span><span className="rounded bg-muted px-2 py-1">投递：{applicationStatuses[detail.application_status || detail.applications[0]?.state || 'NOT_REQUESTED']}</span></div>
-      <div role="tablist" aria-label="机会详情功能" className="flex flex-wrap gap-1">{Object.entries(tabs).map(([key, label], index) => <button key={key} type="button" id={`opportunity-tab-${key}`} role="tab" tabIndex={tab === key ? 0 : -1} aria-selected={tab === key} aria-controls={`opportunity-panel-${key}`} className={`rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`} onClick={() => setTab(key as OpportunityTab)} onKeyDown={event => {
+      {!legacy && <div role="tablist" aria-label="机会详情功能" className="flex flex-wrap gap-1">{Object.entries(tabs).map(([key, label], index) => <button key={key} type="button" id={`opportunity-tab-${key}`} role="tab" tabIndex={tab === key ? 0 : -1} aria-selected={tab === key} aria-controls={`opportunity-panel-${key}`} className={`rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`} onClick={() => setTab(key as OpportunityTab)} onKeyDown={event => {
         const keys = Object.keys(tabs) as OpportunityTab[]
         const next = event.key === 'ArrowRight' ? (index + 1) % keys.length : event.key === 'ArrowLeft' ? (index + keys.length - 1) % keys.length : event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : -1
         if (next >= 0) { event.preventDefault(); setTab(keys[next]); document.getElementById(`opportunity-tab-${keys[next]}`)?.focus() }
-      }}>{label}</button>)}</div>
+      }}>{label}</button>)}</div>}
     </header>
     <div className="space-y-4 p-5">
       {error && <p role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
       {saved && <p role="status" className="text-sm text-emerald-600">{saved}</p>}
-      <section id="opportunity-panel-overview" role="tabpanel" aria-labelledby="opportunity-tab-overview" hidden={tab !== 'overview'} className="space-y-5">
+      <section id="opportunity-panel-overview" role={legacy ? undefined : "tabpanel"} aria-labelledby={legacy ? undefined : "opportunity-tab-overview"} hidden={!legacy && tab !== 'overview'} className="space-y-5">
         <fieldset disabled={busy} className="space-y-5">
         <div className="grid gap-4 md:grid-cols-2">
           <label>求职阶段<select className="mt-1 block w-full rounded border bg-background p-2" value={value.stage} onChange={e => change('stage', e.target.value)}>{Object.entries(stages).map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select></label>
@@ -90,12 +90,12 @@ export default function OpportunityEditor({ detail, onSaved, onClose, initialTab
         </fieldset>
         <details open><summary className="cursor-pointer font-medium">JD 与 AI 分析</summary><p className="my-3 whitespace-pre-wrap text-sm">{jobDescription(detail.job_snapshot)}</p>{detail.analyses.map(a => <article key={a.id} className="mb-3 rounded border p-3 text-sm"><p>分析 #{a.id} · {a.score} 分 · {a.decision} · 分析简历 {a.resume_version_id ? `v${a.resume_version_id}` : '版本未知'}</p><p className="mt-2 whitespace-pre-wrap">{a.summary}</p></article>)}</details>
       </section>
-      <section id="opportunity-panel-feedback" role="tabpanel" aria-labelledby="opportunity-tab-feedback" hidden={tab !== 'feedback'} className="space-y-4">
+      <section id="opportunity-panel-feedback" role={legacy ? undefined : "tabpanel"} aria-labelledby={legacy ? undefined : "opportunity-tab-feedback"} hidden={!legacy && tab !== 'feedback'} className="space-y-4">
         {lastObservation > 0 && <div className="rounded border bg-muted/40 p-3"><Button variant="outline" disabled={busy} onClick={reviewMessages}>已查看这些 HR 消息提醒</Button><p className="mt-2 text-xs text-muted-foreground">只清除已加载消息的待核实提醒；新消息仍会再次提醒。确认真实结果请使用下方反馈表单。</p></div>}
         <FeedbackSection detail={detail} onSaved={onSaved} />
       </section>
-      <section id="opportunity-panel-interviews" role="tabpanel" aria-labelledby="opportunity-tab-interviews" hidden={tab !== 'interviews'}><OpportunityInterviews opportunityId={detail.id} version={detail.version} onSaved={onSaved} /></section>
-      <section id="opportunity-panel-records" role="tabpanel" aria-labelledby="opportunity-tab-records" hidden={tab !== 'records'} className="space-y-5">
+      <section id="opportunity-panel-interviews" role={legacy ? undefined : "tabpanel"} aria-labelledby={legacy ? undefined : "opportunity-tab-interviews"} hidden={!legacy && tab !== 'interviews'}><OpportunityInterviews opportunityId={detail.id} version={detail.version} onSaved={onSaved} /></section>
+      <section id="opportunity-panel-records" role={legacy ? undefined : "tabpanel"} aria-labelledby={legacy ? undefined : "opportunity-tab-records"} hidden={!legacy && tab !== 'records'} className="space-y-5">
         {['boss', 'zhilian'].includes(detail.platform) && <Button asChild variant="outline"><Link href={`/${detail.platform}/analysis`}>原平台分析与投递对账</Link></Button>}
         <div><h3 className="font-medium">投递记录</h3>{detail.applications.length === 0 && <p className="mt-2 text-sm text-muted-foreground">尚无投递请求</p>}{detail.applications.map(a => <div key={a.id} className="mt-2 rounded border p-3 text-sm"><p>#{a.id} · {applicationStatuses[a.state]}</p><p className="mt-1 text-muted-foreground">{a.evidence || '无结果证据'}</p></div>)}</div>
         <details><summary className="cursor-pointer font-medium">时间线（已加载 {events.length} 条）</summary><ol className="mt-3 space-y-3">{events.map(e => <li key={e.id} className="border-l-2 pl-3 text-sm"><p>#{e.id} · {eventLabel(e.type)} · {eventSourceLabel(e.source)}</p><p className="text-muted-foreground">{e.occurred_at || `发生时间未知；记录于 ${e.observed_at}`}</p>{e.type.startsWith('INTERVIEW_') && <p>{interviewEventSummary(e.payload)}</p>}{e.reason && <p>{e.type === 'CORRECTION' ? '更正原因' : '备注'}：{e.reason}</p>}</li>)}</ol>{hasOlder && <Button className="mt-3" variant="outline" disabled={busy} onClick={loadOlder}>加载更早记录</Button>}</details>

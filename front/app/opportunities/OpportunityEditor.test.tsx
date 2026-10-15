@@ -14,6 +14,24 @@ const detail: OpportunityDetail = {
   archived: 1, version: 4, follow_up_at: null, note: '', nextAction: '', job_snapshot: '{}', events: [], analyses: [],
   applications: [{ id: 2, state: 'UNKNOWN', evidence: 'NO_CONFIRMATION', requested_at: '' }],
 }
+it('keeps drafts across independent saves in the restored single-page editor', async () => {
+  vi.mocked(opportunityApi).mockResolvedValue({ success: true })
+  let current = { ...detail, archived: 0 }
+  const saved = vi.fn(() => {
+    current = { ...current, version: current.version + 1, stage: 'RECRUITER_REPLIED' }
+    view.rerender(<OpportunityEditor legacy detail={current} onSaved={saved} onClose={vi.fn()} />)
+  })
+  const view = render(<OpportunityEditor legacy detail={current} onSaved={saved} onClose={vi.fn()} />)
+  expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('反馈备注')).toBeVisible()
+  fireEvent.change(screen.getByLabelText('备注'), { target: { value: '旧版布局仍保留独立草稿' } })
+  fireEvent.change(screen.getByLabelText('反馈备注'), { target: { value: '合成已核实反馈' } })
+  fireEvent.click(screen.getByText('确认记录反馈'))
+  await screen.findByText('真实反馈已记录')
+  expect(screen.getByLabelText('备注')).toHaveValue('旧版布局仍保留独立草稿')
+  expect(screen.getByLabelText('求职阶段')).toHaveValue('RECRUITER_REPLIED')
+  expect(opportunityApi).toHaveBeenCalledWith('/8/feedback', expect.anything())
+})
 it('restores the opportunity without dispatching an application and preserves UNKNOWN visibility', async () => {
   vi.mocked(opportunityApi).mockResolvedValue({ success: true })
   const saved = vi.fn()

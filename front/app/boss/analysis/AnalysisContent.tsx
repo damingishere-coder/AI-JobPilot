@@ -36,9 +36,9 @@ export default function AnalysisContent({
   refreshSignal?: number
   focusScanRunId?: string
 }) {
-  const [analyticsOpen, setAnalyticsOpen] = useState(false)
-  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
-  const [detailedTable, setDetailedTable] = useState(false)
+  const [analyticsOpen, setAnalyticsOpen] = useState(true)
+  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(true)
+  const [detailedTable, setDetailedTable] = useState(true)
   const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [showDialog, setShowDialog] = useState(false)
   const [dialogTitle, setDialogTitle] = useState("")
