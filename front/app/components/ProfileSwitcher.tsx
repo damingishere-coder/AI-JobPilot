@@ -226,8 +226,6 @@ export default function ProfileSwitcher({ onProfileChange, beforeSwitch, compact
     }
   }
 
-  if (scope && presentation === 'embedded' && !management) return null
-
   return (
     <div className={`flex flex-wrap items-center gap-2 ${compact ? '' : 'rounded-lg border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/5'}`}>
       <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
