@@ -18,7 +18,6 @@ import { rememberZhilianRun, lastZhilianRun } from '@/lib/zhilian-scan-context'
 import { getZhilianPageStatus } from '@/lib/zhilian-page-status'
 import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 import type { DiscoverView } from '@/app/discover/workspace-query'
-import { WorkspaceEntryLink } from '@/app/discover/WorkspaceEntryLink'
 import PageHeader from '@/app/components/PageHeader'
 import CurrentProfileBadge, { type CurrentProfile } from '@/app/components/CurrentProfileBadge'
 import KeywordTagInput from '@/app/components/KeywordTagInput'
@@ -829,17 +828,16 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
 
   return (
     <div className="space-y-6">
-      <details open={Boolean(requestedHistoryRunId)} className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">历史采集记录</summary><div className="mt-4"><ScanHistory platform="zhilian" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} /></div></details>
-      {!workspaceView && <WorkspaceEntryLink platform="zhilian" view="setup" />}
+      <ScanHistory platform="zhilian" profileId={currentProfile?.id} requestedRunId={requestedHistoryRunId} onRuns={acceptBackendRuns} />
       <PageHeader
-        headingLevel={workspaceView ? 2 : 1}
         icon={<BiBriefcase className="text-2xl" />}
-        title={workspaceView === 'task' ? '智联采集任务' : '智联搜索条件'}
+        title="智联招聘配置"
+        headingLevel={workspaceView ? 2 : 1}
         subtitle="配置智联招聘平台的求职参数"
         iconClass="text-white"
         accentBgClass="bg-purple-500"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             <Button onClick={handleOpenPlatform} size="sm" className="app-button-soft px-4">
               <BiLinkExternal className="mr-1" /> 检查智联状态
             </Button>
@@ -880,12 +878,12 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
 	      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
         <p role="status" className={isLoggedIn ? 'text-sm text-emerald-700' : 'text-sm text-amber-700'}>{loginMessage}</p>
         <div className="flex gap-2">
-          <Button asChild variant="outline"><Link href={workspaceView ? "/discover?platform=zhilian&view=results" : "/zhilian/analysis"}>全部岗位结果</Link></Button>
-          {latestRunId && currentProfile && <Button asChild><Link href={`${workspaceView ? "/discover?platform=zhilian&view=results&" : "/zhilian/analysis?"}profileId=${currentProfile.id}&scanRunId=${encodeURIComponent(latestRunId)}`}>查看本次扫描结果</Link></Button>}
+          <Button asChild variant="outline"><Link href="/zhilian/analysis">智联分析</Link></Button>
+          {latestRunId && currentProfile && <Button asChild><Link href={`/zhilian/analysis?profileId=${currentProfile.id}&scanRunId=${encodeURIComponent(latestRunId)}`}>查看本次扫描结果</Link></Button>}
         </div>
       </div>
       <div className="space-y-6">
-          <div hidden={workspaceView === 'setup'}><ProgressLogCard
+          <ProgressLogCard
             logs={progressLogs}
             isRunning={isDelivering}
             isPaused={isScanPaused}
@@ -904,10 +902,8 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
               </details>}
               {scanResult && !isDelivering && scanResult.keywordResults.some(item => !['complete', 'exhausted'].includes(item.outcome)) && <Button size="sm" variant="outline" disabled={isStarting || startUnconfirmed || backendRunRef.current?.desired === 'STOPPED'} onClick={() => { void handleStartDelivery(true) }}>继续未完成关键词</Button>}
             </>}
-          /></div>
+          />
 
-          <div hidden={workspaceView === 'task'} className="space-y-6">
-          <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">使用说明</summary>
 	          <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -924,8 +920,6 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
             </CardContent>
           </Card>
 
-          </details>
-          <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">实验与诊断工具</summary>
           <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -956,7 +950,6 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
             </CardContent>
           </Card>
 
-          </details>
           {/* 配置表单 */}
           <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
             <CardHeader>
@@ -1030,12 +1023,11 @@ export default function ZhilianWorkspace({ workspaceView, onWorkspaceViewChange,
                     )}
                   </div>
                   {filterError && <p role="alert" className="col-span-full text-destructive">{filterError}</p>}
-                  {filterCatalog && <details className="col-span-full rounded-lg border p-4"><summary className="cursor-pointer text-sm font-medium">高级平台筛选</summary><div className="mt-4"><FilterControls key={filterCatalog.cityCode} catalog={filterCatalog} filters={config.filters||{}} disabled={!hasProfile} onChange={filters=>setConfig(c=>({...c,filters}))}/></div></details>}
+                  {filterCatalog && <FilterControls key={filterCatalog.cityCode} catalog={filterCatalog} filters={config.filters||{}} disabled={!hasProfile} onChange={filters=>setConfig(c=>({...c,filters}))}/>}
                 </div>
               )}
             </CardContent>
           </Card>
-          </div>
       </div>
 
       {/* 操作结果弹框 */}

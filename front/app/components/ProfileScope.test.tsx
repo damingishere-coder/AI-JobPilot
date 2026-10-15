@@ -6,6 +6,14 @@ import { useUnsavedChanges } from '@/lib/use-unsaved-changes'
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+it('shows the original embedded profile selector when the page has no global toolbar', async () => {
+  const current = { id: 1, name: '合成旧版档案', isActive: 1 }
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data: [current], current }), { headers: { 'Content-Type': 'application/json' } })))
+  render(<ProfileScopeProvider><ProfileSwitcher /></ProfileScopeProvider>)
+  expect(await screen.findByRole('button', { name: '合成旧版档案' })).toBeEnabled()
+  expect(screen.getByText('当前档案')).toBeVisible()
+})
+
 it('serializes concurrent activation attempts from global and management switchers until the first response finishes', async () => {
   const profiles = [{ id: 1, name: '求职者甲', isActive: 1 }, { id: 2, name: '求职者乙' }, { id: 3, name: '求职者丙' }]
   let active = profiles[0]
@@ -69,7 +77,6 @@ function Consumer({ dirty = false }: { dirty?: boolean }) {
     <span data-testid="current">{scope?.current?.name}</span>
     <span data-testid="error">{scope?.error}</span>
     <button disabled={scope?.conflicted}>保存测试草稿</button>
-    <ProfileSwitcher presentation="global" />
     <ProfileSwitcher onProfileChange={() => {}} />
   </>
 }
@@ -99,7 +106,7 @@ it('does not notify business forms again when the same profile is renamed', asyn
   const onChange = vi.fn()
   let current = { id: 1, name: '求职者甲', isActive: 1 }
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data: [current], current }), { headers: { 'Content-Type': 'application/json' } })))
-  render(<ProfileScopeProvider><ProfileSwitcher presentation="global" /><ProfileSwitcher onProfileChange={onChange} /></ProfileScopeProvider>)
+  render(<ProfileScopeProvider><ProfileSwitcher onProfileChange={onChange} /></ProfileScopeProvider>)
   await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
   current = { ...current, name: '新档案名称' }
   fireEvent(window, new Event('focus'))

@@ -1,11 +1,13 @@
 import { expect, it } from 'vitest'
 import { activeWorkspace } from './Sidebar'
 
-it('旧平台详情和推荐入口只属于一个主导航', () => {
-  expect(activeWorkspace('/boss/analysis')).toBe('/discover')
-  expect(activeWorkspace('/zhilian/analysis')).toBe('/discover')
-  expect(activeWorkspace('/strategy/ranking')).toBe('/opportunities')
-  expect(activeWorkspace('/ai-config')).toBe('/profiles')
-  expect(activeWorkspace('/env-config')).toBe('/settings')
-  expect(activeWorkspace('/hr')).toBe('/hr')
+it('恢复平台独立导航，分析页只选中对应分析入口，兼容入口仍归入原配置页', () => {
+  expect(activeWorkspace('/boss')).toBe('/boss')
+  expect(activeWorkspace('/boss/analysis')).toBe('/boss/analysis')
+  expect(activeWorkspace('/zhilian/analysis')).toBe('/zhilian/analysis')
+  expect(activeWorkspace('/strategy/ranking')).toBe('/strategy')
+  expect(activeWorkspace('/ai-config')).toBe('/ai-config')
+  expect(activeWorkspace('/profiles')).toBe('/ai-config')
+  expect(activeWorkspace('/env-config')).toBe('/env-config')
+  expect(activeWorkspace('/hr')).toBe('/env-config')
 })

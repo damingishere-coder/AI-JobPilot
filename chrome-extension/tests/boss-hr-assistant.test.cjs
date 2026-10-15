@@ -67,7 +67,7 @@ test("backend no longer contains the OpenCLI HR runtime classes or settings", ()
   assert.doesNotMatch(watcher, /OpenCli|openCli/);
 });
 
-test("legacy workbench routes preserve access to the separated HR, profile, and connection views", () => {
+test("restored environment page keeps HR controls and preserves direct profile and connection views", () => {
   const environmentPage = source("front/app/env-config/page.tsx");
   const legacyProfilePage = source("front/app/ai-config/page.tsx");
   const hrPage = source("front/app/hr/page.tsx");
@@ -76,7 +76,9 @@ test("legacy workbench routes preserve access to the separated HR, profile, and 
   const profileEditor = source("front/app/ai-config/ProfileEditor.tsx");
   const workbench = source("front/app/env-config/HrAssistantSettingsCard.tsx");
 
-  assert.match(environmentPage, /export\s*\{\s*default\s*\}\s*from\s*['"]\.\.\/settings\/page['"]/);
+  assert.match(environmentPage, /import EnvironmentSettings from ['"]\.\/EnvironmentSettings['"]/);
+  assert.match(environmentPage, /import HrAssistantSettingsCard from ['"]\.\/HrAssistantSettingsCard['"]/);
+  assert.match(environmentPage, /<EnvironmentSettings\s*\/>\s*<HrAssistantSettingsCard\s*\/>/);
   assert.match(legacyProfilePage, /export\s*\{\s*default\s*\}\s*from\s*['"]\.\.\/profiles\/page['"]/);
   for (const page of [hrPage, settingsPage]) {
     assert.match(page, /import HrAssistantSettingsCard from ['"]\.\.\/env-config\/HrAssistantSettingsCard['"]/);

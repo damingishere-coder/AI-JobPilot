@@ -21,10 +21,10 @@ describe('BOSS 首次读取状态', () => {
     expect(screen.getByText('正在读取岗位…')).toBeInTheDocument()
     expect(screen.queryByText(/共 0 条/)).not.toBeInTheDocument()
     expect(screen.queryByText('排队中 0')).not.toBeInTheDocument()
-    expect(screen.queryByText(/当前范围没有岗位/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/当前范围没有(?:入库)?岗位/)).not.toBeInTheDocument()
     await act(async () => { pending.forEach(resolve => resolve()) })
     expect(screen.getByText('排队中 0')).toBeInTheDocument()
-    expect(screen.getByText(/当前范围没有岗位/)).toBeInTheDocument()
+    expect(screen.getByText(/当前范围没有(?:入库)?岗位/)).toBeInTheDocument()
   })
 
   it('首次接口失败不显示零条或无岗位，队列失败也不假定为零', async () => {
@@ -34,6 +34,6 @@ describe('BOSS 首次读取状态', () => {
     expect(screen.getByText('队列读取失败')).toBeInTheDocument()
     expect(screen.queryByText(/共 0 条/)).not.toBeInTheDocument()
     expect(screen.queryByText('排队中 0')).not.toBeInTheDocument()
-    expect(screen.queryByText(/当前范围没有岗位/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/当前范围没有(?:入库)?岗位/)).not.toBeInTheDocument()
   })
 })

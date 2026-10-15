@@ -60,12 +60,12 @@ it('backend pause survives stale bridge status and explicit resume uses the reta
   expect(screen.getByRole('button',{name:'停止扫描'})).toBeInTheDocument()
 })
 
-for(const state of ['PAUSED','BLOCKED'])it(`the primary action resumes the exact backend ${state} run while history stays collapsed`,async()=>{
+for(const state of ['PAUSED','BLOCKED'])it(`the original layout resumes the exact backend ${state} run with visible scan history`,async()=>{
   runs=[{...running,state,desired:'PAUSED',error_code:'PAGE_HIDDEN',pageConnected:true}]
   mocks.command.mockResolvedValue({...running})
   await act(async()=>{render(<ZhilianWorkspace />)})
   await act(async()=>{window.dispatchEvent(new Event('focus'))})
-  expect(screen.getByText('历史采集记录').closest('details')).not.toHaveAttribute('open')
+  expect(screen.getByRole('region',{name:'扫描记录'})).toBeVisible()
   expect(screen.queryByRole('button',{name:'开始扫描'})).not.toBeInTheDocument()
   const resume=screen.getByRole('button',{name:'继续扫描'})
   expect(resume).toBeEnabled()

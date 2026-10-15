@@ -36,9 +36,9 @@ export default function AnalysisContent({
   refreshSignal?: number
   focusScanRunId?: string
 }) {
-  const [analyticsOpen, setAnalyticsOpen] = useState(false)
-  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(false)
-  const [detailedTable, setDetailedTable] = useState(false)
+  const [analyticsOpen, setAnalyticsOpen] = useState(true)
+  const [pendingCardsExpanded, setPendingCardsExpanded] = useState(true)
+  const [detailedTable, setDetailedTable] = useState(true)
   const [showDetailColumns, setShowDetailColumns] = useState(false)
   const [showDialog, setShowDialog] = useState(false)
   const [dialogTitle, setDialogTitle] = useState("")
@@ -276,7 +276,7 @@ export default function AnalysisContent({
       )}
 
       <WorkspaceDataStatus error={loadError || statsError} loading={loadingList} updatedAt={lastUpdatedAt} hasData={items.length > 0} onRetry={() => { void loadList(page, size); void refreshStats() }} />
-      <details className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">岗位概况与统计</summary><div className="mt-4"><BossKpiCards stats={dashboardStats} loading={loadingDashboardStats} /></div></details>
+      <details open className="rounded-lg border bg-background p-4"><summary className="cursor-pointer text-sm font-medium">岗位概况与统计</summary><div className="mt-4"><BossKpiCards stats={dashboardStats} loading={loadingDashboardStats} /></div></details>
 
       <Card>
         <CardHeader>
@@ -334,7 +334,7 @@ export default function AnalysisContent({
             onReset={resetFilters}
           />
 
-          <details className="mb-4 rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">待确认岗位审核卡片（{workspaceCountLabel(pendingJobs.length, loadingList, loaded, loadError)}）</summary>{loaded && !loadError && <BossPendingCards
+          <details open className="mb-4 rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">待确认岗位审核卡片（{workspaceCountLabel(pendingJobs.length, loadingList, loaded, loadError)}）</summary>{loaded && !loadError && <BossPendingCards
             itemsLength={items.length}
             loadingList={loadingList}
             pendingJobs={pendingJobs}

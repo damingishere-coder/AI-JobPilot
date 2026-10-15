@@ -19,7 +19,7 @@ it('blocks the stale business area and requires explicit draft abandonment befor
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ready: true }), { headers: { 'Content-Type': 'application/json' } })))
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
   render(<AppShell><Draft /></AppShell>)
-  expect(document.querySelector('#workspace-content')?.parentElement).toHaveAttribute('inert')
+  expect(document.querySelector('textarea')?.closest('[inert]')).toHaveAttribute('inert')
   expect(document.querySelector('textarea')).toHaveValue('保留的输入')
   fireEvent.click(screen.getByRole('button', { name: '放弃草稿并读取当前档案' }))
   expect(state.refresh).not.toHaveBeenCalled()
