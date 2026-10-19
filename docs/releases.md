@@ -4,7 +4,7 @@
 
 ## 当前发布状态
 
-当前正式版为 [v1.5.0](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0)，应用版本 **1.5.0**，配套 Chrome Bridge **1.8.0**。主要面向 Windows 本地开发与个人使用。
+当前正式版为 [v1.6.0](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0)，应用版本 **1.6.0**，配套 Chrome Bridge **1.10.16**。主要面向 Windows 本地开发与个人使用。
 
 普通用户优先使用源码包与 [Windows 启动指南](../WINDOWS_SETUP.md)。JAR 已包含页面，前端静态 ZIP 用于独立集成，扩展 ZIP 需要在 Chrome 中单独加载；它们不是多个不同的应用版本。
 
@@ -18,14 +18,14 @@ $env:SERVER_ADDRESS = '127.0.0.1'
 $env:SERVER_PORT = '6866'
 $env:APP_AUTO_OPEN_BROWSER = 'false'
 $env:APP_BROWSER_INITIALIZE_ON_STARTUP = 'false'
-java -jar .\AI-JobPilot-v1.5.0.jar
+java -jar .\AI-JobPilot-v1.6.0.jar
 ```
 
 打开 **http://127.0.0.1:6866**，检查 **http://127.0.0.1:6866/api/ready**，再配置模型与简历。该路径无需安装 Node / pnpm，但不是 Windows 安装器。基础使用可以粘贴简历；上传 PDF、Word、图片所需的 `resume-parser` 脚本、Python 环境和模型不包含在 JAR 中，需从同版本源码准备，见 [本机识别器](../resume-parser/README.md)。
 
-把扩展 ZIP 解压到固定目录，在 `chrome://extensions/` 加载该目录。已有扩展则重新加载并刷新页面，核对扩展版本 1.8.0。
+把扩展 ZIP 解压到固定目录，在 `chrome://extensions/` 加载该目录。已有扩展则重新加载并刷新页面，核对扩展版本 1.10.16。
 
-已有部署不要直接另起一个 6866 服务，也不要随意改数据库路径。先备份并沿用原管理器和配置，参考 [1.5 升级与回滚](releases/v1.5.0.md)。`v1.5.0` 标签及发行包保持不可变；发布后的文档勘误以 `main` 的最新指南为准。
+已有部署不要直接另起一个 6866 服务，也不要随意改数据库路径。先备份并沿用原管理器和配置，参考 [1.6 升级与回滚](releases/v1.6.0.md)。`v1.6.0` 标签及发行包保持不可变；发布后的文档勘误以 `main` 的最新指南为准。
 
 仓库已发布正式版本及自动化构建产物，但还没有免运行环境的完整 Windows 桌面安装器。源码启动需要 Java、Node.js 和 pnpm；已构建 JAR 的基础运行只需 Java 21。完整 Windows 安装包仍在路线图中。
 

@@ -1,6 +1,6 @@
 # Windows 本地运行指南 · 1.5
 
-应用版本 **1.5.0**，配套 Chrome Bridge **1.8.0**。普通使用只需要记住 **http://127.0.0.1:6866**，页面和 API 共用一个服务。
+应用版本 **1.6.0**，配套 Chrome Bridge **1.10.16**。普通使用只需要记住 **http://127.0.0.1:6866**，页面和 API 共用一个服务。
 
 ## 1. 准备环境
 
@@ -30,14 +30,14 @@ pnpm -v
 在你希望保存项目的目录打开 PowerShell：
 
 ```powershell
-git clone --branch v1.5.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
+git clone --branch v1.6.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
 cd AI-JobPilot
 cd front
 pnpm install --frozen-lockfile
 cd ..
 ```
 
-也可以下载 [v1.5.0 的 source.zip](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0)，解压后在项目根目录执行相同的依赖安装命令。根目录应包含 `gradlew.bat`、`start_windows.bat`、`front`、`src` 和 `chrome-extension`。
+也可以下载 [v1.6.0 的 source.zip](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0)，解压后在项目根目录执行相同的依赖安装命令。根目录应包含 `gradlew.bat`、`start_windows.bat`、`front`、`src` 和 `chrome-extension`。
 
 后面的相对路径都以这个项目根目录为起点，不需要照抄其他人的电脑路径。
 
@@ -78,7 +78,7 @@ cd ..
 
 1. 在 Chrome 地址栏输入 `chrome://extensions/`。
 2. 开启「开发者模式」，点击「加载已解压的扩展程序」。
-3. 选择项目的 `chrome-extension` 文件夹，确认版本为 **1.8.0**。
+3. 选择项目的 `chrome-extension` 文件夹，确认版本为 **1.10.16**。
 4. 在 Chrome 打开 `http://127.0.0.1:6866`，刷新工作台。
 5. 登录 BOSS 或智联，回到工作台检查扩展与平台状态。
 
@@ -138,7 +138,7 @@ Get-NetTCPConnection -State Listen -LocalPort 6866 | Select-Object LocalAddress,
 
 ### 页面存在，但扩展未连接
 
-检查是否使用 Chrome、扩展是否启用且为 1.8.0、页面是否为 `http://127.0.0.1:6866`。重新加载扩展并刷新两个页面；登录或验证提示需要在官网处理。
+检查是否使用 Chrome、扩展是否启用且为 1.10.16、页面是否为 `http://127.0.0.1:6866`。重新加载扩展并刷新两个页面；登录或验证提示需要在官网处理。
 
 ### PowerShell 禁止执行脚本
 
@@ -156,9 +156,9 @@ Windows 启动脚本不会因为根目录放了 `.env` 就自动读取它。普�
 
 ## 7. 验证、停止与升级
 
-- 确认页面左下角显示 `v1.5.0`，`/api/ready` 返回就绪。
-- 确认当前档案、已保存简历与模型配置正确；Chrome Bridge 显示 1.8.0。
+- 确认页面左下角显示 `v1.6.0`，`/api/ready` 返回就绪。
+- 确认当前档案、已保存简历与模型配置正确；Chrome Bridge 显示 1.10.16。
 - 查看一次采集与分析过程及待确认记录；是否对外投递由你决定，测试通过不代表真实平台投递成功。
 - 托管服务在原管理器里停止；前台直接运行 `run_backend.ps1` 时在对应终端按 `Ctrl+C`。双击启动的实例应先辨认其 Java 进程和日志，不要用批量端口清理脚本代替进程归属检查。
 
-升级前先停止写入，备份实际 SQLite 数据库、配置和旧程序。SQLite 正在运行时请使用一致性备份方式，不要只复制主文件而忽略 WAL。1.5 新增 V20 数据表，回滚不能用旧数据库覆盖升级后的新记录，详见 [1.5 发布与回滚](docs/releases/v1.5.0.md)。
+升级前先停止写入，备份实际 SQLite 数据库、配置和旧程序。SQLite 正在运行时请使用一致性备份方式，不要只复制主文件而忽略 WAL。从 1.5 升级到 1.6 会应用 V21 至 V38 的迁移，涉及执行协议、求职跟进、扫描与 HR 回执等数据结构，回滚不能用旧数据库覆盖升级后的新记录，详见 [1.6 发布与回滚](docs/releases/v1.6.0.md)。

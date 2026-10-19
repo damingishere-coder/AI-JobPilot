@@ -8,7 +8,7 @@
 
 Organize your resume, collect jobs, review AI matching evidence, and confirm applications from your own computer.
 
-[简体中文](README.md) · [Download 1.5](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Report an issue](https://github.com/damingishere-coder/AI-JobPilot/issues)
+[简体中文](README.md) · [Download 1.6](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Report an issue](https://github.com/damingishere-coder/AI-JobPilot/issues)
 
 [![Release](https://img.shields.io/github/v/release/damingishere-coder/AI-JobPilot?color=2563eb&label=release)](https://github.com/damingishere-coder/AI-JobPilot/releases/latest) [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml) [![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml) [![License](https://img.shields.io/badge/license-Non--Commercial-64748b)](LICENSE)
 
@@ -65,7 +65,7 @@ These are unmodified browser captures of the v1.5 frontend. All companies, jobs,
 Run in PowerShell:
 
 ```powershell
-git clone --branch v1.5.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
+git clone --branch v1.6.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
 cd AI-JobPilot
 cd front
 pnpm install --frozen-lockfile
@@ -77,7 +77,7 @@ The first launch downloads dependencies. Open **http://127.0.0.1:6866 in Chrome*
 
 ### 2. Connect Chrome Bridge
 
-Open `chrome://extensions/`, enable **Developer mode**, select **Load unpacked**, and choose the repository's `chrome-extension` folder. Application v1.5 ships with **Chrome Bridge 1.8.0**. After updating extension files, reload the extension and refresh both the workspace and platform tabs.
+Open `chrome://extensions/`, enable **Developer mode**, select **Load unpacked**, and choose the repository's `chrome-extension` folder. Application v1.6 ships with **Chrome Bridge 1.10.16**. After updating extension files, reload the extension and refresh both the workspace and platform tabs.
 
 ### 3. Run your first analysis
 
@@ -87,17 +87,17 @@ Configure your model connection in Environment settings. Create a profile and sa
 
 ## Choose a download
 
-The [v1.5.0 release](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) includes:
+The [v1.6.0 release](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0) includes:
 
 | Asset | Purpose |
 | --- | --- |
-| `AI-JobPilot-v1.5.0-source.zip` | Source and startup scripts; install prerequisites using the Windows guide |
-| `AI-JobPilot-v1.5.0.jar` | Java application with bundled frontend; requires Java 21 and local configuration |
-| `AI-JobPilot-v1.5.0-chrome-extension.zip` | Unpack and load in Chrome; internal extension version is 1.8.0 |
-| `AI-JobPilot-v1.5.0-frontend-static.zip` | Static frontend for integration with an existing backend |
+| `AI-JobPilot-v1.6.0-source.zip` | Source and startup scripts; install prerequisites using the Windows guide |
+| `AI-JobPilot-v1.6.0.jar` | Java application with bundled frontend; requires Java 21 and local configuration |
+| `AI-JobPilot-v1.6.0-chrome-extension.zip` | Unpack and load in Chrome; internal extension version is 1.10.16 |
+| `AI-JobPilot-v1.6.0-frontend-static.zip` | Static frontend for integration with an existing backend |
 | `SHA256SUMS.txt` | Download integrity checksums |
 
-A standalone Windows `.exe` installer is not available. See [download and verification instructions](docs/releases.md) and [v1.5 release notes](docs/releases/v1.5.0.md).
+A standalone Windows `.exe` installer is not available. See [download and verification instructions](docs/releases.md) and [v1.6 release notes](docs/releases/v1.6.0.md).
 
 ## Platform support and limitations
 

@@ -8,7 +8,7 @@
 
 在自己的电脑上整理简历、采集岗位、查看 AI 匹配依据，确认后再投递。
 
-[English](README.en.md) · [下载 1.5](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) · [快速开始](#快速开始) · [使用文档](docs/README.md) · [反馈问题](https://github.com/damingishere-coder/AI-JobPilot/issues)
+[English](README.en.md) · [下载 1.6](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0) · [快速开始](#快速开始) · [使用文档](docs/README.md) · [反馈问题](https://github.com/damingishere-coder/AI-JobPilot/issues)
 
 [![Release](https://img.shields.io/github/v/release/damingishere-coder/AI-JobPilot?color=2563eb&label=release)](https://github.com/damingishere-coder/AI-JobPilot/releases/latest) [![CI](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/ci.yml) [![CodeQL](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml/badge.svg)](https://github.com/damingishere-coder/AI-JobPilot/actions/workflows/codeql.yml) [![License](https://img.shields.io/badge/license-Non--Commercial-64748b)](LICENSE)
 
@@ -65,7 +65,7 @@ AI JobPilot 是面向个人求职者的本地工作台。把分散在浏览器�
 在 PowerShell 中执行：
 
 ```powershell
-git clone --branch v1.5.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
+git clone --branch v1.6.0 --depth 1 https://github.com/damingishere-coder/AI-JobPilot.git
 cd AI-JobPilot
 cd front
 pnpm install --frozen-lockfile
@@ -79,7 +79,7 @@ cd ..
 
 ### 2. 连接 Chrome Bridge
 
-打开 `chrome://extensions/`，开启「开发者模式」，点击「加载已解压的扩展程序」，选择项目的 `chrome-extension` 文件夹。v1.5 配套的扩展版本为 **1.8.0**；更新文件后还需在扩展页点击「重新加载」，并刷新工作台和平台页面。
+打开 `chrome://extensions/`，开启「开发者模式」，点击「加载已解压的扩展程序」，选择项目的 `chrome-extension` 文件夹。v1.6 配套的扩展版本为 **1.10.16**；更新文件后还需在扩展页点击「重新加载」，并刷新工作台和平台页面。
 
 ### 3. 开始第一次分析
 
@@ -89,17 +89,17 @@ cd ..
 
 ## 下载哪个文件？
 
-[v1.5.0 正式版下载](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.5.0) 提供以下产物：
+[v1.6.0 正式版下载](https://github.com/damingishere-coder/AI-JobPilot/releases/tag/v1.6.0) 提供以下产物：
 
 | 文件 | 用途 |
 | --- | --- |
-| `AI-JobPilot-v1.5.0-source.zip` | 源码及启动脚本；按 Windows 指南准备运行环境 |
-| `AI-JobPilot-v1.5.0.jar` | 包含前端的 Java 应用；需要 Java 21 与本地配置，适合进阶部署 |
-| `AI-JobPilot-v1.5.0-chrome-extension.zip` | 解压后加载到 Chrome；内部扩展版本为 1.8.0 |
-| `AI-JobPilot-v1.5.0-frontend-static.zip` | 前端静态资源，供已有后端集成使用 |
+| `AI-JobPilot-v1.6.0-source.zip` | 源码及启动脚本；按 Windows 指南准备运行环境 |
+| `AI-JobPilot-v1.6.0.jar` | 包含前端的 Java 应用；需要 Java 21 与本地配置，适合进阶部署 |
+| `AI-JobPilot-v1.6.0-chrome-extension.zip` | 解压后加载到 Chrome；内部扩展版本为 1.10.16 |
+| `AI-JobPilot-v1.6.0-frontend-static.zip` | 前端静态资源，供已有后端集成使用 |
 | `SHA256SUMS.txt` | 下载文件的完整性校验值 |
 
-目前没有免环境安装的 Windows `.exe` 安装器。JAR、静态包与扩展分别承担不同职责，详见 [下载、校验与运行](docs/releases.md) 和 [1.5 发布说明](docs/releases/v1.5.0.md)。
+目前没有免环境安装的 Windows `.exe` 安装器。JAR、静态包与扩展分别承担不同职责，详见 [下载、校验与运行](docs/releases.md) 和 [1.6 发布说明](docs/releases/v1.6.0.md)。
 
 ## 平台支持与当前边界
 
