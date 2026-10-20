@@ -2,7 +2,7 @@
   "use strict";
 
   const CONTENT_VERSION = "2026-09-30-hr-background-v1";
-  const SCRIPT_BUILD = "2026-10-11-hr-read-recovery-v1";
+  const SCRIPT_BUILD = "2026-10-20-hr-send-readiness-v1";
   if (window.top !== window.self || window.__GET_JOBS_BOSS_HR_BRIDGE__ === SCRIPT_BUILD) return;
   window.__GET_JOBS_BOSS_HR_BRIDGE__ = SCRIPT_BUILD;
   const support = globalThis.GetJobsBossHrSupport;
@@ -598,9 +598,10 @@
       return { success: true, outcome: "FAILED_SAFE", evidence: "输入框内容复核失败" };
     }
 
-    // Let the reactive editor update its native send control before checking readiness.
-    await wait(50);
-    const sendButtons=findTextSendControls(input).filter(sendControlEnabled);
+    // Background rendering can take longer than one frame and replace the editor.
+    // Only observe readiness here; never rewrite a changed draft or retry a send.
+    const readiness=await waitForTextSendControl(command);
+    if (!readiness.button) return {success:true,outcome:readiness.stale?"STALE":"FAILED_SAFE",evidence:readiness.evidence};
     if (Date.now() >= command.deadlineAt) return { success: true, outcome: "FAILED_SAFE", evidence: "发送命令已过期" };
     await guard();
     const recheck=support.currentSession(document,{uid:command.uid});
@@ -611,18 +612,10 @@
       || (command.expectedInboundRound?.length && (finalRound.length!==command.expectedInboundRound.length || finalRound.some((m,i)=>!support.messagesMatch(m,command.expectedInboundRound[i])))))
       return {success:true,outcome:"STALE",evidence:"点击发送前会话或消息发生变化"};
     if(Date.now()>=command.deadlineAt) return {success:true,outcome:"FAILED_SAFE",evidence:"授权复核后租约已过期"};
-    let dispatched = false;
-    if (sendButtons.length === 1) {
-      sendDispatched=true;
-      sendButtons[0].click();
-      dispatched = true;
-    } else if (sendButtons.length === 0) {
-      return { success: true, outcome: "FAILED_SAFE", evidence: "真实发送按钮不可用，未触发发送动作" };
-    } else {
-      return { success: true, outcome: "FAILED_SAFE", evidence: "发送按钮命中多个候选项" };
-    }
-
-    if (!dispatched) return { success: true, outcome: "FAILED_SAFE", evidence: "未触发发送动作" };
+    const finalControl=textSendState(command.draft);
+    if (!finalControl.button) return {success:true,outcome:finalControl.stale?"STALE":"FAILED_SAFE",evidence:finalControl.evidence};
+    sendDispatched=true;
+    finalControl.button.click();
     const confirmed = await waitForOutbound(command.draft, before.length);
     return confirmed
       ? { success: true, outcome: "SENT", evidence: "DOM_OUTBOUND_EXACT_MATCH", observedLatestInbound: latest }
@@ -829,6 +822,29 @@
     const scope=input.closest?.(".chat-conversation") || input.parentElement || document;
     return Array.from(scope.querySelectorAll("div.send-message,button[type='send'].btn-send,button.btn-send,button,[role='button']"))
       .filter(element=>visible(element) && /^发送(?:[（(]Enter[）)])?$/.test(support.normalizeText(element.textContent)));
+  }
+
+  function textSendState(draft) {
+    const inputs=Array.from(document.querySelectorAll("#chat-input,textarea,[contenteditable='true']")).filter(visible);
+    if(inputs.length!==1) return {evidence:"聊天输入框未唯一命中，未触发发送动作"};
+    const input=inputs[0];
+    if(support.normalizeText(inputValue(input))!==support.normalizeText(draft))
+      return {stale:true,evidence:"等待发送按钮时草稿已变化，保留当前输入，未触发发送动作"};
+    const controls=findTextSendControls(input);
+    if(controls.length>1) return {ambiguous:true,evidence:"发送按钮命中多个候选项"};
+    const button=controls.length===1 && sendControlEnabled(controls[0]) ? controls[0] : null;
+    return {button,evidence:"真实发送按钮不可用，未触发发送动作"};
+  }
+
+  async function waitForTextSendControl(command) {
+    const deadline=Math.min(command.deadlineAt,Date.now()+2500);
+    for(;;) {
+      await guard();
+      const state=textSendState(command.draft);
+      const remaining=deadline-Date.now();
+      if(state.button || state.stale || state.ambiguous || remaining<=0) return state;
+      await wait(Math.min(100,remaining));
+    }
   }
 
   function sendControlEnabled(element) {
