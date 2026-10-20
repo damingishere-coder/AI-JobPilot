@@ -126,10 +126,13 @@ chrome.runtime.onInstalled?.addListener?.(() => {
 
 const scanObserver = GetJobsScanObserver.create({storage:chrome.storage.local, request:requestLocalApi, version:chrome.runtime.getManifest().version});
 const bossHrHost = GetJobsBossHrHost.create({ chrome, request: requestLocalApi,
-  ensureContent: async tabId => {
-    await ensureContentScript(tabId, "boss-content.js");
-    await chrome.scripting.executeScript({ target:{tabId}, world:"MAIN", files:["boss-hr-identity.js"] });
-  } });
+  ensureContent: ensureBossHrContent });
+async function ensureBossHrContent(tabId) {
+  // HR has its own idempotent builds. Reconnect them in place after an extension
+  // update without restarting the unrelated job scanner or reloading the page.
+  await chrome.scripting.executeScript({ target:{tabId}, world:"MAIN", files:["boss-hr-identity.js"] });
+  await chrome.scripting.executeScript({ target:{tabId}, files:["boss-hr-support.js","boss-hr-bridge.js","boss-hr-assistant.js"] });
+}
 bossHrHost.initialize().catch(()=>{});
 chrome.runtime.onStartup?.addListener?.(()=>bossHrHost.initialize(true).catch(()=>{}));
 chrome.storage.local.get('__GET_JOBS_SCAN_OBSERVER_V1__').then(data=>{if(Object.keys(data.__GET_JOBS_SCAN_OBSERVER_V1__||{}).length) chrome.alarms?.create?.('scan-observer-sync',{periodInMinutes:0.5});}).catch(()=>{});

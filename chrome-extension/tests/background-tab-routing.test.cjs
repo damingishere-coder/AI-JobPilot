@@ -43,6 +43,18 @@ test('overlay pause changes the persistent background host instead of the legacy
 const BOSS_CONTENT_VERSION = readContentVersion("boss-content.js");
 const ZHILIAN_CONTENT_VERSION = readContentVersion("zhilian-content.js");
 
+test('HR reconnects its own scripts on the existing tab without the legacy scanner or page navigation',async()=>{
+  const h=loadBackground({tabs:[{id:7,windowId:8,url:'https://www.zhipin.com/web/geek/chat?getjobs-autopilot=1',status:'complete'}],contentReady:false});
+  h.context.ensureContentScript=async()=>{throw new Error('legacy content context is unavailable after extension update');};
+  await h.context.ensureBossHrContent(7);
+  assert.deepEqual(h.executedScripts.map(item=>({tab:item.target.tabId,world:item.world,files:Array.from(item.files)})),[
+    {tab:7,world:'MAIN',files:['boss-hr-identity.js']},
+    {tab:7,world:undefined,files:['boss-hr-support.js','boss-hr-bridge.js','boss-hr-assistant.js']}
+  ]);
+  assert.equal(h.tabUpdates.length,0);assert.equal(h.windowUpdates.length,0);assert.equal(h.windowCreates.length,0);
+  assert.equal(h.tabList.length,1);
+});
+
 function jsonResponse(body, { ok = true, status = 200 } = {}) {
   return {
     ok,

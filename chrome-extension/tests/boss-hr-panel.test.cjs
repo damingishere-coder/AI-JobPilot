@@ -15,9 +15,9 @@ class Node {
   attachShadow(){this.shadow=new Node('shadow');return this.shadow;}
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-async function harness({mismatch=false,hostState={},statusState={},policyState={}}={}){
+async function harness({mismatch=false,hostState={},statusState={},policyState={},previousBuild}={}){
   const document={documentElement:new Node('html'),getElementById:()=>null,createElement:tag=>new Node(tag)};
-  let timer,fail=false,held=new Set(),clock=0,timeoutId=0;
+  let timer,fail=false,held=new Set(),clock=0,timeoutId=0,oldCleanups=0;
   const operations=[],pending=[],timeouts=new Map();
   const binding={watchSessionId:'watch',hostGeneration:'generation',pageDocumentId:'document'};
   const host={transport:'CHROME_BACKGROUND',state:'RUNNING',intentEnabled:true,profileId:4,...binding,...hostState};
@@ -30,14 +30,25 @@ async function harness({mismatch=false,hostState={},statusState={},policyState={
   const window={setInterval:fn=>{timer=fn;return 1;},clearInterval:()=>{},
     setTimeout:(fn,ms)=>{const id=++timeoutId;timeouts.set(id,{fn,at:clock+ms});return id;},clearTimeout:id=>timeouts.delete(id)};
   window.top=window;window.self=window;
-  vm.runInNewContext(fs.readFileSync(require.resolve('../boss-hr-assistant.js'),'utf8'),{document,window,chrome:{runtime},location:{pathname:'/web/geek/chat'},Date});
+  if(previousBuild){window.__GET_JOBS_BOSS_HR_ASSISTANT__=previousBuild;window.__GET_JOBS_BOSS_HR_ASSISTANT_CLEANUP__=()=>oldCleanups++;}
+  const source=fs.readFileSync(require.resolve('../boss-hr-assistant.js'),'utf8');
+  const context=vm.createContext({document,window,chrome:{runtime},location:{pathname:'/web/geek/chat'},Date});
+  vm.runInContext(source,context);
   await flush();const root=document.documentElement.childNodes[0].shadow;
   const nodes=()=>{const result=[];const walk=node=>{result.push(node);node.childNodes.forEach(walk);};walk(root);return result;};
-  return {nodes,operations,tick:async()=>{timer();await flush();},fail:()=>{fail=true;},
+  return {nodes,operations,reinject:()=>vm.runInContext(source,context),oldCleanups:()=>oldCleanups,panels:()=>document.documentElement.childNodes.length,
+    tick:async()=>{timer();await flush();},fail:()=>{fail=true;},
     hold:operations=>{held=new Set(operations);},setHost:value=>Object.assign(host,value),setStatus:value=>Object.assign(status,value),
     release:async response=>{pending.splice(0).forEach(item=>item.reply(response || item.response));await flush();},
     expire:async ms=>{clock+=ms;for(const [id,timeout] of timeouts)if(timeout.at<=clock){timeouts.delete(id);timeout.fn();}await flush();}};
 }
+
+test('an extension update replaces the prior panel connection in place and repeated injection stays single',async()=>{
+  const h=await harness({previousBuild:'2026-10-08-hr-background-ui-v4'});
+  assert.equal(h.oldCleanups(),1);assert.equal(h.panels(),1);
+  assert.ok(h.nodes().some(node=>node.textContent==='后台托管：运行中'));
+  h.reinject();await flush();assert.equal(h.oldCleanups(),1);assert.equal(h.panels(),1);
+});
 test('panel shows the saved 15 day policy and shared status, with collapsed records and same-host pause',async()=>{
   const h=await harness();
   assert.ok(h.nodes().some(node=>node.textContent==='后台托管：运行中'));
